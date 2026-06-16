@@ -1,0 +1,11 @@
+{
+  "watch": [
+    "src",
+    "config",
+    "service"
+  ],
+  "ext": "js,json",
+  "ignore": [
+    "node_modules"
+  ]
+}

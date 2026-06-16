@@ -1,0 +1,53 @@
+body {
+  padding: 0;
+  margin: 0;
+}
+html,
+body,
+#map {
+  height: 100%;
+}
+
+#map-search-mod {
+  position: absolute;
+  z-index: 9999;
+  width: 180px;
+  height: 60px;
+  left: 50px;
+  top: 13px;
+  border-radius: 3px;
+  background-color: #fff;
+  display: none;
+}
+
+#map-search-mod input {
+  display: inline-block;
+  width: 160px;
+  max-width: 95%;
+}
+
+/* 右下角菜单列表，图标项右下角往上湃 */
+#map-menu {
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  position: fixed;
+  bottom: 10px;
+  right: 15px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  width: 25px;
+  z-index: 9999;
+}
+
+#map-menu li {
+  width: 100%;
+  height: 25px;
+  line-height: 25px;
+  text-align: center;
+  cursor: pointer;
+  background-color: #fff;
+  margin: 5px 0;
+  border-radius: 3px;
+}

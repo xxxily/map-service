@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+**/static
+*.md
+*.woff
+*.ttf
+*.tpl
+**/iconfont.js

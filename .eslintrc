@@ -1,0 +1,49 @@
+{
+  "env": {
+    "browser": true,
+    "mocha": true,
+    "es6": true,
+    "node": true
+  },
+  "globals": {
+    "expect": true,
+    "sinon": true
+  },
+  "plugins": [
+    "import",
+    "node",
+    "promise",
+    "standard",
+    "vue"
+  ],
+  "extends": [
+    "standard",
+    "plugin:vue/recommended"
+  ],
+  "rules": {
+    "comma-dangle": [
+      "warn",
+      {
+        "arrays": "always-multiline",
+        "objects": "always",
+        "imports": "never",
+        "exports": "never",
+        "functions": "never"
+      }
+    ]
+  },
+  "overrides": [
+    // 覆盖vue相关规则
+    {
+      "files": [ "**/*.vue"],
+      "rules": {}
+    }
+  ],
+  "parserOptions": {
+    "parser": "babel-eslint",
+    "ecmaVersion": 2020,
+    "ecmaFeatures": {
+      "jsx": true
+    }
+  }
+}

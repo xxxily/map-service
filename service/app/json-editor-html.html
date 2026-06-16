@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Config JSON Editor</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/4.6.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 20px;
+        }
+
+        #editor_holder {
+            margin-top: 20px;
+        }
+
+        .btn-group {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Config JSON Editor</h1>
+        <div class="btn-group" role="group">
+            <button id="save_config" class="btn btn-primary">Save Config</button>
+            <button id="load_config" class="btn btn-secondary">Load Config</button>
+        </div>
+        <div id="editor_holder"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/json-editor/2.9.1/jsoneditor.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const schema = {
+                type: 'array',
+                format: 'tabs',
+                items: {
+                    type: 'object',
+                    // title: 'Child',
+                    // headerTemplate: "{{self.name11 || 'Config Item'}}",
+                    // headerTemplate: "{{ i1 }} - {{self.name}}",
+                    headerTemplate: "{{self.name}}",
+                    properties: {
+                        name: {
+                            type: 'string',
+                            title: '配置标题',
+                            minLength: 1,
+                        },
+                        disabled: {
+                            type: 'boolean',
+                            title: '是否禁用当前配置',
+                            default: false
+                        },
+                        type: {
+                            type: 'string',
+                            title: '配置类型',
+                            enum: ['room', 'contact', 'room-join', 'room-leave', 'room-topic', 'friendship', 'cron'],
+                            options: {
+                                enum_titles: ['群聊', '私聊', '群成员加入', '群成员离开', '群聊名称变更', '添加好友', '定时任务'],
+                            }
+                        },
+                        id: {
+                            type: 'string',
+                            options: {
+                                hidden: true
+                            },
+                            minLength: 1,
+                            default: () => `${Date.now()}-${Math.random().toString(36).substr(2)}`
+                        },
+                        cronApplyTo: {
+                            type: 'string',
+                            title: '定时任务应用范围',
+                            options: {
+                                dependencies: {
+                                    type: "cron"
+                                }
+                            },
+                            enum: ['room', 'contact', 'default'],
+                        },
+
+                        interval: {
+                            type: 'integer',
+                            title: '执行间隔（毫秒）',
+                            options: {
+                                dependencies: {
+                                    type: "cron"
+                                }
+                            },
+                            minimum: 0
+                        },
+
+                        keywords: {
+                            type: 'array',
+                            title: '触发指令/关键词',
+                            items: { type: 'string' }
+                        },
+
+                        supportQuote: {
+                            type: 'boolean',
+                            title: '指令是否支持消息引用',
+                            default: true
+                        },
+
+                        debounce: {
+                            type: 'object',
+                            title: '防抖（防止频繁执行指令）',
+                            options: {
+                                collapsed: true
+                            },
+                            properties: {
+                                enable: { type: 'boolean', default: true },
+                                timeout: { type: 'integer', minimum: 0, default: 10000 },
+                                errorMsg: { type: 'string', default: "请勿频繁操作，稍后再试" }
+                            }
+                        },
+
+                        validPeriod: {
+                            type: 'object',
+                            title: '指令有效期',
+                            options: {
+                                collapsed: true
+                            },
+                            properties: {
+                                enable: { type: 'boolean' },
+                                startDate: { type: 'string', format: 'date-time' },
+                                endDate: { type: 'string', format: 'date-time' },
+                                errorMsg: { type: 'string' }
+                            }
+                        },
+
+                        workingHours: {
+                            type: 'object',
+                            title: '工作时间（定义指令的工作时间）',
+                            options: {
+                                collapsed: true
+                            },
+                            properties: {
+                                enable: { type: 'boolean' },
+                                timeRange: {
+                                    type: 'array',
+                                    items: {
+                                        type: 'object',
+                                        properties: {
+                                            startTime: { type: 'string', format: 'time' },
+                                            endTime: { type: 'string', format: 'time' }
+                                        }
+                                    }
+                                },
+                                errorMsg: { type: 'string' }
+                            }
+                        },
+
+                        fuzzyMode: {
+                            type: 'object',
+                            title: '模糊匹配模式',
+                            options: {
+                                collapsed: true
+                            },
+                            properties: {
+                                enable: { type: 'boolean' },
+                                threshold: { type: 'number', minimum: 0, maximum: 1 }
+                            }
+                        },
+
+                        handlerOptions: {
+                            type: 'object',
+                            title: '处理器选项',
+                            options: {
+                                collapsed: true
+                            },
+                            properties: {
+                                randomMsg: { type: 'boolean' },
+                                allowCustomRandomData: { type: 'boolean' },
+                                allowCustomRandomCount: { type: 'boolean' },
+                                maxRandomCount: { type: 'integer', minimum: 1 },
+                                mentionTalker: { type: 'boolean' },
+                                fakeMentionTalker: { type: 'boolean' },
+                                afterTalkerNameMessage: { type: 'string' },
+                                prefixMessage: { type: 'string' },
+                                suffixMessage: { type: 'string' },
+                                resType: {
+                                    type: 'string',
+                                    title: '响应类型',
+                                    enum: ['axios', 'directus', 'message'],
+                                    default: 'message',
+                                    options: {
+                                        enum_titles: ['Axios请求', 'Directus请求', '固定消息']
+                                    }
+                                },
+
+                                message: {
+                                    type: 'string',
+                                    title: '固定消息',
+                                    options: {
+                                        dependencies: {
+                                            resType: "message"
+                                        }
+                                    }
+                                },
+
+                                axios: {
+                                    type: 'array',
+                                    title: 'Axios请求配置',
+                                    options: {
+                                        dependencies: {
+                                            resType: "axios"
+                                        }
+                                    },
+                                    items: {
+                                        type: 'object',
+                                        properties: {
+                                            enable: { type: 'boolean' },
+                                            debug: { type: 'boolean' },
+                                            config: {
+                                                type: 'object',
+                                                properties: {
+                                                    url: { type: 'string' },
+                                                    method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] },
+                                                    baseURL: { type: 'string' },
+                                                    headers: { type: 'object' },
+                                                    params: { type: 'object' },
+                                                    data: { type: 'object' },
+                                                    timeout: { type: 'integer' },
+                                                    withCredentials: { type: 'boolean' },
+                                                    auth: {
+                                                        type: 'object',
+                                                        properties: {
+                                                            username: { type: 'string' },
+                                                            password: { type: 'string' }
+                                                        }
+                                                    },
+                                                    responseType: { type: 'string', enum: ['arraybuffer', 'blob', 'document', 'json', 'text', 'stream'] },
+                                                    responseEncoding: { type: 'string' },
+                                                    xsrfCookieName: { type: 'string' },
+                                                    xsrfHeaderName: { type: 'string' },
+                                                    maxContentLength: { type: 'integer' },
+                                                    maxBodyLength: { type: 'integer' },
+                                                    maxRedirects: { type: 'integer' },
+                                                    proxy: {
+                                                        type: 'object',
+                                                        properties: {
+                                                            host: { type: 'string' },
+                                                            port: { type: 'integer' },
+                                                            auth: {
+                                                                type: 'object',
+                                                                properties: {
+                                                                    username: { type: 'string' },
+                                                                    password: { type: 'string' }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            fieldPath: { type: 'string' },
+                                            random: { type: 'boolean' },
+                                            separator: { type: 'string' }
+                                        }
+                                    }
+                                },
+                                directus: {
+                                    type: 'array',
+                                    title: 'Directus请求配置',
+                                    options: {
+                                        dependencies: {
+                                            resType: "directus"
+                                        }
+                                    },
+                                    items: {
+                                        type: 'object',
+                                        properties: {
+                                            enable: { type: 'boolean' },
+                                            debug: { type: 'boolean' },
+                                            item: { type: 'string' },
+                                            itemId: { type: 'string' },
+                                            field: { type: 'string' },
+                                            random: { type: 'boolean' },
+                                            randomCount: { type: 'integer' },
+                                            separator: { type: 'string' },
+                                            beforeDefaultMessage: { type: 'boolean' },
+                                            afterDefaultMessage: { type: 'boolean' },
+                                            joinStr: { type: 'string' },
+                                            prefixMessage: { type: 'string' },
+                                            suffixMessage: { type: 'string' }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            const initialData = [
+                {
+                    name: '群成员签到',
+                    type: 'room',
+                    id: `${Date.now()}-${Math.random().toString(36).substr(2)}`,
+                    cronApplyTo: 'room',
+                    interval: 30000,
+                    disabled: false,
+                    debounce: {
+                        enable: true,
+                        timeout: 3000,
+                        errorMsg: '请勿频繁操作，稍后再试'
+                    },
+                    handlerOptions: {
+                        randomMsg: true,
+                        maxRandomCount: 1,
+                        mentionTalker: true,
+                        message: '签到成功！'
+                    }
+                },
+                {
+                    name: '自动欢迎新成员',
+                    type: 'room-join',
+                    id: `${Date.now()}-${Math.random().toString(36).substr(2)}`,
+                    disabled: false,
+                    handlerOptions: {
+                        mentionTalker: true,
+                        message: '欢迎加入我们的群！'
+                    }
+                },
+                {
+                    name: '定时提醒',
+                    type: 'cron',
+                    id: `${Date.now()}-${Math.random().toString(36).substr(2)}`,
+                    cronApplyTo: 'room',
+                    interval: 86400000, // 每天
+                    disabled: false,
+                    handlerOptions: {
+                        message: '这是一条每日提醒消息。'
+                    }
+                }
+            ];
+
+            const editor = new JSONEditor(document.getElementById('editor_holder'), {
+                schema: schema,
+                theme: 'bootstrap4',
+                iconlib: 'fontawesome5',
+                disable_edit_json: true,
+                disable_properties: true,
+                no_additional_properties: true,
+                required_by_default: true
+            });
+
+            editor.on('ready', () => {
+                editor.setValue(initialData);
+            });
+
+            editor.on('change', () => {
+                const errors = editor.validate();
+                if (errors.length) {
+                    console.log('Validation errors:', errors);
+                } else {
+                    console.log('Valid data:', editor.getValue());
+                }
+
+                // Implement the logic to show/hide axios and directus options
+                const data = editor.getValue();
+                data.forEach((item, index) => {
+                    if (item.handlerOptions) {
+                        const axiosEnabled = item.handlerOptions.axios && item.handlerOptions.axios.some(a => a.enable);
+                        const directusEnabled = item.handlerOptions.directus && item.handlerOptions.directus.some(d => d.enable);
+
+                        if (axiosEnabled) {
+                            editor.getEditor(`root.${index}.handlerOptions.directus`).disable();
+                        } else if (directusEnabled) {
+                            editor.getEditor(`root.${index}.handlerOptions.axios`).disable();
+                        } else {
+                            editor.getEditor(`root.${index}.handlerOptions.directus`).enable();
+                            editor.getEditor(`root.${index}.handlerOptions.axios`).enable();
+                        }
+                    }
+                });
+            });
+
+            // Save config
+            document.getElementById('save_config').addEventListener('click', () => {
+                const data = editor.getValue();
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'config.json';
+                a.click();
+                URL.revokeObjectURL(url);
+            });
+
+            // Load config
+            document.getElementById('load_config').addEventListener('click', () => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = 'application/json';
+                input.onchange = (event) => {
+                    const file = event.target.files[0];
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        try {
+                            const data = JSON.parse(e.target.result);
+                            editor.setValue(data);
+                        } catch (error) {
+                            console.error('Error parsing JSON:', error);
+                            alert('Invalid JSON file');
+                        }
+                    };
+                    reader.readAsText(file);
+                };
+                input.click();
+            });
+        });
+    </script>
+</body>
+
+</html>
