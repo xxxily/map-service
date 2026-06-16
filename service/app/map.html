@@ -1,254 +1,36 @@
 <!DOCTYPE HTML>
 <html>
+
 <head>
   <meta charset="UTF-8">
   <title>混合地图</title>
-  <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
-  <script src="https://webapi.amap.com/maps?v=1.4.15&key=fceacbfcab715a873337b8a2fed4f93b&plugin=AMap.Autocomplete,AMap.PlaceSearch"></script>
-  <link href="//cdn.bootcdn.net/ajax/libs/leaflet/1.7.1/leaflet.min.css" rel="stylesheet">
-  <script src="//cdn.bootcss.com/jquery/3.1.0/jquery.min.js"></script>
-  <script src="//cdn.bootcdn.net/ajax/libs/leaflet/1.7.1/leaflet.min.js"></script>
-  <!--<script src="//cdn.bootcdn.net/ajax/libs/pouchdb/7.2.2/pouchdb.min.js"></script>-->
-  <!--<script src="//unpkg.com/leaflet.tilelayer.pouchdbcached@latest/L.TileLayer.PouchDBCached.js"></script>-->
-  <style type="text/css">
-    body{
-      padding:0;
-      margin:0;
-    }
-    html, body, #map{
-      height:100%;
-    }
-  </style>
+  <meta name="viewport"
+    content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+  <link rel="icon" href="./favicon.ico" type="image/x-icon">
+  <script>window._AMapSecurityConfig = { securityJsCode: '4d0564f442a8150fd4209442f4e2fcde', }</script>
+  <script src="https://webapi.amap.com/maps?v=2.0&key=de27deab99d785fc6d1cf5ea64200794&plugin=AMap.AutoComplete,AMap.PlaceSearch,AMap.Geolocation"></script>
+  <link href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+  <script src="./leaflet.edgebuffer.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pouchdb@9.0.0/dist/pouchdb.min.js"></script>
+  <script src="./L.TileLayer.PouchDBCached.js"></script>
+  <link rel="stylesheet" href="./style.css?20260616">
 </head>
+
 <body>
+  <div id="map-search-mod">
+    <label for="tipinput">请输入关键字：</label>
+    <input id="tipinput" autocomplete="off" />
+  </div>
 
-<div id="map-search-mod">
-  <table>
-    <tr>
-      <td>
-        <label>请输入关键字：</label>
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <input id="tipinput"/>
-      </td>
-    </tr>
-  </table>
-</div>
+  <ul id="map-menu">
+    <li><button type="button" data-action="toggleLayerControl" aria-label="切换图层">☰</button></li>
+    <li><button type="button" data-action="toggleSearchMode" aria-label="搜索地点">⌕</button></li>
+    <li><button type="button" data-action="updataPosition" aria-label="定位当前位置">⌖</button></li>
+  </ul>
 
-<!--<div id="container" style="width:100%; height:100%; background-color:#f00"></div>-->
-<div id="map"></div>
-
-<style>
-  #map-search-mod{
-    position:absolute;
-    z-index:9999;
-    width:180px;
-    height:60px;
-    left:50px;
-    top:13px;
-    border-radius:3px;
-    background-color:#fff;
-  }
-
-  #map-search-mod input{
-    display:inline-block;
-    width:160px;
-    max-width:95%;
-  }
-</style>
-
-<script>
-
-  function initAMap () {
-    var map = new AMap.Map('container', {
-      resizeEnable: true, //是否监控地图容器尺寸变化
-      zoom: 11, //初始化地图层级
-      center: [116.397428, 39.90923] //初始化地图中心点
-    })
-  }
-
-  function AMapSearch () {
-    const auto = new AMap.Autocomplete({
-      input: 'tipinput'
-    })
-    const placeSearch = new AMap.PlaceSearch({
-      // map: map
-    })
-    //构造地点查询类
-    AMap.event.addListener(auto, 'select', select)
-
-    function select (e) {
-      console.log('高德搜索选中结果', e)
-
-      if (window.map && window.map.setView) {
-        const location = [e.poi.location.lat, e.poi.location.lng]
-        window.map.setView(location, 18)
-
-        L.marker(location, {
-          opacity: 1,
-          draggable: true,
-          title: e.poi.name
-        }).addTo(map)
-      }
-      // placeSearch.setCity(e.poi.adcode)
-      // placeSearch.search(e.poi.name)  //关键字查询查询
-    }
-  }
-
-  AMapSearch()
-
-  function getPosition () {
-    return new Promise((resolve, reject) => {
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(function (position) {
-          let latitude = position.coords.latitude
-          let longitude = position.coords.longitude
-          let data = {
-            lat: latitude,
-            lng: longitude
-          }
-          alert(JSON.stringify(data))
-          resolve(data)
-          console.log(data)
-        }, function () {
-          reject(arguments)
-        })
-      } else {
-        reject('你的浏览器不支持当前地理位置信息获取')
-      }
-    })
-  }
-
-  async function initLeafletMap () {
-    var map = window.L.map('map', {
-      // center: [23.129112, 113.264385],
-      // center: [22.369841,111.421691],
-      // 合水镇
-      center: [22.369841, 111.421691],
-      zoom: 16,
-      zoomControl: false,
-      /* 显示属性控件，即右下角提示内容 */
-      attributionControl: true,
-      keyboardPanDelta: 480
-    }).setMaxBounds([[-90, 0], [90, 360]])
-
-    window.map = map
-
-    L.marker([22.369841, 111.421691], {
-      opacity: 0.8,
-      draggable: true,
-      title: '合水镇'
-    }).addTo(map)
-
-    // map.setView([23.129112, 113.264385])
-
-    var mapLayers = {
-      '谷歌高德/卫星（缓存）': L.layerGroup([
-        L.tileLayer('/api.v1/fetchRelay?url=https%3A%2F%2Fwww.google.com%2Fmaps%2Fvt%3Flyrs%3Ds%40189%26gl%3Dcn%26x%3D{x}%26y%3D{y}%26z%3D{z}', {
-          maxZoom: 19,
-          minZoom: 3,
-          useCache: true,
-          attribution: '谷歌提供卫星图，高德提供街道图'
-        }),
-        L.tileLayer('/api.v1/fetchRelay?url=http%3A%2F%2Fwebst0{s}.is.autonavi.com%2Fappmaptile%3Fstyle%3D8%26x%3D{x}%26y%3D{y}%26z%3D{z}', {
-          maxZoom: 19,
-          maxNativeZoom: 18,
-          minZoom: 3,
-          useCache: true,
-          attribution: '谷歌提供卫星图，高德提供街道图',
-          subdomains: '1234',
-          opacity: 0.8
-        })
-      ]).addTo(map),
-
-      '谷歌高德杂交/卫星': L.layerGroup([
-        L.tileLayer('//www.google.cn/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}', {
-          maxZoom: 19,
-          minZoom: 3,
-          attribution: '谷歌提供卫星图，高德提供街道图'
-        }),
-        L.tileLayer('//webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}', {
-          maxZoom: 19,
-          maxNativeZoom: 18,
-          minZoom: 3,
-          useCache: false,
-          // useOnlyCache: true,
-          crossOrigin: false,
-          attribution: '谷歌提供卫星图，高德提供街道图',
-          subdomains: '1234',
-          opacity: 0.8
-        })
-      ]),
-
-      '高德/卫星': L.layerGroup([
-        L.tileLayer('//webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}', {
-          maxZoom: 20,
-          maxNativeZoom: 18,
-          minZoom: 3,
-          attribution: '高德地图 AutoNavi.com',
-          subdomains: '1234'
-        }),
-        L.tileLayer('//webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}', {
-          maxZoom: 20,
-          maxNativeZoom: 18,
-          minZoom: 3,
-          attribution: '高德地图 AutoNavi.com',
-          subdomains: '1234',
-          opacity: 0.5
-        })
-      ]),
-      '高德/街道': L.tileLayer('//webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
-        maxZoom: 20,
-        maxNativeZoom: 18,
-        minZoom: 3,
-        attribution: '高德地图 AutoNavi.com',
-        subdomains: '1234'
-      }),
-      '谷歌/卫星': L.tileLayer('//www.google.cn/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}', {
-        maxZoom: 20,
-        minZoom: 3,
-        attribution: '谷歌 Google.cn'
-      }),
-      '谷歌/街道': L.tileLayer('//www.google.cn/maps/vt?lyrs=m@189&gl=cn&x={x}&y={y}&z={z}', {
-        maxZoom: 20,
-        minZoom: 3,
-        attribution: '谷歌 Google.cn'
-      }),
-      '智图/街道': L.tileLayer('//map.geoq.cn/ArcGIS/rest/services/ChinaOnlineStreetPurplishBlue/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 20,
-        maxNativeZoom: 16,
-        minZoom: 3,
-        attribution: '智图 GeoQ.cn'
-      })
-    }
-
-    var layerControl = window.L.control.layers(mapLayers, {}, {
-      position: 'topright',
-      collapsed: true,
-    }).addTo(map)
-
-    window.L.control.zoom({
-      zoomInTitle: '放大',
-      zoomOutTitle: '缩小'
-    }).addTo(map)
-
-    console.log('-----------------------------')
-    const result = await getPosition().catch(err => {console.log('1111', err)})
-    console.log('getPosition', result)
-  }
-
-  initLeafletMap()
-
-  /* 地图瓦片数量计算公式 */
-  // let count = 0
-  // for (let i=1; i < 19; i++) {
-  //   const row = Math.pow(2,i-1)
-  //   count = count + row * row
-  //   console.log(`${i} ${row} ${row*row} ${count}`)
-  // }
-</script>
-<!--源代码地址：https://lantian.pub/article/modify-website/leaflet-combine-google-cn-satellite-autonavi-map.lantian/-->
+  <div id="map"></div>
+  <script src="./index.js?20260616"></script>
 </body>
+
 </html>

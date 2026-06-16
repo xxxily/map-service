@@ -9,7 +9,7 @@
 
 import utils from './utils/index.js'
 import fs from 'fs-extra'
-import glob from 'glob'
+import { glob } from 'glob'
 import path from 'path'
 import dayjs from 'dayjs'
 import rootPath from './rootPath.js'
@@ -32,17 +32,10 @@ const service = {
    * @returns {Promise<unknown>}
    */
   async getResourceFileList () {
-    return new Promise((resolve, reject) => {
-      fs.ensureDirSync(serviceConfig.staticDir)
-      glob('**/**.**', {
-        cwd: serviceConfig.staticDir,
-      }, function (err, files) {
-        if (err) {
-          reject(err)
-        } else {
-          resolve(files)
-        }
-      })
+    fs.ensureDirSync(serviceConfig.staticDir)
+    return glob('**/**.**', {
+      cwd: serviceConfig.staticDir,
+      nodir: true,
     })
   },
 
@@ -51,17 +44,10 @@ const service = {
    * @returns {Promise<unknown>}
    */
   async getDistPackageFileList () {
-    return new Promise((resolve, reject) => {
-      fs.ensureDirSync(serviceConfig.staticDir)
-      glob('**/dist_**.zip', {
-        cwd: serviceConfig.staticDir,
-      }, function (err, files) {
-        if (err) {
-          reject(err)
-        } else {
-          resolve(files)
-        }
-      })
+    fs.ensureDirSync(serviceConfig.staticDir)
+    return glob('**/dist_**.zip', {
+      cwd: serviceConfig.staticDir,
+      nodir: true,
     })
   },
 

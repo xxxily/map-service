@@ -20,11 +20,14 @@ async function gitPull (options) {
 
 export default function () {
   /* 每小时执行一次定时任务 */
-  const job = new CronJob('00 00 * * * *', function () {
-    gitPull(['-f'])
-  }, null, true, 'Asia/Shanghai')
-
-  job.start()
+  const job = CronJob.from({
+    cronTime: '00 00 * * * *',
+    onTick: function () {
+      gitPull(['-f'])
+    },
+    start: true,
+    timeZone: 'Asia/Shanghai',
+  })
 
   return job
 }

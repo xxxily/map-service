@@ -5,7 +5,7 @@ const watch = [
   'tests',
   'pm2.config.js',
   'package.json',
-  'yarn.lock',
+  'package-lock.json',
 ]
 const commonConfig = {
   instances: 1,

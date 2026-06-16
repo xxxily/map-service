@@ -3,28 +3,37 @@ const urlParams = new URLSearchParams(window.location.search)
 
 const AMap = window.AMap
 
-function initAMap () {
-  const map = new AMap.Map('container', {
-    resizeEnable: true, // 是否监控地图容器尺寸变化
-    zoom: 11, // 初始化地图层级
-    center: [116.397428, 39.90923], // 初始化地图中心点
-  })
+function parseDefaultView () {
+  const rawCoords = (urlParams.get('coords') || '23.129112,113.264385').split(',')
+  const lat = Number(rawCoords[0])
+  const lng = Number(rawCoords[1])
+  const zoom = Number.parseInt(rawCoords[2] || 16, 10)
+
+  return {
+    center: [
+      Number.isFinite(lat) ? lat : 23.129112,
+      Number.isFinite(lng) ? lng : 113.264385,
+    ],
+    zoom: Number.isFinite(zoom) ? zoom : 16,
+  }
 }
 
 function AMapSearch () {
-  const auto = new AMap.Autocomplete({
+  if (!AMap || !AMap.AutoComplete || !AMap.PlaceSearch) {
+    console.warn('高德搜索插件加载失败，搜索功能不可用')
+    return
+  }
+
+  const auto = new AMap.AutoComplete({
     input: 'tipinput',
   })
-  const placeSearch = new AMap.PlaceSearch({
-    // map: map
-  })
   // 构造地点查询类
-  AMap.event.addListener(auto, 'select', select)
+  auto.on('select', select)
 
   function select (e) {
     console.log('高德搜索选中结果', e)
 
-    if (window.map && window.map.setView) {
+    if (window.map && window.map.setView && e.poi && e.poi.location) {
       const location = [e.poi.location.lat, e.poi.location.lng]
       window.map.setView(location, 18)
 
@@ -32,14 +41,12 @@ function AMapSearch () {
         opacity: 1,
         draggable: true,
         title: e.poi.name,
-      }).addTo(map)
+      }).addTo(window.map)
     }
     // placeSearch.setCity(e.poi.adcode)
     // placeSearch.search(e.poi.name)  //关键字查询查询
   }
 }
-
-AMapSearch()
 
 /**
  * 高德地图定位
@@ -47,6 +54,11 @@ AMapSearch()
  */
 let geolocation = null
 function AMapGeolocation () {
+  if (!AMap || !AMap.Geolocation) {
+    console.warn('高德定位插件加载失败，将仅使用浏览器定位')
+    return null
+  }
+
   geolocation = new AMap.Geolocation({
     enableHighAccuracy: true,
     noIpLocate: 3,
@@ -63,7 +75,6 @@ function AMapGeolocation () {
 
   return geolocation
 }
-AMapGeolocation()
 
 function getPosition () {
   return new Promise((resolve, reject) => {
@@ -85,8 +96,7 @@ function getPosition () {
   })
 }
 
-const defCoords = (urlParams.get('coords') || '23.129112,113.264385').split(',')
-const defZoom = parseInt(defCoords[2] || 16)
+const defaultView = parseDefaultView()
 
 function initLayerControl (map) {
   const mapLayers = {
@@ -237,8 +247,8 @@ function addTargetMarker (map, location) {
 
 async function initLeafletMap () {
   const map = L.map('map', {
-    center: defCoords,
-    zoom: defZoom,
+    center: defaultView.center,
+    zoom: defaultView.zoom,
     zoomControl: false,
     /* 是否显示属性控件，即右下角提示内容 */
     attributionControl: false,
@@ -248,7 +258,9 @@ async function initLeafletMap () {
 
   window.map = map
 
-  addTargetMarker(map, defCoords)
+  AMapSearch()
+  AMapGeolocation()
+  addTargetMarker(map, defaultView.center)
 
   const layerControl = initLayerControl(map)
   console.log('图层控制', layerControl)
@@ -294,6 +306,12 @@ async function initLeafletMap () {
        * 将获取到的WGS-84坐标转换为GCJ-02坐标
        * https://lbs.amap.com/api/javascript-api/guide/transform/convertfrom
        */
+      if (!AMap || !AMap.convertFrom) {
+        map.setView([lat, lng], 18)
+        addTargetMarker(map, [lat, lng])
+        return
+      }
+
       AMap.convertFrom([lng, lat], 'gps', function (status, result) {
         if (result.info === 'ok' && result.locations.length > 0) {
           const lnglats = result.locations[0]
@@ -324,7 +342,8 @@ async function initLeafletMap () {
 
   /* 给map-menu绑定代理事件 */
   document.getElementById('map-menu').addEventListener('click', function (e) {
-    const action = e.target.getAttribute('data-action')
+    const actionTarget = e.target.closest('[data-action]')
+    const action = actionTarget && actionTarget.getAttribute('data-action')
     if (action && actionMap[action] instanceof Function) {
       actionMap[action]()
     }

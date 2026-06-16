@@ -7,33 +7,32 @@
  * @github       https://github.com/xxxily
  */
 
-import glob from 'glob'
+import { globSync } from 'glob'
 
 /* 获取定时任务模块，cronJob下的每个文件都是一个定时任务模块 */
-const getCronJobMod = () => {
+const getCronJobMod = async () => {
   const jobsMod = {}
-  const globResult = glob.sync('*.js', {
+  const globResult = globSync('*.js', {
     cwd: new URL('.', import.meta.url).pathname,
   })
 
-  globResult.forEach(filename => {
+  for (const filename of globResult) {
     if (filename !== 'index.js') {
       const name = filename.replace(/\.js$/, '')
-      import(`./${filename}`).then(module => {
-        jobsMod[name] = module.default
-      })
+      const module = await import(`./${filename}`)
+      jobsMod[name] = module.default
     }
-  })
+  }
 
   return jobsMod
 }
 
 const jobs = {
-  init () {
+  async init () {
     const jobsIgnore = [
       'removeTimeoutPackage',
     ]
-    const jobsMap = getCronJobMod()
+    const jobsMap = await getCronJobMod()
     const jobList = Object.keys(jobsMap)
 
     jobList.forEach((jobName) => {

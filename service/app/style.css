@@ -1,29 +1,55 @@
-body {
-  padding: 0;
-  margin: 0;
-}
 html,
 body,
 #map {
   height: 100%;
 }
 
+body {
+  padding: 0;
+  margin: 0;
+  color: #1d2a2e;
+  font-family: ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
 #map-search-mod {
+  display: none;
   position: absolute;
   z-index: 9999;
-  width: 180px;
-  height: 60px;
-  left: 50px;
-  top: 13px;
-  border-radius: 3px;
+  top: 14px;
+  left: 14px;
+  width: min(280px, calc(100vw - 28px));
+  box-sizing: border-box;
+  padding: 10px 12px 12px;
+  border: 1px solid rgba(18, 57, 63, 0.14);
+  border-radius: 8px;
   background-color: #fff;
-  display: none;
+  box-shadow: 0 10px 30px rgba(20, 37, 42, 0.16);
+}
+
+#map-search-mod label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #50676d;
 }
 
 #map-search-mod input {
-  display: inline-block;
-  width: 160px;
-  max-width: 95%;
+  display: block;
+  width: 100%;
+  height: 34px;
+  box-sizing: border-box;
+  border: 1px solid #bdcccf;
+  border-radius: 6px;
+  padding: 0 10px;
+  outline: none;
+  color: #122428;
+  font-size: 14px;
+}
+
+#map-search-mod input:focus {
+  border-color: #167a7f;
+  box-shadow: 0 0 0 3px rgba(22, 122, 127, 0.14);
 }
 
 /* 右下角菜单列表，图标项右下角往上湃 */
@@ -32,22 +58,50 @@ body,
   flex-direction: column-reverse;
   align-items: flex-end;
   position: fixed;
-  bottom: 10px;
-  right: 15px;
+  right: 16px;
+  bottom: 16px;
+  gap: 8px;
   padding: 0;
   margin: 0;
   list-style: none;
-  width: 25px;
   z-index: 9999;
 }
 
 #map-menu li {
-  width: 100%;
-  height: 25px;
-  line-height: 25px;
-  text-align: center;
-  cursor: pointer;
+  margin: 0;
+}
+
+#map-menu button {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid rgba(18, 57, 63, 0.14);
+  border-radius: 8px;
   background-color: #fff;
-  margin: 5px 0;
-  border-radius: 3px;
+  color: #183338;
+  box-shadow: 0 8px 24px rgba(20, 37, 42, 0.18);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+#map-menu button:hover,
+#map-menu button:focus-visible {
+  border-color: #167a7f;
+  outline: none;
+  color: #0a666b;
+}
+
+@media (max-width: 560px) {
+  #map-search-mod {
+    top: 10px;
+    left: 10px;
+    width: calc(100vw - 20px);
+  }
+
+  #map-menu {
+    right: 12px;
+    bottom: 12px;
+  }
 }

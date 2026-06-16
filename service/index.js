@@ -9,9 +9,8 @@
 import axios from 'axios'
 import express from 'express'
 import fs from 'fs-extra'
-import bodyParser from 'body-parser'
 import urlJoin from 'url-join'
-import * as cors from 'cors'
+import cors from 'cors'
 import corsOpts from './cors.conf.js'
 import baseConfig from './config.js'
 import simpleApi from './bin/simpleApi.js'
@@ -65,10 +64,10 @@ const index = {
     app.use(commonMethods)
 
     /* parse application/x-www-form-urlencoded */
-    app.use(bodyParser.urlencoded({ extended: false, }))
+    app.use(express.urlencoded({ extended: false, }))
 
     /* parse application/json */
-    app.use(bodyParser.json())
+    app.use(express.json())
 
     /* 初始化静态资源的目录地址 */
     fs.ensureDirSync(serviceConfig.staticDir)
@@ -107,7 +106,9 @@ const index = {
       console.log('可用接口地址：')
       console.log(simpleApi.getRegisteredApiLink().join('\n'))
       console.log('开启定时任务服务')
-      cronJob.init()
+      cronJob.init().catch(err => {
+        console.error('定时任务服务启动失败', err)
+      })
     })
   },
 }

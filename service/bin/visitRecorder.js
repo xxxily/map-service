@@ -8,10 +8,10 @@
  */
 import morgan from 'morgan'
 import path from 'path'
-import rfs from 'rotating-file-stream'
+import { createStream } from 'rotating-file-stream'
 import rootPath from './rootPath.js'
 
-const accessLogStream = rfs.createStream('access.log', {
+const accessLogStream = createStream('access.log', {
   path: path.join(rootPath, './log/visitRecorder'),
   interval: '1d',
   size: '2M',
