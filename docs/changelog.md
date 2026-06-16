@@ -1,5 +1,50 @@
 # Change Log
 
+## 2026-06-17 - API, Cache, Frontend, and Test Modernization
+
+### API
+
+- Replaced `/api.v1` with `/api/v1`.
+- Removed unrelated/testing APIs: random file selector, Wallhaven selector,
+  GitLab webhook handler, static resource/package search helpers, and `/login`.
+- Added `GET /api/v1/health` and root `GET /health`.
+- Added `GET /api/v1/routes` and `GET /api/v1/openapi.json` for lightweight API
+  discovery.
+- Added `GET /api/v1/cache/fetch-relay` and
+  `DELETE /api/v1/cache/fetch-relay` cache management endpoints.
+
+### Tile Relay Cache
+
+- Replaced permanent cache reads with TTL-based cache metadata.
+- Added `HIT`, `MISS`, `REVALIDATED`, `STALE`, and `BYPASS` cache status
+  headers.
+- Added conditional upstream revalidation with `ETag` and `Last-Modified`
+  headers when available.
+- Prevented failed, undersized, or non-tile upstream responses from being
+  cached.
+- Added atomic cache writes through temporary files and metadata sidecars.
+- Tightened the upstream whitelist to exact hosts and tile paths.
+
+### Frontend
+
+- Migrated the map UI to Vite 8.
+- Added npm-managed `leaflet` and `@amap/amap-jsapi-loader`.
+- Replaced CDN/time-stamped script and style tags with module imports and
+  hashed build output.
+- Split map code into focused modules under `src/`.
+- Removed duplicated `map.html` and unrelated static HTML/text/binary assets.
+- Removed browser-side PouchDB tile caching so cache freshness is centralized in
+  the backend.
+
+### Dependencies and Tests
+
+- Removed dependencies tied to deleted utility scripts: Directus SDK, dayjs,
+  ExcelJS, lowdb, Meilisearch, MiniSearch, and p-queue.
+- Removed old offline task scripts and JSON DB/random selector utilities.
+- Added `npm test` using Node's native test runner.
+- Added tests for relay cache freshness, stale fallback, failed-response cache
+  rejection, cache bypass, and relay whitelist rules.
+
 ## 2026-06-17 - Modernization Baseline
 
 ### Dependency Management

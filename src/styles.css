@@ -52,7 +52,6 @@ body {
   box-shadow: 0 0 0 3px rgba(22, 122, 127, 0.14);
 }
 
-/* 右下角菜单列表，图标项右下角往上湃 */
 #map-menu {
   display: flex;
   flex-direction: column-reverse;
@@ -91,6 +90,11 @@ body {
   border-color: #167a7f;
   outline: none;
   color: #0a666b;
+}
+
+.leaflet-control-layers {
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(20, 37, 42, 0.16);
 }
 
 @media (max-width: 560px) {

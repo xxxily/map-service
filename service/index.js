@@ -10,6 +10,7 @@ import axios from 'axios'
 import express from 'express'
 import fs from 'fs-extra'
 import urlJoin from 'url-join'
+import path from 'path'
 import cors from 'cors'
 import corsOpts from './cors.conf.js'
 import baseConfig from './config.js'
@@ -28,7 +29,7 @@ if (serviceConfig.enableCors) {
 const index = {
   async getServiceConfig () {
     const getConfigHandler = async (resolve, reject) => {
-      const url = urlJoin(simpleApi.localService, simpleApi.basePath, '/service-config')
+      const url = urlJoin(simpleApi.localService, simpleApi.basePath, '/health')
       axios({
         url,
         timeout: 200,
@@ -89,11 +90,24 @@ const index = {
         res.set('x-timestamp', Date.now())
       },
     }
+    const appOptions = {
+      ...options,
+      setHeaders: function (res, filePath, stat) {
+        res.set('Access-Control-Allow-Origin', '*')
+        res.set('x-timestamp', Date.now())
+
+        if (path.basename(filePath) === 'index.html') {
+          res.set('Cache-Control', 'no-cache')
+        } else {
+          res.set('Cache-Control', 'public, max-age=31536000, immutable')
+        }
+      },
+    }
 
     /* 注册服务前端页面服务 */
     if (serviceConfig.appDir) {
       fs.ensureDirSync(serviceConfig.appDir)
-      app.use('/', express.static(serviceConfig.appDir, options))
+      app.use('/', express.static(serviceConfig.appDir, appOptions))
     }
 
     app.use(serviceConfig.staticPath, express.static(serviceConfig.staticDir, options))

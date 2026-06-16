@@ -29,9 +29,7 @@ const getCronJobMod = async () => {
 
 const jobs = {
   async init () {
-    const jobsIgnore = [
-      'removeTimeoutPackage',
-    ]
+    const jobsIgnore = []
     const jobsMap = await getCronJobMod()
     const jobList = Object.keys(jobsMap)
 

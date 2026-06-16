@@ -3,83 +3,103 @@
 Base URL:
 
 ```text
-/api.v1
+/api/v1
 ```
 
-## Health
-
-### `GET /check`
-
-Returns a minimal process health response.
+All JSON endpoints use the shared response envelope:
 
 ```json
 {
   "code": 0,
-  "result": {
-    "msg": "ok"
-  },
+  "result": {},
   "error": null
 }
 ```
 
-## Service Metadata
+Errors use `code: -1` and place details under `error.message`.
 
-### `GET /api.v1/service-config`
+## System
 
-Returns current static service configuration.
+### `GET /api/v1/health`
 
-This endpoint currently exposes internal paths and should not be exposed to
-untrusted networks without review.
+Returns process health.
 
-## Static Resource Helpers
+### `GET /health`
 
-### `GET /api.v1/resource-list`
+Root-level health check for simple load balancer probes.
 
-Lists files under the configured static directory.
+### `GET /api/v1/routes`
 
-### `GET /api.v1/has-resource-file?filename=<name>`
+Returns the registered API route catalog.
 
-Checks whether a static resource exists.
+### `GET /api/v1/openapi.json`
 
-### `GET /api.v1/search-package-file`
-
-Searches historical frontend package records from the static log.
-
-### `GET /api.v1/get-latest-package-file`
-
-Returns the latest matching package record or redirects to it when requested.
+Returns a lightweight OpenAPI 3.1 document generated from the registered route
+metadata.
 
 ## Tile Relay
 
-### `GET /api.v1/fetchRelay?url=<encoded-url>`
+### `GET /api/v1/tiles/relay?url=<encoded-url>`
 
-Fetches a whitelisted upstream URL and caches successful responses locally.
+Fetches a whitelisted upstream map tile URL through the service cache.
 
-Current whitelisted providers:
+Allowed upstreams:
 
-- `google.com`
-- `autonavi.com`
+- `https://www.google.com/maps/vt`
+- `https://www.google.cn/maps/vt`
+- `https://webst01.is.autonavi.com/appmaptile` through `webst04`
+- `https://webrd01.is.autonavi.com/appmaptile` through `webrd04`
 
-Current query parameters:
+Query parameters:
 
-- `url` - required, URL-encoded upstream resource URL.
-- `useProxy` - optional boolean; when true, uses the configured local proxy.
-- `noCache` - optional boolean; when true, bypasses the local cache.
+- `url` - required, URL-encoded upstream tile URL.
+- `refresh=true` - bypasses a stale/fresh read and updates cache from upstream.
+- `noCache=true` - alias for `refresh=true`.
+- `cache=false` - streams upstream response without writing local cache.
+- `useProxy=true` - uses the configured local proxy for upstream requests.
 
-Known follow-up work:
+Response headers:
 
-- cache freshness currently needs stronger revalidation semantics,
-- failed upstream responses must not be cached,
-- cache purge/revalidate controls should be documented after implementation.
+- `X-Cache: MISS` - fetched upstream and wrote a new cache file.
+- `X-Cache: HIT` - served a fresh cache file.
+- `X-Cache: REVALIDATED` - upstream returned `304`, metadata TTL was extended.
+- `X-Cache: STALE` - upstream refresh failed, served cache within stale window.
+- `X-Cache: BYPASS` - cache was disabled for this request.
 
-## Legacy / Review Required
+Cache policy:
 
-The following endpoints came from earlier utility/testing work and should be
-reviewed before expanding the public API:
+- Only `2xx` upstream responses are cacheable.
+- Empty or undersized responses are rejected and not cached.
+- Responses with non-tile content types are rejected and not cached.
+- Cache files are written atomically through a temporary file and renamed only
+  after validation.
+- Metadata is stored beside each tile as `<cache-file>.meta.json`.
+- Fresh cache TTL defaults to 6 hours.
+- Stale fallback window defaults to 30 days.
 
-- `GET /api.v1/random-file-selector`
-- `GET /api.v1/random-wallhaven-wallpapers`
-- `ALL /api.v1/do1-gitlab-webhook`
-- `ALL /login`
+## Cache Management
 
-They are candidates for removal or isolation from the public API surface.
+### `GET /api/v1/cache/fetch-relay`
+
+Returns cache stats, provider counts, and up to 100 recent entries.
+
+### `DELETE /api/v1/cache/fetch-relay`
+
+Clears the full tile relay cache.
+
+### `DELETE /api/v1/cache/fetch-relay?url=<encoded-url>`
+
+Clears a single whitelisted tile cache entry.
+
+## Removed APIs
+
+The old utility/testing APIs were removed during the API cleanup:
+
+- random local file selector
+- Wallhaven wallpaper selector
+- GitLab webhook handler
+- static resource/package search endpoints
+- `/login`
+
+New APIs should be added under `/api/v1`, registered in
+`service/bin/simpleApi.js`, and documented here.

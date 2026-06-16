@@ -6,9 +6,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
     "start": "nodemon service/index.js",
     "exec": "node service/index.js",
-    "check": "node --check service/index.js",
+    "test": "node --test",
+    "check": "node --check service/index.js && node --check service/bin/simpleApi.js && node --check service/bin/service.js && node --check service/bin/middleware/fetchRelay/index.js && node --check vite.config.js && node --check src/main.js && node --check src/map/layers.js && node --check src/map/location.js && node --check src/map/search.js && node --check src/map/url-state.js",
     "pm2-start": "pm2 start pm2.config.js",
     "pm2-stop": "pm2 stop pm2.config.js",
     "pm2-restart": "pm2 restart pm2.config.js",
@@ -16,37 +19,22 @@
     "pm2-delete": "pm2 delete pm2.config.js"
   },
   "dependencies": {
-    "@directus/sdk": "^22.0.0",
+    "@amap/amap-jsapi-loader": "^1.0.1",
     "axios": "^1.18.0",
     "cors": "^2.8.6",
     "cron": "^4.4.0",
-    "dayjs": "^1.11.21",
-    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "fs-extra": "^11.3.5",
     "glob": "^13.0.6",
-    "lowdb": "^7.0.1",
-    "meilisearch": "^0.58.0",
-    "minisearch": "^7.2.0",
+    "leaflet": "^1.9.4",
     "morgan": "^1.11.0",
-    "p-queue": "^9.3.0",
     "rotating-file-stream": "^3.2.9",
     "simple-git": "^3.36.0",
     "url-join": "^5.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
-  },
-  "overrides": {
-    "archiver": "^7.0.1",
-    "archiver-utils": "^5.0.2",
-    "brace-expansion": "^5.0.6",
-    "glob": "^13.0.6",
-    "minimatch": "^10.2.5",
-    "readdir-glob": "^3.0.0",
-    "tmp": "^0.2.7",
-    "uuid": "^14.0.0",
-    "zip-stream": "^7.0.5"
+    "nodemon": "^3.1.14",
+    "vite": "^8.0.16"
   },
   "engines": {
     "node": ">=22.13.0",

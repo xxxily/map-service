@@ -1,20 +1,30 @@
 export default {
-  domain: [
-    'google.com',
-    'autonavi.com',
+  allowedHosts: [
+    'www.google.com',
+    'www.google.cn',
+    'webst01.is.autonavi.com',
+    'webst02.is.autonavi.com',
+    'webst03.is.autonavi.com',
+    'webst04.is.autonavi.com',
+    'webrd01.is.autonavi.com',
+    'webrd02.is.autonavi.com',
+    'webrd03.is.autonavi.com',
+    'webrd04.is.autonavi.com',
   ],
-  url: [
-    'autonavi.com/appmaptile',
-    'google.com/maps/vt',
+  allowedPathPatterns: [
+    /^\/maps\/vt$/,
+    /^\/appmaptile$/,
   ],
-  isInDomainlist (url) {
-    const domain = this.domain || []
-    const urlObj = new URL(url)
-    const host = urlObj.host
-    return domain.some((domainItem) => { return host.includes(domainItem) })
-  },
-  isInUrlList (url) {
-    const urlList = this.url || []
-    return urlList.some((urlItem) => { return url.includes(urlItem) })
+  isAllowed (url) {
+    try {
+      const urlObj = new URL(url)
+      const hostname = urlObj.hostname.toLowerCase()
+      const pathname = urlObj.pathname
+
+      return this.allowedHosts.includes(hostname) &&
+        this.allowedPathPatterns.some(pattern => pattern.test(pathname))
+    } catch (err) {
+      return false
+    }
   },
 }

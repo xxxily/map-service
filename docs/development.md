@@ -15,7 +15,7 @@ modernization pass and `package-lock.json` is the source of truth.
 
 ## Runtime
 
-The service is an ESM Node.js application.
+The backend is an ESM Node.js application.
 
 ```bash
 npm run exec
@@ -24,10 +24,25 @@ npm start
 
 Scripts:
 
+- `npm run dev` - run the Vite dev server for frontend development.
+- `npm run build` - build the frontend into `service/app/`.
 - `npm run exec` - run `service/index.js` directly.
 - `npm start` - run the service through nodemon.
-- `npm run check` - syntax-check the service entrypoint.
+- `npm run check` - syntax-check backend, Vite config, and frontend modules.
+- `npm test` - run Node native tests.
 - `npm run pm2-start` - start with PM2 using `pm2.config.js`.
+
+## Frontend Workflow
+
+Edit source files under `src/` and root `index.html`.
+
+Do not hand-edit generated files under `service/app/`; rebuild them instead:
+
+```bash
+npm run build
+```
+
+The production service serves the generated `service/app/index.html` at `/`.
 
 ## Verification Checklist
 
@@ -36,15 +51,18 @@ Before committing service changes, run:
 ```bash
 npm install
 npm run check
+npm test
+npm run build
 npm outdated --json
 npm audit --omit=dev --registry=https://registry.npmjs.org --json
 ```
 
 For map UI changes, also verify:
 
-- `GET /map.html` returns 200.
+- `GET /` returns the generated map app.
 - Browser console has no script errors.
-- Leaflet loads, a marker is visible, and map tiles load.
+- Leaflet loads, a marker is visible, and map tiles load through
+  `/api/v1/tiles/relay`.
 
 ## Local State
 

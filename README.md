@@ -1,8 +1,8 @@
 # map-service
 
-`map-service` is a small Node.js static map service. It serves the map UI from
-`service/app`, exposes a versioned API under `/api.v1`, and relays selected map
-tile requests through a local cache.
+`map-service` is a small Node.js map service. It serves a Vite-built Leaflet +
+AMap browser app, exposes a versioned API under `/api/v1`, and relays selected
+map tile requests through a freshness-aware local cache.
 
 ## Requirements
 
@@ -16,6 +16,7 @@ not reintroduce `yarn.lock`.
 
 ```bash
 npm install
+npm run build
 npm run exec
 ```
 
@@ -27,9 +28,19 @@ http://127.0.0.1:3088
 
 Useful pages and endpoints:
 
-- `GET /map.html` - Leaflet + AMap mixed map page
-- `GET /check` - health check
-- `GET /api.v1/fetchRelay?url=...` - whitelisted tile relay with cache
+- `GET /` - Vite-built map app.
+- `GET /api/v1/health` - health check.
+- `GET /api/v1/tiles/relay?url=...` - whitelisted tile relay with cache.
+- `GET /api/v1/cache/fetch-relay` - cache stats.
+
+## Development
+
+```bash
+npm run dev
+npm test
+npm run check
+npm run build
+```
 
 ## Documentation
 
@@ -37,11 +48,3 @@ Useful pages and endpoints:
 - [Architecture Overview](docs/architecture.md)
 - [API Reference](docs/api.md)
 - [Change Log](docs/changelog.md)
-
-## Verification
-
-```bash
-npm run check
-npm outdated --json
-npm audit --omit=dev --registry=https://registry.npmjs.org --json
-```

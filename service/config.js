@@ -15,6 +15,20 @@ const config = {
     staticPath: '/',
     debug: false,
 
+    fetchRelay: {
+      cacheDir: path.resolve(rootPath, './.cache/fetchRelay'),
+      ttl: 1000 * 60 * 60 * 6,
+      staleTtl: 1000 * 60 * 60 * 24 * 30,
+      timeout: 1000 * 10,
+      minCacheBytes: 128,
+      browserMaxAge: 1000 * 60 * 60,
+      browserStaleWhileRevalidate: 1000 * 60 * 60 * 24,
+      allowedContentTypes: [
+        'image/',
+        'application/octet-stream',
+      ],
+    },
+
     /* 允许哪些域名调取本站的接口 */
     enableCors: false,
     corsWhitelist: [
