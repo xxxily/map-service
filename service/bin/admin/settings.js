@@ -1,3 +1,5 @@
+import crypto from 'crypto'
+
 function clone (value) {
   return JSON.parse(JSON.stringify(value))
 }
@@ -46,6 +48,27 @@ function normalizeProviderPolicy (input = {}, current = {}) {
   })
 
   return result
+}
+
+export function getAccessHash (password) {
+  if (!password) return ''
+  return crypto.createHash('sha256').update(password + '_map_access_salt').digest('hex')
+}
+
+function normalizeAccess (input = {}, current = {}) {
+  return {
+    enabled: normalizeBoolean(input.enabled ?? current.enabled ?? false),
+    password: Object.hasOwn(input, 'password')
+      ? String(input.password || '')
+      : String(current.password || ''),
+  }
+}
+
+function sanitizeAccess (access) {
+  return {
+    enabled: Boolean(access.enabled),
+    hasPassword: Boolean(access.password),
+  }
 }
 
 function normalizeProxy (input = {}, current = {}) {
@@ -98,6 +121,10 @@ export class AdminSettings {
           'google-street': true,
         },
       }),
+      access: normalizeAccess(defaults.access || {
+        enabled: false,
+        password: '',
+      }),
     }
     this.cache = null
   }
@@ -110,6 +137,7 @@ export class AdminSettings {
     const saved = await this.store.read('settings', {})
     this.cache = {
       proxy: normalizeProxy(saved?.proxy || {}, this.defaults.proxy),
+      access: normalizeAccess(saved?.access || {}, this.defaults.access),
     }
     return clone(this.cache)
   }
@@ -118,6 +146,7 @@ export class AdminSettings {
     const settings = await this.readRaw()
     return {
       proxy: sanitizeProxy(settings.proxy),
+      access: sanitizeAccess(settings.access),
     }
   }
 
@@ -128,6 +157,9 @@ export class AdminSettings {
       proxy: Object.hasOwn(input, 'proxy')
         ? normalizeProxy(input.proxy || {}, current.proxy)
         : current.proxy,
+      access: Object.hasOwn(input, 'access')
+        ? normalizeAccess(input.access || {}, current.access)
+        : current.access,
     }
 
     await this.store.write('settings', next)
@@ -148,6 +180,28 @@ export class AdminSettings {
       ...proxy,
       enabled: Boolean(forceProxy || (proxy.enabled && providerEnabled)),
     }
+  }
+
+  async verifyAccess (token) {
+    const settings = await this.readRaw()
+    if (!settings.access.enabled) {
+      return true
+    }
+    if (!settings.access.password) {
+      return true
+    }
+    const expectedToken = getAccessHash(settings.access.password)
+    return token === expectedToken
+  }
+
+  async isAccessEnabled () {
+    const settings = await this.readRaw()
+    return Boolean(settings.access.enabled && settings.access.password)
+  }
+
+  async checkPassword (password) {
+    const settings = await this.readRaw()
+    return settings.access.password === password
   }
 }
 

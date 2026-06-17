@@ -13,6 +13,7 @@ import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
 import { registerServiceWorker } from './pwa.js'
+import { getAccessStatus, verifyAccessPassword } from './admin/api.js'
 
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
@@ -106,10 +107,75 @@ async function initLeafletMap () {
   })
 }
 
+async function checkMapAccessBeforeInit () {
+  try {
+    const status = await getAccessStatus()
+    if (status.required) {
+      showPasswordLockScreen()
+    } else {
+      initLeafletMap()
+    }
+  } catch (err) {
+    console.error('Failed to check map access status', err)
+    initLeafletMap() // 出错时默认放行以保证可用性
+  }
+}
+
+function showPasswordLockScreen () {
+  document.getElementById('map-lock-screen')?.remove()
+
+  const lockScreen = document.createElement('div')
+  lockScreen.id = 'map-lock-screen'
+  lockScreen.className = 'lock-screen-backdrop'
+  lockScreen.innerHTML = `
+    <div class="lock-screen-card">
+      <div class="lock-screen-icon">🔒</div>
+      <h2>私有地图服务</h2>
+      <p>管理员启用了访问控制，请输入密码解锁</p>
+      <form id="lock-screen-form" autocomplete="off">
+        <div class="lock-screen-field">
+          <input type="password" name="password" placeholder="请输入访问密码" required autofocus>
+        </div>
+        <div id="lock-screen-error" class="lock-screen-error" style="display: none;"></div>
+        <button type="submit">载入地图</button>
+      </form>
+    </div>
+  `
+
+  document.body.appendChild(lockScreen)
+
+  const form = document.getElementById('lock-screen-form')
+  const errorNode = document.getElementById('lock-screen-error')
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    errorNode.style.display = 'none'
+    const password = form.elements.password.value.trim()
+    if (!password) return
+
+    try {
+      const btn = form.querySelector('button')
+      btn.disabled = true
+      btn.textContent = '正在验证...'
+
+      await verifyAccessPassword(password)
+
+      lockScreen.remove()
+      initLeafletMap()
+    } catch (err) {
+      const btn = form.querySelector('button')
+      btn.disabled = false
+      btn.textContent = '载入地图'
+      errorNode.textContent = err.message || '访问密码错误'
+      errorNode.style.display = 'block'
+    }
+  })
+}
+
 if (new URLSearchParams(window.location.search).get('view') === 'admin') {
   initAdminApp({ amapLoader: AMapLoader })
 } else {
-  initLeafletMap()
+  checkMapAccessBeforeInit()
 }
 
 registerServiceWorker()

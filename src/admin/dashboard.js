@@ -119,6 +119,7 @@ async function handleSubmit (event) {
   const proxyForm = event.target.closest('[data-proxy-form]')
   const precacheForm = event.target.closest('[data-precache-form]')
   const placeSearchForm = event.target.closest('[data-place-search-form]')
+  const accessForm = event.target.closest('[data-access-form]')
 
   if (loginForm) {
     event.preventDefault()
@@ -167,6 +168,34 @@ async function handleSubmit (event) {
     const keyword = placeSearchForm.elements.keyword.value.trim()
     if (keyword) {
       await searchPlaces(adminState, keyword)
+    }
+  }
+
+  if (accessForm) {
+    event.preventDefault()
+    try {
+      const accessEnabled = accessForm.elements.accessEnabled.checked
+      const accessPassword = accessForm.elements.accessPassword.value.trim()
+
+      const payload = {
+        access: {
+          enabled: accessEnabled,
+        },
+      }
+
+      if (accessPassword) {
+        payload.access.password = accessPassword
+      } else if (accessEnabled && !adminState.settings?.access?.hasPassword) {
+        setNotice('', '启用访问密码时，必须设置访问密码')
+        return
+      }
+
+      adminState.settings = await adminApi.updateSettings(payload)
+      setNotice('访问控制已保存')
+      renderDashboard()
+    } catch (err) {
+      setNotice('', err.message)
+      renderDashboard()
     }
   }
 }

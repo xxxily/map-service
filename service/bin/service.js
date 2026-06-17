@@ -11,7 +11,7 @@ import baseConfig from '../config.js'
 import FetchRelay from './middleware/fetchRelay/index.js'
 import AdminStore from './admin/store.js'
 import createAdminAuth from './admin/auth.js'
-import AdminSettings from './admin/settings.js'
+import AdminSettings, { getAccessHash } from './admin/settings.js'
 import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
 import { getTileProviderByUrl } from './admin/tileProviders.js'
@@ -120,6 +120,23 @@ const service = {
 
   createPrecacheTask (input) {
     return precacheManager.createTask(input)
+  },
+
+  isAccessEnabled () {
+    return adminSettings.isAccessEnabled()
+  },
+
+  verifyAccess (token) {
+    return adminSettings.verifyAccess(token)
+  },
+
+  checkAccessPassword (password) {
+    return adminSettings.checkPassword(password)
+  },
+
+  async getAccessSignature () {
+    const settings = await adminSettings.readRaw()
+    return getAccessHash(settings.access.password)
   },
 }
 

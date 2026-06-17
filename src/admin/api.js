@@ -73,3 +73,15 @@ export const adminApi = {
   tasks: () => request('/admin/precache/tasks'),
   createTask: (body) => request('/admin/precache/tasks', { method: 'POST', body }),
 }
+
+export async function getAccessStatus () {
+  return request('/access/status', { auth: false })
+}
+
+export async function verifyAccessPassword (password) {
+  return request('/access/verify', {
+    method: 'POST',
+    auth: false,
+    body: { password },
+  })
+}

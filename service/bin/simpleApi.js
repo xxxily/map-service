@@ -43,6 +43,12 @@ function bearerTokenFromRequest (req) {
   return matched ? matched[1] : ''
 }
 
+function getCookie (req, name) {
+  const cookies = req.get('cookie') || ''
+  const matched = cookies.match(new RegExp(`(^|;)\\s*${name}\\s*=\\s*([^;]+)`))
+  return matched ? decodeURIComponent(matched[2]) : ''
+}
+
 function requireAdmin (req) {
   const session = service.verifyAdminToken(bearerTokenFromRequest(req))
   if (!session) {
@@ -142,6 +148,17 @@ const simpleApi = {
       describe: '带服务端缓存的地图瓦片代理',
       tags: ['tiles'],
       handler: async (req, res) => {
+        // 访问控制拦截
+        const accessEnabled = await service.isAccessEnabled()
+        if (accessEnabled) {
+          const token = getCookie(req, 'map_access_token') || req.query.access_token || ''
+          const verified = await service.verifyAccess(token)
+          if (!verified) {
+            jsonError(res, '拒绝访问：未提供有效的地图访问授权', 401)
+            return
+          }
+        }
+
         if (!req.query.url) {
           jsonError(res, '缺少 url 参数', 400)
           return
@@ -297,6 +314,49 @@ const simpleApi = {
       describe: '根路径健康检查',
       tags: ['system'],
       handler: async (req, res) => res.jsonSuc({ status: 'ok', timestamp: Date.now(), }),
+    },
+    {
+      path: '/access/status',
+      method: 'get',
+      describe: '获取访问密码验证状态',
+      tags: ['access'],
+      handler: async (req, res) => {
+        const enabled = await service.isAccessEnabled()
+        if (!enabled) {
+          res.jsonSuc({ required: false })
+          return
+        }
+        const token = getCookie(req, 'map_access_token') || req.query.access_token || ''
+        const verified = await service.verifyAccess(token)
+        res.jsonSuc({ required: !verified })
+      },
+    },
+    {
+      path: '/access/verify',
+      method: 'post',
+      describe: '验证访问密码',
+      tags: ['access'],
+      handler: async (req, res) => {
+        const { password } = req.body || {}
+        if (!password) {
+          jsonError(res, '请输入访问密码', 400)
+          return
+        }
+        const isMatch = await service.checkAccessPassword(password)
+        if (!isMatch) {
+          jsonError(res, '访问密码错误', 403)
+          return
+        }
+        const token = await service.getAccessSignature()
+        // 设置 httpOnly cookie 缓存
+        res.cookie('map_access_token', token, {
+          path: '/',
+          httpOnly: true,
+          maxAge: 1000 * 60 * 60 * 24 * 30, // 30天
+          sameSite: 'lax',
+        })
+        res.jsonSuc({ token })
+      },
     },
   ],
   /**

@@ -6,7 +6,7 @@ import path from 'path'
 import { tmpdir } from 'node:os'
 import createAdminAuth from '../service/bin/admin/auth.js'
 import AdminStore from '../service/bin/admin/store.js'
-import AdminSettings from '../service/bin/admin/settings.js'
+import AdminSettings, { getAccessHash } from '../service/bin/admin/settings.js'
 import { createTilePlan, generateTiles, PrecacheManager } from '../service/bin/admin/precache.js'
 import { getTileProviderByUrl, listTileProviders } from '../service/bin/admin/tileProviders.js'
 import { getVisitStats } from '../service/bin/admin/visitStats.js'
@@ -355,5 +355,40 @@ test('visit stats parses morgan access logs without failing on invalid lines', a
     assert.equal(stats.topPaths[0].path, '/api/v1/health')
   } finally {
     await fs.remove(logDir)
+  }
+})
+
+test('admin settings support access control settings and verification', async () => {
+  const dataDir = tempDir('admin-access-control')
+  const store = new AdminStore({ dataDir })
+  const settings = new AdminSettings(store)
+
+  try {
+    // 默认不开启密码
+    assert.equal(await settings.isAccessEnabled(), false)
+    assert.equal(await settings.verifyAccess('invalid_token'), true)
+
+    // 启用访问控制
+    const sanitized = await settings.update({
+      access: {
+        enabled: true,
+        password: 'my_access_password',
+      },
+    })
+    
+    assert.equal(sanitized.access.enabled, true)
+    assert.equal(sanitized.access.hasPassword, true)
+    assert.equal(await settings.isAccessEnabled(), true)
+    
+    // 验证校验逻辑
+    assert.equal(await settings.checkPassword('my_access_password'), true)
+    assert.equal(await settings.checkPassword('wrong_password'), false)
+
+    // 生成 token 并验证
+    const expectedHash = getAccessHash('my_access_password')
+    assert.equal(await settings.verifyAccess(expectedHash), true)
+    assert.equal(await settings.verifyAccess('wrong_token'), false)
+  } finally {
+    await fs.remove(dataDir)
   }
 })
