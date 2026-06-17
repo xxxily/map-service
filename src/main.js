@@ -10,6 +10,7 @@ import { initLayerControl, toggleLayerControl } from './map/layers.js'
 import { addTargetMarker, initAmapGeolocation, updatePosition } from './map/location.js'
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
+import { initAdminApp } from './admin/dashboard.js'
 
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
@@ -62,6 +63,9 @@ async function initLeafletMap () {
     toggleLayerControl: () => toggleLayerControl(layerControl, map),
     toggleSearchMode,
     updatePosition: () => updatePosition(map, AMap),
+    openAdmin: () => {
+      window.location.href = '/?view=admin'
+    },
   }
 
   document.getElementById('map-menu').addEventListener('click', (event) => {
@@ -73,4 +77,8 @@ async function initLeafletMap () {
   })
 }
 
-initLeafletMap()
+if (new URLSearchParams(window.location.search).get('view') === 'admin') {
+  initAdminApp()
+} else {
+  initLeafletMap()
+}

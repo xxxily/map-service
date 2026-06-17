@@ -1,5 +1,20 @@
 # Change Log
 
+## 1.1.0 - 2026-06-17
+
+### Admin Console
+
+- Added the first management console MVP at `/?view=admin`.
+- Added a map-page management icon that opens the console.
+- Added admin login with signed bearer-token authentication.
+- Added dashboard panels for system version/runtime info, tile cache stats,
+  access stats, proxy settings, and pre-cache tasks.
+- Added runtime proxy settings for upstream tile requests.
+- Added bounded tile pre-cache task creation and persisted task snapshots.
+- Added requirements management under `docs/requirements/`.
+- Added tests for admin auth, settings persistence, proxy propagation, visit log
+  parsing, and pre-cache tile planning.
+
 ## 1.0.0 - 2026-06-17
 
 ### Release

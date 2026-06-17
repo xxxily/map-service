@@ -29,6 +29,31 @@ const config = {
       ],
     },
 
+    admin: {
+      dataDir: path.resolve(rootPath, './.db/admin'),
+      auth: {
+        username: process.env.MAP_SERVICE_ADMIN_USERNAME || 'admin',
+        password: process.env.MAP_SERVICE_ADMIN_PASSWORD || 'admin',
+        tokenSecret: process.env.MAP_SERVICE_ADMIN_TOKEN_SECRET || 'map-service-dev-admin-secret',
+        tokenTtl: 1000 * 60 * 60 * 8,
+      },
+      settings: {
+        proxy: {
+          enabled: false,
+          protocol: 'http',
+          host: '127.0.0.1',
+          port: 10809,
+          username: '',
+          password: '',
+        },
+      },
+      precache: {
+        maxTiles: 5000,
+        defaultConcurrency: 4,
+        maxConcurrency: 8,
+      },
+    },
+
     /* 允许哪些域名调取本站的接口 */
     enableCors: false,
     corsWhitelist: [

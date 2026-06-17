@@ -91,6 +91,126 @@ Clears the full tile relay cache.
 
 Clears a single whitelisted tile cache entry.
 
+## Admin
+
+Admin endpoints are grouped under `/api/v1/admin`. Except for login, every
+admin endpoint requires:
+
+```text
+Authorization: Bearer <token>
+```
+
+Configure credentials through environment variables:
+
+- `MAP_SERVICE_ADMIN_USERNAME`
+- `MAP_SERVICE_ADMIN_PASSWORD`
+- `MAP_SERVICE_ADMIN_TOKEN_SECRET`
+
+Development defaults are `admin` / `admin`. Override them before exposing the
+service outside a local environment.
+
+### `POST /api/v1/admin/auth/login`
+
+Request:
+
+```json
+{
+  "username": "admin",
+  "password": "admin"
+}
+```
+
+Returns a bearer token, expiry timestamp, and public user info.
+
+### `POST /api/v1/admin/auth/logout`
+
+Validates the current token and returns `status: ok`. Token removal is handled
+client-side.
+
+### `GET /api/v1/admin/session`
+
+Validates the current token and returns username plus token timestamps.
+
+### `GET /api/v1/admin/system`
+
+Returns package name/version, Node.js version, process id, uptime,
+environment, server time, and API base path.
+
+### `GET /api/v1/admin/cache`
+
+Returns tile relay cache stats. This is the authenticated equivalent of
+`GET /api/v1/cache/fetch-relay`.
+
+### `DELETE /api/v1/admin/cache`
+
+Clears the full tile relay cache.
+
+### `DELETE /api/v1/admin/cache?url=<encoded-url>`
+
+Clears one whitelisted tile cache entry.
+
+### `GET /api/v1/admin/visits`
+
+Returns best-effort access statistics parsed from
+`log/visitRecorder/access.log`, including status-code counts, top paths, and
+recent requests.
+
+### `GET /api/v1/admin/settings`
+
+Returns sanitized runtime settings. Proxy passwords are never returned; the
+response uses `hasPassword` instead.
+
+### `PUT /api/v1/admin/settings`
+
+Updates runtime settings.
+
+```json
+{
+  "proxy": {
+    "enabled": true,
+    "protocol": "http",
+    "host": "127.0.0.1",
+    "port": 10809,
+    "username": "",
+    "password": ""
+  }
+}
+```
+
+When enabled, these proxy settings are used by tile relay upstream requests and
+pre-cache jobs.
+
+### `GET /api/v1/admin/precache/providers`
+
+Returns the supported internal tile provider catalog for pre-cache jobs.
+
+### `GET /api/v1/admin/precache/tasks`
+
+Returns recent pre-cache task snapshots.
+
+### `POST /api/v1/admin/precache/tasks`
+
+Creates a bounded pre-cache task.
+
+```json
+{
+  "providerId": "amap-road",
+  "bounds": {
+    "west": 113.24,
+    "south": 23.11,
+    "east": 113.29,
+    "north": 23.15
+  },
+  "minZoom": 12,
+  "maxZoom": 12,
+  "concurrency": 4,
+  "refresh": false
+}
+```
+
+Requests are rejected when bounds are invalid, zoom levels are outside the
+provider range, or the expanded tile count exceeds the configured maximum.
+
 ## Removed APIs
 
 The old utility/testing APIs were removed during the API cleanup:

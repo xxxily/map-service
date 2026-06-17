@@ -4,6 +4,7 @@
 **/node_lib/
 **/.cache/
 .cache/
+.db/
 
 npm-debug.log*
 yarn-debug.log*

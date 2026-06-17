@@ -22,6 +22,17 @@ npm run exec
 npm start
 ```
 
+Admin credentials are configured through environment variables:
+
+```bash
+MAP_SERVICE_ADMIN_USERNAME=admin
+MAP_SERVICE_ADMIN_PASSWORD=change-me
+MAP_SERVICE_ADMIN_TOKEN_SECRET=change-me-too
+```
+
+Local development has `admin` / `admin` defaults so the console can run without
+extra setup. Do not expose those defaults in a shared environment.
+
 Scripts:
 
 - `npm run dev` - run the Vite dev server for frontend development.
@@ -43,6 +54,13 @@ npm run build
 ```
 
 The production service serves the generated `service/app/index.html` at `/`.
+The management console is the same Vite app and is opened with `/?view=admin`.
+
+## Requirements Workflow
+
+Larger product or system changes should start with a focused document under
+`docs/requirements/`. Keep the document close to implementation and update the
+acceptance criteria when scope changes.
 
 ## Verification Checklist
 

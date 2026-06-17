@@ -37,6 +37,22 @@ function cacheControlHeader () {
   return parts.join(', ')
 }
 
+function bearerTokenFromRequest (req) {
+  const authorization = req.get('authorization') || ''
+  const matched = /^Bearer\s+(.+)$/i.exec(authorization)
+  return matched ? matched[1] : ''
+}
+
+function requireAdmin (req) {
+  const session = service.verifyAdminToken(bearerTokenFromRequest(req))
+  if (!session) {
+    const err = new Error('未登录或登录已过期')
+    err.statusCode = 401
+    throw err
+  }
+  return session
+}
+
 function buildOpenApiSpec () {
   const paths = {}
 
@@ -156,6 +172,125 @@ const simpleApi = {
       },
     },
     {
+      path: '/admin/auth/login',
+      method: 'post',
+      describe: '管理后台登录',
+      tags: ['admin'],
+      handler: async (req, res) => res.jsonSuc(service.loginAdmin(req.body || {})),
+    },
+    {
+      path: '/admin/auth/logout',
+      method: 'post',
+      describe: '管理后台退出登录',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc({ status: 'ok' })
+      },
+    },
+    {
+      path: '/admin/session',
+      method: 'get',
+      describe: '获取当前管理后台会话',
+      tags: ['admin'],
+      handler: async (req, res) => res.jsonSuc(requireAdmin(req)),
+    },
+    {
+      path: '/admin/system',
+      method: 'get',
+      describe: '获取管理后台系统概览',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.getAdminSystemInfo())
+      },
+    },
+    {
+      path: '/admin/cache',
+      method: 'get',
+      describe: '获取管理后台缓存状态',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.getFetchRelayCacheStats())
+      },
+    },
+    {
+      path: '/admin/cache',
+      method: 'delete',
+      describe: '清理管理后台瓦片缓存',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        const targetUrl = req.query.url ? decodeURIComponent(req.query.url) : ''
+        if (targetUrl && !whitelist.isAllowed(targetUrl)) {
+          jsonError(res, '请求的 URL 不在白名单内，不允许清理', 403)
+          return
+        }
+        res.jsonSuc(await service.clearFetchRelayCache(targetUrl))
+      },
+    },
+    {
+      path: '/admin/visits',
+      method: 'get',
+      describe: '获取管理后台访问统计',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.getVisitStats())
+      },
+    },
+    {
+      path: '/admin/settings',
+      method: 'get',
+      describe: '获取管理后台运行时设置',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.getAdminSettings())
+      },
+    },
+    {
+      path: '/admin/settings',
+      method: 'put',
+      describe: '更新管理后台运行时设置',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.updateAdminSettings(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/precache/providers',
+      method: 'get',
+      describe: '获取可预缓存瓦片提供方',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(service.getPrecacheProviders())
+      },
+    },
+    {
+      path: '/admin/precache/tasks',
+      method: 'get',
+      describe: '获取预缓存任务列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listPrecacheTasks())
+      },
+    },
+    {
+      path: '/admin/precache/tasks',
+      method: 'post',
+      describe: '创建预缓存任务',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createPrecacheTask(req.body || {}))
+      },
+    },
+    {
       path: '/cache/fetch-relay',
       method: 'get',
       describe: '获取瓦片代理缓存状态',
@@ -223,7 +358,7 @@ const simpleApi = {
               if (res.headersSent) {
                 next(err)
               } else {
-                jsonError(res, err, err.response?.status || 500)
+                jsonError(res, err, err.statusCode || err.response?.status || 500)
               }
             })
           })

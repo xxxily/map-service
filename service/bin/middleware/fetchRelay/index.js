@@ -24,6 +24,41 @@ function normalizeBoolean (value) {
   return value === true || value === 'true' || value === '1'
 }
 
+function normalizeProxyConfig (proxy) {
+  if (!proxy || proxy.enabled === false) {
+    return null
+  }
+
+  if (proxy === true) {
+    return {
+      host: '127.0.0.1',
+      port: 10809,
+      protocol: 'http',
+    }
+  }
+
+  const host = String(proxy.host || '').trim()
+  const port = Number(proxy.port)
+  if (!host || !Number.isInteger(port)) {
+    return null
+  }
+
+  const result = {
+    host,
+    port,
+    protocol: proxy.protocol || 'http',
+  }
+
+  if (proxy.username) {
+    result.auth = {
+      username: String(proxy.username),
+      password: String(proxy.password || ''),
+    }
+  }
+
+  return result
+}
+
 function pickHeaders (headers = {}) {
   const result = {}
   HEADER_ALLOW_LIST.forEach((name) => {
@@ -171,11 +206,14 @@ class FetchRelay {
       }
     }
 
-    if (normalizeBoolean(options.useProxy)) {
-      axiosConf.proxy = {
-        host: '127.0.0.1',
-        port: 10809,
-      }
+    const proxySource = Object.hasOwn(options, 'proxy')
+      ? options.proxy
+      : normalizeBoolean(options.useProxy)
+          ? this.config.proxy || true
+          : null
+    const proxy = normalizeProxyConfig(proxySource)
+    if (proxy) {
+      axiosConf.proxy = proxy
     }
 
     return axiosConf
