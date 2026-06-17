@@ -20,3 +20,4 @@
 
 - [管理后台 MVP](./admin-console-mvp.md)
 - [KML 导入导出](./kml-import-export.md)
+- [访问控制加固](./access-control-hardening.md)

@@ -16,6 +16,13 @@ const serviceConfig = baseConfig.staticService
 const routeSet = {}
 const CACHE_CONTROL_SECONDS = Math.floor((serviceConfig.fetchRelay?.browserMaxAge || 0) / 1000)
 const STALE_SECONDS = Math.floor((serviceConfig.fetchRelay?.browserStaleWhileRevalidate || 0) / 1000)
+const ACCESS_COOKIE_NAME = 'map_access_token'
+const ACCESS_VERIFY_LIMIT = {
+  maxAttempts: 5,
+  windowMs: 1000 * 60 * 10,
+  blockMs: 1000 * 60 * 15,
+}
+const accessVerifyAttempts = new Map()
 
 function jsonError (res, error, statusCode = 500) {
   res.status(statusCode)
@@ -46,7 +53,12 @@ function bearerTokenFromRequest (req) {
 function getCookie (req, name) {
   const cookies = req.get('cookie') || ''
   const matched = cookies.match(new RegExp(`(^|;)\\s*${name}\\s*=\\s*([^;]+)`))
-  return matched ? decodeURIComponent(matched[2]) : ''
+  if (!matched) return ''
+  try {
+    return decodeURIComponent(matched[2])
+  } catch (err) {
+    return ''
+  }
 }
 
 function requireAdmin (req) {
@@ -57,6 +69,66 @@ function requireAdmin (req) {
     throw err
   }
   return session
+}
+
+function accessTokenFromRequest (req) {
+  return getCookie(req, ACCESS_COOKIE_NAME)
+}
+
+function accessVerifyKey (req) {
+  return [
+    req.ip || req.socket?.remoteAddress || 'unknown',
+    req.get('user-agent') || '',
+  ].join('|')
+}
+
+function getAccessVerifyState (req) {
+  const key = accessVerifyKey(req)
+  const now = Date.now()
+  const state = accessVerifyAttempts.get(key)
+  if (!state || now - state.firstFailedAt > ACCESS_VERIFY_LIMIT.windowMs) {
+    return {
+      key,
+      state: {
+        count: 0,
+        firstFailedAt: now,
+        blockedUntil: 0,
+      },
+    }
+  }
+  return { key, state }
+}
+
+function assertAccessVerifyAllowed (req) {
+  const { state } = getAccessVerifyState(req)
+  if (state.blockedUntil > Date.now()) {
+    const err = new Error('访问密码错误次数过多，请稍后再试')
+    err.statusCode = 429
+    throw err
+  }
+}
+
+function recordAccessVerifyFailure (req) {
+  const { key, state } = getAccessVerifyState(req)
+  state.count += 1
+  if (state.count >= ACCESS_VERIFY_LIMIT.maxAttempts) {
+    state.blockedUntil = Date.now() + ACCESS_VERIFY_LIMIT.blockMs
+  }
+  accessVerifyAttempts.set(key, state)
+}
+
+function clearAccessVerifyFailures (req) {
+  accessVerifyAttempts.delete(accessVerifyKey(req))
+}
+
+function accessCookieOptions (req, maxAge) {
+  return {
+    path: '/',
+    httpOnly: true,
+    maxAge,
+    sameSite: 'lax',
+    secure: Boolean(req.secure || req.get('x-forwarded-proto') === 'https'),
+  }
 }
 
 function buildOpenApiSpec () {
@@ -151,7 +223,7 @@ const simpleApi = {
         // 访问控制拦截
         const accessEnabled = await service.isAccessEnabled()
         if (accessEnabled) {
-          const token = getCookie(req, 'map_access_token') || req.query.access_token || ''
+          const token = accessTokenFromRequest(req)
           const verified = await service.verifyAccess(token)
           if (!verified) {
             jsonError(res, '拒绝访问：未提供有效的地图访问授权', 401)
@@ -341,7 +413,7 @@ const simpleApi = {
           res.jsonSuc({ required: false })
           return
         }
-        const token = getCookie(req, 'map_access_token') || req.query.access_token || ''
+        const token = accessTokenFromRequest(req)
         const verified = await service.verifyAccess(token)
         res.jsonSuc({ required: !verified })
       },
@@ -352,6 +424,7 @@ const simpleApi = {
       describe: '验证访问密码',
       tags: ['access'],
       handler: async (req, res) => {
+        assertAccessVerifyAllowed(req)
         const { password } = req.body || {}
         if (!password) {
           jsonError(res, '请输入访问密码', 400)
@@ -359,18 +432,14 @@ const simpleApi = {
         }
         const isMatch = await service.checkAccessPassword(password)
         if (!isMatch) {
+          recordAccessVerifyFailure(req)
           jsonError(res, '访问密码错误', 403)
           return
         }
-        const token = await service.getAccessSignature()
-        // 设置 httpOnly cookie 缓存
-        res.cookie('map_access_token', token, {
-          path: '/',
-          httpOnly: true,
-          maxAge: 1000 * 60 * 60 * 24 * 30, // 30天
-          sameSite: 'lax',
-        })
-        res.jsonSuc({ token })
+        clearAccessVerifyFailures(req)
+        const session = await service.createAccessToken()
+        res.cookie(ACCESS_COOKIE_NAME, session.token, accessCookieOptions(req, session.maxAge))
+        res.jsonSuc({ expiresAt: session.expiresAt })
       },
     },
   ],

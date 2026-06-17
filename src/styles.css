@@ -891,6 +891,17 @@ body.admin-view #map-search-mod {
   background: #115e59;
 }
 
+.lock-screen-card .lock-screen-secondary {
+  margin-top: 10px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #cbd5d6;
+}
+
+.lock-screen-card .lock-screen-secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .lock-screen-card button:disabled {
   background: #1f2e30;
   color: #556c6e;

@@ -15,6 +15,7 @@ import { initAdminApp } from './admin/dashboard.js'
 import { registerServiceWorker } from './pwa.js'
 import { getAccessStatus, verifyAccessPassword } from './admin/api.js'
 import { initKmlSupport } from './map/kml.js'
+import { escapeHtml } from './admin/utils.js'
 
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
@@ -125,27 +126,32 @@ async function checkMapAccessBeforeInit () {
     }
   } catch (err) {
     console.error('Failed to check map access status', err)
-    initLeafletMap() // 出错时默认放行以保证可用性
+    showPasswordLockScreen({
+      message: '访问状态检查失败，请稍后重试',
+      allowRetry: true,
+    })
   }
 }
 
-function showPasswordLockScreen () {
+function showPasswordLockScreen (options = {}) {
   document.getElementById('map-lock-screen')?.remove()
 
   const lockScreen = document.createElement('div')
   lockScreen.id = 'map-lock-screen'
   lockScreen.className = 'lock-screen-backdrop'
+  const message = options.message || '管理员启用了访问控制，请输入密码解锁'
   lockScreen.innerHTML = `
     <div class="lock-screen-card">
       <div class="lock-screen-icon">🔒</div>
       <h2>私有地图服务</h2>
-      <p>管理员启用了访问控制，请输入密码解锁</p>
+      <p>${escapeHtml(message)}</p>
       <form id="lock-screen-form" autocomplete="off">
         <div class="lock-screen-field">
           <input type="password" name="password" placeholder="请输入访问密码" required autofocus>
         </div>
-        <div id="lock-screen-error" class="lock-screen-error" style="display: none;"></div>
+        <div id="lock-screen-error" class="lock-screen-error" style="${options.message ? '' : 'display: none;'}">${escapeHtml(options.message || '')}</div>
         <button type="submit">载入地图</button>
+        ${options.allowRetry ? '<button type="button" class="lock-screen-secondary" data-lock-retry>重试检查</button>' : ''}
       </form>
     </div>
   `
@@ -154,6 +160,12 @@ function showPasswordLockScreen () {
 
   const form = document.getElementById('lock-screen-form')
   const errorNode = document.getElementById('lock-screen-error')
+  const retryButton = lockScreen.querySelector('[data-lock-retry]')
+
+  retryButton?.addEventListener('click', () => {
+    lockScreen.remove()
+    checkMapAccessBeforeInit()
+  })
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault()

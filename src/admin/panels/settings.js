@@ -70,8 +70,14 @@ export function renderSettingsPanel (state) {
           </label>
           <label>
             <span>设置访问密码</span>
-            <input name="accessPassword" type="password" autocomplete="new-password" placeholder="${access.hasPassword ? '已设置，输入新密码以修改' : '输入以设置访问密码'}">
+            <input name="accessPassword" type="password" autocomplete="new-password" placeholder="${access.hasPassword ? '已设置，输入新密码以修改' : '输入至少 10 位访问密码'}">
           </label>
+          ${access.hasPassword ? `
+            <label class="admin-check">
+              <input type="checkbox" name="clearAccessPassword">
+              <span>清除已保存的访问密码</span>
+            </label>
+          ` : ''}
           <button type="submit">保存访问控制</button>
         </form>
       </section>

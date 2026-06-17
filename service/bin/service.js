@@ -11,7 +11,7 @@ import baseConfig from '../config.js'
 import FetchRelay from './middleware/fetchRelay/index.js'
 import AdminStore from './admin/store.js'
 import createAdminAuth from './admin/auth.js'
-import AdminSettings, { getAccessHash } from './admin/settings.js'
+import AdminSettings from './admin/settings.js'
 import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
 import { getTileProviderByUrl } from './admin/tileProviders.js'
@@ -23,7 +23,10 @@ const fetchRelay = new FetchRelay(serviceConfig.fetchRelay)
 const adminConfig = serviceConfig.admin || {}
 const adminStore = new AdminStore({ dataDir: adminConfig.dataDir })
 const adminAuth = createAdminAuth(adminConfig.auth, adminStore)
-const adminSettings = new AdminSettings(adminStore, adminConfig.settings)
+const adminSettings = new AdminSettings(adminStore, {
+  ...(adminConfig.settings || {}),
+  accessTokenSecret: adminConfig.auth?.tokenSecret,
+})
 const precacheManager = new PrecacheManager({
   store: adminStore,
   maxTiles: adminConfig.precache?.maxTiles,
@@ -138,9 +141,8 @@ const service = {
     return adminSettings.checkPassword(password)
   },
 
-  async getAccessSignature () {
-    const settings = await adminSettings.readRaw()
-    return getAccessHash(settings.access.password)
+  createAccessToken () {
+    return adminSettings.createAccessToken()
   },
 }
 

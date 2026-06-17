@@ -6,7 +6,7 @@ import path from 'path'
 import { tmpdir } from 'node:os'
 import createAdminAuth from '../service/bin/admin/auth.js'
 import AdminStore from '../service/bin/admin/store.js'
-import AdminSettings, { getAccessHash } from '../service/bin/admin/settings.js'
+import AdminSettings from '../service/bin/admin/settings.js'
 import { createTilePlan, generateTiles, PrecacheManager } from '../service/bin/admin/precache.js'
 import { getTileProviderByUrl, listTileProviders } from '../service/bin/admin/tileProviders.js'
 import { getVisitStats } from '../service/bin/admin/visitStats.js'
@@ -396,33 +396,67 @@ test('visit stats parses morgan access logs without failing on invalid lines', a
 test('admin settings support access control settings and verification', async () => {
   const dataDir = tempDir('admin-access-control')
   const store = new AdminStore({ dataDir })
-  const settings = new AdminSettings(store)
+  const settings = new AdminSettings(store, {
+    accessTokenSecret: 'test-access-secret',
+    accessTokenTtl: 1000,
+  })
 
   try {
     // 默认不开启密码
     assert.equal(await settings.isAccessEnabled(), false)
     assert.equal(await settings.verifyAccess('invalid_token'), true)
 
+    await assert.rejects(() => settings.update({
+      access: {
+        enabled: true,
+        password: 'short',
+      },
+    }), /访问密码长度至少为 10 位/)
+
     // 启用访问控制
     const sanitized = await settings.update({
       access: {
         enabled: true,
-        password: 'my_access_password',
+        password: 'my_access_password_10',
       },
     })
-    
+
     assert.equal(sanitized.access.enabled, true)
     assert.equal(sanitized.access.hasPassword, true)
     assert.equal(await settings.isAccessEnabled(), true)
-    
+    const raw = await settings.readRaw()
+    assert.equal(Object.hasOwn(raw.access, 'password'), false)
+    assert.equal(raw.access.passwordHash.algorithm, 'scrypt')
+    assert.notEqual(raw.access.passwordHash.hash, 'my_access_password_10')
+
     // 验证校验逻辑
-    assert.equal(await settings.checkPassword('my_access_password'), true)
+    assert.equal(await settings.checkPassword('my_access_password_10'), true)
     assert.equal(await settings.checkPassword('wrong_password'), false)
 
-    // 生成 token 并验证
-    const expectedHash = getAccessHash('my_access_password')
-    assert.equal(await settings.verifyAccess(expectedHash), true)
+    // 生成签名 token 并验证
+    const session = await settings.createAccessToken()
+    assert.equal(Object.hasOwn(session, 'token'), true)
+    assert.equal(await settings.verifyAccess(session.token), true)
     assert.equal(await settings.verifyAccess('wrong_token'), false)
+
+    // 修改密码后旧 token 失效
+    await settings.update({
+      access: {
+        enabled: true,
+        password: 'my_new_access_password_10',
+      },
+    })
+    assert.equal(await settings.verifyAccess(session.token), false)
+
+    // 清除密码后访问控制关闭
+    const cleared = await settings.update({
+      access: {
+        enabled: false,
+        clearPassword: true,
+      },
+    })
+    assert.equal(cleared.access.hasPassword, false)
+    assert.equal(await settings.isAccessEnabled(), false)
   } finally {
     await fs.remove(dataDir)
   }

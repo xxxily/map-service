@@ -8,6 +8,8 @@ import { renderLayersPanel } from './panels/layers.js'
 import { renderSettingsPanel } from './panels/settings.js'
 import { showConfirm } from '../ui/dialog.js'
 
+const ACCESS_PASSWORD_MIN_LENGTH = 10
+
 function renderActivePanel () {
   if (adminState.activeTab === 'cache') {
     return renderCachePanel(adminState)
@@ -177,6 +179,7 @@ async function handleSubmit (event) {
     try {
       const accessEnabled = accessForm.elements.accessEnabled.checked
       const accessPassword = accessForm.elements.accessPassword.value.trim()
+      const clearPassword = accessForm.elements.clearAccessPassword?.checked || false
 
       const payload = {
         access: {
@@ -185,9 +188,22 @@ async function handleSubmit (event) {
       }
 
       if (accessPassword) {
+        if (accessPassword.length < ACCESS_PASSWORD_MIN_LENGTH) {
+          setNotice('', `访问密码长度至少为 ${ACCESS_PASSWORD_MIN_LENGTH} 位`)
+          renderDashboard()
+          return
+        }
         payload.access.password = accessPassword
+      } else if (clearPassword) {
+        payload.access.clearPassword = true
       } else if (accessEnabled && !adminState.settings?.access?.hasPassword) {
         setNotice('', '启用访问密码时，必须设置访问密码')
+        renderDashboard()
+        return
+      }
+
+      if (accessEnabled && clearPassword && !accessPassword) {
+        setNotice('', '启用访问密码时不能同时清除密码')
         renderDashboard()
         return
       }
