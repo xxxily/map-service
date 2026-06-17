@@ -193,7 +193,7 @@ const simpleApi = {
       method: 'post',
       describe: '管理后台登录',
       tags: ['admin'],
-      handler: async (req, res) => res.jsonSuc(service.loginAdmin(req.body || {})),
+      handler: async (req, res) => res.jsonSuc(await service.loginAdmin(req.body || {})),
     },
     {
       path: '/admin/auth/logout',
@@ -203,6 +203,21 @@ const simpleApi = {
       handler: async (req, res) => {
         requireAdmin(req)
         res.jsonSuc({ status: 'ok' })
+      },
+    },
+    {
+      path: '/admin/auth/password',
+      method: 'post',
+      describe: '修改管理后台密码',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        const { currentPassword, newPassword } = req.body || {}
+        if (!currentPassword || !newPassword) {
+          jsonError(res, '当前密码和新密码不能为空', 400)
+          return
+        }
+        res.jsonSuc(await service.updateAdminPassword(currentPassword, newPassword))
       },
     },
     {

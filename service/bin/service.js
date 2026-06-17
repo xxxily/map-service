@@ -22,7 +22,7 @@ const serviceConfig = baseConfig.staticService || {}
 const fetchRelay = new FetchRelay(serviceConfig.fetchRelay)
 const adminConfig = serviceConfig.admin || {}
 const adminStore = new AdminStore({ dataDir: adminConfig.dataDir })
-const adminAuth = createAdminAuth(adminConfig.auth)
+const adminAuth = createAdminAuth(adminConfig.auth, adminStore)
 const adminSettings = new AdminSettings(adminStore, adminConfig.settings)
 const precacheManager = new PrecacheManager({
   store: adminStore,
@@ -74,8 +74,12 @@ const service = {
     return fetchRelay.clear(targetUrl)
   },
 
-  loginAdmin (credentials) {
+  async loginAdmin (credentials) {
     return adminAuth.login(credentials)
+  },
+
+  async updateAdminPassword (currentPassword, newPassword) {
+    return adminAuth.updatePassword(currentPassword, newPassword)
   },
 
   verifyAdminToken (token) {

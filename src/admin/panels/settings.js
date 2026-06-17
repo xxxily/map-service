@@ -75,6 +75,27 @@ export function renderSettingsPanel (state) {
           <button type="submit">保存访问控制</button>
         </form>
       </section>
+
+      <section class="admin-panel">
+        <div class="admin-panel-head">
+          <h2>修改管理密码</h2>
+        </div>
+        <form class="admin-form" data-admin-password-form autocomplete="off">
+          <label>
+            <span>当前密码</span>
+            <input name="currentPassword" type="password" required autocomplete="current-password" placeholder="请输入当前密码">
+          </label>
+          <label>
+            <span>新密码</span>
+            <input name="newPassword" type="password" required autocomplete="new-password" placeholder="请输入新密码（至少4位）">
+          </label>
+          <label>
+            <span>确认新密码</span>
+            <input name="confirmPassword" type="password" required autocomplete="new-password" placeholder="请再次输入新密码">
+          </label>
+          <button type="submit">修改密码</button>
+        </form>
+      </section>
     </div>
   `
 }

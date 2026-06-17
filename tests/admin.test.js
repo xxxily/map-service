@@ -16,7 +16,7 @@ function tempDir (name) {
   return path.join(tmpdir(), `map-service-${name}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 }
 
-test('admin auth creates expiring bearer tokens and rejects bad credentials', () => {
+test('admin auth creates expiring bearer tokens and rejects bad credentials', async () => {
   const auth = createAdminAuth({
     username: 'operator',
     password: 'secret',
@@ -24,9 +24,9 @@ test('admin auth creates expiring bearer tokens and rejects bad credentials', ()
     tokenTtl: 1000,
   })
 
-  assert.throws(() => auth.login({ username: 'operator', password: 'bad' }), /用户名或密码不正确/)
+  await assert.rejects(() => auth.login({ username: 'operator', password: 'bad' }), /用户名或密码不正确/)
 
-  const login = auth.login({ username: 'operator', password: 'secret' })
+  const login = await auth.login({ username: 'operator', password: 'secret' })
   assert.equal(login.tokenType, 'Bearer')
   assert.equal(login.user.username, 'operator')
 
@@ -34,6 +34,41 @@ test('admin auth creates expiring bearer tokens and rejects bad credentials', ()
   assert.equal(session.username, 'operator')
   assert.ok(session.expiresAt > Date.now())
   assert.equal(auth.verifyToken(`${login.token}x`), null)
+})
+
+test('admin auth supports custom store and password updates', async () => {
+  const dataDir = tempDir('admin-auth-update')
+  const store = new AdminStore({ dataDir })
+  const auth = createAdminAuth({
+    username: 'operator',
+    password: 'initial-password',
+    tokenSecret: 'test-secret',
+  }, store)
+
+  try {
+    // 初始密码登录
+    const login1 = await auth.login({ username: 'operator', password: 'initial-password' })
+    assert.equal(login1.user.username, 'operator')
+
+    // 错误当前密码修改失败
+    await assert.rejects(() => auth.updatePassword('wrong-password', 'new-password'), /当前密码不正确/)
+
+    // 密码太短修改失败
+    await assert.rejects(() => auth.updatePassword('initial-password', '123'), /新密码长度至少为 4 位/)
+
+    // 正确修改密码
+    const res = await auth.updatePassword('initial-password', 'new-password')
+    assert.equal(res.status, 'ok')
+
+    // 新密码登录成功
+    const login2 = await auth.login({ username: 'operator', password: 'new-password' })
+    assert.equal(login2.user.username, 'operator')
+
+    // 旧密码登录失败
+    await assert.rejects(() => auth.login({ username: 'operator', password: 'initial-password' }), /用户名或密码不正确/)
+  } finally {
+    await fs.remove(dataDir)
+  }
 })
 
 test('admin settings persist proxy config and sanitize password', async () => {

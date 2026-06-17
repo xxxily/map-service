@@ -19,3 +19,4 @@
 当前需求文档：
 
 - [管理后台 MVP](./admin-console-mvp.md)
+- [KML 导入导出](./kml-import-export.md)

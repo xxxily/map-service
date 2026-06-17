@@ -34,11 +34,27 @@ function sign (secret, payloadPart) {
     .digest('base64url')
 }
 
-export function createAdminAuth (conf = {}) {
+export function createAdminAuth (conf = {}, store = null) {
   const username = String(conf.username || 'admin')
   const password = String(conf.password || 'admin')
   const tokenSecret = String(conf.tokenSecret || 'map-service-dev-admin-secret')
   const tokenTtl = Number(conf.tokenTtl || 1000 * 60 * 60 * 8)
+
+  async function getCredentials () {
+    if (store) {
+      const saved = await store.read('auth', null)
+      if (saved && saved.username && saved.password) {
+        return {
+          username: String(saved.username),
+          password: String(saved.password),
+        }
+      }
+    }
+    return {
+      username,
+      password,
+    }
+  }
 
   function createToken (subject = username) {
     const now = Date.now()
@@ -85,30 +101,51 @@ export function createAdminAuth (conf = {}) {
     }
   }
 
-  function login (input = {}) {
+  async function login (input = {}) {
+    const credentials = await getCredentials()
     const inputUsername = String(input.username || '')
     const inputPassword = String(input.password || '')
-    const matched = timingSafeStringEqual(inputUsername, username) &&
-      timingSafeStringEqual(inputPassword, password)
+    const matched = timingSafeStringEqual(inputUsername, credentials.username) &&
+      timingSafeStringEqual(inputPassword, credentials.password)
 
     if (!matched) {
       throw createHttpError('用户名或密码不正确', 401)
     }
 
-    const token = createToken(username)
+    const token = createToken(credentials.username)
     const session = verifyToken(token)
     return {
       token,
       tokenType: 'Bearer',
       expiresAt: session.expiresAt,
       user: {
-        username,
+        username: credentials.username,
       },
+    }
+  }
+
+  async function updatePassword (currentPassword, newPassword) {
+    if (!store) {
+      throw createHttpError('持久化存储未配置，无法修改密码', 500)
+    }
+    const credentials = await getCredentials()
+    if (!timingSafeStringEqual(currentPassword, credentials.password)) {
+      throw createHttpError('当前密码不正确', 400)
+    }
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.trim().length < 4) {
+      throw createHttpError('新密码长度至少为 4 位', 400)
+    }
+
+    credentials.password = newPassword
+    await store.write('auth', credentials)
+    return {
+      status: 'ok',
     }
   }
 
   return {
     login,
+    updatePassword,
     createToken,
     verifyToken,
     getPublicInfo () {

@@ -120,6 +120,7 @@ async function handleSubmit (event) {
   const precacheForm = event.target.closest('[data-precache-form]')
   const placeSearchForm = event.target.closest('[data-place-search-form]')
   const accessForm = event.target.closest('[data-access-form]')
+  const adminPasswordForm = event.target.closest('[data-admin-password-form]')
 
   if (loginForm) {
     event.preventDefault()
@@ -187,11 +188,44 @@ async function handleSubmit (event) {
         payload.access.password = accessPassword
       } else if (accessEnabled && !adminState.settings?.access?.hasPassword) {
         setNotice('', '启用访问密码时，必须设置访问密码')
+        renderDashboard()
         return
       }
 
       adminState.settings = await adminApi.updateSettings(payload)
       setNotice('访问控制已保存')
+      renderDashboard()
+    } catch (err) {
+      setNotice('', err.message)
+      renderDashboard()
+    }
+  }
+
+  if (adminPasswordForm) {
+    event.preventDefault()
+    const currentPassword = adminPasswordForm.elements.currentPassword.value
+    const newPassword = adminPasswordForm.elements.newPassword.value
+    const confirmPassword = adminPasswordForm.elements.confirmPassword.value
+
+    if (newPassword.length < 4) {
+      setNotice('', '新密码长度至少为 4 位')
+      renderDashboard()
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      setNotice('', '两次输入的新密码不一致')
+      renderDashboard()
+      return
+    }
+
+    try {
+      await adminApi.updatePassword({
+        currentPassword,
+        newPassword,
+      })
+      setNotice('管理密码修改成功！')
+      adminPasswordForm.reset()
       renderDashboard()
     } catch (err) {
       setNotice('', err.message)

@@ -14,6 +14,7 @@ import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
 import { registerServiceWorker } from './pwa.js'
 import { getAccessStatus, verifyAccessPassword } from './admin/api.js'
+import { initKmlSupport } from './map/kml.js'
 
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
@@ -62,6 +63,8 @@ async function initLeafletMap () {
 
   const layerControl = initLayerControl(map)
 
+  initKmlSupport(map)
+
   map.on('moveend', () => writeMapViewToUrl(map))
   map.on('zoomend', () => writeMapViewToUrl(map))
   map.on('rotate', () => {
@@ -86,6 +89,11 @@ async function initLeafletMap () {
 
   const actionMap = {
     toggleLayerControl: () => toggleLayerControl(layerControl, map),
+    toggleKmlPanel: () => {
+      if (window.toggleKmlPanel) {
+        window.toggleKmlPanel()
+      }
+    },
     toggleSearchMode,
     updatePosition: () => updatePosition(map, AMap),
     resetBearing: () => {
