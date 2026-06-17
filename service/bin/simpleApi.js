@@ -291,28 +291,6 @@ const simpleApi = {
       },
     },
     {
-      path: '/cache/fetch-relay',
-      method: 'get',
-      describe: '获取瓦片代理缓存状态',
-      tags: ['cache'],
-      handler: async (req, res) => res.jsonSuc(await service.getFetchRelayCacheStats()),
-    },
-    {
-      path: '/cache/fetch-relay',
-      method: 'delete',
-      describe: '清理瓦片代理缓存',
-      tags: ['cache'],
-      handler: async (req, res) => {
-        const targetUrl = req.query.url ? decodeURIComponent(req.query.url) : ''
-        if (targetUrl && !whitelist.isAllowed(targetUrl)) {
-          jsonError(res, '请求的 URL 不在白名单内，不允许清理', 403)
-          return
-        }
-
-        res.jsonSuc(await service.clearFetchRelayCache(targetUrl))
-      },
-    },
-    {
       path: '/health',
       basePath: '/',
       method: 'get',

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f766e">
+    <title>离线 - 混合地图</title>
+    <style>
+      body {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        margin: 0;
+        background: #f4f7f6;
+        color: #102528;
+        font-family: ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      main {
+        width: min(360px, calc(100vw - 32px));
+        box-sizing: border-box;
+        border: 1px solid rgba(22, 61, 61, 0.12);
+        border-radius: 8px;
+        padding: 20px;
+        background: #fff;
+        box-shadow: 0 18px 42px rgba(21, 46, 49, 0.12);
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 0;
+        color: #50676d;
+        line-height: 1.6;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>当前处于离线状态</h1>
+      <p>已缓存的应用界面仍可打开，地图瓦片和管理数据需要网络恢复后继续加载。</p>
+    </main>
+  </body>
+</html>

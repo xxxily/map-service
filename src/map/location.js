@@ -1,4 +1,5 @@
 import L from 'leaflet'
+import { showAlert } from '../ui/dialog.js'
 
 export function initAmapGeolocation (AMap) {
   if (!AMap?.Geolocation) {
@@ -62,7 +63,7 @@ export async function updatePosition (map, AMap) {
   })
 
   if (!result?.lat || !result?.lng) {
-    window.alert('获取地理位置失败，请手动选择')
+    await showAlert('获取地理位置失败，请手动选择')
     return
   }
 
@@ -82,7 +83,7 @@ export async function updatePosition (map, AMap) {
       return
     }
 
-    window.alert('坐标转换失败，请手动选择')
+    showAlert('坐标转换失败，请手动选择')
     map.setView([lat, lng], 18)
     addTargetMarker(map, [lat, lng])
   })

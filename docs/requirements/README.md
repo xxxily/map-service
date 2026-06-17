@@ -1,22 +1,21 @@
-# Requirements
+# 需求文档
 
-This directory is the requirements management home for map-service.
+本目录用于集中管理 map-service 的产品和系统需求。
 
-Every meaningful product or system capability should start with a requirement
-document here before implementation. Keep documents focused on user outcomes,
-scope, API contracts, acceptance criteria, and follow-up roadmap items.
+任何较大的产品能力或系统能力，在实现前都应先在这里创建或更新需求文档。文档应聚焦
+用户目标、范围边界、API 契约、验收标准和后续路线。
 
-Recommended document structure:
+建议文档结构：
 
-- Background and goals
-- Users and scenarios
-- In-scope and out-of-scope items
-- Functional requirements
-- Non-functional requirements
-- API or data model notes
-- Acceptance criteria
-- Future roadmap
+- 背景和目标
+- 用户和场景
+- 范围内和范围外事项
+- 功能需求
+- 非功能需求
+- API 或数据模型说明
+- 验收标准
+- 后续路线
 
-Current requirement documents:
+当前需求文档：
 
-- [Admin Console MVP](./admin-console-mvp.md)
+- [管理后台 MVP](./admin-console-mvp.md)

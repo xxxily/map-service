@@ -11,6 +11,7 @@ import { addTargetMarker, initAmapGeolocation, updatePosition } from './map/loca
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
+import { registerServiceWorker } from './pwa.js'
 
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
@@ -78,7 +79,9 @@ async function initLeafletMap () {
 }
 
 if (new URLSearchParams(window.location.search).get('view') === 'admin') {
-  initAdminApp()
+  initAdminApp({ amapLoader: AMapLoader })
 } else {
   initLeafletMap()
 }
+
+registerServiceWorker()

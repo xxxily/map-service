@@ -14,6 +14,7 @@ import createAdminAuth from './admin/auth.js'
 import AdminSettings from './admin/settings.js'
 import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
+import { getTileProviderByUrl } from './admin/tileProviders.js'
 import fs from 'fs-extra'
 import path from 'path'
 
@@ -54,7 +55,11 @@ async function readPackageInfo () {
 
 const service = {
   async fetchRelay (url, options = {}) {
-    const proxy = await adminSettings.getProxyForRequest(options.useProxy)
+    const providerId = options.providerId || getTileProviderByUrl(url)?.id || ''
+    const proxy = await adminSettings.getProxyForRequest({
+      forceProxy: options.useProxy,
+      providerId,
+    })
     return fetchRelay.fetch(url, {
       ...options,
       proxy,

@@ -1,12 +1,12 @@
-# API Reference
+# API 参考
 
-Base URL:
+基础路径：
 
 ```text
 /api/v1
 ```
 
-All JSON endpoints use the shared response envelope:
+所有 JSON 接口使用统一响应结构：
 
 ```json
 {
@@ -16,102 +16,92 @@ All JSON endpoints use the shared response envelope:
 }
 ```
 
-Errors use `code: -1` and place details under `error.message`.
+错误响应使用 `code: -1`，错误详情放在 `error.message`。
 
-## System
+## 系统接口
 
 ### `GET /api/v1/health`
 
-Returns process health.
+返回进程健康状态。
 
 ### `GET /health`
 
-Root-level health check for simple load balancer probes.
+根路径健康检查，便于负载均衡或简单探活使用。
 
 ### `GET /api/v1/routes`
 
-Returns the registered API route catalog.
+返回当前注册的 API 路由目录。
 
 ### `GET /api/v1/openapi.json`
 
-Returns a lightweight OpenAPI 3.1 document generated from the registered route
-metadata.
+返回根据路由元数据生成的轻量 OpenAPI 3.1 文档。
 
-## Tile Relay
+## 瓦片代理
 
 ### `GET /api/v1/tiles/relay?url=<encoded-url>`
 
-Fetches a whitelisted upstream map tile URL through the service cache.
+通过服务端缓存代理访问白名单内的地图瓦片 URL。
 
-Allowed upstreams:
+允许的上游：
 
 - `https://www.google.com/maps/vt`
 - `https://www.google.cn/maps/vt`
-- `https://webst01.is.autonavi.com/appmaptile` through `webst04`
-- `https://webrd01.is.autonavi.com/appmaptile` through `webrd04`
+- `https://webst01.is.autonavi.com/appmaptile` 到 `webst04`
+- `https://webrd01.is.autonavi.com/appmaptile` 到 `webrd04`
 
-Query parameters:
+查询参数：
 
-- `url` - required, URL-encoded upstream tile URL.
-- `refresh=true` - bypasses a stale/fresh read and updates cache from upstream.
-- `noCache=true` - alias for `refresh=true`.
-- `cache=false` - streams upstream response without writing local cache.
-- `useProxy=true` - uses the configured local proxy for upstream requests.
+- `url`：必填，URL 编码后的上游瓦片 URL。
+- `refresh=true`：跳过当前缓存读取并回源刷新。
+- `noCache=true`：`refresh=true` 的别名。
+- `cache=false`：直接流式返回上游响应，不写入本地缓存。
+- `useProxy=true`：强制本次上游请求走代理。
 
-Response headers:
+代理策略：
 
-- `X-Cache: MISS` - fetched upstream and wrote a new cache file.
-- `X-Cache: HIT` - served a fresh cache file.
-- `X-Cache: REVALIDATED` - upstream returned `304`, metadata TTL was extended.
-- `X-Cache: STALE` - upstream refresh failed, served cache within stale window.
-- `X-Cache: BYPASS` - cache was disabled for this request.
+- 默认根据后台配置的图层策略判断是否走代理。
+- Google 图层默认走代理。
+- 高德图层默认不走代理。
+- 未识别图层默认不走代理。
+- `useProxy=true` 会强制走代理，主要用于调试。
 
-Cache policy:
+响应头：
 
-- Only `2xx` upstream responses are cacheable.
-- Empty or undersized responses are rejected and not cached.
-- Responses with non-tile content types are rejected and not cached.
-- Cache files are written atomically through a temporary file and renamed only
-  after validation.
-- Metadata is stored beside each tile as `<cache-file>.meta.json`.
-- Fresh cache TTL defaults to 6 hours.
-- Stale fallback window defaults to 30 days.
+- `X-Cache: MISS`：回源并写入新缓存。
+- `X-Cache: HIT`：命中新鲜缓存。
+- `X-Cache: REVALIDATED`：上游返回 `304`，缓存元数据已续期。
+- `X-Cache: STALE`：回源失败，返回 stale 窗口内的缓存。
+- `X-Cache: BYPASS`：本次请求禁用缓存。
 
-## Cache Management
+缓存策略：
 
-### `GET /api/v1/cache/fetch-relay`
+- 只有 `2xx` 上游响应会被缓存。
+- 空响应或过小响应会被拒绝，不写缓存。
+- 非瓦片内容类型会被拒绝，不写缓存。
+- 缓存文件通过临时文件原子写入。
+- 每个缓存文件旁边保存 `<cache-file>.meta.json` 元数据。
+- 默认新鲜 TTL 为 6 小时。
+- 默认 stale 回退窗口为 30 天。
 
-Returns cache stats, provider counts, and up to 100 recent entries.
+## 管理后台接口
 
-### `DELETE /api/v1/cache/fetch-relay`
-
-Clears the full tile relay cache.
-
-### `DELETE /api/v1/cache/fetch-relay?url=<encoded-url>`
-
-Clears a single whitelisted tile cache entry.
-
-## Admin
-
-Admin endpoints are grouped under `/api/v1/admin`. Except for login, every
-admin endpoint requires:
+管理接口统一位于 `/api/v1/admin`。除登录接口外，所有管理接口都需要：
 
 ```text
 Authorization: Bearer <token>
 ```
 
-Configure credentials through environment variables:
+管理员账号通过环境变量配置：
 
 - `MAP_SERVICE_ADMIN_USERNAME`
 - `MAP_SERVICE_ADMIN_PASSWORD`
 - `MAP_SERVICE_ADMIN_TOKEN_SECRET`
 
-Development defaults are `admin` / `admin`. Override them before exposing the
-service outside a local environment.
+本地开发默认账号密码为 `admin` / `admin`。上线前必须覆盖默认值。
 
 ### `POST /api/v1/admin/auth/login`
 
-Request:
+请求：
 
 ```json
 {
@@ -120,49 +110,43 @@ Request:
 }
 ```
 
-Returns a bearer token, expiry timestamp, and public user info.
+返回 Bearer Token、过期时间和用户信息。
 
 ### `POST /api/v1/admin/auth/logout`
 
-Validates the current token and returns `status: ok`. Token removal is handled
-client-side.
+校验当前 Token 并返回 `status: ok`。前端负责删除本地 Token。
 
 ### `GET /api/v1/admin/session`
 
-Validates the current token and returns username plus token timestamps.
+校验当前 Token，返回用户名和 Token 时间信息。
 
 ### `GET /api/v1/admin/system`
 
-Returns package name/version, Node.js version, process id, uptime,
-environment, server time, and API base path.
+返回应用版本、Node.js 版本、进程号、运行时间、环境、服务器时间和 API 基础路径。
 
 ### `GET /api/v1/admin/cache`
 
-Returns tile relay cache stats. This is the authenticated equivalent of
-`GET /api/v1/cache/fetch-relay`.
+返回缓存统计、provider 统计和最多 100 条最近缓存项。
 
 ### `DELETE /api/v1/admin/cache`
 
-Clears the full tile relay cache.
+清空全部瓦片缓存。
 
 ### `DELETE /api/v1/admin/cache?url=<encoded-url>`
 
-Clears one whitelisted tile cache entry.
+清理指定白名单瓦片 URL 的缓存。
 
 ### `GET /api/v1/admin/visits`
 
-Returns best-effort access statistics parsed from
-`log/visitRecorder/access.log`, including status-code counts, top paths, and
-recent requests.
+解析 `log/visitRecorder/access.log` 并返回访问统计，包括状态码分布、高频路径和最近请求。
 
 ### `GET /api/v1/admin/settings`
 
-Returns sanitized runtime settings. Proxy passwords are never returned; the
-response uses `hasPassword` instead.
+返回脱敏后的运行时设置。代理密码不会返回，只返回 `hasPassword`。
 
 ### `PUT /api/v1/admin/settings`
 
-Updates runtime settings.
+更新运行时设置。
 
 ```json
 {
@@ -172,25 +156,41 @@ Updates runtime settings.
     "host": "127.0.0.1",
     "port": 10809,
     "username": "",
-    "password": ""
+    "password": "",
+    "providerPolicy": {
+      "amap-satellite": false,
+      "amap-road": false,
+      "google-satellite": true,
+      "google-street": true
+    }
   }
 }
 ```
 
-When enabled, these proxy settings are used by tile relay upstream requests and
-pre-cache jobs.
+`providerPolicy` 控制哪些图层走代理。保存空密码不会覆盖已存在密码。
 
 ### `GET /api/v1/admin/precache/providers`
 
-Returns the supported internal tile provider catalog for pre-cache jobs.
+返回后台支持的图层目录。每个图层包含：
+
+- `id`
+- `name`
+- `vendor`
+- `category`
+- `description`
+- `template`
+- `subdomains`
+- `minZoom`
+- `maxZoom`
+- `proxyDefault`
 
 ### `GET /api/v1/admin/precache/tasks`
 
-Returns recent pre-cache task snapshots.
+返回最近预缓存任务快照。
 
 ### `POST /api/v1/admin/precache/tasks`
 
-Creates a bounded pre-cache task.
+创建有边界限制的预缓存任务。
 
 ```json
 {
@@ -208,18 +208,17 @@ Creates a bounded pre-cache task.
 }
 ```
 
-Requests are rejected when bounds are invalid, zoom levels are outside the
-provider range, or the expanded tile count exceeds the configured maximum.
+后端会校验图层、区域、缩放级别、并发数和任务瓦片总数。无效或超出上限的任务会被拒绝。
 
-## Removed APIs
+## 已移除接口
 
-The old utility/testing APIs were removed during the API cleanup:
+旧版工具和测试接口已移除：
 
-- random local file selector
-- Wallhaven wallpaper selector
-- GitLab webhook handler
-- static resource/package search endpoints
+- 公开缓存管理接口 `/api/v1/cache/fetch-relay`，缓存查看和清理统一收口到鉴权后的 `/api/v1/admin/cache`
+- 随机本地文件选择
+- Wallhaven 壁纸选择
+- GitLab webhook
+- 静态资源/包搜索辅助接口
 - `/login`
 
-New APIs should be added under `/api/v1`, registered in
-`service/bin/simpleApi.js`, and documented here.
+新增接口应放在 `/api/v1` 下，在 `service/bin/simpleApi.js` 注册，并同步更新本文档。

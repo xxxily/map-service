@@ -8,6 +8,7 @@ import createAdminAuth from '../service/bin/admin/auth.js'
 import AdminStore from '../service/bin/admin/store.js'
 import AdminSettings from '../service/bin/admin/settings.js'
 import { createTilePlan, generateTiles, PrecacheManager } from '../service/bin/admin/precache.js'
+import { getTileProviderByUrl, listTileProviders } from '../service/bin/admin/tileProviders.js'
 import { getVisitStats } from '../service/bin/admin/visitStats.js'
 import FetchRelay from '../service/bin/middleware/fetchRelay/index.js'
 
@@ -68,9 +69,98 @@ test('admin settings persist proxy config and sanitize password', async () => {
 
     const raw = await settings.readRaw()
     assert.equal(raw.proxy.password, 'proxy-pass')
+
+    const googleProxy = await settings.getProxyForRequest({ providerId: 'google-satellite' })
+    const amapProxy = await settings.getProxyForRequest({ providerId: 'amap-road' })
+    assert.equal(googleProxy.enabled, false)
+    assert.equal(amapProxy.enabled, false)
   } finally {
     await fs.remove(dataDir)
   }
+})
+
+test('admin settings support provider-level proxy policy', async () => {
+  const dataDir = tempDir('admin-provider-proxy')
+  const store = new AdminStore({ dataDir })
+  const settings = new AdminSettings(store, {
+    proxy: {
+      enabled: true,
+      protocol: 'http',
+      host: '127.0.0.1',
+      port: 10809,
+      username: '',
+      password: '',
+      providerPolicy: {
+        'amap-road': false,
+        'google-satellite': true,
+      },
+    },
+  })
+
+  try {
+    const googleProxy = await settings.getProxyForRequest({ providerId: 'google-satellite' })
+    const amapProxy = await settings.getProxyForRequest({ providerId: 'amap-road' })
+    const forcedProxy = await settings.getProxyForRequest({ providerId: 'amap-road', forceProxy: true })
+
+    assert.equal(googleProxy.enabled, true)
+    assert.equal(amapProxy.enabled, false)
+    assert.equal(forcedProxy.enabled, true)
+
+    const sanitized = await settings.update({
+      proxy: {
+        providerPolicy: {
+          'amap-road': true,
+        },
+      },
+    })
+    assert.equal(sanitized.proxy.providerPolicy['amap-road'], true)
+    assert.equal(sanitized.proxy.providerPolicy['google-satellite'], true)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('admin settings default proxy policy targets google layers', async () => {
+  const dataDir = tempDir('admin-default-provider-proxy')
+  const store = new AdminStore({ dataDir })
+  const settings = new AdminSettings(store, {
+    proxy: {
+      enabled: true,
+      protocol: 'http',
+      host: '127.0.0.1',
+      port: 10809,
+      username: '',
+      password: '',
+      providerPolicy: {
+        'amap-satellite': false,
+        'amap-road': false,
+        'google-satellite': true,
+        'google-street': true,
+      },
+    },
+  })
+
+  try {
+    assert.equal((await settings.getProxyForRequest({ providerId: 'google-satellite' })).enabled, true)
+    assert.equal((await settings.getProxyForRequest({ providerId: 'google-street' })).enabled, true)
+    assert.equal((await settings.getProxyForRequest({ providerId: 'amap-road' })).enabled, false)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+
+test('tile provider catalog exposes layer config and detects providers by url', () => {
+  const providers = listTileProviders()
+  const google = providers.find(provider => provider.id === 'google-satellite')
+  const amap = providers.find(provider => provider.id === 'amap-road')
+
+  assert.equal(Boolean(google.template), true)
+  assert.equal(google.proxyDefault, true)
+  assert.equal(amap.proxyDefault, false)
+  assert.equal(getTileProviderByUrl('https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x=1&y=2&z=3')?.id, 'google-satellite')
+  assert.equal(getTileProviderByUrl('https://webst01.is.autonavi.com/appmaptile?style=8&x=1&y=2&z=3')?.id, 'amap-road')
+  assert.equal(getTileProviderByUrl('https://webst04.is.autonavi.com/appmaptile?style=8&x=1&y=2&z=3')?.id, 'amap-road')
 })
 
 test('fetch relay forwards configured proxy to upstream request', async () => {
@@ -193,14 +283,14 @@ test('precache tile plan expands bounds and enforces max tile count', () => {
 test('precache manager persists and completes queued tasks', async () => {
   const dataDir = tempDir('precache-manager')
   const store = new AdminStore({ dataDir })
-  const fetchedUrls = []
+  const fetchedCalls = []
   const manager = new PrecacheManager({
     store,
     maxTiles: 20,
     defaultConcurrency: 2,
     maxConcurrency: 4,
-    fetchTile: async (url) => {
-      fetchedUrls.push(url)
+    fetchTile: async (url, options) => {
+      fetchedCalls.push({ url, options })
       return {
         stream: Readable.from([Buffer.from('tile')]),
       }
@@ -227,7 +317,8 @@ test('precache manager persists and completes queued tasks', async () => {
     assert.equal(tasks[0].status, 'completed')
     assert.equal(tasks[0].failed, 0)
     assert.equal(tasks[0].succeeded, tasks[0].total)
-    assert.equal(fetchedUrls.length, tasks[0].total)
+    assert.equal(fetchedCalls.length, tasks[0].total)
+    assert.equal(fetchedCalls[0].options.providerId, 'amap-road')
 
     await assert.rejects(() => manager.createTask({
       providerId: 'amap-road',

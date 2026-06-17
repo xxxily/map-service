@@ -268,6 +268,7 @@ export class PrecacheManager {
 
         try {
           const result = await this.fetchTile(url, {
+            providerId: task.providerId,
             refresh: task.refresh,
             cache: true,
           })

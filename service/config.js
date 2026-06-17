@@ -45,6 +45,12 @@ const config = {
           port: 10809,
           username: '',
           password: '',
+          providerPolicy: {
+            'amap-satellite': false,
+            'amap-road': false,
+            'google-satellite': true,
+            'google-street': true,
+          },
         },
       },
       precache: {

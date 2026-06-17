@@ -1,18 +1,17 @@
 # map-service
 
-`map-service` is a small Node.js map service. It serves a Vite-built Leaflet +
-AMap browser app, exposes a versioned API under `/api/v1`, and relays selected
-map tile requests through a freshness-aware local cache.
+`map-service` 是一个轻量地图服务。项目使用 Vite 构建 Leaflet + 高德地图前端，
+通过 `/api/v1` 暴露版本化接口，并为白名单瓦片请求提供可刷新、可回源校验的
+服务端缓存代理。
 
-## Requirements
+## 环境要求
 
 - Node.js >= 22.13
 - npm >= 10
 
-Dependency management uses npm only. Keep `package-lock.json` committed and do
-not reintroduce `yarn.lock`.
+依赖管理只使用 npm。请保留 `package-lock.json`，不要重新引入 `yarn.lock`。
 
-## Quick Start
+## 快速开始
 
 ```bash
 npm install
@@ -20,26 +19,27 @@ npm run build
 npm run exec
 ```
 
-Default service URL:
+默认服务地址：
 
 ```text
 http://127.0.0.1:3088
 ```
 
-Useful pages and endpoints:
+常用页面和接口：
 
-- `GET /` - Vite-built map app.
-- `GET /?view=admin` - management console.
-- `GET /api/v1/health` - health check.
-- `GET /api/v1/tiles/relay?url=...` - whitelisted tile relay with cache.
-- `GET /api/v1/cache/fetch-relay` - cache stats.
+- `GET /`：地图 PWA 应用。
+- `GET /?view=admin`：管理后台。
+- `GET /api/v1/health`：健康检查。
+- `GET /api/v1/tiles/relay?url=...`：白名单瓦片缓存代理。
+- `GET /api/v1/admin/cache`：登录后查看缓存状态。
 
-Default local admin credentials are `admin` / `admin`. Configure
-`MAP_SERVICE_ADMIN_USERNAME`, `MAP_SERVICE_ADMIN_PASSWORD`, and
-`MAP_SERVICE_ADMIN_TOKEN_SECRET` before using the console outside local
-development.
+本地开发默认后台账号密码为 `admin` / `admin`。非本地环境必须配置：
 
-## Development
+- `MAP_SERVICE_ADMIN_USERNAME`
+- `MAP_SERVICE_ADMIN_PASSWORD`
+- `MAP_SERVICE_ADMIN_TOKEN_SECRET`
+
+## 开发
 
 ```bash
 npm run dev
@@ -48,10 +48,10 @@ npm run check
 npm run build
 ```
 
-## Documentation
+## 文档
 
-- [Development Guide](docs/development.md)
-- [Architecture Overview](docs/architecture.md)
-- [API Reference](docs/api.md)
-- [Requirements](docs/requirements/README.md)
-- [Change Log](docs/changelog.md)
+- [开发指南](docs/development.md)
+- [架构说明](docs/architecture.md)
+- [API 参考](docs/api.md)
+- [需求文档](docs/requirements/README.md)
+- [变更日志](docs/changelog.md)

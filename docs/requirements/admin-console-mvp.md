@@ -1,198 +1,198 @@
-# Admin Console MVP
+# 管理后台 MVP 需求
 
-## Background
+## 背景
 
-map-service has completed its first modernization pass: dependency management
-uses npm, the frontend is Vite based, and the tile relay cache is served through
-structured `/api/v1` endpoints. The next step is an operations console that
-turns the service from a passive tile proxy into a manageable system.
+map-service 已完成第一轮现代化改造：依赖管理切到 npm，前端使用
+Vite，瓦片代理缓存统一走 `/api/v1`。下一步需要建设管理后台，让系统从
+一个被动瓦片代理，升级为可以配置、观测和预热缓存的完整服务。
 
-## Goals
+## 目标
 
-- Provide a clear admin entry from the map page.
-- Protect management functions behind login.
-- Let operators inspect application version, runtime, cache state, and traffic.
-- Let operators configure the upstream tile proxy without code changes.
-- Let operators submit bounded pre-cache jobs for map areas and zoom ranges.
-- Establish a requirements document home for future system planning.
+- 地图页提供清晰的后台入口。
+- 后台功能必须登录后访问。
+- 运维人员可以查看版本、运行状态、缓存情况和访问统计。
+- 运维人员可以配置瓦片上游请求代理，并能按图层决定是否走代理。
+- 运维人员可以选择地图区域和图层，创建有边界的预缓存任务。
+- 建立 `docs/requirements/` 作为后续需求文档管理目录。
 
-## Users
+## 用户
 
-- Operator: deploys and maintains map-service, checks health and traffic, clears
-  or warms cache, and changes proxy settings.
-- Developer: extends new API modules and admin pages without touching unrelated
-  map rendering code.
+- 运维人员：部署和维护 map-service，检查服务状态、清理或预热缓存、调整代理配置。
+- 开发人员：扩展 API 和后台页面时，可以基于模块化结构增加功能，而不是修改巨石页面。
 
-## Scope
+## 范围
 
-### In Scope For This MVP
+### 本 MVP 已纳入
 
-- Add a management icon on the map tool menu.
-- Add an admin login view in the existing Vite app.
-- Add a dashboard view after login.
-- Show package version, Node version, uptime, process id, and server time.
-- Show tile cache totals, freshness distribution, provider counts, and recent
-  entries.
-- Show access log summary, status-code distribution, top paths, and recent
-  requests.
-- Allow runtime proxy enable/disable plus host, port, protocol, and optional
-  credentials.
-- Add pre-cache task creation with bounds, zoom range, provider, and concurrency
-  controls.
-- Track pre-cache task status, progress, success/failure counts, and recent
-  errors.
-- Persist admin settings and task snapshots under the service data directory.
-- Protect all admin APIs with bearer-token authentication.
+- 地图工具菜单增加管理入口。
+- 登录后进入同一个 Vite 应用内的管理后台。
+- 后台通过导航切换：概览、缓存、预缓存、图层、设置。
+- 显示应用版本、Node 版本、运行时间、进程号和服务器时间。
+- 显示瓦片缓存统计、访问统计和预缓存任务。
+- 支持通过高德地点搜索快速定位预缓存区域。
+- 支持选择指定图层创建预缓存任务。
+- 支持查看后台可用图层配置，包括厂商、类型、缩放范围、模板、子域和默认代理建议。
+- 支持代理总开关、代理地址、端口、账号密码和按图层启用代理。
+- 默认代理策略：Google 图层走代理，高德图层不走代理。
+- 持久化后台设置和预缓存任务快照。
+- 所有管理接口使用 Bearer Token 鉴权。
+- 后台前端按布局、状态、工具函数、面板组件拆分，避免巨石文件。
+- 应用支持 PWA 安装，缓存应用壳和静态资源，基础离线页可用。
 
-### Out Of Scope For This MVP
+### 暂不纳入
 
-- Multi-user role based access control.
-- Database-backed durable task queue.
-- Distributed workers.
-- Fine-grained audit log.
-- Visual polygon drawing and arbitrary shape clipping.
-- Push notifications or websocket progress updates.
+- 多用户和角色权限。
+- 数据库持久化任务队列。
+- 分布式预缓存 worker。
+- 完整审计日志。
+- 任意多边形缓存裁剪。
+- WebSocket 或 SSE 任务实时推送。
 
-These are roadmap items and should be designed after the MVP validates the
-operational workflow.
+## 功能需求
 
-## Functional Requirements
+### F1. 后台入口
 
-### F1. Admin Entry
+地图页工具菜单提供管理按钮，点击后打开 `/?view=admin`。
 
-The map page exposes a compact management icon in the existing tool menu. The
-icon opens `?view=admin` in the same application.
+### F2. 登录认证
 
-### F2. Authentication
+用户使用配置的管理员账号密码登录。后端返回有过期时间的签名 Token，
+前端保存 Token 并在请求管理接口时放入 `Authorization` 头。
 
-Operators log in with configured credentials. The backend returns a signed
-bearer token with an expiry. The frontend stores the token locally and attaches
-it to admin API calls. Logout removes local credentials.
-
-Default development credentials may exist for local startup, but deployment
-documentation must point operators to environment variables:
+上线必须配置：
 
 - `MAP_SERVICE_ADMIN_USERNAME`
 - `MAP_SERVICE_ADMIN_PASSWORD`
 - `MAP_SERVICE_ADMIN_TOKEN_SECRET`
 
-### F3. System Overview
+### F3. 概览
 
-The dashboard shows:
+概览页展示：
 
-- package name and version
-- Node.js version
-- process id
-- uptime
-- server time
-- environment
-- service base path
+- 应用名和版本号
+- Node.js 版本
+- 进程号
+- 运行时间
+- 运行环境
+- 服务器时间
+- 访问统计摘要和最近请求
 
-### F4. Cache Operations
+### F4. 缓存管理
 
-The dashboard shows cache totals and allows clearing the complete tile relay
-cache. A future iteration can add single-entry clearing from the recent-entry
-table.
+缓存页展示瓦片缓存文件数、体积、新鲜/可回退/过期数量和 provider 统计。
+支持清空全部瓦片缓存。
 
-### F5. Access Statistics
+### F5. 访问统计
 
-The dashboard parses recent visit logs and shows:
+访问统计从 `log/visitRecorder/access.log` 解析，展示请求总数、状态码分布、
+高频路径和最近请求。日志解析应尽量容错，无法解析的行直接忽略。
 
-- total parsed requests
-- status-code groups
-- top requested paths
-- recent requests with method, path, status, and user agent
+### F6. 代理设置
 
-Log parsing must be best-effort. Invalid lines are ignored rather than failing
-the admin dashboard.
+代理设置支持：
 
-### F6. Proxy Settings
+- 总开关
+- 协议：`http` 或 `https`
+- 主机
+- 端口
+- 可选账号密码
+- 按图层启用代理
 
-Operators can configure the proxy used for upstream tile requests:
+代理策略规则：
 
-- enabled
-- protocol: `http` or `https`
-- host
-- port
-- optional username/password
+- `useProxy=true` 仍然可以强制单次请求走代理，方便调试。
+- 后台配置的常规策略按 providerId 判断。
+- Google 图层默认启用代理。
+- 高德图层默认不启用代理。
+- 未识别图层默认不走代理，除非显式 `useProxy=true`。
 
-The tile relay and pre-cache jobs use these settings when proxy is enabled.
-Request query `useProxy` remains supported for direct tile relay debugging, but
-runtime settings are the authoritative admin path.
+### F7. 图层配置
 
-### F7. Pre-Cache Jobs
+后台可以查看统一图层目录。每个图层至少包含：
 
-Operators can submit a bounded pre-cache job:
+- 图层 ID
+- 名称
+- 厂商
+- 类型
+- URL 模板
+- 子域配置
+- 最小/最大缩放级别
+- 默认代理建议
 
-- provider from a safe internal tile provider catalog
-- west, south, east, north bounds
-- min zoom and max zoom
-- refresh existing cache or only fill missing/expired entries
-- concurrency limit
+### F8. 预缓存任务
 
-The backend expands the bounds into Web Mercator tile coordinates and fetches
-each generated tile through the existing relay cache pipeline. The task status
-is queryable and persisted as a snapshot so the dashboard can recover after a
-process restart.
+预缓存支持：
 
-## Non-Functional Requirements
+- 通过高德搜索快速定位地点。
+- 使用地图当前视野生成缓存区域 bounds。
+- 选择指定图层创建任务。
+- 指定最小/最大缩放级别。
+- 指定并发数。
+- 选择是否刷新已有缓存。
 
-- Admin endpoints must not be public; every endpoint under `/api/v1/admin`
-  except login requires a bearer token.
-- Credentials and token secrets must not be returned by settings APIs.
-- Bounds, zoom levels, provider names, and proxy values must be validated.
-- Pre-cache jobs must have a maximum tile count guard to prevent accidental
-  large downloads.
-- Upstream non-2xx tile responses must not be cached.
-- Frontend admin UI should be operational and dense, not marketing oriented.
-- Tests should cover auth, settings persistence, proxy config propagation, and
-  pre-cache coordinate planning.
+后端将 bounds 和 zoom 展开为 Web Mercator 瓦片坐标，并复用现有
+fetchRelay 管线下载和写入缓存。
 
-## API Design
+## 非功能需求
 
-| Method | Path | Purpose |
+- `/api/v1/admin` 除登录外都必须鉴权。
+- 后台设置接口不得返回明文代理密码。
+- bounds、zoom、providerId、proxy 配置都必须校验。
+- 预缓存任务必须有最大瓦片数量限制，避免误操作导致超大下载。
+- 上游非 2xx 响应不能写入缓存。
+- 管理后台 UI 应偏运维工具风格，信息密度合理，不做营销页。
+- 前端面板必须模块化拆分，避免继续扩大单文件页面。
+- 前端业务代码禁止直接使用浏览器原生阻塞弹窗 `alert`、`confirm`、`prompt`，必须使用项目统一 Dialog 组件。
+- PWA 缓存不得缓存 `/api/` 请求，避免绕过后端缓存和管理接口的实时状态。
+- 涉及缓存、代理、图层识别和任务规划的逻辑必须有测试覆盖。
+
+## API 设计
+
+| 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `POST` | `/api/v1/admin/auth/login` | Login and receive bearer token |
-| `POST` | `/api/v1/admin/auth/logout` | Frontend logout no-op endpoint |
-| `GET` | `/api/v1/admin/session` | Validate current token |
-| `GET` | `/api/v1/admin/system` | Runtime and version overview |
-| `GET` | `/api/v1/admin/cache` | Tile cache stats |
-| `DELETE` | `/api/v1/admin/cache` | Clear tile cache |
-| `GET` | `/api/v1/admin/visits` | Access statistics |
-| `GET` | `/api/v1/admin/settings` | Read sanitized admin settings |
-| `PUT` | `/api/v1/admin/settings` | Update runtime settings |
-| `GET` | `/api/v1/admin/precache/providers` | List supported tile providers |
-| `GET` | `/api/v1/admin/precache/tasks` | List pre-cache tasks |
-| `POST` | `/api/v1/admin/precache/tasks` | Create pre-cache task |
+| `POST` | `/api/v1/admin/auth/login` | 登录并获取 Token |
+| `POST` | `/api/v1/admin/auth/logout` | 退出登录 no-op |
+| `GET` | `/api/v1/admin/session` | 校验当前 Token |
+| `GET` | `/api/v1/admin/system` | 获取版本和运行信息 |
+| `GET` | `/api/v1/admin/cache` | 获取缓存状态 |
+| `DELETE` | `/api/v1/admin/cache` | 清空缓存 |
+| `GET` | `/api/v1/admin/visits` | 获取访问统计 |
+| `GET` | `/api/v1/admin/settings` | 获取脱敏后的运行时设置 |
+| `PUT` | `/api/v1/admin/settings` | 更新运行时设置 |
+| `GET` | `/api/v1/admin/precache/providers` | 获取图层目录 |
+| `GET` | `/api/v1/admin/precache/tasks` | 获取预缓存任务 |
+| `POST` | `/api/v1/admin/precache/tasks` | 创建预缓存任务 |
 
-## Data Model
+## 数据模型
 
-Runtime admin data is stored under `.db/admin/`:
+运行时后台数据存储在 `.db/admin/`：
 
-- `settings.json`: proxy and future admin settings.
-- `precache-tasks.json`: recent task snapshots.
+- `settings.json`：代理和后续后台设置。
+- `precache-tasks.json`：最近预缓存任务快照。
 
-The `.db` directory is intentionally runtime state and should not be committed.
+`.db` 属于运行时状态，不应提交到仓库。
 
-## Acceptance Criteria
+## 验收标准
 
-- Map page management icon opens the admin view.
-- Unauthenticated admin dashboard access shows login.
-- Successful login opens dashboard and loads all admin panels.
-- Dashboard displays current application version from `package.json`.
-- Cache panel shows stats from the tile relay cache.
-- Clearing cache through admin API removes cache entries.
-- Access panel tolerates missing logs and shows stats when logs exist.
-- Proxy settings can be saved and are used by backend tile fetches.
-- Pre-cache task API rejects invalid or oversized requests.
-- Valid pre-cache jobs are persisted and expose progress.
-- `npm run check`, `npm test`, and `npm run build` pass.
+- 地图页管理按钮能打开后台。
+- 未登录访问后台展示登录页。
+- 登录成功后能进入后台并通过导航切换面板。
+- 概览能展示当前 `package.json` 版本。
+- 缓存页能读取和清空瓦片缓存。
+- 预缓存页能通过高德搜索定位地点。
+- 预缓存任务可以选择指定图层。
+- 图层页能查看所有图层配置。
+- 代理设置可以按图层保存策略，Google 默认走代理，高德默认不走代理。
+- 后端能根据瓦片 URL 或预缓存 providerId 应用图层级代理策略。
+- 应用可作为 PWA 安装，离线时能打开基础离线页。
+- 源码中不存在直接调用 `alert`、`confirm`、`prompt` 的业务代码。
+- 无效或超大预缓存任务会被拒绝。
+- `npm run check`、`npm test`、`npm run build` 通过。
 
-## Roadmap
+## 后续路线
 
-- Replace single admin password with user and role management.
-- Add task cancellation, retry policy controls, and worker-level observability.
-- Add interactive rectangle/polygon drawing in the admin map.
-- Add OpenAPI schema details for request and response bodies.
-- Add audit trail for sensitive admin operations.
-- Add optional websocket or server-sent events for live task progress.
+- 增加任务取消、重试策略和 worker 状态观测。
+- 增加真正的用户和角色权限。
+- 增加可拖拽矩形或多边形编辑。
+- 增加敏感操作审计日志。
+- 增加任务进度实时推送。

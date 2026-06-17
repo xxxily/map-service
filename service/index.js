@@ -96,7 +96,7 @@ const index = {
         res.set('Access-Control-Allow-Origin', '*')
         res.set('x-timestamp', Date.now())
 
-        if (path.basename(filePath) === 'index.html') {
+        if (['index.html', 'sw.js', 'manifest.webmanifest'].includes(path.basename(filePath))) {
           res.set('Cache-Control', 'no-cache')
         } else {
           res.set('Cache-Control', 'public, max-age=31536000, immutable')

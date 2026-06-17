@@ -36,6 +36,18 @@ function normalizeHost (value) {
   return host
 }
 
+function normalizeProviderPolicy (input = {}, current = {}) {
+  const result = { ...(current || {}) }
+
+  Object.entries(input || {}).forEach(([providerId, enabled]) => {
+    if (/^[a-z0-9-]+$/i.test(providerId)) {
+      result[providerId] = normalizeBoolean(enabled)
+    }
+  })
+
+  return result
+}
+
 function normalizeProxy (input = {}, current = {}) {
   const next = {
     enabled: normalizeBoolean(input.enabled ?? current.enabled),
@@ -46,6 +58,7 @@ function normalizeProxy (input = {}, current = {}) {
     password: Object.hasOwn(input, 'password')
       ? String(input.password || '')
       : String(current.password || ''),
+    providerPolicy: normalizeProviderPolicy(input.providerPolicy, current.providerPolicy),
   }
 
   if (!next.username) {
@@ -63,6 +76,7 @@ function sanitizeProxy (proxy) {
     port: proxy.port,
     username: proxy.username || '',
     hasPassword: Boolean(proxy.password),
+    providerPolicy: proxy.providerPolicy || {},
   }
 }
 
@@ -77,6 +91,12 @@ export class AdminSettings {
         port: 10809,
         username: '',
         password: '',
+        providerPolicy: {
+          'amap-satellite': false,
+          'amap-road': false,
+          'google-satellite': true,
+          'google-street': true,
+        },
       }),
     }
     this.cache = null
@@ -115,12 +135,18 @@ export class AdminSettings {
     return this.getSanitized()
   }
 
-  async getProxyForRequest (forceProxy = false) {
+  async getProxyForRequest (options = {}) {
     const settings = await this.readRaw()
     const proxy = settings.proxy
+    const forceProxy = options === true || options.forceProxy === true
+    const providerId = options.providerId || ''
+    const providerEnabled = providerId
+      ? Boolean((proxy.providerPolicy || {})[providerId])
+      : false
+
     return {
       ...proxy,
-      enabled: Boolean(forceProxy || proxy.enabled),
+      enabled: Boolean(forceProxy || (proxy.enabled && providerEnabled)),
     }
   }
 }
