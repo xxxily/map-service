@@ -1,6 +1,12 @@
 # Change Log
 
-## 2026-06-17 - API, Cache, Frontend, and Test Modernization
+## 1.0.0 - 2026-06-17
+
+### Release
+
+- First stable release after the API, cache, frontend, and test modernization.
+- This release contains breaking changes and intentionally does not preserve the
+  old `/api.v1` API surface.
 
 ### API
 
