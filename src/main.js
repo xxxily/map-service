@@ -1,5 +1,6 @@
 import AMapLoader from '@amap/amap-jsapi-loader'
 import L from 'leaflet'
+import 'leaflet-rotate'
 import 'leaflet/dist/leaflet.css'
 import './styles.css'
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
@@ -41,6 +42,9 @@ async function initLeafletMap () {
   const map = L.map('map', {
     center: defaultView.center,
     zoom: defaultView.zoom,
+    bearing: defaultView.bearing || 0,
+    rotate: true,
+    touchRotate: true,
     zoomControl: false,
     attributionControl: false,
     keyboardPanDelta: 480,
@@ -59,11 +63,35 @@ async function initLeafletMap () {
 
   map.on('moveend', () => writeMapViewToUrl(map))
   map.on('zoomend', () => writeMapViewToUrl(map))
+  map.on('rotate', () => {
+    writeMapViewToUrl(map)
+    const bearing = map.getBearing ? map.getBearing() : 0
+    const btn = document.getElementById('reset-bearing-btn')
+    if (btn) {
+      if (Math.abs(bearing) > 0.1) {
+        btn.style.display = 'grid'
+        const icon = btn.querySelector('.compass-icon') || btn
+        icon.style.transform = `rotate(${-bearing}deg)`
+      } else {
+        btn.style.display = 'none'
+      }
+    }
+  })
+
+  // 触发一次以初始化可能已经存在的旋转状态
+  if (map.getBearing && Math.abs(map.getBearing()) > 0.1) {
+    map.fire('rotate')
+  }
 
   const actionMap = {
     toggleLayerControl: () => toggleLayerControl(layerControl, map),
     toggleSearchMode,
     updatePosition: () => updatePosition(map, AMap),
+    resetBearing: () => {
+      if (map.setBearing) {
+        map.setBearing(0)
+      }
+    },
     openAdmin: () => {
       window.location.href = '/?view=admin'
     },

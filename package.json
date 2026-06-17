@@ -27,6 +27,7 @@
     "fs-extra": "^11.3.5",
     "glob": "^13.0.6",
     "leaflet": "^1.9.4",
+    "leaflet-rotate": "^0.2.8",
     "morgan": "^1.11.0",
     "rotating-file-stream": "^3.2.9",
     "simple-git": "^3.36.0",

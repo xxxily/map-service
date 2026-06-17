@@ -1,6 +1,19 @@
 import L from 'leaflet'
 import { tileRelayEndpoint } from '../config.js'
 
+// 对 L.GridLayer 扩展以支持可视区域外一部分瓦片图的预加载
+const originalGetTiledPixelBounds = L.GridLayer.prototype._getTiledPixelBounds
+L.GridLayer.prototype._getTiledPixelBounds = function (center) {
+  const pixelBounds = originalGetTiledPixelBounds.call(this, center)
+  if (this.options.preloadBuffer) {
+    const buffer = this.options.preloadBuffer
+    const min = pixelBounds.min.subtract([buffer, buffer])
+    const max = pixelBounds.max.add([buffer, buffer])
+    return L.bounds(min, max)
+  }
+  return pixelBounds
+}
+
 function relayTileUrl (targetUrl) {
   const encodedTarget = encodeURIComponent(targetUrl)
     .replace(/%7B/g, '{')
@@ -18,11 +31,15 @@ function createTileLayer (url, options) {
   return L.tileLayer(url, {
     minZoom: 3,
     keepBuffer: 10,
+    preloadBuffer: 256, // 预先向四周多加载 1 圈瓦片
     ...options,
   })
 }
 
 export function initLayerControl (map) {
+  // 从 localStorage 获取用户上一次选择的图层，默认使用 '高德/卫星'
+  const savedLayerName = localStorage.getItem('last_map_layer') || '高德/卫星'
+
   const mapLayers = {
     '高德/卫星': L.layerGroup([
       createTileLayer(autonaviSatellite, {
@@ -37,7 +54,7 @@ export function initLayerControl (map) {
         subdomains: '1234',
         opacity: 0.5,
       }),
-    ]).addTo(map),
+    ]),
 
     '高德/街道': createTileLayer(autonaviRoad, {
       maxZoom: 20,
@@ -69,13 +86,25 @@ export function initLayerControl (map) {
       maxZoom: 20,
       attribution: '谷歌 Google',
     }),
-
   }
+
+  // 渲染选中的默认图层
+  const activeLayerName = mapLayers[savedLayerName] ? savedLayerName : '高德/卫星'
+  mapLayers[activeLayerName].addTo(map)
 
   const layerControl = L.control.layers(mapLayers, {}, {
     position: 'topright',
     collapsed: true,
   }).addTo(map)
+
+  // 监听基准底图切换事件，将用户当前选择记录进本地缓存中
+  map.on('baselayerchange', (event) => {
+    try {
+      localStorage.setItem('last_map_layer', event.name)
+    } catch (e) {
+      console.error('Failed to save last_map_layer to localStorage', e)
+    }
+  })
 
   layerControl._container.style.display = 'none'
   return layerControl

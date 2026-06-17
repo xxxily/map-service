@@ -757,3 +757,40 @@ body.admin-view #map-search-mod {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* 高德搜索自动补全下拉建议框的美化 */
+.amap-sug-result {
+  z-index: 20000 !important;
+  border: 1px solid rgba(18, 57, 63, 0.12) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 12px 36px rgba(20, 37, 42, 0.18) !important;
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  backdrop-filter: blur(8px) !important;
+  padding: 6px 0 !important;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.amap-sug-result .auto-item {
+  padding: 8px 12px !important;
+  font-size: 13px !important;
+  color: #44585c !important;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.amap-sug-result .auto-item:hover {
+  background-color: #ecfdf5 !important;
+}
+
+.amap-sug-result .sug-key {
+  color: #0f766e !important;
+  font-weight: 600 !important;
+}
+
+/* 指南针旋转重置按钮样式 */
+#reset-bearing-btn .compass-icon {
+  display: inline-block;
+  transition: transform 0.2s ease-out;
+  font-size: 20px;
+}

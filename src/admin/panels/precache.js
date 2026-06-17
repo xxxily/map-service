@@ -137,6 +137,9 @@ export function initPrecacheMap (state) {
   const container = state.root.querySelector('#admin-precache-map')
   if (!container) return
 
+  // 移除之前切换面板残留的高德搜索建议气泡 DOM 节点，防止内存泄露和气泡悬空
+  document.querySelectorAll('.amap-sug-result').forEach(el => el.remove())
+
   if (state.map) {
     state.map.remove()
     state.map = null
@@ -170,6 +173,25 @@ export function initPrecacheMap (state) {
   map.on('moveend zoomend', () => syncBoundsFromMap(state))
 
   state.map = map
+
+  // 为后台预缓存搜索输入框绑定高德 AutoComplete 插件以支持搜索预填充
+  const searchInput = state.root.querySelector('[data-place-search-form] input[name="keyword"]')
+  if (searchInput) {
+    searchInput.id = 'admin-precache-search-input'
+    loadAmapForAdmin(state).then((AMap) => {
+      if (AMap && AMap.AutoComplete) {
+        const autoComplete = new AMap.AutoComplete({
+          input: 'admin-precache-search-input',
+        })
+        autoComplete.on('select', (event) => {
+          if (event.poi?.location) {
+            const { lng, lat } = event.poi.location
+            movePrecacheMapToPoint(state, lng, lat)
+          }
+        })
+      }
+    })
+  }
 }
 
 export async function searchPlaces (state, keyword) {
