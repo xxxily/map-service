@@ -218,7 +218,7 @@ function updateKmlPanelUI (map) {
     const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
     return `
       <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${kmlFile.id}">
-        <div class="kml-file-head" data-kml-action="toggle-collapse" data-kml-id="${kmlFile.id}">
+        <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${kmlFile.id}" aria-expanded="${expanded}" title="点击展开更多 KML 操作">
           <div class="kml-file-title">
             <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
             <span class="kml-file-count">${kmlFile.features.length}</span>
@@ -228,30 +228,36 @@ function updateKmlPanelUI (map) {
             <button type="button" class="kml-file-btn kml-visibility-btn ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-visible" data-kml-id="${kmlFile.id}" aria-label="${visibilityTitle}" aria-pressed="${enabled}" title="${visibilityTitle}">
               <span class="kml-eye-icon" aria-hidden="true"></span>
             </button>
-            <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
-              <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
-              <span>纠偏</span>
-            </label>
-            <button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="在此文件下新增标注点">➕</button>
-            <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件">⤓</button>
-            <button type="button" class="kml-file-btn delete" data-kml-action="delete-file" data-kml-id="${kmlFile.id}" title="删除此 KML 文件">🗑</button>
           </div>
         </div>
-        <div class="kml-features-list" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
-          ${kmlFile.features.map(feat => {
-            let icon = '📍'
-            if (feat.type === 'LineString') icon = '〰'
-            if (feat.type === 'Polygon') icon = '⬡'
-            return `
-              <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
-                <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
-                  <span class="kml-feature-icon">${icon}</span>
-                  <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
+        <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
+          <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
+            <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
+              <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
+              <span>坐标纠偏</span>
+            </label>
+            <div class="kml-file-tool-actions">
+              <button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="在此文件下新增标注点" aria-label="新增标注点">➕</button>
+              <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件">⤓</button>
+              <button type="button" class="kml-file-btn delete" data-kml-action="delete-file" data-kml-id="${kmlFile.id}" title="删除此 KML 文件" aria-label="删除此 KML 文件">🗑</button>
+            </div>
+          </div>
+          <div class="kml-features-list">
+            ${kmlFile.features.map(feat => {
+              let icon = '📍'
+              if (feat.type === 'LineString') icon = '〰'
+              if (feat.type === 'Polygon') icon = '⬡'
+              return `
+                <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
+                  <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
+                    <span class="kml-feature-icon">${icon}</span>
+                    <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
+                  </div>
+                  <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注">✖</button>
                 </div>
-                <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注">✖</button>
-              </div>
-            `
-          }).join('')}
+              `
+            }).join('')}
+          </div>
         </div>
       </div>
     `
