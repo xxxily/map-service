@@ -1282,6 +1282,10 @@ body.admin-view #map-search-mod {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
 }
 
+.kml-file-card.is-disabled {
+  background: rgba(241, 245, 249, 0.74);
+}
+
 .kml-file-head {
   display: flex;
   align-items: center;
@@ -1313,6 +1317,10 @@ body.admin-view #map-search-mod {
   color: #0f766e;
 }
 
+.kml-file-card.is-disabled .kml-file-name {
+  color: #64748b;
+}
+
 .kml-file-count {
   font-size: 10px;
   color: #0f766e;
@@ -1322,17 +1330,29 @@ body.admin-view #map-search-mod {
   font-weight: 600;
 }
 
+.kml-file-state {
+  flex: 0 0 auto;
+  border-radius: 10px;
+  padding: 1px 6px;
+  background: rgba(100, 116, 139, 0.12);
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+}
+
 .kml-file-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   margin-left: 8px;
 }
 
 .kml-file-btn {
   background: none;
   border: none;
-  padding: 4px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
   cursor: pointer;
   font-size: 14px;
   color: #64748b;
@@ -1351,6 +1371,50 @@ body.admin-view #map-search-mod {
 .kml-file-btn.delete:hover {
   background: rgba(239, 68, 68, 0.08);
   color: #ef4444;
+}
+
+.kml-visibility-btn {
+  position: relative;
+}
+
+.kml-eye-icon {
+  position: relative;
+  width: 15px;
+  height: 10px;
+  border: 1.6px solid currentColor;
+  border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+}
+
+.kml-eye-icon::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translate(-50%, -50%);
+}
+
+.kml-visibility-btn.is-visible {
+  color: #0f766e;
+}
+
+.kml-visibility-btn.is-hidden {
+  color: #94a3b8;
+}
+
+.kml-visibility-btn.is-hidden .kml-eye-icon::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -3px;
+  width: 20px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: rotate(-38deg);
 }
 
 .kml-features-list {

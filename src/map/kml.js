@@ -10,6 +10,7 @@ let kmlList = []
 
 const kmlLayerGroups = new Map()
 const featureLayers = new Map()
+const expandedKmlIds = new Set()
 
 let isAddingPoint = false
 let activeKmlIdForAdd = null
@@ -35,6 +36,7 @@ function normalizeKmlFile (kmlFile) {
   return {
     ...kmlFile,
     coordCorrection: kmlFile.coordCorrection || KML_COORD_CORRECTION,
+    enabled: kmlFile.enabled !== false,
     features: Array.isArray(kmlFile.features) ? kmlFile.features : [],
   }
 }
@@ -53,6 +55,10 @@ function downloadKmlFile (fileName, kmlText) {
 
 function shouldCorrectCoords (kmlFile) {
   return kmlFile?.coordCorrection !== 'none'
+}
+
+function isKmlEnabled (kmlFile) {
+  return Boolean(kmlFile) && kmlFile.enabled !== false
 }
 
 function getMapCoordinates (kmlFile, feature) {
@@ -142,6 +148,20 @@ function renderFeature (map, kmlFile, feature) {
   return layer
 }
 
+function removeKmlLayers (map, kmlFile) {
+  const kmlId = typeof kmlFile === 'string' ? kmlFile : kmlFile.id
+  const group = kmlLayerGroups.get(kmlId)
+  if (group) {
+    map.removeLayer(group)
+    kmlLayerGroups.delete(kmlId)
+  }
+
+  const targetKml = typeof kmlFile === 'string' ? kmlList.find(k => k.id === kmlFile) : kmlFile
+  targetKml?.features.forEach(feature => {
+    featureLayers.delete(feature.id)
+  })
+}
+
 function escapeHtml (str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -152,11 +172,9 @@ function escapeHtml (str) {
 }
 
 function renderKmlLayers (map, kmlFile) {
-  if (kmlLayerGroups.has(kmlFile.id)) {
-    const oldGroup = kmlLayerGroups.get(kmlFile.id)
-    map.removeLayer(oldGroup)
-    kmlLayerGroups.delete(kmlFile.id)
-  }
+  removeKmlLayers(map, kmlFile)
+
+  if (!isKmlEnabled(kmlFile)) return
   
   const group = L.featureGroup()
   
@@ -195,14 +213,21 @@ function updateKmlPanelUI (map) {
   }
   
   container.innerHTML = kmlList.map(kmlFile => {
+    const enabled = isKmlEnabled(kmlFile)
+    const expanded = expandedKmlIds.has(kmlFile.id)
+    const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
     return `
-      <div class="kml-file-card" data-kml-card-id="${kmlFile.id}">
+      <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${kmlFile.id}">
         <div class="kml-file-head" data-kml-action="toggle-collapse" data-kml-id="${kmlFile.id}">
           <div class="kml-file-title">
             <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
             <span class="kml-file-count">${kmlFile.features.length}</span>
+            ${enabled ? '' : '<span class="kml-file-state">已隐藏</span>'}
           </div>
           <div class="kml-file-actions">
+            <button type="button" class="kml-file-btn kml-visibility-btn ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-visible" data-kml-id="${kmlFile.id}" aria-label="${visibilityTitle}" aria-pressed="${enabled}" title="${visibilityTitle}">
+              <span class="kml-eye-icon" aria-hidden="true"></span>
+            </button>
             <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
               <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
               <span>纠偏</span>
@@ -212,7 +237,7 @@ function updateKmlPanelUI (map) {
             <button type="button" class="kml-file-btn delete" data-kml-action="delete-file" data-kml-id="${kmlFile.id}" title="删除此 KML 文件">🗑</button>
           </div>
         </div>
-        <div class="kml-features-list" id="features-${kmlFile.id}" style="display: none;">
+        <div class="kml-features-list" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
           ${kmlFile.features.map(feat => {
             let icon = '📍'
             if (feat.type === 'LineString') icon = '〰'
@@ -236,6 +261,11 @@ function updateKmlPanelUI (map) {
 function focusFeature (map, kmlId, featureId) {
   const kmlFile = kmlList.find(k => k.id === kmlId)
   if (!kmlFile) return
+  if (!isKmlEnabled(kmlFile)) {
+    showAlert('该 KML 文件已隐藏，请先启用后查看。')
+    return
+  }
+
   const feature = kmlFile.features.find(f => f.id === featureId)
   if (!feature) return
   
@@ -434,6 +464,7 @@ export function initKmlSupport (map) {
           id: `kml-${Date.now()}`,
           name: file.name,
           coordCorrection: correctionInput?.checked === false ? 'none' : KML_COORD_CORRECTION,
+          enabled: true,
           features
         }
         
@@ -442,6 +473,7 @@ export function initKmlSupport (map) {
         
         renderKmlLayers(map, newKml)
         updateKmlPanelUI(map)
+        expandedKmlIds.add(newKml.id)
         
         const featListDiv = document.getElementById(`features-${newKml.id}`)
         if (featListDiv) featListDiv.style.display = 'flex'
@@ -473,8 +505,30 @@ export function initKmlSupport (map) {
     if (action === 'toggle-collapse') {
       const listDiv = document.getElementById(`features-${kmlId}`)
       if (listDiv) {
-        listDiv.style.display = listDiv.style.display === 'none' ? 'flex' : 'none'
+        const willExpand = listDiv.style.display === 'none'
+        listDiv.style.display = willExpand ? 'flex' : 'none'
+        if (willExpand) {
+          expandedKmlIds.add(kmlId)
+        } else {
+          expandedKmlIds.delete(kmlId)
+        }
       }
+    }
+
+    if (action === 'toggle-visible') {
+      event.stopPropagation()
+      const kmlFile = kmlList.find(k => k.id === kmlId)
+      if (!kmlFile) return
+
+      kmlFile.enabled = !isKmlEnabled(kmlFile)
+      saveToStorage()
+
+      if (isAddingPoint && activeKmlIdForAdd === kmlId && !isKmlEnabled(kmlFile)) {
+        togglePickupMode(map, null)
+      }
+
+      renderKmlLayers(map, kmlFile)
+      updateKmlPanelUI(map)
     }
     
     if (action === 'focus-feature') {
@@ -493,10 +547,15 @@ export function initKmlSupport (map) {
       
       const index = kmlList.findIndex(k => k.id === kmlId)
       if (index !== -1) {
+        if (isAddingPoint && activeKmlIdForAdd === kmlId) {
+          togglePickupMode(map, null)
+        }
+
         kmlList[index].features.forEach(feat => {
           featureLayers.delete(feat.id)
         })
         kmlList.splice(index, 1)
+        expandedKmlIds.delete(kmlId)
         saveToStorage()
         
         if (kmlLayerGroups.has(kmlId)) {
@@ -519,6 +578,11 @@ export function initKmlSupport (map) {
     
     if (action === 'add-point') {
       event.stopPropagation()
+      const kmlFile = kmlList.find(k => k.id === kmlId)
+      if (!isKmlEnabled(kmlFile)) {
+        showAlert('该 KML 文件已隐藏，请先启用后再新增标注。')
+        return
+      }
       togglePickupMode(map, kmlId)
     }
   })
@@ -533,7 +597,9 @@ export function initKmlSupport (map) {
 
     kmlFile.coordCorrection = target.checked ? KML_COORD_CORRECTION : 'none'
     saveToStorage()
-    renderKmlLayers(map, kmlFile)
+    if (isKmlEnabled(kmlFile)) {
+      renderKmlLayers(map, kmlFile)
+    }
     updateKmlPanelUI(map)
   })
   

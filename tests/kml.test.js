@@ -27,3 +27,22 @@ test('KML export keeps stored standard coordinates unchanged', () => {
   assert.match(kml, /<coordinates>111\.3950162020138,22\.3796367459376,0<\/coordinates>/)
   assert.doesNotMatch(kml, /111\.400306/)
 })
+
+test('KML export is independent from file visibility state', () => {
+  const kmlFile = {
+    name: 'hidden.kml',
+    enabled: false,
+    features: [{
+      type: 'Point',
+      name: '隐藏点位',
+      description: '禁用显示时仍允许导出',
+      coordinates: [113.264385, 23.129112],
+    }],
+  }
+
+  const kml = generateKmlText(kmlFile.name, kmlFile.features)
+
+  assert.match(kml, /<name>hidden\.kml<\/name>/)
+  assert.match(kml, /<name>隐藏点位<\/name>/)
+  assert.match(kml, /<coordinates>113\.264385,23\.129112,0<\/coordinates>/)
+})
