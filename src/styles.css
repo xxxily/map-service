@@ -1097,13 +1097,24 @@ body.admin-view #map-search-mod {
   max-width: 160px;
   border: 1px solid rgba(15, 118, 110, 0.22);
   border-radius: 6px;
-  padding: 3px 7px;
+  padding: 2px 7px;
   background: rgba(255, 255, 255, 0.94);
   color: #102528;
-  box-shadow: 0 6px 18px rgba(16, 37, 40, 0.16);
+  box-shadow: 0 3px 10px rgba(16, 37, 40, 0.14);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
+}
+
+.leaflet-tooltip-top.kml-point-label {
+  margin-top: 0;
+}
+
+.leaflet-tooltip-top.kml-point-label::before {
+  border-top-color: rgba(255, 255, 255, 0.94);
 }
 
 /* KML 面板样式 */

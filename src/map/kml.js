@@ -115,7 +115,7 @@ function renderFeature (map, kmlFile, feature) {
     layer.bindTooltip(escapeHtml(getFeatureLabel(feature)), {
       permanent: true,
       direction: 'top',
-      offset: [0, -28],
+      offset: [-16, -18],
       opacity: 1,
       className: 'kml-point-label',
     })
