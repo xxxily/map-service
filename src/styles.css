@@ -974,6 +974,20 @@ body.admin-view #map-search-mod {
   cursor: not-allowed;
 }
 
+.leaflet-tooltip.kml-point-label {
+  overflow: hidden;
+  max-width: 160px;
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  border-radius: 6px;
+  padding: 3px 7px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #102528;
+  box-shadow: 0 6px 18px rgba(16, 37, 40, 0.16);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* KML 面板样式 */
 .kml-panel {
   position: fixed;

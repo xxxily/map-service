@@ -5,6 +5,7 @@ import { generateKmlText, parseKML } from './kml-format.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_COORD_CORRECTION = 'wgs84-to-gcj02'
+const KML_POINT_LABEL_MAX_LENGTH = 18
 let kmlList = []
 
 const kmlLayerGroups = new Map()
@@ -75,6 +76,26 @@ function mapLatLngToStoredCoordinate (kmlFile, latlng) {
   return shouldCorrectCoords(kmlFile) ? gcj02ToWgs84(coord) : coord
 }
 
+function getFeatureLabel (feature) {
+  const name = String(feature?.name || '').replace(/\s+/g, ' ').trim()
+  if (!name) return '未命名要素'
+  if (name.length <= KML_POINT_LABEL_MAX_LENGTH) return name
+  return `${name.slice(0, KML_POINT_LABEL_MAX_LENGTH)}...`
+}
+
+function renderFeaturePopup (kmlId, feature) {
+  return `
+    <div class="kml-popup-content">
+      <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
+      <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
+      <div class="kml-popup-actions">
+        <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">编辑</button>
+        <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">删除</button>
+      </div>
+    </div>
+  `
+}
+
 function renderFeature (map, kmlFile, feature) {
   const kmlId = kmlFile.id
   let layer
@@ -90,6 +111,13 @@ function renderFeature (map, kmlFile, feature) {
       feature.coordinates = mapLatLngToStoredCoordinate(kmlFile, newLatLng)
       saveToStorage()
       updateKmlPanelUI(map)
+    })
+    layer.bindTooltip(escapeHtml(getFeatureLabel(feature)), {
+      permanent: true,
+      direction: 'top',
+      offset: [0, -28],
+      opacity: 1,
+      className: 'kml-point-label',
     })
   } else if (feature.type === 'LineString') {
     const latlngs = getMapLatLngs(kmlFile, feature)
@@ -107,17 +135,7 @@ function renderFeature (map, kmlFile, feature) {
   }
   
   if (layer) {
-    const popupContent = `
-      <div class="kml-popup-content">
-        <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
-        <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
-        <div class="kml-popup-actions">
-          <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">编辑</button>
-          <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">删除</button>
-        </div>
-      </div>
-    `
-    layer.bindPopup(popupContent, { closeButton: false })
+    layer.bindPopup(renderFeaturePopup(kmlId, feature), { closeButton: false })
     featureLayers.set(feature.id, layer)
   }
   
@@ -261,17 +279,10 @@ async function handleEditFeature (map, kmlId, featureId) {
     
     const layer = featureLayers.get(featureId)
     if (layer) {
-      const popupContent = `
-        <div class="kml-popup-content">
-          <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
-          <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
-          <div class="kml-popup-actions">
-            <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">编辑</button>
-            <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">删除</button>
-          </div>
-        </div>
-      `
-      layer.setPopupContent(popupContent)
+      layer.setPopupContent(renderFeaturePopup(kmlId, feature))
+      if (feature.type === 'Point') {
+        layer.setTooltipContent(escapeHtml(getFeatureLabel(feature)))
+      }
       layer.closePopup()
       setTimeout(() => layer.openPopup(), 100)
     }
