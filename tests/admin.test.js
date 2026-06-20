@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import createAdminAuth from '../service/bin/admin/auth.js'
 import AdminStore from '../service/bin/admin/store.js'
 import AdminSettings from '../service/bin/admin/settings.js'
-import { createTilePlan, generateTiles, PrecacheManager } from '../service/bin/admin/precache.js'
+import { createTilePlan, estimateTilePlan, generateTiles, PrecacheManager } from '../service/bin/admin/precache.js'
 import { getTileProviderByUrl, listTileProviders } from '../service/bin/admin/tileProviders.js'
 import { getVisitStats } from '../service/bin/admin/visitStats.js'
 import FetchRelay from '../service/bin/middleware/fetchRelay/index.js'
@@ -315,6 +315,29 @@ test('precache tile plan expands bounds and enforces max tile count', () => {
   }), /超过上限/)
 })
 
+test('precache estimate returns tile count and size range even over task limit', () => {
+  const estimate = estimateTilePlan({
+    providerId: 'amap-road',
+    bounds: {
+      west: 113,
+      south: 23,
+      east: 114,
+      north: 24,
+    },
+    minZoom: 3,
+    maxZoom: 18,
+  }, {
+    maxTiles: 1,
+  })
+
+  assert.equal(estimate.providerId, 'amap-road')
+  assert.equal(estimate.withinLimit, false)
+  assert.equal(estimate.maxTiles, 1)
+  assert.ok(estimate.total > 1)
+  assert.ok(estimate.estimatedBytes > 0)
+  assert.ok(estimate.estimatedBytesRange.min < estimate.estimatedBytesRange.max)
+})
+
 test('precache manager persists and completes queued tasks', async () => {
   const dataDir = tempDir('precache-manager')
   const store = new AdminStore({ dataDir })
@@ -367,6 +390,130 @@ test('precache manager persists and completes queued tasks', async () => {
       maxZoom: 3,
       concurrency: 'fast',
     }), /并发数 必须是整数/)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('precache manager can pause and resume running tasks', async () => {
+  const dataDir = tempDir('precache-manager-pause')
+  const store = new AdminStore({ dataDir })
+  const fetchedCalls = []
+  let firstFetchStarted = null
+  const firstFetchStartedPromise = new Promise(resolve => {
+    firstFetchStarted = resolve
+  })
+  let releaseFirstFetch = null
+  const releaseFirstFetchPromise = new Promise(resolve => {
+    releaseFirstFetch = resolve
+  })
+  const manager = new PrecacheManager({
+    store,
+    maxTiles: 20,
+    defaultConcurrency: 1,
+    maxConcurrency: 1,
+    fetchTile: async (url, options) => {
+      fetchedCalls.push({ url, options })
+      if (fetchedCalls.length === 1) {
+        firstFetchStarted()
+        await releaseFirstFetchPromise
+      }
+      return {
+        stream: Readable.from([Buffer.from('tile')]),
+      }
+    },
+  })
+
+  try {
+    const task = await manager.createTask({
+      providerId: 'amap-road',
+      bounds: {
+        west: 113.24,
+        south: 23.11,
+        east: 113.50,
+        north: 23.35,
+      },
+      minZoom: 8,
+      maxZoom: 8,
+      concurrency: 1,
+    })
+
+    await firstFetchStartedPromise
+    const paused = await manager.pauseTask(task.id)
+    assert.equal(['pausing', 'paused'].includes(paused.status), true)
+    releaseFirstFetch()
+    await manager.queue
+
+    let tasks = await manager.listTasks()
+    assert.equal(tasks[0].status, 'paused')
+    assert.ok(tasks[0].completed > 0)
+    assert.ok(tasks[0].completed < tasks[0].total)
+
+    const beforeResume = fetchedCalls.length
+    const resumed = await manager.resumeTask(task.id)
+    assert.equal(resumed.status, 'queued')
+    await manager.queue
+
+    tasks = await manager.listTasks()
+    assert.equal(tasks[0].status, 'completed')
+    assert.equal(tasks[0].completed, tasks[0].total)
+    assert.equal(fetchedCalls.length, tasks[0].total)
+    assert.ok(fetchedCalls.length > beforeResume)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('precache manager deletes queued tasks and stops running tasks', async () => {
+  const dataDir = tempDir('precache-manager-delete')
+  const store = new AdminStore({ dataDir })
+  let releaseFetch = null
+  const firstFetchStarted = new Promise(resolve => {
+    releaseFetch = resolve
+  })
+  let continueFetch = null
+  const continueFetchPromise = new Promise(resolve => {
+    continueFetch = resolve
+  })
+  const manager = new PrecacheManager({
+    store,
+    maxTiles: 20,
+    defaultConcurrency: 1,
+    maxConcurrency: 1,
+    fetchTile: async () => {
+      releaseFetch()
+      await continueFetchPromise
+      return {
+        stream: Readable.from([Buffer.from('tile')]),
+      }
+    },
+  })
+
+  try {
+    const task = await manager.createTask({
+      providerId: 'amap-road',
+      bounds: {
+        west: 113.24,
+        south: 23.11,
+        east: 113.50,
+        north: 23.35,
+      },
+      minZoom: 5,
+      maxZoom: 5,
+      concurrency: 1,
+    })
+
+    await firstFetchStarted
+    const deleted = await manager.deleteTask(task.id)
+    assert.deepEqual(deleted, {
+      id: task.id,
+      status: 'deleted',
+    })
+    continueFetch()
+    await manager.queue
+
+    const tasks = await manager.listTasks()
+    assert.equal(tasks.some(item => item.id === task.id), false)
   } finally {
     await fs.remove(dataDir)
   }

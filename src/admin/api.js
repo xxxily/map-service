@@ -72,7 +72,11 @@ export const adminApi = {
   updatePassword: (body) => request('/admin/auth/password', { method: 'POST', body }),
   providers: () => request('/admin/precache/providers'),
   tasks: () => request('/admin/precache/tasks'),
+  estimateTask: (body) => request('/admin/precache/estimate', { method: 'POST', body }),
   createTask: (body) => request('/admin/precache/tasks', { method: 'POST', body }),
+  pauseTask: (taskId) => request(`/admin/precache/tasks/${encodeURIComponent(taskId)}/pause`, { method: 'POST' }),
+  resumeTask: (taskId) => request(`/admin/precache/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' }),
+  deleteTask: (taskId) => request(`/admin/precache/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }),
 }
 
 export async function getAccessStatus () {

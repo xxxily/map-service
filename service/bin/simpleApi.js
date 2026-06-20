@@ -385,6 +385,16 @@ const simpleApi = {
       },
     },
     {
+      path: '/admin/precache/estimate',
+      method: 'post',
+      describe: '估算预缓存任务',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.estimatePrecacheTask(req.body || {}))
+      },
+    },
+    {
       path: '/admin/precache/tasks',
       method: 'post',
       describe: '创建预缓存任务',
@@ -392,6 +402,36 @@ const simpleApi = {
       handler: async (req, res) => {
         requireAdmin(req)
         res.jsonSuc(await service.createPrecacheTask(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/precache/tasks/:id/pause',
+      method: 'post',
+      describe: '暂停预缓存任务',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.pausePrecacheTask(req.params.id))
+      },
+    },
+    {
+      path: '/admin/precache/tasks/:id/resume',
+      method: 'post',
+      describe: '继续预缓存任务',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.resumePrecacheTask(req.params.id))
+      },
+    },
+    {
+      path: '/admin/precache/tasks/:id',
+      method: 'delete',
+      describe: '删除预缓存任务',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.deletePrecacheTask(req.params.id))
       },
     },
     {

@@ -188,6 +188,30 @@ Authorization: Bearer <token>
 
 返回最近预缓存任务快照。
 
+任务状态：
+
+- `queued`：排队中
+- `running`：执行中
+- `pausing`：正在暂停
+- `paused`：已暂停
+- `completed`：已完成
+- `completed_with_errors`：完成但有部分瓦片失败
+- `failed`：任务失败
+- `interrupted`：服务重启导致中断
+
+### `POST /api/v1/admin/precache/estimate`
+
+估算预缓存任务规模。请求体与创建任务一致，但不会真正创建任务；即使预计瓦片数超过上限，也会返回 `withinLimit: false` 和估算数据，便于前端展示。
+
+返回字段包含：
+
+- `total`：预计瓦片文件数量
+- `ranges`：各缩放级别瓦片范围和数量
+- `maxTiles`：服务端允许的任务瓦片上限
+- `withinLimit`：是否在任务上限内
+- `estimatedBytes`：按经验平均值估算的下载体积
+- `estimatedBytesRange`：经验估算体积区间
+
 ### `POST /api/v1/admin/precache/tasks`
 
 创建有边界限制的预缓存任务。
@@ -209,6 +233,18 @@ Authorization: Bearer <token>
 ```
 
 后端会校验图层、区域、缩放级别、并发数和任务瓦片总数。无效或超出上限的任务会被拒绝。
+
+### `POST /api/v1/admin/precache/tasks/:id/pause`
+
+暂停预缓存任务。`queued` 任务会直接变为 `paused`；`running` 任务会先变为 `pausing`，当前正在下载的瓦片结束后变为 `paused`。
+
+### `POST /api/v1/admin/precache/tasks/:id/resume`
+
+继续 `paused` 或 `interrupted` 任务。任务会从已完成数量之后的瓦片继续执行。
+
+### `DELETE /api/v1/admin/precache/tasks/:id`
+
+删除预缓存任务。执行中的任务会被标记停止，并从任务列表和持久化快照中移除。
 
 ## 已移除接口
 

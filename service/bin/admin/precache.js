@@ -2,6 +2,23 @@ import crypto from 'node:crypto'
 import { buildTileUrl, getTileProvider, listTileProviders } from './tileProviders.js'
 
 const MAX_LAT = 85.05112878
+const DEFAULT_TILE_SIZE_ESTIMATE = {
+  min: 12 * 1024,
+  average: 36 * 1024,
+  max: 96 * 1024,
+}
+const TILE_SIZE_ESTIMATE_BY_CATEGORY = {
+  road: {
+    min: 8 * 1024,
+    average: 28 * 1024,
+    max: 72 * 1024,
+  },
+  satellite: {
+    min: 24 * 1024,
+    average: 72 * 1024,
+    max: 180 * 1024,
+  },
+}
 
 function createHttpError (message, statusCode = 400) {
   const err = new Error(message)
@@ -109,7 +126,7 @@ export function createTilePlan (input = {}, options = {}) {
   }
 
   const maxTiles = Number(options.maxTiles || 5000)
-  if (total > maxTiles) {
+  if (options.enforceMaxTiles !== false && total > maxTiles) {
     throw createHttpError(`预缓存任务包含 ${total} 个瓦片，超过上限 ${maxTiles}`)
   }
 
@@ -136,9 +153,30 @@ export function generateTiles (plan) {
 }
 
 async function consumeStream (stream) {
+  let bytes = 0
   for await (const chunk of stream) {
-    void chunk
+    if (typeof chunk === 'string') {
+      bytes += Buffer.byteLength(chunk)
+    } else if (chunk?.byteLength) {
+      bytes += chunk.byteLength
+    } else {
+      bytes += Buffer.byteLength(String(chunk))
+    }
   }
+  return bytes
+}
+
+function getTileSizeEstimate (provider) {
+  return TILE_SIZE_ESTIMATE_BY_CATEGORY[provider.category] || DEFAULT_TILE_SIZE_ESTIMATE
+}
+
+function withoutRuntimeFlags (task) {
+  const {
+    pauseRequested,
+    deleteRequested,
+    ...snapshot
+  } = task
+  return snapshot
 }
 
 export class PrecacheManager {
@@ -157,9 +195,16 @@ export class PrecacheManager {
     const savedTasks = await this.store.read('precache-tasks', [])
     const now = Date.now()
     this.tasks = (Array.isArray(savedTasks) ? savedTasks : []).map((task) => {
-      if (['queued', 'running'].includes(task.status)) {
+      const normalizedTask = {
+        ...task,
+        bytes: Number(task.bytes || 0),
+        pauseRequested: false,
+        deleteRequested: false,
+      }
+
+      if (['queued', 'running', 'pausing', 'deleting'].includes(task.status)) {
         return {
-          ...task,
+          ...normalizedTask,
           status: 'interrupted',
           updatedAt: now,
           finishedAt: now,
@@ -172,7 +217,7 @@ export class PrecacheManager {
           ].slice(-20),
         }
       }
-      return task
+      return normalizedTask
     })
     await this.persist()
   }
@@ -181,21 +226,31 @@ export class PrecacheManager {
     this.tasks = this.tasks
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, 50)
-    await this.store.write('precache-tasks', this.tasks)
+    await this.store.write('precache-tasks', this.tasks
+      .filter(task => !task.deleteRequested)
+      .map(withoutRuntimeFlags))
   }
 
   async listTasks () {
     await this.ready
     return this.tasks
+      .filter(task => !task.deleteRequested)
+      .map(withoutRuntimeFlags)
   }
 
   getProviders () {
     return listTileProviders()
   }
 
+  async estimateTask (input = {}) {
+    await this.ready
+    return estimateTilePlan(input, { maxTiles: this.maxTiles })
+  }
+
   async createTask (input = {}) {
     await this.ready
     const plan = createTilePlan(input, { maxTiles: this.maxTiles })
+    const estimate = estimateTilePlan(input, { maxTiles: this.maxTiles })
     const requestedConcurrency = toInteger(input.concurrency || this.defaultConcurrency, '并发数')
     const concurrency = clamp(
       requestedConcurrency,
@@ -212,6 +267,9 @@ export class PrecacheManager {
       maxZoom: plan.maxZoom,
       ranges: plan.ranges,
       total: plan.total,
+      estimatedBytes: estimate.estimatedBytes,
+      estimatedBytesRange: estimate.estimatedBytesRange,
+      bytes: 0,
       completed: 0,
       succeeded: 0,
       failed: 0,
@@ -227,7 +285,90 @@ export class PrecacheManager {
     this.tasks.unshift(task)
     await this.persist()
     this.enqueue(task.id)
+    return withoutRuntimeFlags(task)
+  }
+
+  findTask (taskId) {
+    const task = this.tasks.find(item => item.id === taskId && !item.deleteRequested)
+    if (!task) {
+      throw createHttpError('预缓存任务不存在', 404)
+    }
     return task
+  }
+
+  async pauseTask (taskId) {
+    await this.ready
+    const task = this.findTask(taskId)
+    const now = Date.now()
+
+    if (task.status === 'queued') {
+      task.status = 'paused'
+      task.updatedAt = now
+      await this.persist()
+      return withoutRuntimeFlags(task)
+    }
+
+    if (task.status === 'running') {
+      task.pauseRequested = true
+      task.status = 'pausing'
+      task.updatedAt = now
+      await this.persist()
+      return withoutRuntimeFlags(task)
+    }
+
+    if (task.status === 'pausing' || task.status === 'paused') {
+      return withoutRuntimeFlags(task)
+    }
+
+    throw createHttpError('当前任务状态不支持暂停')
+  }
+
+  async resumeTask (taskId) {
+    await this.ready
+    const task = this.findTask(taskId)
+    const now = Date.now()
+
+    if (task.status === 'pausing') {
+      throw createHttpError('任务正在暂停，请稍后继续')
+    }
+
+    if (!['paused', 'interrupted'].includes(task.status)) {
+      throw createHttpError('当前任务状态不支持继续')
+    }
+
+    if (task.completed >= task.total) {
+      task.status = task.failed > 0 ? 'completed_with_errors' : 'completed'
+      task.finishedAt = now
+      task.updatedAt = now
+      await this.persist()
+      return withoutRuntimeFlags(task)
+    }
+
+    task.status = 'queued'
+    task.pauseRequested = false
+    task.deleteRequested = false
+    task.finishedAt = null
+    task.updatedAt = now
+    await this.persist()
+    this.enqueue(task.id)
+    return withoutRuntimeFlags(task)
+  }
+
+  async deleteTask (taskId) {
+    await this.ready
+    const task = this.findTask(taskId)
+    const previousStatus = task.status
+    task.deleteRequested = true
+    task.status = 'deleting'
+    task.updatedAt = Date.now()
+    if (!['running', 'pausing'].includes(previousStatus)) {
+      this.tasks = this.tasks.filter(item => item.id !== task.id)
+    }
+    await this.persist()
+    return {
+      id: task.id,
+      status: 'deleted',
+    }
   }
 
   enqueue (taskId) {
@@ -253,15 +394,20 @@ export class PrecacheManager {
     }
 
     const tiles = generateTiles(task)
-    let cursor = 0
+    let cursor = clamp(Number(task.completed || 0), 0, tiles.length)
     const now = Date.now()
     task.status = 'running'
-    task.startedAt = now
+    task.startedAt = task.startedAt || now
+    task.finishedAt = null
     task.updatedAt = now
     await this.persist()
 
     const worker = async () => {
       while (cursor < tiles.length) {
+        if (task.deleteRequested || task.pauseRequested || task.status === 'pausing') {
+          return
+        }
+
         const tile = tiles[cursor]
         cursor += 1
         const url = buildTileUrl(provider, tile)
@@ -272,7 +418,7 @@ export class PrecacheManager {
             refresh: task.refresh,
             cache: true,
           })
-          await consumeStream(result.stream)
+          task.bytes += await consumeStream(result.stream)
           task.succeeded += 1
         } catch (err) {
           task.failed += 1
@@ -294,10 +440,51 @@ export class PrecacheManager {
 
     await Promise.all(Array.from({ length: task.concurrency }, () => worker()))
 
+    if (task.deleteRequested) {
+      this.tasks = this.tasks.filter(item => item.id !== task.id)
+      await this.persist()
+      return
+    }
+
+    if (task.pauseRequested || task.status === 'pausing') {
+      task.status = 'paused'
+      task.pauseRequested = false
+      task.finishedAt = null
+      task.updatedAt = Date.now()
+      await this.persist()
+      return
+    }
+
     task.status = task.failed > 0 ? 'completed_with_errors' : 'completed'
     task.finishedAt = Date.now()
     task.updatedAt = task.finishedAt
     await this.persist()
+  }
+}
+
+export function estimateTilePlan (input = {}, options = {}) {
+  const provider = getTileProvider(input.providerId || input.provider)
+  if (!provider) {
+    throw createHttpError('不支持的瓦片提供方')
+  }
+
+  const plan = createTilePlan(input, {
+    ...options,
+    enforceMaxTiles: false,
+  })
+  const tileSizeEstimate = getTileSizeEstimate(provider)
+  const maxTiles = Number(options.maxTiles || 5000)
+
+  return {
+    ...plan,
+    maxTiles,
+    withinLimit: plan.total <= maxTiles,
+    tileSizeEstimate,
+    estimatedBytes: plan.total * tileSizeEstimate.average,
+    estimatedBytesRange: {
+      min: plan.total * tileSizeEstimate.min,
+      max: plan.total * tileSizeEstimate.max,
+    },
   }
 }
 

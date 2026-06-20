@@ -125,8 +125,24 @@ const service = {
     return precacheManager.listTasks()
   },
 
+  estimatePrecacheTask (input) {
+    return precacheManager.estimateTask(input)
+  },
+
   createPrecacheTask (input) {
     return precacheManager.createTask(input)
+  },
+
+  pausePrecacheTask (taskId) {
+    return precacheManager.pauseTask(taskId)
+  },
+
+  resumePrecacheTask (taskId) {
+    return precacheManager.resumeTask(taskId)
+  },
+
+  deletePrecacheTask (taskId) {
+    return precacheManager.deleteTask(taskId)
   },
 
   isAccessEnabled () {
