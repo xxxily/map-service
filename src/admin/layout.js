@@ -1,4 +1,4 @@
-import { ADMIN_TABS } from './state.js'
+import { ADMIN_PAGES, buildAdminPageUrl } from './routes.js'
 import { escapeHtml } from './utils.js'
 
 export function renderNotice (state) {
@@ -46,10 +46,10 @@ export function renderShell (state, content) {
       ${renderNotice(state)}
       <div class="admin-layout">
         <nav class="admin-tabs" aria-label="后台导航">
-          ${ADMIN_TABS.map(tab => `
-            <button type="button" data-admin-tab="${tab.id}" class="${state.activeTab === tab.id ? 'is-active' : ''}">
+          ${ADMIN_PAGES.map(tab => `
+            <a href="${buildAdminPageUrl(tab.id)}" data-admin-tab="${tab.id}" class="${state.activeTab === tab.id ? 'is-active' : ''}">
               ${escapeHtml(tab.label)}
-            </button>
+            </a>
           `).join('')}
         </nav>
         <div class="admin-content">

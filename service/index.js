@@ -108,6 +108,10 @@ const index = {
     if (serviceConfig.appDir) {
       fs.ensureDirSync(serviceConfig.appDir)
       app.use('/', express.static(serviceConfig.appDir, appOptions))
+      app.get(['/admin', '/admin/:tab'], (req, res) => {
+        res.set('Cache-Control', 'no-cache')
+        res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
+      })
     }
 
     app.use(serviceConfig.staticPath, express.static(serviceConfig.staticDir, options))

@@ -12,6 +12,7 @@ import { addTargetMarker, initAmapGeolocation, updatePosition } from './map/loca
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
+import { isAdminLocation } from './admin/routes.js'
 import { registerServiceWorker } from './pwa.js'
 import { getAccessStatus, verifyAccessPassword } from './admin/api.js'
 import { initKmlSupport } from './map/kml.js'
@@ -103,7 +104,7 @@ async function initLeafletMap () {
       }
     },
     openAdmin: () => {
-      window.location.href = '/?view=admin'
+      window.location.href = '/admin/overview'
     },
   }
 
@@ -192,7 +193,7 @@ function showPasswordLockScreen (options = {}) {
   })
 }
 
-if (new URLSearchParams(window.location.search).get('view') === 'admin') {
+if (isAdminLocation(window.location)) {
   initAdminApp({ amapLoader: AMapLoader })
 } else {
   checkMapAccessBeforeInit()

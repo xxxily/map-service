@@ -1,6 +1,6 @@
 import { escapeHtml, formatBytes } from '../utils.js'
 
-export function renderCachePanel (state) {
+export function renderCachePage (state) {
   const cache = state.cache || {}
   return `
     <section class="admin-panel">
@@ -22,4 +22,21 @@ export function renderCachePanel (state) {
       </div>
     </section>
   `
+}
+
+export async function handleCacheClick ({ api, event, renderDashboard, setNotice, showConfirm, state }) {
+  const actionTarget = event.target.closest('[data-admin-action]')
+  if (actionTarget?.getAttribute('data-admin-action') !== 'clear-cache') return false
+
+  if (!await showConfirm('清空所有瓦片缓存？')) return true
+  try {
+    await api.clearCache()
+    state.cache = await api.cache()
+    setNotice('缓存已清空')
+    renderDashboard()
+  } catch (err) {
+    setNotice('', err.message)
+    renderDashboard()
+  }
+  return true
 }

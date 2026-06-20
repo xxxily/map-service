@@ -292,7 +292,9 @@ body.admin-view #map-search-mod {
   gap: 6px;
 }
 
-.admin-tabs button {
+.admin-tabs a {
+  display: grid;
+  align-items: center;
   min-height: 38px;
   box-sizing: border-box;
   border: 1px solid transparent;
@@ -301,11 +303,12 @@ body.admin-view #map-search-mod {
   background: transparent;
   color: #335056;
   text-align: left;
+  text-decoration: none;
 }
 
-.admin-tabs button:hover,
-.admin-tabs button:focus-visible,
-.admin-tabs button.is-active {
+.admin-tabs a:hover,
+.admin-tabs a:focus-visible,
+.admin-tabs a.is-active {
   border-color: rgba(15, 118, 110, 0.18);
   outline: none;
   background: #fff;
@@ -621,10 +624,92 @@ body.admin-view #map-search-mod {
   font-size: 12px;
 }
 
+.admin-task-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-empty {
+  margin: 0;
+  color: #657b7f;
+  font-size: 14px;
+}
+
+.admin-task-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(220px, 1fr);
+  gap: 10px 14px;
+  border: 1px solid rgba(22, 61, 61, 0.12);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fbfa;
+}
+
+.admin-task-main {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.admin-task-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-task-title strong {
+  overflow: hidden;
+  color: #102528;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-task-title small {
+  color: #657b7f;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.admin-task-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.admin-task-summary div,
+.admin-task-details dl > div {
+  min-width: 0;
+  border: 1px solid rgba(22, 61, 61, 0.1);
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+}
+
+.admin-task-summary dt,
+.admin-task-details dt {
+  margin: 0 0 3px;
+  color: #657b7f;
+  font-size: 12px;
+}
+
+.admin-task-summary dd,
+.admin-task-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #102528;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .admin-task-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  grid-column: 1 / -1;
 }
 
 .admin-task-actions button {
@@ -647,6 +732,33 @@ body.admin-view #map-search-mod {
 .admin-task-actions button.danger {
   border-color: rgba(190, 24, 93, 0.18);
   color: #9f1239;
+}
+
+.admin-task-details {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.admin-task-details dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.admin-task-errors {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-task-errors p {
+  margin: 0;
+  border-radius: 7px;
+  padding: 8px;
+  background: #fff1f2;
+  color: #9f1239;
+  font-size: 12px;
 }
 
 .admin-provider-policy {
@@ -793,7 +905,7 @@ body.admin-view #map-search-mod {
     overflow-x: auto;
   }
 
-  .admin-tabs button {
+  .admin-tabs a {
     flex: 0 0 auto;
     text-align: center;
   }
@@ -805,8 +917,14 @@ body.admin-view #map-search-mod {
   .admin-field-grid,
   .admin-stat-row,
   .admin-provider-policy,
-  .admin-layer-grid {
+  .admin-layer-grid,
+  .admin-task-card,
+  .admin-task-details dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-task-card {
+    grid-template-columns: 1fr;
   }
 
   .admin-metrics-five {

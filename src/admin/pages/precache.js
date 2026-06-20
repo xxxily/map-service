@@ -13,6 +13,15 @@ const TASK_STATUS_LABELS = {
   interrupted: '已中断',
   deleting: '删除中',
 }
+const PRECACHE_ESTIMATE_DELAY = 1000
+let estimateTimer = null
+let estimateRequestId = 0
+let pendingEstimateKey = ''
+let lastEstimateKey = ''
+
+function getTaskStatusLabel (status) {
+  return TASK_STATUS_LABELS[status] || status
+}
 
 function getPrecacheFormState (state, providers) {
   const firstProvider = providers[0]
@@ -40,11 +49,15 @@ function getSelectedProvider (providers, formState) {
   return providers.find(provider => provider.id === formState.providerId) || providers[0] || null
 }
 
-export function renderPrecachePanel (state) {
+export function renderPrecachePage (state) {
   const providers = state.providers || []
   const formState = getPrecacheFormState(state, providers)
   const selectedProvider = getSelectedProvider(providers, formState)
-  const tasks = state.tasks || []
+  const expandedTaskIds = state.expandedTaskIds || new Set()
+  const tasks = (state.tasks || []).map(task => ({
+    ...task,
+    expanded: expandedTaskIds.has(task.id),
+  }))
 
   return `
     <div class="admin-grid">
@@ -82,7 +95,7 @@ export function renderPrecachePanel (state) {
             <label><span>并发</span><input name="concurrency" type="number" min="1" max="8" value="${escapeHtml(formState.concurrency)}" required></label>
             <label class="admin-check admin-check-field"><input name="refresh" type="checkbox" ${formState.refresh ? 'checked' : ''}><span>刷新已有缓存</span></label>
           </div>
-          ${renderEstimate(state)}
+          ${renderPrecacheEstimate(state)}
           <button type="submit">创建任务</button>
         </form>
       </section>
@@ -91,22 +104,22 @@ export function renderPrecachePanel (state) {
   `
 }
 
-function renderEstimate (state) {
+export function renderPrecacheEstimate (state) {
   const estimate = state.precacheEstimate
   if (state.precacheEstimateStatus === 'loading') {
-    return '<div class="admin-estimate"><p>正在估算瓦片数量和下载体积</p></div>'
+    return '<div class="admin-estimate" data-precache-estimate><p>正在估算瓦片数量和下载体积</p></div>'
   }
 
   if (state.precacheEstimateError) {
-    return `<div class="admin-estimate is-error"><p>${escapeHtml(state.precacheEstimateError)}</p></div>`
+    return `<div class="admin-estimate is-error" data-precache-estimate><p>${escapeHtml(state.precacheEstimateError)}</p></div>`
   }
 
   if (!estimate) {
-    return '<div class="admin-estimate"><p>调整区域、图层或级别后会自动估算任务规模</p></div>'
+    return '<div class="admin-estimate" data-precache-estimate><p>停止移动地图后会自动估算任务规模</p></div>'
   }
 
   return `
-    <div class="admin-estimate ${estimate.withinLimit ? '' : 'is-warning'}">
+    <div class="admin-estimate ${estimate.withinLimit ? '' : 'is-warning'}" data-precache-estimate>
       <dl class="admin-metrics">
         <div><dt>预计文件</dt><dd>${escapeHtml(estimate.total || 0)}</dd></div>
         <div><dt>估算体积</dt><dd>${formatBytes(estimate.estimatedBytesRange?.min || 0)} - ${formatBytes(estimate.estimatedBytesRange?.max || 0)}</dd></div>
@@ -116,6 +129,12 @@ function renderEstimate (state) {
       <p>${renderRangeSummary(estimate.ranges || [])}</p>
     </div>
   `
+}
+
+export function updatePrecacheEstimateView (state) {
+  const estimateNode = state.root?.querySelector('[data-precache-estimate]')
+  if (!estimateNode) return
+  estimateNode.outerHTML = renderPrecacheEstimate(state)
 }
 
 function renderRangeSummary (ranges) {
@@ -130,24 +149,33 @@ function renderTaskPanel (tasks) {
         <h2>任务</h2>
         <span class="admin-badge">${tasks.length}</span>
       </div>
-      <div class="admin-table-wrap">
-        <table class="admin-table">
-          <thead><tr><th>状态</th><th>图层</th><th>进度</th><th>体积</th><th>更新时间</th><th>操作</th></tr></thead>
-          <tbody>
-            ${tasks.slice(0, 10).map(task => `
-              <tr>
-                <td><span class="admin-status">${escapeHtml(TASK_STATUS_LABELS[task.status] || task.status)}</span></td>
-                <td>${escapeHtml(task.providerId)}</td>
-                <td>${renderTaskProgress(task)}</td>
-                <td>${formatBytes(task.bytes || 0)}</td>
-                <td>${formatTime(task.updatedAt)}</td>
-                <td>${renderTaskActions(task)}</td>
-              </tr>
-            `).join('') || '<tr><td colspan="6">暂无任务</td></tr>'}
-          </tbody>
-        </table>
+      <div class="admin-task-list">
+        ${tasks.slice(0, 10).map(task => renderTaskCard(task)).join('') || '<p class="admin-empty">暂无任务</p>'}
       </div>
     </section>
+  `
+}
+
+function renderTaskCard (task) {
+  const expanded = task.expanded
+  return `
+    <article class="admin-task-card">
+      <div class="admin-task-main">
+        <div class="admin-task-title">
+          <span class="admin-status">${escapeHtml(getTaskStatusLabel(task.status))}</span>
+          <strong>${escapeHtml(task.providerId)}</strong>
+          <small>${formatTime(task.updatedAt)}</small>
+        </div>
+        ${renderTaskProgress(task)}
+      </div>
+      <dl class="admin-task-summary">
+        <div><dt>体积</dt><dd>${formatBytes(task.bytes || 0)}</dd></div>
+        <div><dt>级别</dt><dd>${escapeHtml(task.minZoom)}-${escapeHtml(task.maxZoom)}</dd></div>
+        <div><dt>并发</dt><dd>${escapeHtml(task.concurrency || 0)}</dd></div>
+      </dl>
+      ${renderTaskActions(task)}
+      ${expanded ? renderTaskDetails(task) : ''}
+    </article>
   `
 }
 
@@ -167,15 +195,279 @@ function renderTaskActions (task) {
   const canPause = ['queued', 'running'].includes(task.status)
   const canResume = ['paused', 'interrupted'].includes(task.status)
   const canPreview = ['completed', 'completed_with_errors'].includes(task.status)
+  const expandedLabel = task.expanded ? '收起' : '详情'
 
   return `
     <div class="admin-task-actions">
       ${canPause ? `<button type="button" data-precache-task-action="pause" data-task-id="${escapeHtml(task.id)}">暂停</button>` : ''}
       ${canResume ? `<button type="button" data-precache-task-action="resume" data-task-id="${escapeHtml(task.id)}">继续</button>` : ''}
+      <button type="button" data-precache-task-action="edit" data-task-id="${escapeHtml(task.id)}">编辑</button>
+      <button type="button" data-precache-task-action="update" data-task-id="${escapeHtml(task.id)}">更新</button>
       ${canPreview ? `<button type="button" data-precache-task-action="preview" data-task-id="${escapeHtml(task.id)}">预览</button>` : ''}
+      <button type="button" data-precache-task-action="toggle-details" data-task-id="${escapeHtml(task.id)}">${expandedLabel}</button>
       <button type="button" class="danger" data-precache-task-action="delete" data-task-id="${escapeHtml(task.id)}">删除</button>
     </div>
   `
+}
+
+function renderTaskDetails (task) {
+  const bounds = task.bounds || {}
+  const ranges = task.ranges || []
+  const errors = task.errors || []
+
+  return `
+    <div class="admin-task-details">
+      <dl>
+        <div><dt>区域</dt><dd>西 ${escapeHtml(bounds.west)} / 南 ${escapeHtml(bounds.south)} / 东 ${escapeHtml(bounds.east)} / 北 ${escapeHtml(bounds.north)}</dd></div>
+        <div><dt>级别明细</dt><dd>${renderRangeSummary(ranges)}</dd></div>
+        <div><dt>创建时间</dt><dd>${formatTime(task.createdAt)}</dd></div>
+        <div><dt>完成时间</dt><dd>${formatTime(task.finishedAt)}</dd></div>
+      </dl>
+      ${errors.length ? `
+        <div class="admin-task-errors">
+          ${errors.slice(-3).map(error => `<p>${escapeHtml(error.message || '未知错误')}</p>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `
+}
+
+function collectPrecacheForm (state, form) {
+  updatePrecacheFormState(state, form)
+  return {
+    providerId: form.elements.providerId.value,
+    bounds: {
+      west: Number(form.elements.west.value),
+      south: Number(form.elements.south.value),
+      east: Number(form.elements.east.value),
+      north: Number(form.elements.north.value),
+    },
+    minZoom: Number(form.elements.minZoom.value),
+    maxZoom: Number(form.elements.maxZoom.value),
+    concurrency: Number(form.elements.concurrency.value),
+    refresh: form.elements.refresh.checked,
+  }
+}
+
+function replaceTaskInState (state, task) {
+  state.tasks = state.tasks.map(item => item.id === task.id ? task : item)
+}
+
+function removeTaskFromState (state, taskId) {
+  state.tasks = state.tasks.filter(item => item.id !== taskId)
+}
+
+function stableStringify (value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function clearPrecacheEstimateForPendingChange (state) {
+  estimateRequestId += 1
+  pendingEstimateKey = ''
+  state.precacheEstimate = null
+  state.precacheEstimateStatus = ''
+  state.precacheEstimateError = ''
+  updatePrecacheEstimateView(state)
+}
+
+export function schedulePrecacheEstimate (state, api, delay = PRECACHE_ESTIMATE_DELAY) {
+  if (state.activeTab !== 'precache') return
+  window.clearTimeout(estimateTimer)
+  estimateTimer = window.setTimeout(() => {
+    refreshPrecacheEstimate(state, api)
+  }, delay)
+}
+
+async function refreshPrecacheEstimate (state, api) {
+  if (state.activeTab !== 'precache') return
+
+  const form = state.root?.querySelector('[data-precache-form]')
+  if (!form) return
+
+  const payload = collectPrecacheForm(state, form)
+  const payloadKey = stableStringify(payload)
+  if (payloadKey === lastEstimateKey || payloadKey === pendingEstimateKey) {
+    return
+  }
+
+  const requestId = estimateRequestId + 1
+  estimateRequestId = requestId
+  pendingEstimateKey = payloadKey
+  state.precacheEstimateStatus = 'loading'
+  state.precacheEstimateError = ''
+  updatePrecacheEstimateView(state)
+
+  try {
+    const estimate = await api.estimateTask(payload)
+    if (requestId !== estimateRequestId) return
+    state.precacheEstimate = estimate
+    state.precacheEstimateStatus = ''
+    state.precacheEstimateError = ''
+    lastEstimateKey = payloadKey
+    pendingEstimateKey = ''
+    updatePrecacheEstimateView(state)
+  } catch (err) {
+    if (requestId !== estimateRequestId) return
+    state.precacheEstimate = null
+    state.precacheEstimateStatus = ''
+    state.precacheEstimateError = err.message
+    pendingEstimateKey = ''
+    updatePrecacheEstimateView(state)
+  }
+}
+
+export async function handlePrecacheSubmit ({ api, event, renderDashboard, setNotice, state }) {
+  const precacheForm = event.target.closest('[data-precache-form]')
+  const placeSearchForm = event.target.closest('[data-place-search-form]')
+
+  if (precacheForm) {
+    event.preventDefault()
+    try {
+      const task = await api.createTask(collectPrecacheForm(state, precacheForm))
+      state.tasks = [task, ...state.tasks]
+      setNotice('预缓存任务已创建')
+      renderDashboard()
+    } catch (err) {
+      setNotice('', err.message)
+      renderDashboard()
+    }
+    return true
+  }
+
+  if (placeSearchForm) {
+    event.preventDefault()
+    const keyword = placeSearchForm.elements.keyword.value.trim()
+    if (keyword) {
+      await searchPlaces(state, keyword)
+    }
+    return true
+  }
+
+  return false
+}
+
+export async function handlePrecacheClick ({ api, event, renderDashboard, setNotice, showConfirm, state }) {
+  const taskActionTarget = event.target.closest('[data-precache-task-action]')
+  if (taskActionTarget) {
+    await handlePrecacheTaskAction({
+      actionTarget: taskActionTarget,
+      api,
+      renderDashboard,
+      setNotice,
+      showConfirm,
+      state,
+    })
+    return true
+  }
+
+  const placeTarget = event.target.closest('[data-place-lng][data-place-lat]')
+  if (placeTarget) {
+    movePrecacheMapToPoint(
+      state,
+      Number(placeTarget.getAttribute('data-place-lng')),
+      Number(placeTarget.getAttribute('data-place-lat'))
+    )
+    return true
+  }
+
+  const actionTarget = event.target.closest('[data-admin-action]')
+  if (actionTarget?.getAttribute('data-admin-action') === 'sync-bounds') {
+    syncBoundsFromMap(state)
+    clearPrecacheEstimateForPendingChange(state)
+    schedulePrecacheEstimate(state, api)
+    return true
+  }
+
+  return false
+}
+
+export async function handlePrecacheChange ({ api, event, state }) {
+  const precacheForm = event.target.closest('[data-precache-form]')
+  if (!precacheForm) return false
+
+  updatePrecacheFormState(state, precacheForm)
+  clearPrecacheEstimateForPendingChange(state)
+  schedulePrecacheEstimate(state, api)
+  return true
+}
+
+async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, setNotice, showConfirm, state }) {
+  const action = actionTarget.getAttribute('data-precache-task-action')
+  const taskId = actionTarget.getAttribute('data-task-id')
+  const task = state.tasks.find(item => item.id === taskId)
+  if (!action || !taskId) return
+
+  try {
+    if (action === 'pause') {
+      replaceTaskInState(state, await api.pauseTask(taskId))
+      setNotice('预缓存任务已暂停')
+      renderDashboard()
+      return
+    }
+
+    if (action === 'resume') {
+      replaceTaskInState(state, await api.resumeTask(taskId))
+      setNotice('预缓存任务已继续')
+      renderDashboard()
+      return
+    }
+
+    if (action === 'delete') {
+      if (!await showConfirm('删除此预缓存任务？执行中的任务会停止并从列表移除。')) return
+      await api.deleteTask(taskId)
+      removeTaskFromState(state, taskId)
+      setNotice('预缓存任务已删除')
+      renderDashboard()
+      return
+    }
+
+    if (action === 'edit' && task) {
+      applyTaskToPrecacheForm(state, task)
+      clearPrecacheEstimateForPendingChange(state)
+      schedulePrecacheEstimate(state, api)
+      setNotice('任务参数已回填，可调整后创建新任务')
+      renderDashboard()
+      return
+    }
+
+    if (action === 'update' && task) {
+      const updatedTask = await api.createTask({
+        providerId: task.providerId,
+        bounds: task.bounds,
+        minZoom: task.minZoom,
+        maxZoom: task.maxZoom,
+        concurrency: task.concurrency,
+        refresh: false,
+      })
+      state.tasks = [updatedTask, ...state.tasks]
+      setNotice('更新任务已创建，将跳过新鲜缓存并补齐缺失瓦片')
+      renderDashboard()
+      return
+    }
+
+    if (action === 'toggle-details') {
+      if (state.expandedTaskIds.has(taskId)) {
+        state.expandedTaskIds.delete(taskId)
+      } else {
+        state.expandedTaskIds.add(taskId)
+      }
+      renderDashboard()
+      return
+    }
+
+    if (action === 'preview' && task) {
+      window.location.href = buildTaskPreviewUrl(task)
+    }
+  } catch (err) {
+    setNotice('', err.message)
+    renderDashboard()
+  }
 }
 
 export async function loadAmapForAdmin (state) {
@@ -266,15 +558,38 @@ export function buildTaskPreviewUrl (task) {
   return `/?coords=${encodeURIComponent(coords)}`
 }
 
+export function applyTaskToPrecacheForm (state, task) {
+  if (!task) return
+  const bounds = task.bounds || {}
+
+  state.precacheForm = {
+    providerId: task.providerId || state.precacheForm?.providerId || '',
+    bounds: {
+      west: Number(bounds.west),
+      south: Number(bounds.south),
+      east: Number(bounds.east),
+      north: Number(bounds.north),
+    },
+    minZoom: Number(task.minZoom),
+    maxZoom: Number(task.maxZoom),
+    concurrency: Number(task.concurrency || state.precacheForm?.concurrency || 4),
+    refresh: false,
+  }
+}
+
 export function movePrecacheMapToPoint (state, lng, lat, zoom = 15) {
   if (!state.map) return
   state.map.setView([lat, lng], zoom)
   syncBoundsFromMap(state)
+  if (state.onPrecacheBoundsChange instanceof Function) {
+    state.onPrecacheBoundsChange()
+  }
 }
 
-export function initPrecacheMap (state) {
+export function initPrecacheMap (state, api) {
   const container = state.root.querySelector('#admin-precache-map')
   if (!container) return
+  state.onPrecacheBoundsChange = () => schedulePrecacheEstimate(state, api)
 
   // 移除之前切换面板残留的高德搜索建议气泡 DOM 节点，防止内存泄露和气泡悬空
   document.querySelectorAll('.amap-sug-result').forEach(el => el.remove())
@@ -308,12 +623,16 @@ export function initPrecacheMap (state) {
     fillColor: '#f59e0b',
     fillOpacity: 0.14,
   }).addTo(map)
+  let readyForBoundsChange = false
   map.fitBounds(bounds)
   map.on('moveend zoomend', () => syncBoundsFromMap(state))
   map.on('moveend zoomend', () => {
-    if (state.onPrecacheBoundsChange instanceof Function) {
+    if (readyForBoundsChange && state.onPrecacheBoundsChange instanceof Function) {
       state.onPrecacheBoundsChange()
     }
+  })
+  window.requestAnimationFrame(() => {
+    readyForBoundsChange = true
   })
 
   state.map = map

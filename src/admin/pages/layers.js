@@ -1,6 +1,6 @@
 import { escapeHtml } from '../utils.js'
 
-export function renderLayersPanel (state) {
+export function renderLayersPage (state) {
   const providers = state.providers || []
 
   return `

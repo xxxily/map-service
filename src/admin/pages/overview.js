@@ -1,6 +1,6 @@
 import { escapeHtml, formatDuration, formatTime } from '../utils.js'
 
-export function renderOverviewPanel (state) {
+export function renderOverviewPage (state) {
   const system = state.system
   const visits = state.visits || {}
   const version = system?.package?.version || '-'

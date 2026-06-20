@@ -1,10 +1,4 @@
-export const ADMIN_TABS = [
-  { id: 'overview', label: '概览' },
-  { id: 'cache', label: '缓存' },
-  { id: 'precache', label: '预缓存' },
-  { id: 'layers', label: '图层' },
-  { id: 'settings', label: '设置' },
-]
+import { isAdminTab } from './routes.js'
 
 export const adminState = {
   root: null,
@@ -35,6 +29,7 @@ export const adminState = {
   precacheEstimate: null,
   precacheEstimateStatus: '',
   precacheEstimateError: '',
+  expandedTaskIds: new Set(),
   amapLoader: null,
   AMap: null,
   map: null,
@@ -47,7 +42,7 @@ export function setNotice (message = '', error = '') {
 }
 
 export function setActiveTab (tabId) {
-  if (ADMIN_TABS.some(tab => tab.id === tabId)) {
+  if (isAdminTab(tabId)) {
     adminState.activeTab = tabId
   }
 }

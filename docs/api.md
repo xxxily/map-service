@@ -234,6 +234,8 @@ Authorization: Bearer <token>
 
 后端会校验图层、区域、缩放级别、并发数和任务瓦片总数。无效或超出上限的任务会被拒绝。
 
+若基于历史任务创建更新任务，应复用历史任务的 `providerId`、`bounds`、`minZoom`、`maxZoom` 和 `concurrency`，并设置 `refresh: false`。此时已有且新鲜的缓存会直接跳过，缺失或过期缓存会按正常缓存流程下载或条件更新。
+
 ### `POST /api/v1/admin/precache/tasks/:id/pause`
 
 暂停预缓存任务。`queued` 任务会直接变为 `paused`；`running` 任务会先变为 `pausing`，当前正在下载的瓦片结束后变为 `paused`。
