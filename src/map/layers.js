@@ -65,11 +65,11 @@ export function initLayerControl (map) {
 
     '谷歌高德/卫星': L.layerGroup([
       createTileLayer(googleSatellite, {
-        maxZoom: 19,
+        maxZoom: 22,
         attribution: '谷歌提供卫星图，高德提供街道图',
       }),
       createTileLayer(autonaviRoad, {
-        maxZoom: 19,
+        maxZoom: 22,
         maxNativeZoom: 18,
         attribution: '高德地图 AutoNavi.com',
         subdomains: '1234',
@@ -78,12 +78,12 @@ export function initLayerControl (map) {
     ]),
 
     '谷歌/卫星': createTileLayer(googleSatellite, {
-      maxZoom: 20,
+      maxZoom: 22,
       attribution: '谷歌 Google',
     }),
 
     '谷歌/街道': createTileLayer(googleStreet, {
-      maxZoom: 20,
+      maxZoom: 22,
       attribution: '谷歌 Google',
     }),
   }

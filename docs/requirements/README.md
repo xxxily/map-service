@@ -18,6 +18,7 @@
 
 当前需求文档：
 
+- [功能完备地图应用建设需求](./full-featured-map-application.md)
 - [管理后台 MVP](./admin-console-mvp.md)
 - [KML 导入导出](./kml-import-export.md)
 - [访问控制加固](./access-control-hardening.md)

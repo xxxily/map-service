@@ -191,7 +191,9 @@ test('tile provider catalog exposes layer config and detects providers by url', 
   const amap = providers.find(provider => provider.id === 'amap-road')
 
   assert.equal(Boolean(google.template), true)
+  assert.equal(google.maxZoom, 22)
   assert.equal(google.proxyDefault, true)
+  assert.equal(amap.maxZoom, 18)
   assert.equal(amap.proxyDefault, false)
   assert.equal(getTileProviderByUrl('https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x=1&y=2&z=3')?.id, 'google-satellite')
   assert.equal(getTileProviderByUrl('https://webst01.is.autonavi.com/appmaptile?style=8&x=1&y=2&z=3')?.id, 'amap-road')

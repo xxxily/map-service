@@ -6,7 +6,7 @@ const config = {
   /* 静态服务器配置 */
   staticService: {
     host: '::',
-    port: 3088,
+    port: parseInt(process.env.MAP_SERVICE_PORT) || 3088,
     // port: 80,
     appDir: path.resolve(import.meta.dirname, './app'),
     staticDir: path.resolve(rootPath, './dist'),

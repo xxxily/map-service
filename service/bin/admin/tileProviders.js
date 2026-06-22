@@ -31,7 +31,7 @@ export const TILE_PROVIDER_CATALOG = [
     description: '谷歌卫星瓦片图层。',
     template: 'https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}',
     minZoom: 3,
-    maxZoom: 20,
+    maxZoom: 22,
     proxyDefault: true,
   },
   {
@@ -42,7 +42,7 @@ export const TILE_PROVIDER_CATALOG = [
     description: '谷歌街道瓦片图层。',
     template: 'https://www.google.com/maps/vt?lyrs=m@189&gl=cn&x={x}&y={y}&z={z}',
     minZoom: 3,
-    maxZoom: 20,
+    maxZoom: 22,
     proxyDefault: true,
   },
 ]
