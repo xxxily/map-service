@@ -4,6 +4,7 @@ export function renderOverviewPage (state) {
   const system = state.system
   const visits = state.visits || {}
   const version = system?.package?.version || '-'
+  const visitStatus = state.visitsError || (state.visitsLoading ? '统计中' : '')
 
   return `
     <div class="admin-grid">
@@ -24,12 +25,12 @@ export function renderOverviewPage (state) {
       <section class="admin-panel admin-panel-wide">
         <div class="admin-panel-head">
           <h2>访问</h2>
-          <span class="admin-badge">${visits.total || 0}</span>
+          <span class="admin-badge">${escapeHtml(visitStatus || visits.total || 0)}</span>
         </div>
         <div class="admin-stat-row">
           ${Object.entries(visits.statusGroups || {}).map(([group, count]) => `
             <div><span>${escapeHtml(group)}</span><strong>${count}</strong></div>
-          `).join('') || '<div><span>请求</span><strong>0</strong></div>'}
+          `).join('') || `<div><span>请求</span><strong>${escapeHtml(visitStatus || 0)}</strong></div>`}
         </div>
         <div class="admin-table-wrap">
           <table class="admin-table">

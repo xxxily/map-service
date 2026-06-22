@@ -8,6 +8,7 @@ import axios from 'axios'
 const CACHEABLE_STATUS_MIN = 200
 const CACHEABLE_STATUS_MAX = 299
 const META_SUFFIX = '.meta.json'
+const STATS_STATE_FILE = '.stats.json'
 const HEADER_ALLOW_LIST = [
   'cache-control',
   'content-type',
@@ -92,6 +93,12 @@ class FetchRelay {
     }
     this.config = utils.merge(defConf, conf || {})
     this.httpClient = this.config.httpClient || axios
+    this.statsStatePath = path.join(this.config.cacheDir, STATS_STATE_FILE)
+    this.statsStateLoaded = false
+    this.statsStateLoadPromise = null
+    this.statsDirty = false
+    this.statsSnapshot = null
+    this.statsRefreshPromise = null
   }
 
   getCachePaths (url) {
@@ -229,6 +236,7 @@ class FetchRelay {
     }
 
     await fs.writeJson(entry.metaPath, meta, { spaces: 2 })
+    await this.invalidateStatsSnapshot()
     return {
       ...entry,
       meta,
@@ -276,6 +284,7 @@ class FetchRelay {
 
     await fs.move(tempPath, paths.cachePath, { overwrite: true })
     await fs.writeJson(paths.metaPath, meta, { spaces: 2 })
+    await this.invalidateStatsSnapshot()
 
     return {
       ...paths,
@@ -354,6 +363,102 @@ class FetchRelay {
   }
 
   async getStats () {
+    await this.ensureStatsStateLoaded()
+
+    if (!this.statsDirty && this.statsSnapshot) {
+      return this.statsSnapshot
+    }
+
+    if (this.statsRefreshPromise) {
+      return this.statsSnapshot
+        ? { ...this.statsSnapshot, refreshing: true }
+        : this.statsRefreshPromise
+    }
+
+    this.statsRefreshPromise = this.collectStats()
+      .then((stats) => {
+        this.statsSnapshot = stats
+        this.statsDirty = false
+        return this.writeStatsState().then(() => stats)
+      })
+      .catch((err) => {
+        if (this.statsSnapshot) {
+          console.warn('[fetchRelay] cache stats refresh failed, serving previous snapshot:', err.message)
+          return this.statsSnapshot
+        }
+        throw err
+      })
+      .finally(() => {
+        this.statsRefreshPromise = null
+      })
+
+    if (this.statsSnapshot) {
+      return {
+        ...this.statsSnapshot,
+        refreshing: true,
+      }
+    }
+
+    return this.statsRefreshPromise
+  }
+
+  async ensureStatsStateLoaded () {
+    if (this.statsStateLoaded) return
+    if (this.statsStateLoadPromise) return this.statsStateLoadPromise
+
+    this.statsStateLoadPromise = (async () => {
+      await fs.ensureDir(this.config.cacheDir)
+
+      try {
+        const state = await fs.readJson(this.statsStatePath)
+        this.statsDirty = Boolean(state.dirty)
+        this.statsSnapshot = state.snapshot || null
+      } catch (err) {
+        this.statsDirty = false
+        this.statsSnapshot = null
+      }
+
+      this.statsStateLoaded = true
+    })().finally(() => {
+      this.statsStateLoadPromise = null
+    })
+
+    return this.statsStateLoadPromise
+  }
+
+  async writeStatsState () {
+    await fs.ensureDir(this.config.cacheDir)
+    await fs.writeJson(this.statsStatePath, {
+      dirty: this.statsDirty,
+      snapshot: this.statsSnapshot,
+      updatedAt: now(),
+    }, { spaces: 2 })
+  }
+
+  async invalidateStatsSnapshot () {
+    await this.ensureStatsStateLoaded()
+    if (this.statsDirty) return
+
+    this.statsDirty = true
+    await this.writeStatsState()
+  }
+
+  createEmptyStats () {
+    return {
+      cacheDir: this.config.cacheDir,
+      files: 0,
+      bytes: 0,
+      fresh: 0,
+      stale: 0,
+      expired: 0,
+      providers: {},
+      entries: [],
+      generatedAt: now(),
+      refreshing: false,
+    }
+  }
+
+  async collectStats () {
     await fs.ensureDir(this.config.cacheDir)
 
     let files = 0
@@ -367,6 +472,10 @@ class FetchRelay {
     const walk = async (dir) => {
       const items = await fs.readdir(dir, { withFileTypes: true })
       for (const item of items) {
+        if (item.name === STATS_STATE_FILE) {
+          continue
+        }
+
         const itemPath = path.join(dir, item.name)
         if (item.isDirectory()) {
           await walk(itemPath)
@@ -414,6 +523,8 @@ class FetchRelay {
       entries: entries
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 100),
+      generatedAt: now(),
+      refreshing: false,
     }
   }
 
@@ -424,6 +535,7 @@ class FetchRelay {
         fs.remove(paths.cachePath),
         fs.remove(paths.metaPath),
       ])
+      await this.invalidateStatsSnapshot()
 
       return {
         removed: 1,
@@ -433,6 +545,10 @@ class FetchRelay {
 
     await fs.remove(this.config.cacheDir)
     await fs.ensureDir(this.config.cacheDir)
+    await this.ensureStatsStateLoaded()
+    this.statsDirty = false
+    this.statsSnapshot = this.createEmptyStats()
+    await this.writeStatsState()
 
     return {
       removed: 'all',

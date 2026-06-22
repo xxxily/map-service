@@ -187,3 +187,34 @@ test('fetch relay clears all cache entries', async () => {
     await cleanup()
   }
 })
+
+test('fetch relay persists cache stats and reuses snapshot without cache changes', async () => {
+  const targetUrl = 'https://www.google.com/maps/vt?lyrs=s&x=19&y=20&z=21'
+  const { relay, cacheDir, cleanup } = createRelay([{}])
+
+  try {
+    const result = await relay.fetch(targetUrl)
+    await readStream(result.stream)
+
+    const stats = await relay.getStats()
+    assert.equal(stats.files, 1)
+    assert.equal(stats.refreshing, false)
+
+    const reusedRelay = new FetchRelay({
+      cacheDir,
+      minCacheBytes: 1,
+      httpClient: async () => {
+        throw new Error('stats snapshot should not fetch upstream')
+      },
+    })
+    reusedRelay.collectStats = async () => {
+      throw new Error('stats snapshot should not be recomputed')
+    }
+
+    const reusedStats = await reusedRelay.getStats()
+    assert.equal(reusedStats.files, 1)
+    assert.equal(reusedStats.generatedAt, stats.generatedAt)
+  } finally {
+    await cleanup()
+  }
+})

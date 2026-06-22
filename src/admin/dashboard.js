@@ -32,11 +32,59 @@ function getPageContext (event) {
   }
 }
 
+function renderDashboardIfActive (...tabIds) {
+  if (!tabIds.length || tabIds.includes(adminState.activeTab)) {
+    renderDashboard()
+  }
+}
+
 async function dispatchPageHandler (handlerName, event) {
   const handler = getAdminPage(adminState.activeTab)[handlerName]
   return handler instanceof Function
     ? Boolean(await handler(getPageContext(event)))
     : false
+}
+
+async function loadDashboardStats (options = {}) {
+  const cacheOnly = Boolean(options.cacheOnly)
+  Object.assign(adminState, {
+    cacheLoading: true,
+    cacheError: '',
+    visitsLoading: cacheOnly ? adminState.visitsLoading : true,
+    visitsError: cacheOnly ? adminState.visitsError : '',
+  })
+  renderDashboardIfActive('overview', 'cache')
+
+  adminApi.cache()
+    .then((cache) => {
+      adminState.cache = cache
+      adminState.cacheError = ''
+      if (cache.refreshing) {
+        window.setTimeout(() => loadDashboardStats({ cacheOnly: true }), 1500)
+      }
+    })
+    .catch((err) => {
+      adminState.cacheError = err.message
+    })
+    .finally(() => {
+      adminState.cacheLoading = false
+      renderDashboardIfActive('cache')
+    })
+
+  if (cacheOnly) return
+
+  adminApi.visits()
+    .then((visits) => {
+      adminState.visits = visits
+      adminState.visitsError = ''
+    })
+    .catch((err) => {
+      adminState.visitsError = err.message
+    })
+    .finally(() => {
+      adminState.visitsLoading = false
+      renderDashboardIfActive('overview')
+    })
 }
 
 async function loadDashboard () {
@@ -45,11 +93,9 @@ async function loadDashboard () {
   renderDashboard()
 
   try {
-    const [session, system, cache, visits, settings, providers, tasks] = await Promise.all([
+    const [session, system, settings, providers, tasks] = await Promise.all([
       adminApi.session(),
       adminApi.system(),
-      adminApi.cache(),
-      adminApi.visits(),
       adminApi.settings(),
       adminApi.providers(),
       adminApi.tasks(),
@@ -58,8 +104,6 @@ async function loadDashboard () {
     Object.assign(adminState, {
       session,
       system,
-      cache,
-      visits,
       settings,
       providers,
       tasks,
@@ -68,6 +112,7 @@ async function loadDashboard () {
     setNotice('')
     renderDashboard()
     getAdminPage(adminState.activeTab).afterLoad?.(adminState, adminApi)
+    loadDashboardStats()
   } catch (err) {
     adminState.loading = false
     if (err.status === 401) {

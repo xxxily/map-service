@@ -2,6 +2,7 @@ import { escapeHtml, formatBytes } from '../utils.js'
 
 export function renderCachePage (state) {
   const cache = state.cache || {}
+  const status = state.cacheError || (state.cacheLoading ? '统计中' : '')
   return `
     <section class="admin-panel">
       <div class="admin-panel-head">
@@ -9,7 +10,7 @@ export function renderCachePage (state) {
         <button type="button" data-admin-action="clear-cache">清空</button>
       </div>
       <dl class="admin-metrics admin-metrics-five">
-        <div><dt>文件</dt><dd>${cache.files || 0}</dd></div>
+        <div><dt>文件</dt><dd>${escapeHtml(status || cache.files || 0)}</dd></div>
         <div><dt>体积</dt><dd>${formatBytes(cache.bytes || 0)}</dd></div>
         <div><dt>新鲜</dt><dd>${cache.fresh || 0}</dd></div>
         <div><dt>可回退</dt><dd>${cache.stale || 0}</dd></div>

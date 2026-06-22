@@ -14,10 +14,14 @@ const TASK_STATUS_LABELS = {
   deleting: '删除中',
 }
 const PRECACHE_ESTIMATE_DELAY = 1000
+const PRECACHE_TASK_REFRESH_DELAY = 1500
+const ACTIVE_TASK_STATUSES = new Set(['queued', 'running', 'pausing', 'deleting'])
 let estimateTimer = null
 let estimateRequestId = 0
 let pendingEstimateKey = ''
 let lastEstimateKey = ''
+let taskRefreshTimer = null
+let taskRefreshRequestId = 0
 
 function getTaskStatusLabel (status) {
   return TASK_STATUS_LABELS[status] || status
@@ -49,15 +53,23 @@ function getSelectedProvider (providers, formState) {
   return providers.find(provider => provider.id === formState.providerId) || providers[0] || null
 }
 
+function getTasksForRender (state) {
+  const expandedTaskIds = state.expandedTaskIds || new Set()
+  return (state.tasks || []).map(task => ({
+    ...task,
+    expanded: expandedTaskIds.has(task.id),
+  }))
+}
+
+function hasActiveTasks (tasks = []) {
+  return tasks.some(task => ACTIVE_TASK_STATUSES.has(task.status))
+}
+
 export function renderPrecachePage (state) {
   const providers = state.providers || []
   const formState = getPrecacheFormState(state, providers)
   const selectedProvider = getSelectedProvider(providers, formState)
-  const expandedTaskIds = state.expandedTaskIds || new Set()
-  const tasks = (state.tasks || []).map(task => ({
-    ...task,
-    expanded: expandedTaskIds.has(task.id),
-  }))
+  const tasks = getTasksForRender(state)
 
   return `
     <div class="admin-grid">
@@ -144,7 +156,7 @@ function renderRangeSummary (ranges) {
 
 function renderTaskPanel (tasks) {
   return `
-    <section class="admin-panel admin-panel-wide">
+    <section class="admin-panel admin-panel-wide" data-precache-task-panel>
       <div class="admin-panel-head">
         <h2>任务</h2>
         <span class="admin-badge">${tasks.length}</span>
@@ -257,6 +269,12 @@ function removeTaskFromState (state, taskId) {
   state.tasks = state.tasks.filter(item => item.id !== taskId)
 }
 
+function updatePrecacheTaskPanelView (state) {
+  const taskPanel = state.root?.querySelector('[data-precache-task-panel]')
+  if (!taskPanel) return
+  taskPanel.outerHTML = renderTaskPanel(getTasksForRender(state))
+}
+
 function stableStringify (value) {
   if (Array.isArray(value)) {
     return `[${value.map(stableStringify).join(',')}]`
@@ -322,6 +340,33 @@ async function refreshPrecacheEstimate (state, api) {
   }
 }
 
+export function schedulePrecacheTaskRefresh (state, api, delay = PRECACHE_TASK_REFRESH_DELAY) {
+  window.clearTimeout(taskRefreshTimer)
+  if (state.activeTab !== 'precache' || !hasActiveTasks(state.tasks)) return
+
+  taskRefreshTimer = window.setTimeout(() => {
+    refreshPrecacheTasks(state, api)
+  }, delay)
+}
+
+async function refreshPrecacheTasks (state, api) {
+  if (state.activeTab !== 'precache') return
+
+  const requestId = taskRefreshRequestId + 1
+  taskRefreshRequestId = requestId
+
+  try {
+    const tasks = await api.tasks()
+    if (requestId !== taskRefreshRequestId || state.activeTab !== 'precache') return
+    state.tasks = tasks
+    updatePrecacheTaskPanelView(state)
+    schedulePrecacheTaskRefresh(state, api)
+  } catch (err) {
+    console.warn('预缓存任务状态刷新失败', err)
+    schedulePrecacheTaskRefresh(state, api, PRECACHE_TASK_REFRESH_DELAY * 2)
+  }
+}
+
 export async function handlePrecacheSubmit ({ api, event, renderDashboard, setNotice, state }) {
   const precacheForm = event.target.closest('[data-precache-form]')
   const placeSearchForm = event.target.closest('[data-place-search-form]')
@@ -333,6 +378,7 @@ export async function handlePrecacheSubmit ({ api, event, renderDashboard, setNo
       state.tasks = [task, ...state.tasks]
       setNotice('预缓存任务已创建')
       renderDashboard()
+      schedulePrecacheTaskRefresh(state, api, 300)
     } catch (err) {
       setNotice('', err.message)
       renderDashboard()
@@ -408,6 +454,7 @@ async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, s
       replaceTaskInState(state, await api.pauseTask(taskId))
       setNotice('预缓存任务已暂停')
       renderDashboard()
+      schedulePrecacheTaskRefresh(state, api, 300)
       return
     }
 
@@ -415,6 +462,7 @@ async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, s
       replaceTaskInState(state, await api.resumeTask(taskId))
       setNotice('预缓存任务已继续')
       renderDashboard()
+      schedulePrecacheTaskRefresh(state, api, 300)
       return
     }
 
@@ -448,6 +496,7 @@ async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, s
       state.tasks = [updatedTask, ...state.tasks]
       setNotice('更新任务已创建，将跳过新鲜缓存并补齐缺失瓦片')
       renderDashboard()
+      schedulePrecacheTaskRefresh(state, api, 300)
       return
     }
 
@@ -467,6 +516,7 @@ async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, s
   } catch (err) {
     setNotice('', err.message)
     renderDashboard()
+    schedulePrecacheTaskRefresh(state, api, 300)
   }
 }
 
@@ -587,6 +637,8 @@ export function movePrecacheMapToPoint (state, lng, lat, zoom = 15) {
 }
 
 export function initPrecacheMap (state, api) {
+  schedulePrecacheTaskRefresh(state, api)
+
   const container = state.root.querySelector('#admin-precache-map')
   if (!container) return
   state.onPrecacheBoundsChange = () => schedulePrecacheEstimate(state, api)

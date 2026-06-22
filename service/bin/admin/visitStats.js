@@ -3,6 +3,9 @@ import path from 'path'
 import rootPath from '../rootPath.js'
 
 const ACCESS_LOG_PATTERN = /^(\S+) - (\S+) \[(.+?)] "(\S+) ([^"]*) HTTP\/([^"]*)" (\d{3}) (\S+) "([^"]*)" "([^"]*)"$/
+const DEFAULT_STATS_TTL = 30 * 1000
+
+const statsCache = new Map()
 
 function statusGroup (status) {
   const family = Math.floor(Number(status) / 100)
@@ -67,12 +70,23 @@ async function getAccessLogFiles (logDir) {
 export async function getVisitStats (options = {}) {
   const logDir = options.logDir || path.join(rootPath, './log/visitRecorder')
   const maxLines = Number(options.maxLines || 2000)
+  const ttl = Number(options.ttl || DEFAULT_STATS_TTL)
+  const cacheKey = `${logDir}:${maxLines}`
+  const cached = statsCache.get(cacheKey)
+  if (cached && Date.now() - cached.generatedAt < ttl) {
+    return cached.result
+  }
+
   const files = await getAccessLogFiles(logDir)
   const lines = []
 
-  for (const file of files.slice(0, 5).reverse()) {
+  for (const file of files.slice(0, 5)) {
     const content = await fs.readFile(file.filePath, 'utf8')
-    lines.push(...content.split(/\r?\n/).filter(Boolean))
+    const fileLines = content.split(/\r?\n/).filter(Boolean)
+    lines.unshift(...fileLines)
+    if (lines.length >= maxLines) {
+      break
+    }
   }
 
   const selectedLines = lines.slice(-maxLines)
@@ -97,7 +111,7 @@ export async function getVisitStats (options = {}) {
     .sort((a, b) => b.count - a.count)
     .slice(0, 20)
 
-  return {
+  const result = {
     logDir,
     total: records.length,
     scannedLines: selectedLines.length,
@@ -107,6 +121,11 @@ export async function getVisitStats (options = {}) {
     recentRequests: records.slice(-50).reverse(),
     generatedAt: Date.now(),
   }
+  statsCache.set(cacheKey, {
+    generatedAt: result.generatedAt,
+    result,
+  })
+  return result
 }
 
 export default getVisitStats
