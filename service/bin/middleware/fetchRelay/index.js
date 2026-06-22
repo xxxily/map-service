@@ -250,7 +250,9 @@ class FetchRelay {
 
     if (statusCode < CACHEABLE_STATUS_MIN || statusCode > CACHEABLE_STATUS_MAX) {
       response.data.destroy()
-      throw new Error(`upstream responded with non-cacheable status ${statusCode}`)
+      const err = new Error(`upstream responded with non-cacheable status ${statusCode}`)
+      err.statusCode = statusCode
+      throw err
     }
 
     if (!isLikelyCacheableContent(contentType, this.config.allowedContentTypes)) {

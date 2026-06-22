@@ -28,6 +28,7 @@ export const adminState = {
     minZoom: 12,
     maxZoom: 12,
     concurrency: 4,
+    requestIntervalMs: 0,
     refresh: false,
   },
   precacheEstimate: null,

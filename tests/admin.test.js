@@ -281,7 +281,7 @@ test('fetch relay keeps default proxy behavior for useProxy option', async () =>
   }
 })
 
-test('precache tile plan expands bounds and enforces max tile count', () => {
+test('precache tile plan expands bounds and can warn over suggested max tile count', () => {
   const plan = createTilePlan({
     providerId: 'amap-road',
     bounds: {
@@ -299,6 +299,22 @@ test('precache tile plan expands bounds and enforces max tile count', () => {
   assert.equal(plan.providerId, 'amap-road')
   assert.equal(plan.total, generateTiles(plan).length)
   assert.ok(plan.total > 0)
+
+  const oversizedPlan = createTilePlan({
+    providerId: 'amap-road',
+    bounds: {
+      west: 113,
+      south: 23,
+      east: 114,
+      north: 24,
+    },
+    minZoom: 3,
+    maxZoom: 18,
+  }, {
+    maxTiles: 1,
+    enforceMaxTiles: false,
+  })
+  assert.ok(oversizedPlan.total > 1)
 
   assert.throws(() => createTilePlan({
     providerId: 'amap-road',
@@ -390,6 +406,210 @@ test('precache manager persists and completes queued tasks', async () => {
       maxZoom: 3,
       concurrency: 'fast',
     }), /并发数 必须是整数/)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('precache manager allows oversized tasks and applies request interval', async () => {
+  const dataDir = tempDir('precache-manager-interval')
+  const store = new AdminStore({ dataDir })
+  const fetchedAt = []
+  const manager = new PrecacheManager({
+    store,
+    maxTiles: 1,
+    defaultConcurrency: 2,
+    maxConcurrency: 2,
+    fetchTile: async () => {
+      fetchedAt.push(Date.now())
+      return {
+        stream: Readable.from([Buffer.from('tile')]),
+      }
+    },
+  })
+
+  try {
+    const task = await manager.createTask({
+      providerId: 'amap-road',
+      bounds: {
+        west: -179,
+        south: -80,
+        east: 179,
+        north: 80,
+      },
+      minZoom: 3,
+      maxZoom: 3,
+      concurrency: 2,
+      requestIntervalMs: 5,
+    })
+    await manager.queue
+
+    const tasks = await manager.listTasks()
+    assert.equal(tasks[0].id, task.id)
+    assert.equal(tasks[0].status, 'completed')
+    assert.ok(tasks[0].total > 1)
+    assert.equal(tasks[0].requestIntervalMs, 5)
+    assert.equal(tasks[0].concurrency, 2)
+    assert.ok(fetchedAt.length > 2)
+    const intervals = fetchedAt.slice(1, 4).map((timestamp, index) => timestamp - fetchedAt[index])
+    assert.ok(intervals.every(interval => interval >= 4))
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('precache manager records failed tiles and retries them on resume', async () => {
+  const dataDir = tempDir('precache-manager-retry')
+  const store = new AdminStore({ dataDir })
+  const attempts = new Map()
+  const manager = new PrecacheManager({
+    store,
+    maxTiles: 20,
+    defaultConcurrency: 1,
+    maxConcurrency: 1,
+    fetchTile: async (url) => {
+      const count = Number(attempts.get(url) || 0) + 1
+      attempts.set(url, count)
+      if (attempts.size === 1 && count === 1) {
+        throw new Error('temporary tile failure')
+      }
+      return {
+        stream: Readable.from([Buffer.from('tile')]),
+      }
+    },
+  })
+
+  try {
+    const task = await manager.createTask({
+      providerId: 'amap-road',
+      bounds: {
+        west: 113.24,
+        south: 23.11,
+        east: 113.29,
+        north: 23.15,
+      },
+      minZoom: 3,
+      maxZoom: 3,
+      concurrency: 1,
+    })
+    await manager.queue
+
+    let tasks = await manager.listTasks()
+    assert.equal(tasks[0].status, 'completed_with_errors')
+    assert.equal(tasks[0].failed, 1)
+    assert.equal(Object.keys(tasks[0].failedTiles).length, 1)
+
+    const resumed = await manager.resumeTask(task.id)
+    assert.equal(resumed.status, 'queued')
+    await manager.queue
+
+    tasks = await manager.listTasks()
+    assert.equal(tasks[0].status, 'completed')
+    assert.equal(tasks[0].failed, 0)
+    assert.equal(Object.keys(tasks[0].failedTiles).length, 0)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('precache manager pauses after repeated rate limit errors', async () => {
+  const dataDir = tempDir('precache-manager-rate-limit')
+  const store = new AdminStore({ dataDir })
+  const rateLimitError = new Error('too many requests')
+  rateLimitError.statusCode = 429
+  const manager = new PrecacheManager({
+    store,
+    maxTiles: 20,
+    defaultConcurrency: 1,
+    maxConcurrency: 1,
+    rateLimitMaxRetries: 1,
+    rateLimitRetryDelayMs: 1,
+    fetchTile: async () => {
+      throw rateLimitError
+    },
+  })
+
+  try {
+    const task = await manager.createTask({
+      providerId: 'amap-road',
+      bounds: {
+        west: 113.24,
+        south: 23.11,
+        east: 113.29,
+        north: 23.15,
+      },
+      minZoom: 3,
+      maxZoom: 3,
+      concurrency: 1,
+    })
+    await manager.queue
+
+    const tasks = await manager.listTasks()
+    assert.equal(tasks[0].id, task.id)
+    assert.equal(tasks[0].status, 'paused')
+    assert.ok(tasks[0].failed > 0)
+    assert.ok(tasks[0].errors.some(error => error.statusCode === 429))
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('precache manager retries rate limited tile before continuing remaining tiles', async () => {
+  const dataDir = tempDir('precache-manager-rate-limit-resume')
+  const store = new AdminStore({ dataDir })
+  const attempts = new Map()
+  const rateLimitError = new Error('too many requests')
+  rateLimitError.statusCode = 429
+  const manager = new PrecacheManager({
+    store,
+    maxTiles: 20,
+    defaultConcurrency: 1,
+    maxConcurrency: 1,
+    rateLimitMaxRetries: 1,
+    rateLimitRetryDelayMs: 1,
+    fetchTile: async (url) => {
+      const count = Number(attempts.get(url) || 0) + 1
+      attempts.set(url, count)
+      if (attempts.size === 1 && count <= 2) {
+        throw rateLimitError
+      }
+      return {
+        stream: Readable.from([Buffer.from('tile')]),
+      }
+    },
+  })
+
+  try {
+    const task = await manager.createTask({
+      providerId: 'amap-road',
+      bounds: {
+        west: 113.24,
+        south: 23.11,
+        east: 113.50,
+        north: 23.35,
+      },
+      minZoom: 8,
+      maxZoom: 8,
+      concurrency: 1,
+    })
+    await manager.queue
+
+    let tasks = await manager.listTasks()
+    assert.equal(tasks[0].status, 'paused')
+    assert.equal(tasks[0].completed, 1)
+    assert.equal(tasks[0].failed, 1)
+    assert.ok(tasks[0].total > 1)
+
+    const resumed = await manager.resumeTask(task.id)
+    assert.equal(resumed.status, 'queued')
+    await manager.queue
+
+    tasks = await manager.listTasks()
+    assert.equal(tasks[0].status, 'completed')
+    assert.equal(tasks[0].completed, tasks[0].total)
+    assert.equal(tasks[0].succeeded, tasks[0].total)
+    assert.equal(tasks[0].failed, 0)
+    assert.equal(Object.keys(tasks[0].failedTiles).length, 0)
   } finally {
     await fs.remove(dataDir)
   }

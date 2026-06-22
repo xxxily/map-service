@@ -45,6 +45,7 @@ function getPrecacheFormState (state, providers) {
     minZoom: Number(form.minZoom ?? 12),
     maxZoom: Number(form.maxZoom ?? 12),
     concurrency: Number(form.concurrency ?? 4),
+    requestIntervalMs: Number(form.requestIntervalMs ?? 0),
     refresh: Boolean(form.refresh),
   }
 }
@@ -105,6 +106,7 @@ export function renderPrecachePage (state) {
             <label><span>最小级别</span><input name="minZoom" type="number" min="${selectedProvider?.minZoom || 3}" max="${selectedProvider?.maxZoom || 18}" value="${escapeHtml(formState.minZoom)}" required></label>
             <label><span>最大级别</span><input name="maxZoom" type="number" min="${selectedProvider?.minZoom || 3}" max="${selectedProvider?.maxZoom || 18}" value="${escapeHtml(formState.maxZoom)}" required></label>
             <label><span>并发</span><input name="concurrency" type="number" min="1" max="8" value="${escapeHtml(formState.concurrency)}" required></label>
+            <label><span>请求间隔 ms</span><input name="requestIntervalMs" type="number" min="0" max="60000" value="${escapeHtml(formState.requestIntervalMs)}" required></label>
             <label class="admin-check admin-check-field"><input name="refresh" type="checkbox" ${formState.refresh ? 'checked' : ''}><span>刷新已有缓存</span></label>
           </div>
           ${renderPrecacheEstimate(state)}
@@ -135,8 +137,8 @@ export function renderPrecacheEstimate (state) {
       <dl class="admin-metrics">
         <div><dt>预计文件</dt><dd>${escapeHtml(estimate.total || 0)}</dd></div>
         <div><dt>估算体积</dt><dd>${formatBytes(estimate.estimatedBytesRange?.min || 0)} - ${formatBytes(estimate.estimatedBytesRange?.max || 0)}</dd></div>
-        <div><dt>任务上限</dt><dd>${escapeHtml(estimate.maxTiles || 0)}</dd></div>
-        <div><dt>建议</dt><dd>${estimate.withinLimit ? '可以创建' : '缩小区域或降低级别'}</dd></div>
+        <div><dt>建议上限</dt><dd>${escapeHtml(estimate.maxTiles || 0)}</dd></div>
+        <div><dt>建议</dt><dd>${estimate.withinLimit ? '可以创建' : '任务较大，建议设置请求间隔'}</dd></div>
       </dl>
       <p>${renderRangeSummary(estimate.ranges || [])}</p>
     </div>
@@ -184,6 +186,7 @@ function renderTaskCard (task) {
         <div><dt>体积</dt><dd>${formatBytes(task.bytes || 0)}</dd></div>
         <div><dt>级别</dt><dd>${escapeHtml(task.minZoom)}-${escapeHtml(task.maxZoom)}</dd></div>
         <div><dt>并发</dt><dd>${escapeHtml(task.concurrency || 0)}</dd></div>
+        <div><dt>间隔</dt><dd>${escapeHtml(task.requestIntervalMs || 0)}ms</dd></div>
       </dl>
       ${renderTaskActions(task)}
       ${expanded ? renderTaskDetails(task) : ''}
@@ -205,14 +208,14 @@ function renderTaskProgress (task) {
 
 function renderTaskActions (task) {
   const canPause = ['queued', 'running'].includes(task.status)
-  const canResume = ['paused', 'interrupted'].includes(task.status)
+  const canResume = ['paused', 'interrupted', 'failed', 'completed_with_errors'].includes(task.status)
   const canPreview = ['completed', 'completed_with_errors'].includes(task.status)
   const expandedLabel = task.expanded ? '收起' : '详情'
 
   return `
     <div class="admin-task-actions">
       ${canPause ? `<button type="button" data-precache-task-action="pause" data-task-id="${escapeHtml(task.id)}">暂停</button>` : ''}
-      ${canResume ? `<button type="button" data-precache-task-action="resume" data-task-id="${escapeHtml(task.id)}">继续</button>` : ''}
+      ${canResume ? `<button type="button" data-precache-task-action="resume" data-task-id="${escapeHtml(task.id)}">继续/重试</button>` : ''}
       <button type="button" data-precache-task-action="edit" data-task-id="${escapeHtml(task.id)}">编辑</button>
       <button type="button" data-precache-task-action="update" data-task-id="${escapeHtml(task.id)}">更新</button>
       ${canPreview ? `<button type="button" data-precache-task-action="preview" data-task-id="${escapeHtml(task.id)}">预览</button>` : ''}
@@ -226,15 +229,22 @@ function renderTaskDetails (task) {
   const bounds = task.bounds || {}
   const ranges = task.ranges || []
   const errors = task.errors || []
+  const failedTiles = Object.values(task.failedTiles || {})
 
   return `
     <div class="admin-task-details">
       <dl>
         <div><dt>区域</dt><dd>西 ${escapeHtml(bounds.west)} / 南 ${escapeHtml(bounds.south)} / 东 ${escapeHtml(bounds.east)} / 北 ${escapeHtml(bounds.north)}</dd></div>
         <div><dt>级别明细</dt><dd>${renderRangeSummary(ranges)}</dd></div>
+        <div><dt>失败待重试</dt><dd>${escapeHtml(failedTiles.length)}</dd></div>
         <div><dt>创建时间</dt><dd>${formatTime(task.createdAt)}</dd></div>
         <div><dt>完成时间</dt><dd>${formatTime(task.finishedAt)}</dd></div>
       </dl>
+      ${failedTiles.length ? `
+        <div class="admin-task-errors">
+          ${failedTiles.slice(-3).map(item => `<p>Z${escapeHtml(item.tile?.z)} / X${escapeHtml(item.tile?.x)} / Y${escapeHtml(item.tile?.y)}：${escapeHtml(item.message || '未知错误')}</p>`).join('')}
+        </div>
+      ` : ''}
       ${errors.length ? `
         <div class="admin-task-errors">
           ${errors.slice(-3).map(error => `<p>${escapeHtml(error.message || '未知错误')}</p>`).join('')}
@@ -257,6 +267,7 @@ function collectPrecacheForm (state, form) {
     minZoom: Number(form.elements.minZoom.value),
     maxZoom: Number(form.elements.maxZoom.value),
     concurrency: Number(form.elements.concurrency.value),
+    requestIntervalMs: Number(form.elements.requestIntervalMs.value),
     refresh: form.elements.refresh.checked,
   }
 }
@@ -491,6 +502,7 @@ async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, s
         minZoom: task.minZoom,
         maxZoom: task.maxZoom,
         concurrency: task.concurrency,
+        requestIntervalMs: task.requestIntervalMs || 0,
         refresh: false,
       })
       state.tasks = [updatedTask, ...state.tasks]
@@ -584,6 +596,7 @@ export function updatePrecacheFormState (state, form) {
     minZoom: Number(form.elements.minZoom.value),
     maxZoom: Number(form.elements.maxZoom.value),
     concurrency: Number(form.elements.concurrency.value),
+    requestIntervalMs: Number(form.elements.requestIntervalMs.value),
     refresh: form.elements.refresh.checked,
   }
   return state.precacheForm
@@ -623,6 +636,7 @@ export function applyTaskToPrecacheForm (state, task) {
     minZoom: Number(task.minZoom),
     maxZoom: Number(task.maxZoom),
     concurrency: Number(task.concurrency || state.precacheForm?.concurrency || 4),
+    requestIntervalMs: Number(task.requestIntervalMs || state.precacheForm?.requestIntervalMs || 0),
     refresh: false,
   }
 }

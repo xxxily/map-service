@@ -207,7 +207,7 @@ Authorization: Bearer <token>
 
 - `total`：预计瓦片文件数量
 - `ranges`：各缩放级别瓦片范围和数量
-- `maxTiles`：服务端允许的任务瓦片上限
+- `maxTiles`：建议任务瓦片上限
 - `withinLimit`：是否在任务上限内
 - `estimatedBytes`：按经验平均值估算的下载体积
 - `estimatedBytesRange`：经验估算体积区间
@@ -228,13 +228,16 @@ Authorization: Bearer <token>
   "minZoom": 12,
   "maxZoom": 12,
   "concurrency": 4,
+  "requestIntervalMs": 0,
   "refresh": false
 }
 ```
 
-后端会校验图层、区域、缩放级别、并发数和任务瓦片总数。无效或超出上限的任务会被拒绝。
+后端会校验图层、区域、缩放级别、并发数和请求间隔。`maxTiles` 只作为建议上限，超出上限的任务仍允许创建，前端应展示风险提示。`requestIntervalMs` 表示任意两个瓦片请求开始之间的最小间隔，默认 0，最大 60000。
 
-若基于历史任务创建更新任务，应复用历史任务的 `providerId`、`bounds`、`minZoom`、`maxZoom` 和 `concurrency`，并设置 `refresh: false`。此时已有且新鲜的缓存会直接跳过，缺失或过期缓存会按正常缓存流程下载或条件更新。
+任务会记录失败瓦片到 `failedTiles`，并按 `z/x/y` 去重保存最近错误。`failed` 表示当前仍待重试的失败瓦片数量。若失败数量过多或上游持续返回 429，任务会自动暂停，等待管理员手动继续。
+
+若基于历史任务创建更新任务，应复用历史任务的 `providerId`、`bounds`、`minZoom`、`maxZoom`、`concurrency` 和 `requestIntervalMs`，并设置 `refresh: false`。此时已有且新鲜的缓存会直接跳过，缺失或过期缓存会按正常缓存流程下载或条件更新。
 
 ### `POST /api/v1/admin/precache/tasks/:id/pause`
 
@@ -242,7 +245,7 @@ Authorization: Bearer <token>
 
 ### `POST /api/v1/admin/precache/tasks/:id/resume`
 
-继续 `paused` 或 `interrupted` 任务。任务会从已完成数量之后的瓦片继续执行。
+继续 `paused`、`interrupted`、`failed` 或 `completed_with_errors` 任务。若任务存在 `failedTiles`，会先重试失败瓦片，成功后继续从已完成数量之后的瓦片执行。
 
 ### `DELETE /api/v1/admin/precache/tasks/:id`
 

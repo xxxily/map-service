@@ -19,6 +19,13 @@ const TILE_SIZE_ESTIMATE_BY_CATEGORY = {
     max: 180 * 1024,
   },
 }
+const DEFAULT_REQUEST_INTERVAL_MS = 0
+const MAX_REQUEST_INTERVAL_MS = 60 * 1000
+const DEFAULT_MAX_RECORDED_FAILED_TILES = 500
+const DEFAULT_MAX_TASK_FAILURES = 100
+const DEFAULT_RATE_LIMIT_MAX_RETRIES = 3
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 60 * 1000
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MAX_MS = 10 * 60 * 1000
 
 function createHttpError (message, statusCode = 400) {
   const err = new Error(message)
@@ -44,6 +51,71 @@ function toInteger (value, name) {
     throw createHttpError(`${name} 必须是整数`)
   }
   return numberValue
+}
+
+async function sleep (ms, shouldStop = null) {
+  if (ms <= 0) return true
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (shouldStop?.()) return false
+    await new Promise(resolve => setTimeout(resolve, Math.min(250, deadline - Date.now())))
+  }
+  return !shouldStop?.()
+}
+
+function tileKey (tile) {
+  return `${tile.z}/${tile.x}/${tile.y}`
+}
+
+function isRateLimitError (err) {
+  const statusCode = Number(err?.statusCode || err?.status || err?.response?.status)
+  return statusCode === 429
+}
+
+function getErrorStatusCode (err) {
+  const statusCode = Number(err?.statusCode || err?.status || err?.response?.status)
+  return Number.isInteger(statusCode) ? statusCode : null
+}
+
+function normalizeFailedTiles (failedTiles) {
+  if (!failedTiles || typeof failedTiles !== 'object') return {}
+  if (Array.isArray(failedTiles)) {
+    return failedTiles.reduce((result, item) => {
+      const tile = item?.tile
+      if (tile) {
+        result[tileKey(tile)] = item
+      }
+      return result
+    }, {})
+  }
+  return failedTiles
+}
+
+function normalizeTaskFailedTiles (task) {
+  const failedTiles = normalizeFailedTiles(task.failedTiles)
+  if (Object.keys(failedTiles).length || !Array.isArray(task.errors)) {
+    return failedTiles
+  }
+
+  return task.errors.reduce((result, error) => {
+    if (error?.tile) {
+      const key = tileKey(error.tile)
+      result[key] = {
+        tile: error.tile,
+        key,
+        message: error.message || '未知错误',
+        statusCode: getErrorStatusCode(error),
+        attempts: 1,
+        firstFailedAt: error.timestamp || Date.now(),
+        lastFailedAt: error.timestamp || Date.now(),
+      }
+    }
+    return result
+  }, {})
+}
+
+function countFailedTiles (task) {
+  return Object.keys(task.failedTiles || {}).length
 }
 
 function normalizeLongitude (value) {
@@ -140,16 +212,23 @@ export function createTilePlan (input = {}, options = {}) {
   }
 }
 
-export function generateTiles (plan) {
-  const tiles = []
-  plan.ranges.forEach((range) => {
+function * iterateTiles (plan, startIndex = 0) {
+  const start = Math.max(0, Number(startIndex || 0))
+  let index = 0
+  for (const range of plan.ranges) {
     for (let x = range.minX; x <= range.maxX; x++) {
       for (let y = range.minY; y <= range.maxY; y++) {
-        tiles.push({ x, y, z: range.z })
+        if (index >= start) {
+          yield { x, y, z: range.z }
+        }
+        index += 1
       }
     }
-  })
-  return tiles
+  }
+}
+
+export function generateTiles (plan) {
+  return Array.from(iterateTiles(plan))
 }
 
 async function consumeStream (stream) {
@@ -186,6 +265,14 @@ export class PrecacheManager {
     this.maxTiles = Number(options.maxTiles || 5000)
     this.defaultConcurrency = Number(options.defaultConcurrency || 4)
     this.maxConcurrency = Number(options.maxConcurrency || 8)
+    this.defaultRequestIntervalMs = Number(options.defaultRequestIntervalMs || DEFAULT_REQUEST_INTERVAL_MS)
+    this.maxRequestIntervalMs = Number(options.maxRequestIntervalMs || MAX_REQUEST_INTERVAL_MS)
+    this.maxRecordedFailedTiles = Number(options.maxRecordedFailedTiles || DEFAULT_MAX_RECORDED_FAILED_TILES)
+    this.maxTaskFailures = Number(options.maxTaskFailures || DEFAULT_MAX_TASK_FAILURES)
+    this.rateLimitMaxRetries = Number(options.rateLimitMaxRetries || DEFAULT_RATE_LIMIT_MAX_RETRIES)
+    this.rateLimitRetryDelayMs = Number(options.rateLimitRetryDelayMs || DEFAULT_RATE_LIMIT_RETRY_DELAY_MS)
+    this.rateLimitRetryDelayMaxMs = Number(options.rateLimitRetryDelayMaxMs || DEFAULT_RATE_LIMIT_RETRY_DELAY_MAX_MS)
+    this.nextRequestAt = 0
     this.tasks = []
     this.queue = Promise.resolve()
     this.ready = this.load()
@@ -198,6 +285,11 @@ export class PrecacheManager {
       const normalizedTask = {
         ...task,
         bytes: Number(task.bytes || 0),
+        failedTiles: normalizeTaskFailedTiles(task),
+        requestIntervalMs: Number(task.requestIntervalMs || 0),
+        rateLimitRetries: Number(task.rateLimitRetries || 0),
+        rateLimitResumeAt: Number(task.rateLimitResumeAt || 0),
+        maxTaskFailures: Number(task.maxTaskFailures || this.maxTaskFailures),
         pauseRequested: false,
         deleteRequested: false,
       }
@@ -249,13 +341,22 @@ export class PrecacheManager {
 
   async createTask (input = {}) {
     await this.ready
-    const plan = createTilePlan(input, { maxTiles: this.maxTiles })
+    const plan = createTilePlan(input, {
+      maxTiles: this.maxTiles,
+      enforceMaxTiles: false,
+    })
     const estimate = estimateTilePlan(input, { maxTiles: this.maxTiles })
     const requestedConcurrency = toInteger(input.concurrency || this.defaultConcurrency, '并发数')
     const concurrency = clamp(
       requestedConcurrency,
       1,
       this.maxConcurrency
+    )
+    const requestedRequestIntervalMs = toInteger(input.requestIntervalMs ?? this.defaultRequestIntervalMs, '请求间隔')
+    const requestIntervalMs = clamp(
+      requestedRequestIntervalMs,
+      0,
+      this.maxRequestIntervalMs
     )
     const now = Date.now()
     const task = {
@@ -273,8 +374,13 @@ export class PrecacheManager {
       completed: 0,
       succeeded: 0,
       failed: 0,
+      failedTiles: {},
       refresh: Boolean(input.refresh),
       concurrency,
+      requestIntervalMs,
+      maxTaskFailures: this.maxTaskFailures,
+      rateLimitRetries: 0,
+      rateLimitResumeAt: 0,
       errors: [],
       createdAt: now,
       updatedAt: now,
@@ -332,11 +438,11 @@ export class PrecacheManager {
       throw createHttpError('任务正在暂停，请稍后继续')
     }
 
-    if (!['paused', 'interrupted'].includes(task.status)) {
+    if (!['paused', 'interrupted', 'failed', 'completed_with_errors'].includes(task.status)) {
       throw createHttpError('当前任务状态不支持继续')
     }
 
-    if (task.completed >= task.total) {
+    if (task.completed >= task.total && countFailedTiles(task) === 0) {
       task.status = task.failed > 0 ? 'completed_with_errors' : 'completed'
       task.finishedAt = now
       task.updatedAt = now
@@ -348,6 +454,8 @@ export class PrecacheManager {
     task.pauseRequested = false
     task.deleteRequested = false
     task.finishedAt = null
+    task.rateLimitRetries = 0
+    task.rateLimitResumeAt = 0
     task.updatedAt = now
     await this.persist()
     this.enqueue(task.id)
@@ -379,6 +487,134 @@ export class PrecacheManager {
       })
   }
 
+  shouldStopTask (task) {
+    return task.deleteRequested || task.pauseRequested || task.status === 'pausing'
+  }
+
+  createPendingTileQueue (task) {
+    const cursor = clamp(Number(task.completed || 0), 0, Number(task.total || 0))
+    const failedTiles = Object.values(task.failedTiles || {})
+      .map(item => item.tile)
+      .filter(Boolean)
+    const failedKeys = new Set(failedTiles.map(tile => tileKey(tile)))
+
+    return {
+      failedTiles,
+      failedIndex: 0,
+      failedKeys,
+      remainingTiles: iterateTiles(task, cursor),
+    }
+  }
+
+  takeNextPendingTile (queue) {
+    if (queue.failedIndex < queue.failedTiles.length) {
+      const tile = queue.failedTiles[queue.failedIndex]
+      queue.failedIndex += 1
+      return { tile, isRetry: true }
+    }
+
+    while (true) {
+      const next = queue.remainingTiles.next()
+      if (next.done) return null
+      if (!queue.failedKeys.has(tileKey(next.value))) {
+        return { tile: next.value, isRetry: false }
+      }
+    }
+  }
+
+  async waitForRateLimitBackoff (task) {
+    const waitMs = Math.max(0, Number(task.rateLimitResumeAt || 0) - Date.now())
+    if (waitMs <= 0) return true
+    return sleep(waitMs, () => this.shouldStopTask(task))
+  }
+
+  async waitForRequestSlot (task) {
+    const intervalMs = Number(task.requestIntervalMs || 0)
+    if (intervalMs <= 0) return true
+
+    const currentTime = Date.now()
+    const waitMs = Math.max(0, this.nextRequestAt - currentTime)
+    this.nextRequestAt = Math.max(currentTime, this.nextRequestAt) + intervalMs
+    const canContinue = await sleep(waitMs, () => this.shouldStopTask(task))
+    if (!canContinue) {
+      this.nextRequestAt = Math.min(this.nextRequestAt, Date.now())
+    }
+    return canContinue
+  }
+
+  recordTileSuccess (task, tile, bytes) {
+    const key = tileKey(tile)
+    if (task.failedTiles?.[key]) {
+      delete task.failedTiles[key]
+    }
+    task.bytes += bytes
+    task.succeeded = Math.min(Number(task.succeeded || 0) + 1, Number(task.total || 0))
+    task.failed = countFailedTiles(task)
+    if (!task.rateLimitResumeAt || Date.now() >= Number(task.rateLimitResumeAt || 0)) {
+      task.rateLimitRetries = 0
+      task.rateLimitResumeAt = 0
+    }
+  }
+
+  recordTileFailure (task, tile, err) {
+    const key = tileKey(tile)
+    const now = Date.now()
+    const previous = task.failedTiles?.[key]
+    const statusCode = getErrorStatusCode(err)
+    task.failedTiles[key] = {
+      tile,
+      key,
+      message: err.message,
+      statusCode,
+      attempts: Number(previous?.attempts || 0) + 1,
+      firstFailedAt: previous?.firstFailedAt || now,
+      lastFailedAt: now,
+    }
+    task.failed = countFailedTiles(task)
+    task.errors.push({
+      tile,
+      message: err.message,
+      statusCode,
+      timestamp: now,
+    })
+    task.errors = task.errors.slice(-20)
+
+    const entries = Object.entries(task.failedTiles)
+    if (entries.length > this.maxRecordedFailedTiles) {
+      entries
+        .sort(([, a], [, b]) => Number(a.lastFailedAt || 0) - Number(b.lastFailedAt || 0))
+        .slice(0, entries.length - this.maxRecordedFailedTiles)
+        .forEach(([oldKey]) => {
+          delete task.failedTiles[oldKey]
+        })
+      task.failed = countFailedTiles(task)
+    }
+  }
+
+  async handleRateLimitFailure (task, err) {
+    task.rateLimitRetries = Number(task.rateLimitRetries || 0) + 1
+    if (task.rateLimitRetries > this.rateLimitMaxRetries) {
+      task.pauseRequested = true
+      task.status = 'pausing'
+      task.errors.push({
+        message: '上游返回 429 过多，任务已暂停，等待手动继续',
+        statusCode: 429,
+        timestamp: Date.now(),
+      })
+      task.errors = task.errors.slice(-20)
+      return false
+    }
+
+    const delayMs = Math.min(
+      this.rateLimitRetryDelayMaxMs,
+      this.rateLimitRetryDelayMs * (2 ** (task.rateLimitRetries - 1))
+    )
+    task.rateLimitResumeAt = Math.max(Number(task.rateLimitResumeAt || 0), Date.now() + delayMs)
+    task.updatedAt = Date.now()
+    await this.persist()
+    return this.waitForRateLimitBackoff(task)
+  }
+
   async runTask (taskId) {
     const task = this.tasks.find(item => item.id === taskId)
     if (!task || task.status !== 'queued') {
@@ -393,8 +629,8 @@ export class PrecacheManager {
       return
     }
 
-    const tiles = generateTiles(task)
-    let cursor = clamp(Number(task.completed || 0), 0, tiles.length)
+    task.failedTiles = normalizeFailedTiles(task.failedTiles)
+    const pendingTileQueue = this.createPendingTileQueue(task)
     const now = Date.now()
     task.status = 'running'
     task.startedAt = task.startedAt || now
@@ -403,33 +639,62 @@ export class PrecacheManager {
     await this.persist()
 
     const worker = async () => {
-      while (cursor < tiles.length) {
+      while (true) {
         if (task.deleteRequested || task.pauseRequested || task.status === 'pausing') {
           return
         }
 
-        const tile = tiles[cursor]
-        cursor += 1
+        const pendingTile = this.takeNextPendingTile(pendingTileQueue)
+        if (!pendingTile) {
+          return
+        }
+        const tile = pendingTile.tile
         const url = buildTileUrl(provider, tile)
 
+        let completedAttempt = false
+        let retryCurrentTile = false
+        do {
+          retryCurrentTile = false
+          if (this.shouldStopTask(task)) {
+            return
+          }
+
+          try {
+            if (!await this.waitForRateLimitBackoff(task)) {
+              return
+            }
+            if (!await this.waitForRequestSlot(task)) {
+              return
+            }
+            const result = await this.fetchTile(url, {
+              providerId: task.providerId,
+              refresh: task.refresh,
+              cache: true,
+            })
+            this.recordTileSuccess(task, tile, await consumeStream(result.stream))
+            completedAttempt = true
+          } catch (err) {
+            this.recordTileFailure(task, tile, err)
+            completedAttempt = true
+            if (task.failed >= Number(task.maxTaskFailures || this.maxTaskFailures)) {
+              task.pauseRequested = true
+              task.status = 'pausing'
+              task.errors.push({
+                message: `失败瓦片达到 ${task.failed} 个，任务已暂停，等待手动继续`,
+                timestamp: Date.now(),
+              })
+              task.errors = task.errors.slice(-20)
+            } else if (isRateLimitError(err)) {
+              retryCurrentTile = await this.handleRateLimitFailure(task, err)
+            }
+          }
+        } while (retryCurrentTile)
+
         try {
-          const result = await this.fetchTile(url, {
-            providerId: task.providerId,
-            refresh: task.refresh,
-            cache: true,
-          })
-          task.bytes += await consumeStream(result.stream)
-          task.succeeded += 1
-        } catch (err) {
-          task.failed += 1
-          task.errors.push({
-            tile,
-            message: err.message,
-            timestamp: Date.now(),
-          })
-          task.errors = task.errors.slice(-20)
+          if (completedAttempt && !pendingTile.isRetry && task.completed < task.total) {
+            task.completed += 1
+          }
         } finally {
-          task.completed += 1
           task.updatedAt = Date.now()
           if (task.completed % 10 === 0 || task.completed === task.total) {
             await this.persist()
@@ -450,11 +715,13 @@ export class PrecacheManager {
       task.status = 'paused'
       task.pauseRequested = false
       task.finishedAt = null
+      task.failed = countFailedTiles(task)
       task.updatedAt = Date.now()
       await this.persist()
       return
     }
 
+    task.failed = countFailedTiles(task)
     task.status = task.failed > 0 ? 'completed_with_errors' : 'completed'
     task.finishedAt = Date.now()
     task.updatedAt = task.finishedAt
