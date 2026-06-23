@@ -1,5 +1,6 @@
 import L from 'leaflet'
 import { showAlert } from '../ui/dialog.js'
+import { wgs84ToGcj02 } from './coord-transform.js'
 
 export function initAmapGeolocation (AMap) {
   if (!AMap?.Geolocation) {
@@ -56,35 +57,35 @@ export function addTargetMarker (map, location) {
     })
 }
 
-export async function updatePosition (map, AMap) {
+function isValidGpsPosition (position) {
+  const lat = Number(position?.lat)
+  const lng = Number(position?.lng)
+  return Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180
+}
+
+function getMapPositionFromGps (position) {
+  const lat = Number(position.lat)
+  const lng = Number(position.lng)
+  const [convertedLng, convertedLat] = wgs84ToGcj02([lng, lat])
+  const mapLng = convertedLng < 0 ? convertedLng + 360 : convertedLng
+  return [convertedLat, mapLng]
+}
+
+export async function updatePosition (map) {
   const result = await getBrowserPosition().catch((err) => {
     console.error('获取地理位置失败', err)
     return null
   })
 
-  if (!result?.lat || !result?.lng) {
+  if (!isValidGpsPosition(result)) {
     await showAlert('获取地理位置失败，请手动选择')
     return
   }
 
-  const { lat, lng } = result
-
-  if (!AMap?.convertFrom) {
-    map.setView([lat, lng], 18)
-    addTargetMarker(map, [lat, lng])
-    return
-  }
-
-  AMap.convertFrom([lng, lat], 'gps', (status, converted) => {
-    if (converted.info === 'ok' && converted.locations.length > 0) {
-      const lnglats = converted.locations[0]
-      map.setView([lnglats.lat, lnglats.lng], 18)
-      addTargetMarker(map, [lnglats.lat, lnglats.lng])
-      return
-    }
-
-    showAlert('坐标转换失败，请手动选择')
-    map.setView([lat, lng], 18)
-    addTargetMarker(map, [lat, lng])
-  })
+  const mapPosition = getMapPositionFromGps(result)
+  map.setView(mapPosition, 18)
+  addTargetMarker(map, mapPosition)
 }

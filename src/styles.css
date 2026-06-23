@@ -29,7 +29,8 @@ body.admin-view {
 
 body.admin-view #map,
 body.admin-view #map-menu,
-body.admin-view #map-search-mod {
+body.admin-view #map-search-mod,
+body.admin-view #app-version {
   display: none;
 }
 
@@ -193,6 +194,20 @@ body.admin-view #map-search-mod {
   border-color: #167a7f;
   outline: none;
   color: #0a666b;
+}
+
+#app-version {
+  position: fixed;
+  left: 8px;
+  bottom: 7px;
+  z-index: 800;
+  color: rgba(29, 42, 46, 0.34);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0;
+  pointer-events: none;
+  user-select: none;
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.55);
 }
 
 .admin-shell {
@@ -905,6 +920,11 @@ body.admin-view #map-search-mod {
   #map-menu {
     right: 12px;
     bottom: 12px;
+  }
+
+  #app-version {
+    left: 7px;
+    bottom: 6px;
   }
 
   .admin-shell {

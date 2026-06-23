@@ -18,11 +18,20 @@ import { getAccessStatus, verifyAccessPassword } from './admin/api.js'
 import { initKmlSupport } from './map/kml.js'
 import { escapeHtml } from './admin/utils.js'
 
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
+
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
   iconUrl: markerIcon,
   shadowUrl: markerShadow,
 })
+
+function renderAppVersion () {
+  const versionNode = document.getElementById('app-version')
+  if (versionNode && APP_VERSION) {
+    versionNode.textContent = `v${APP_VERSION}`
+  }
+}
 
 async function loadAmap () {
   window._AMapSecurityConfig = {
@@ -34,7 +43,7 @@ async function loadAmap () {
     version: '2.0',
     plugins: amapConfig.plugins,
   }).catch((err) => {
-    console.warn('高德 JSAPI 加载失败，搜索和坐标转换功能不可用', err)
+    console.warn('高德 JSAPI 加载失败，搜索功能不可用', err)
     return null
   })
 }
@@ -159,7 +168,7 @@ async function initLeafletMap () {
       }
     },
     toggleSearchMode,
-    updatePosition: () => updatePosition(map, AMap),
+    updatePosition: () => updatePosition(map),
     resetBearing: () => {
       if (map.setBearing) {
         map.setBearing(0)
@@ -258,6 +267,7 @@ function showPasswordLockScreen (options = {}) {
 if (isAdminLocation(window.location)) {
   initAdminApp({ amapLoader: AMapLoader })
 } else {
+  renderAppVersion()
   checkMapAccessBeforeInit()
 }
 

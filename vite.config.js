@@ -1,8 +1,14 @@
 import { defineConfig } from 'vite'
+import { readFileSync } from 'node:fs'
+
+const packageInfo = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 
 export default defineConfig({
   root: '.',
   publicDir: 'public',
+  define: {
+    __APP_VERSION__: JSON.stringify(packageInfo.version),
+  },
   build: {
     outDir: 'service/app',
     emptyOutDir: true,
