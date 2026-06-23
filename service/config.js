@@ -56,7 +56,7 @@ const config = {
       precache: {
         maxTiles: 5000,
         defaultConcurrency: 4,
-        maxConcurrency: 8,
+        maxConcurrency: 64,
       },
     },
 

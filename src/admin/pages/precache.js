@@ -105,7 +105,7 @@ export function renderPrecachePage (state) {
           <div class="admin-field-grid">
             <label><span>最小级别</span><input name="minZoom" type="number" min="${selectedProvider?.minZoom || 3}" max="${selectedProvider?.maxZoom || 18}" value="${escapeHtml(formState.minZoom)}" required></label>
             <label><span>最大级别</span><input name="maxZoom" type="number" min="${selectedProvider?.minZoom || 3}" max="${selectedProvider?.maxZoom || 18}" value="${escapeHtml(formState.maxZoom)}" required></label>
-            <label><span>并发</span><input name="concurrency" type="number" min="1" max="8" value="${escapeHtml(formState.concurrency)}" required></label>
+            <label><span>并发</span><input name="concurrency" type="number" min="1" max="64" value="${escapeHtml(formState.concurrency)}" required></label>
             <label><span>请求间隔 ms</span><input name="requestIntervalMs" type="number" min="0" max="60000" value="${escapeHtml(formState.requestIntervalMs)}" required></label>
             <label class="admin-check admin-check-field"><input name="refresh" type="checkbox" ${formState.refresh ? 'checked' : ''}><span>刷新已有缓存</span></label>
           </div>
@@ -209,7 +209,7 @@ function renderTaskProgress (task) {
 function renderTaskActions (task) {
   const canPause = ['queued', 'running'].includes(task.status)
   const canResume = ['paused', 'interrupted', 'failed', 'completed_with_errors'].includes(task.status)
-  const canPreview = ['completed', 'completed_with_errors'].includes(task.status)
+  const canPreview = task.status !== 'deleting'
   const expandedLabel = task.expanded ? '收起' : '详情'
 
   return `
@@ -409,7 +409,7 @@ export async function handlePrecacheSubmit ({ api, event, renderDashboard, setNo
   return false
 }
 
-export async function handlePrecacheClick ({ api, event, renderDashboard, setNotice, showConfirm, state }) {
+export async function handlePrecacheClick ({ api, event, renderDashboard, setNotice, showCheckboxConfirm, showConfirm, state }) {
   const taskActionTarget = event.target.closest('[data-precache-task-action]')
   if (taskActionTarget) {
     await handlePrecacheTaskAction({
@@ -417,6 +417,7 @@ export async function handlePrecacheClick ({ api, event, renderDashboard, setNot
       api,
       renderDashboard,
       setNotice,
+      showCheckboxConfirm,
       showConfirm,
       state,
     })
@@ -454,7 +455,7 @@ export async function handlePrecacheChange ({ api, event, state }) {
   return true
 }
 
-async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, setNotice, showConfirm, state }) {
+async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, setNotice, showCheckboxConfirm, showConfirm, state }) {
   const action = actionTarget.getAttribute('data-precache-task-action')
   const taskId = actionTarget.getAttribute('data-task-id')
   const task = state.tasks.find(item => item.id === taskId)
@@ -478,10 +479,21 @@ async function handlePrecacheTaskAction ({ actionTarget, api, renderDashboard, s
     }
 
     if (action === 'delete') {
-      if (!await showConfirm('删除此预缓存任务？执行中的任务会停止并从列表移除。')) return
-      await api.deleteTask(taskId)
+      let deleteCache = false
+      if (showCheckboxConfirm instanceof Function) {
+        const result = await showCheckboxConfirm('删除此预缓存任务？执行中的任务会停止并从列表移除。', {
+          confirmText: '删除',
+          checkboxLabel: '同时删除该任务范围内已缓存的瓦片文件',
+        })
+        if (!result?.confirmed) return
+        deleteCache = Boolean(result.checked)
+      } else if (!await showConfirm('删除此预缓存任务？执行中的任务会停止并从列表移除。')) {
+        return
+      }
+
+      await api.deleteTask(taskId, { deleteCache })
       removeTaskFromState(state, taskId)
-      setNotice('预缓存任务已删除')
+      setNotice(deleteCache ? '预缓存任务已删除，关联缓存文件清理已提交' : '预缓存任务已删除')
       renderDashboard()
       return
     }

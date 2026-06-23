@@ -76,7 +76,14 @@ export const adminApi = {
   createTask: (body) => request('/admin/precache/tasks', { method: 'POST', body }),
   pauseTask: (taskId) => request(`/admin/precache/tasks/${encodeURIComponent(taskId)}/pause`, { method: 'POST' }),
   resumeTask: (taskId) => request(`/admin/precache/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' }),
-  deleteTask: (taskId) => request(`/admin/precache/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }),
+  deleteTask: (taskId, options = {}) => {
+    const params = new URLSearchParams()
+    if (options.deleteCache) {
+      params.set('deleteCache', 'true')
+    }
+    const query = params.toString()
+    return request(`/admin/precache/tasks/${encodeURIComponent(taskId)}${query ? `?${query}` : ''}`, { method: 'DELETE' })
+  },
 }
 
 export async function getAccessStatus () {

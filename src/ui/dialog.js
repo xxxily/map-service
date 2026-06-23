@@ -31,6 +31,7 @@ export function showDialog (options = {}) {
   const confirmText = options.confirmText || '确定'
   const cancelText = options.cancelText || '取消'
   const showCancel = Boolean(options.showCancel)
+  const checkbox = options.checkbox || null
 
   root.hidden = false
   root.innerHTML = `
@@ -38,6 +39,12 @@ export function showDialog (options = {}) {
       <section class="app-dialog" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
         <h2 id="app-dialog-title">${escapeHtml(title)}</h2>
         <p>${escapeHtml(message)}</p>
+        ${checkbox ? `
+          <label class="app-dialog-check">
+            <input type="checkbox" data-dialog-checkbox ${checkbox.checked ? 'checked' : ''}>
+            <span>${escapeHtml(checkbox.label || '')}</span>
+          </label>
+        ` : ''}
         <div class="app-dialog-actions">
           ${showCancel ? `<button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${escapeHtml(cancelText)}</button>` : ''}
           <button type="button" class="app-dialog-primary" data-dialog-action="confirm">${escapeHtml(confirmText)}</button>
@@ -56,17 +63,22 @@ export function showDialog (options = {}) {
       document.removeEventListener('keydown', onKeydown)
     }
 
+    const resolveDialog = (confirmed) => {
+      const checked = Boolean(root.querySelector('[data-dialog-checkbox]')?.checked)
+      closeDialog(root, cleanup, resolve, checkbox ? { confirmed, checked } : confirmed)
+    }
+
     const onClick = (event) => {
       const actionTarget = event.target.closest('[data-dialog-action]')
       if (!actionTarget) return
       if (dialog?.contains(event.target) && actionTarget.classList.contains('app-dialog-backdrop')) return
-      closeDialog(root, cleanup, resolve, actionTarget.dataset.dialogAction === 'confirm')
+      resolveDialog(actionTarget.dataset.dialogAction === 'confirm')
     }
 
     const onKeydown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        closeDialog(root, cleanup, resolve, false)
+        resolveDialog(false)
       }
     }
 
@@ -90,6 +102,20 @@ export function showConfirm (message, options = {}) {
     confirmText: options.confirmText || '确认',
     cancelText: options.cancelText || '取消',
     showCancel: true,
+  })
+}
+
+export function showCheckboxConfirm (message, options = {}) {
+  return showDialog({
+    title: options.title || '确认操作',
+    message,
+    confirmText: options.confirmText || '确认',
+    cancelText: options.cancelText || '取消',
+    showCancel: true,
+    checkbox: {
+      label: options.checkboxLabel || '',
+      checked: Boolean(options.checked),
+    },
   })
 }
 

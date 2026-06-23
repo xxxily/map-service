@@ -557,6 +557,32 @@ class FetchRelay {
       target: null,
     }
   }
+
+  async clearMany (targetUrls = []) {
+    const urls = [...new Set((Array.isArray(targetUrls) ? targetUrls : [])
+      .filter(Boolean))]
+
+    if (!urls.length) {
+      return {
+        removed: 0,
+        target: null,
+      }
+    }
+
+    await Promise.all(urls.map((targetUrl) => {
+      const paths = this.getCachePaths(targetUrl)
+      return Promise.all([
+        fs.remove(paths.cachePath),
+        fs.remove(paths.metaPath),
+      ])
+    }))
+    await this.invalidateStatsSnapshot()
+
+    return {
+      removed: urls.length,
+      target: null,
+    }
+  }
 }
 
 export default FetchRelay

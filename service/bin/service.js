@@ -33,6 +33,7 @@ const precacheManager = new PrecacheManager({
   defaultConcurrency: adminConfig.precache?.defaultConcurrency,
   maxConcurrency: adminConfig.precache?.maxConcurrency,
   fetchTile: async (url, options = {}) => service.fetchRelay(url, options),
+  clearTileCache: async (urls) => fetchRelay.clearMany(urls),
 })
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
@@ -141,8 +142,8 @@ const service = {
     return precacheManager.resumeTask(taskId)
   },
 
-  deletePrecacheTask (taskId) {
-    return precacheManager.deleteTask(taskId)
+  deletePrecacheTask (taskId, options = {}) {
+    return precacheManager.deleteTask(taskId, options)
   },
 
   isAccessEnabled () {

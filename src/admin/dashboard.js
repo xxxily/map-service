@@ -2,7 +2,7 @@ import { adminApi, getAdminToken, loginAdmin, logoutAdmin } from './api.js'
 import { renderLogin, renderShell } from './layout.js'
 import { adminState, setActiveTab, setNotice } from './state.js'
 import { buildAdminPageUrl, getAdminPage, getAdminTabFromLocation } from './routes.js'
-import { showConfirm } from '../ui/dialog.js'
+import { showCheckboxConfirm, showConfirm } from '../ui/dialog.js'
 
 function getAdminTabFromUrl () {
   return getAdminTabFromLocation(window.location)
@@ -27,6 +27,7 @@ function getPageContext (event) {
     event,
     renderDashboard,
     setNotice,
+    showCheckboxConfirm,
     showConfirm,
     state: adminState,
   }

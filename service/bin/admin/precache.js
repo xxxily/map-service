@@ -21,11 +21,13 @@ const TILE_SIZE_ESTIMATE_BY_CATEGORY = {
 }
 const DEFAULT_REQUEST_INTERVAL_MS = 0
 const MAX_REQUEST_INTERVAL_MS = 60 * 1000
+const DEFAULT_MAX_CONCURRENCY = 64
 const DEFAULT_MAX_RECORDED_FAILED_TILES = 500
 const DEFAULT_MAX_TASK_FAILURES = 100
 const DEFAULT_RATE_LIMIT_MAX_RETRIES = 3
 const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 60 * 1000
 const DEFAULT_RATE_LIMIT_RETRY_DELAY_MAX_MS = 10 * 60 * 1000
+const CACHE_DELETE_BATCH_SIZE = 500
 
 function createHttpError (message, statusCode = 400) {
   const err = new Error(message)
@@ -253,6 +255,7 @@ function withoutRuntimeFlags (task) {
   const {
     pauseRequested,
     deleteRequested,
+    deleteCacheRequested,
     ...snapshot
   } = task
   return snapshot
@@ -264,7 +267,8 @@ export class PrecacheManager {
     this.fetchTile = options.fetchTile
     this.maxTiles = Number(options.maxTiles || 5000)
     this.defaultConcurrency = Number(options.defaultConcurrency || 4)
-    this.maxConcurrency = Number(options.maxConcurrency || 8)
+    this.maxConcurrency = Number(options.maxConcurrency || DEFAULT_MAX_CONCURRENCY)
+    this.clearTileCache = options.clearTileCache || null
     this.defaultRequestIntervalMs = Number(options.defaultRequestIntervalMs || DEFAULT_REQUEST_INTERVAL_MS)
     this.maxRequestIntervalMs = Number(options.maxRequestIntervalMs || MAX_REQUEST_INTERVAL_MS)
     this.maxRecordedFailedTiles = Number(options.maxRecordedFailedTiles || DEFAULT_MAX_RECORDED_FAILED_TILES)
@@ -292,6 +296,7 @@ export class PrecacheManager {
         maxTaskFailures: Number(task.maxTaskFailures || this.maxTaskFailures),
         pauseRequested: false,
         deleteRequested: false,
+        deleteCacheRequested: false,
       }
 
       if (['queued', 'running', 'pausing', 'deleting'].includes(task.status)) {
@@ -462,11 +467,54 @@ export class PrecacheManager {
     return withoutRuntimeFlags(task)
   }
 
-  async deleteTask (taskId) {
+  async clearTaskCache (task) {
+    if (!(this.clearTileCache instanceof Function)) {
+      return {
+        removed: 0,
+        skipped: true,
+      }
+    }
+
+    const provider = getTileProvider(task.providerId)
+    if (!provider) {
+      throw createHttpError('瓦片提供方不存在，无法删除关联缓存')
+    }
+
+    let removed = 0
+    let batch = []
+    for (const tile of iterateTiles(task)) {
+      batch.push(buildTileUrl(provider, tile))
+      if (batch.length >= CACHE_DELETE_BATCH_SIZE) {
+        const result = await this.clearTileCache(batch)
+        removed += Number(result?.removed || batch.length)
+        batch = []
+      }
+    }
+
+    if (batch.length) {
+      const result = await this.clearTileCache(batch)
+      removed += Number(result?.removed || batch.length)
+    }
+
+    return {
+      removed,
+      skipped: false,
+    }
+  }
+
+  async deleteTask (taskId, options = {}) {
     await this.ready
     const task = this.findTask(taskId)
     const previousStatus = task.status
+    const deleteCache = Boolean(options.deleteCache)
+    let cache = null
+
+    if (deleteCache && !['running', 'pausing'].includes(previousStatus)) {
+      cache = await this.clearTaskCache(task)
+    }
+
     task.deleteRequested = true
+    task.deleteCacheRequested = deleteCache
     task.status = 'deleting'
     task.updatedAt = Date.now()
     if (!['running', 'pausing'].includes(previousStatus)) {
@@ -476,6 +524,14 @@ export class PrecacheManager {
     return {
       id: task.id,
       status: 'deleted',
+      ...(deleteCache
+        ? {
+            cache: cache || {
+              removed: 0,
+              pending: true,
+            },
+          }
+        : {}),
     }
   }
 
@@ -706,6 +762,13 @@ export class PrecacheManager {
     await Promise.all(Array.from({ length: task.concurrency }, () => worker()))
 
     if (task.deleteRequested) {
+      if (task.deleteCacheRequested) {
+        try {
+          await this.clearTaskCache(task)
+        } catch (err) {
+          console.error(`[precache] task ${taskId} cache cleanup failed`, err)
+        }
+      }
       this.tasks = this.tasks.filter(item => item.id !== task.id)
       await this.persist()
       return

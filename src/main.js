@@ -39,6 +39,66 @@ async function loadAmap () {
   })
 }
 
+function initDesktopShiftDragRotate (map) {
+  if (!(map.setBearing instanceof Function)) return
+
+  const container = map.getContainer()
+  let rotateState = null
+
+  const stopRotate = () => {
+    if (!rotateState) return
+    if (rotateState.wasDraggingEnabled && map.dragging?.enable instanceof Function) {
+      map.dragging.enable()
+    }
+    container.classList.remove('map-shift-rotating')
+    rotateState = null
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+  }
+
+  const onMouseMove = (event) => {
+    if (!rotateState) return
+    event.preventDefault()
+    const deltaX = event.clientX - rotateState.startX
+    map.setBearing(rotateState.startBearing + deltaX * 0.5)
+  }
+
+  const onMouseUp = (event) => {
+    if (rotateState) {
+      event.preventDefault()
+    }
+    stopRotate()
+  }
+
+  const onMouseDown = (event) => {
+    if (event.button !== 0 || !event.shiftKey) return
+    if (event.target.closest('.leaflet-control, button, a, input, textarea, select')) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation?.()
+
+    rotateState = {
+      startX: event.clientX,
+      startBearing: map.getBearing instanceof Function ? map.getBearing() : 0,
+      wasDraggingEnabled: Boolean(map.dragging?.enabled?.()),
+    }
+
+    if (rotateState.wasDraggingEnabled && map.dragging?.disable instanceof Function) {
+      map.dragging.disable()
+    }
+    container.classList.add('map-shift-rotating')
+    document.addEventListener('mousemove', onMouseMove, { passive: false })
+    document.addEventListener('mouseup', onMouseUp, { passive: false })
+  }
+
+  container.addEventListener('mousedown', onMouseDown, true)
+  map.on('unload', () => {
+    stopRotate()
+    container.removeEventListener('mousedown', onMouseDown, true)
+  })
+}
+
 async function initLeafletMap () {
   const defaultView = parseDefaultView()
   const AMap = await loadAmap()
@@ -49,12 +109,14 @@ async function initLeafletMap () {
     bearing: defaultView.bearing || 0,
     rotate: true,
     touchRotate: true,
+    shiftKeyRotate: true,
     zoomControl: false,
     attributionControl: false,
     keyboardPanDelta: 480,
   }).setMaxBounds([[-90, 0], [90, 360]])
 
   window.map = map
+  initDesktopShiftDragRotate(map)
 
   if (AMap) {
     initAmapSearch(map, AMap)

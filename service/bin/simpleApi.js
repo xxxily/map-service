@@ -431,7 +431,9 @@ const simpleApi = {
       tags: ['admin'],
       handler: async (req, res) => {
         requireAdmin(req)
-        res.jsonSuc(await service.deletePrecacheTask(req.params.id))
+        res.jsonSuc(await service.deletePrecacheTask(req.params.id, {
+          deleteCache: utils.strToBoolean(req.query.deleteCache),
+        }))
       },
     },
     {

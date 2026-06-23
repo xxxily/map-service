@@ -8,7 +8,7 @@ import createAdminAuth from '../service/bin/admin/auth.js'
 import AdminStore from '../service/bin/admin/store.js'
 import AdminSettings from '../service/bin/admin/settings.js'
 import { createTilePlan, estimateTilePlan, generateTiles, PrecacheManager } from '../service/bin/admin/precache.js'
-import { getTileProviderByUrl, listTileProviders } from '../service/bin/admin/tileProviders.js'
+import { buildTileUrl, getTileProvider, getTileProviderByUrl, listTileProviders } from '../service/bin/admin/tileProviders.js'
 import { getVisitStats } from '../service/bin/admin/visitStats.js'
 import FetchRelay from '../service/bin/middleware/fetchRelay/index.js'
 
@@ -736,6 +736,56 @@ test('precache manager deletes queued tasks and stops running tasks', async () =
 
     const tasks = await manager.listTasks()
     assert.equal(tasks.some(item => item.id === task.id), false)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('precache manager optionally clears associated tile cache when deleting task', async () => {
+  const dataDir = tempDir('precache-manager-delete-cache')
+  const store = new AdminStore({ dataDir })
+  const clearedBatches = []
+  const manager = new PrecacheManager({
+    store,
+    maxTiles: 20,
+    defaultConcurrency: 2,
+    maxConcurrency: 64,
+    fetchTile: async () => ({
+      stream: Readable.from([Buffer.from('tile')]),
+    }),
+    clearTileCache: async (urls) => {
+      clearedBatches.push([...urls])
+      return {
+        removed: urls.length,
+      }
+    },
+  })
+
+  try {
+    const task = await manager.createTask({
+      providerId: 'amap-road',
+      bounds: {
+        west: 113.24,
+        south: 23.11,
+        east: 113.29,
+        north: 23.15,
+      },
+      minZoom: 3,
+      maxZoom: 3,
+      concurrency: 32,
+    })
+    await manager.queue
+
+    const provider = getTileProvider(task.providerId)
+    const expectedUrls = generateTiles(task).map(tile => buildTileUrl(provider, tile))
+    const deleted = await manager.deleteTask(task.id, { deleteCache: true })
+    const clearedUrls = clearedBatches.flat()
+
+    assert.equal(deleted.id, task.id)
+    assert.equal(deleted.status, 'deleted')
+    assert.equal(deleted.cache.removed, expectedUrls.length)
+    assert.deepEqual(new Set(clearedUrls), new Set(expectedUrls))
+    assert.equal((await manager.listTasks()).some(item => item.id === task.id), false)
   } finally {
     await fs.remove(dataDir)
   }

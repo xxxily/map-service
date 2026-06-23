@@ -10,6 +10,20 @@ function streamFrom (value) {
   return Readable.from([Buffer.from(value)])
 }
 
+async function removeDir (dir) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await fs.remove(dir)
+      return
+    } catch (err) {
+      if (err.code !== 'ENOTEMPTY' || attempt === 4) {
+        throw err
+      }
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+  }
+}
+
 function createRelay (responses, options = {}) {
   const calls = []
   const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -42,7 +56,7 @@ function createRelay (responses, options = {}) {
     relay,
     cacheDir,
     calls,
-    cleanup: () => fs.remove(cacheDir),
+    cleanup: () => removeDir(cacheDir),
   }
 }
 
@@ -69,7 +83,7 @@ test('fetch relay writes metadata and serves fresh cache without upstream call',
     assert.equal(await readStream(second.stream), 'tile-data')
     assert.equal(calls.length, 1)
 
-    const stats = await relay.getStats()
+    let stats = await relay.getStats()
     assert.equal(stats.files, 1)
     assert.equal(stats.fresh, 1)
   } finally {
@@ -144,7 +158,7 @@ test('fetch relay does not cache upstream errors', async () => {
 
   try {
     await assert.rejects(() => relay.fetch(targetUrl), /non-cacheable status 500/)
-    const stats = await relay.getStats()
+    let stats = await relay.getStats()
     assert.equal(stats.files, 0)
   } finally {
     await cleanup()
@@ -183,6 +197,30 @@ test('fetch relay clears all cache entries', async () => {
 
     stats = await relay.getStats()
     assert.equal(stats.files, 0)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('fetch relay clears selected cache entries in batches', async () => {
+  const firstUrl = 'https://www.google.com/maps/vt?lyrs=s&x=30&y=31&z=12'
+  const secondUrl = 'https://www.google.com/maps/vt?lyrs=s&x=32&y=33&z=12'
+  const { relay, cleanup } = createRelay([{}, {}])
+
+  try {
+    await readStream((await relay.fetch(firstUrl)).stream)
+    await readStream((await relay.fetch(secondUrl)).stream)
+
+    const stats = await relay.getStats()
+    assert.equal(stats.files, 2)
+
+    const clearResult = await relay.clearMany([firstUrl])
+    assert.equal(clearResult.removed, 1)
+
+    assert.equal(await fs.pathExists(relay.getCachePaths(firstUrl).cachePath), false)
+    assert.equal(await fs.pathExists(relay.getCachePaths(firstUrl).metaPath), false)
+    assert.equal(await fs.pathExists(relay.getCachePaths(secondUrl).cachePath), true)
+    assert.equal(await fs.pathExists(relay.getCachePaths(secondUrl).metaPath), true)
   } finally {
     await cleanup()
   }
