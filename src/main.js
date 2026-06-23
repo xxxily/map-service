@@ -7,7 +7,7 @@ import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
 import markerIcon from 'leaflet/dist/images/marker-icon.png'
 import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 import { amapConfig } from './config.js'
-import { initLayerControl, toggleLayerControl } from './map/layers.js'
+import { initLayerControl, setLayerControlVisible } from './map/layers.js'
 import { addTargetMarker, initAmapGeolocation, updatePosition } from './map/location.js'
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
@@ -134,7 +134,7 @@ async function initLeafletMap () {
 
   addTargetMarker(map, defaultView.center)
 
-  const layerControl = initLayerControl(map)
+  const layerControl = initLayerControl(map, defaultView.layerName)
 
   initKmlSupport(map)
 
@@ -160,8 +160,18 @@ async function initLeafletMap () {
     map.fire('rotate')
   }
 
+  const mapMenu = document.getElementById('map-menu')
+  let toolsExpanded = false
+  const setToolsExpanded = (expanded) => {
+    toolsExpanded = expanded
+    mapMenu.classList.toggle('is-expanded', expanded)
+    const moreButton = mapMenu.querySelector('[data-action="toggleLayerControl"]')
+    moreButton?.setAttribute('aria-expanded', String(expanded))
+    setLayerControlVisible(layerControl, map, expanded)
+  }
+
   const actionMap = {
-    toggleLayerControl: () => toggleLayerControl(layerControl, map),
+    toggleLayerControl: () => setToolsExpanded(!toolsExpanded),
     toggleKmlPanel: () => {
       if (window.toggleKmlPanel) {
         window.toggleKmlPanel()
@@ -179,7 +189,7 @@ async function initLeafletMap () {
     },
   }
 
-  document.getElementById('map-menu').addEventListener('click', (event) => {
+  mapMenu.addEventListener('click', (event) => {
     const actionTarget = event.target.closest('[data-action]')
     const action = actionTarget?.getAttribute('data-action')
     if (action && actionMap[action] instanceof Function) {

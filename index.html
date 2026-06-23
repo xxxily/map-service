@@ -17,11 +17,11 @@
 
     <ul id="map-menu" aria-label="地图工具">
       <li><button type="button" data-action="resetBearing" aria-label="重置方向" id="reset-bearing-btn" style="display: none;"><span class="compass-icon">🧭</span></button></li>
-      <li><button type="button" data-action="toggleLayerControl" aria-label="切换图层">☰</button></li>
-      <li><button type="button" data-action="toggleKmlPanel" aria-label="KML管理" title="KML 数据管理">📂</button></li>
+      <li><button type="button" data-action="toggleLayerControl" aria-label="更多工具与图层" aria-expanded="false" title="更多工具与图层">☰</button></li>
+      <li data-more-item><button type="button" data-action="toggleKmlPanel" aria-label="KML管理" title="KML 数据管理">📂</button></li>
       <li><button type="button" data-action="toggleSearchMode" aria-label="搜索地点">⌕</button></li>
       <li><button type="button" data-action="updatePosition" aria-label="定位当前位置">⌖</button></li>
-      <li><button type="button" data-action="openAdmin" aria-label="管理后台">⚙</button></li>
+      <li data-more-item><button type="button" data-action="openAdmin" aria-label="管理后台">⚙</button></li>
     </ul>
 
     <!-- KML 控制面板 -->
@@ -37,6 +37,7 @@
           <span class="kml-import-subtext">仅支持标准 .kml 格式</span>
           <input type="file" id="kml-file-input" accept=".kml" style="display: none;">
         </div>
+        <button type="button" class="kml-create-file-btn" data-kml-action="create-file">新建 KML 文件</button>
         <label class="kml-import-option">
           <input type="checkbox" id="kml-coordinate-correction" checked>
           <span>导入后按高德底图坐标纠偏显示</span>

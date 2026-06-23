@@ -135,11 +135,27 @@ export function showEditDialog (options = {}) {
         <div class="app-dialog-body" style="margin: 16px 0; text-align: left;">
           ${fields.map(field => {
             const val = escapeHtml(values[field.name] || '')
+            if (field.type === 'select') {
+              return `
+                <label style="display: block; margin-bottom: 12px;">
+                  <span style="display: block; font-size: 13px; margin-bottom: 4px; color: #4b5563; font-weight: 500;">${escapeHtml(field.label)}</span>
+                  <select name="${escapeHtml(field.name)}" style="width: 100%; height: 36px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-size: 13px; outline: none; background: #fff;">
+                    ${(field.options || []).map(option => {
+                      const optionValue = typeof option === 'object' ? option.value : option
+                      const optionLabel = typeof option === 'object' ? option.label : option
+                      const selected = String(values[field.name] ?? '') === String(optionValue) ? 'selected' : ''
+                      return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(optionLabel)}</option>`
+                    }).join('')}
+                  </select>
+                </label>
+              `
+            }
             if (field.type === 'textarea') {
               return `
                 <label style="display: block; margin-bottom: 12px;">
                   <span style="display: block; font-size: 13px; margin-bottom: 4px; color: #4b5563; font-weight: 500;">${escapeHtml(field.label)}</span>
                   <textarea name="${escapeHtml(field.name)}" rows="3" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: inherit; font-size: 13px; resize: vertical; outline: none;"></textarea>
+                </label>
                 `
             }
             return `
@@ -158,7 +174,7 @@ export function showEditDialog (options = {}) {
     </div>
   `
 
-  // 这里的 textarea 没有在 HTML 里直接塞入文本值（可能为了避免 XSS 或多行文本格式破裂，但这里可以用 JS 来安全赋值）：
+  // 用 JS 填充 textarea，避免模板内多行文本破坏结构。
   const form = root.querySelector('[data-dialog-form]')
   fields.forEach(field => {
     if (field.type === 'textarea') {

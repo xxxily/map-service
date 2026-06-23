@@ -1,5 +1,8 @@
 import L from 'leaflet'
 import { tileRelayEndpoint } from '../config.js'
+import { writeMapViewToUrl } from './url-state.js'
+
+const DEFAULT_LAYER_NAME = '高德/卫星'
 
 // 对 L.GridLayer 扩展以支持可视区域外一部分瓦片图的预加载
 const originalGetTiledPixelBounds = L.GridLayer.prototype._getTiledPixelBounds
@@ -36,9 +39,14 @@ function createTileLayer (url, options) {
   })
 }
 
-export function initLayerControl (map) {
+export function initLayerControl (map, initialLayerName = '') {
   // 从 localStorage 获取用户上一次选择的图层，默认使用 '高德/卫星'
-  const savedLayerName = localStorage.getItem('last_map_layer') || '高德/卫星'
+  let savedLayerName = DEFAULT_LAYER_NAME
+  try {
+    savedLayerName = localStorage.getItem('last_map_layer') || DEFAULT_LAYER_NAME
+  } catch (e) {
+    console.error('Failed to read last_map_layer from localStorage', e)
+  }
 
   const mapLayers = {
     '高德/卫星': L.layerGroup([
@@ -89,7 +97,8 @@ export function initLayerControl (map) {
   }
 
   // 渲染选中的默认图层
-  const activeLayerName = mapLayers[savedLayerName] ? savedLayerName : '高德/卫星'
+  const activeLayerName = [initialLayerName, savedLayerName, DEFAULT_LAYER_NAME].find(name => mapLayers[name]) || DEFAULT_LAYER_NAME
+  map._activeLayerName = activeLayerName
   mapLayers[activeLayerName].addTo(map)
 
   const layerControl = L.control.layers(mapLayers, {}, {
@@ -99,29 +108,38 @@ export function initLayerControl (map) {
 
   // 监听基准底图切换事件，将用户当前选择记录进本地缓存中
   map.on('baselayerchange', (event) => {
+    map._activeLayerName = event.name
     try {
       localStorage.setItem('last_map_layer', event.name)
     } catch (e) {
       console.error('Failed to save last_map_layer to localStorage', e)
     }
+    writeMapViewToUrl(map, { layerName: event.name })
   })
 
   layerControl._container.style.display = 'none'
   return layerControl
 }
 
-export function toggleLayerControl (layerControl, map) {
-  layerControl._container.style.display = layerControl._container.style.display === 'block' ? 'none' : 'block'
-
+export function setLayerControlVisible (layerControl, map, visible) {
+  layerControl._container.style.display = visible ? 'block' : 'none'
   const zoomControl = document.getElementsByClassName('leaflet-control-zoom')[0]
   if (zoomControl) {
-    zoomControl.style.display = zoomControl.style.display === 'block' ? 'none' : 'block'
+    zoomControl.style.display = visible ? 'block' : 'none'
     return
   }
+
+  if (!visible) return
 
   L.control.zoom({
     zoomInTitle: '放大',
     zoomOutTitle: '缩小',
   }).addTo(map)
   document.getElementsByClassName('leaflet-control-zoom')[0].style.display = 'block'
+}
+
+export function toggleLayerControl (layerControl, map) {
+  const visible = layerControl._container.style.display !== 'block'
+  setLayerControlVisible(layerControl, map, visible)
+  return visible
 }

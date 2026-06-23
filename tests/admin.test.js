@@ -828,15 +828,15 @@ test('admin settings support access control settings and verification', async ()
     await assert.rejects(() => settings.update({
       access: {
         enabled: true,
-        password: 'short',
+        password: '123',
       },
-    }), /访问密码长度至少为 10 位/)
+    }), /访问密码长度至少为 4 位/)
 
     // 启用访问控制
     const sanitized = await settings.update({
       access: {
         enabled: true,
-        password: 'my_access_password_10',
+        password: '1234',
       },
     })
 
@@ -849,7 +849,7 @@ test('admin settings support access control settings and verification', async ()
     assert.notEqual(raw.access.passwordHash.hash, 'my_access_password_10')
 
     // 验证校验逻辑
-    assert.equal(await settings.checkPassword('my_access_password_10'), true)
+    assert.equal(await settings.checkPassword('1234'), true)
     assert.equal(await settings.checkPassword('wrong_password'), false)
 
     // 生成签名 token 并验证

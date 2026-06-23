@@ -1,6 +1,6 @@
 import { escapeHtml } from '../utils.js'
 
-const ACCESS_PASSWORD_MIN_LENGTH = 10
+const ACCESS_PASSWORD_MIN_LENGTH = 4
 
 function collectProxyForm (form, state) {
   const providerPolicy = {}
@@ -98,7 +98,7 @@ export function renderSettingsPage (state) {
           </label>
           <label>
             <span>设置访问密码</span>
-            <input name="accessPassword" type="password" autocomplete="new-password" placeholder="${access.hasPassword ? '已设置，输入新密码以修改' : '输入至少 10 位访问密码'}">
+            <input name="accessPassword" type="password" autocomplete="new-password" placeholder="${access.hasPassword ? '已设置，输入新密码以修改' : `输入至少 ${ACCESS_PASSWORD_MIN_LENGTH} 位访问密码`}">
           </label>
           ${access.hasPassword ? `
             <label class="admin-check">

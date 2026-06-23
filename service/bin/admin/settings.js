@@ -4,7 +4,7 @@ import { promisify } from 'node:util'
 const scryptAsync = promisify(crypto.scrypt)
 const ACCESS_TOKEN_VERSION = 'v1'
 const ACCESS_TOKEN_SCOPE = 'map-access'
-const ACCESS_PASSWORD_MIN_LENGTH = 10
+const ACCESS_PASSWORD_MIN_LENGTH = 4
 const ACCESS_TOKEN_TTL = 1000 * 60 * 60 * 24 * 30
 
 function clone (value) {
