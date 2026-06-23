@@ -605,6 +605,7 @@ function initLongPressPointCreation (map) {
   const container = map.getContainer()
   let pressState = null
   let lastLongPressAt = 0
+  const activePointerIds = new Set()
 
   const clearPress = () => {
     if (pressState?.timer) {
@@ -616,6 +617,16 @@ function initLongPressPointCreation (map) {
   const isInteractiveTarget = (target) => target.closest?.('.leaflet-control, .leaflet-marker-icon, .leaflet-popup, button, a, input, textarea, select')
 
   const onPointerDown = (event) => {
+    activePointerIds.add(event.pointerId)
+    try {
+      container.setPointerCapture?.(event.pointerId)
+    } catch (err) {
+      // 部分浏览器不允许对当前事件捕获指针，忽略即可。
+    }
+    if (activePointerIds.size > 1 || event.isPrimary === false) {
+      clearPress()
+      return
+    }
     if (isAddingPoint || event.button > 0 || isInteractiveTarget(event.target)) return
 
     const startX = event.clientX
@@ -626,6 +637,7 @@ function initLongPressPointCreation (map) {
       startX,
       startY,
       timer: window.setTimeout(async () => {
+        if (!pressState || activePointerIds.size !== 1) return
         lastLongPressAt = Date.now()
         const targetLatLng = latlng
         clearPress()
@@ -646,7 +658,14 @@ function initLongPressPointCreation (map) {
   }
 
   const onPointerUp = (event) => {
+    activePointerIds.delete(event.pointerId)
     if (pressState && event.pointerId === pressState.pointerId) {
+      clearPress()
+    }
+  }
+
+  const onTouchChange = (event) => {
+    if (event.touches?.length > 1) {
       clearPress()
     }
   }
@@ -661,14 +680,19 @@ function initLongPressPointCreation (map) {
   container.addEventListener('pointermove', onPointerMove, { passive: true })
   container.addEventListener('pointerup', onPointerUp, { passive: true })
   container.addEventListener('pointercancel', onPointerUp, { passive: true })
+  container.addEventListener('touchstart', onTouchChange, { passive: true })
+  container.addEventListener('touchmove', onTouchChange, { passive: true })
   container.addEventListener('contextmenu', onContextMenu)
 
   map.on('unload', () => {
     clearPress()
+    activePointerIds.clear()
     container.removeEventListener('pointerdown', onPointerDown)
     container.removeEventListener('pointermove', onPointerMove)
     container.removeEventListener('pointerup', onPointerUp)
     container.removeEventListener('pointercancel', onPointerUp)
+    container.removeEventListener('touchstart', onTouchChange)
+    container.removeEventListener('touchmove', onTouchChange)
     container.removeEventListener('contextmenu', onContextMenu)
   })
 }

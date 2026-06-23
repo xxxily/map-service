@@ -5,6 +5,13 @@ body,
   height: 100%;
 }
 
+:root {
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+}
+
 body {
   padding: 0;
   margin: 0;
@@ -119,8 +126,8 @@ body.admin-view #app-version {
   display: none;
   position: absolute;
   z-index: 9999;
-  top: 14px;
-  left: 14px;
+  top: calc(var(--safe-area-top) + 14px);
+  left: calc(var(--safe-area-left) + 14px);
   width: min(280px, calc(100vw - 28px));
   box-sizing: border-box;
   padding: 10px 12px 12px;
@@ -161,8 +168,8 @@ body.admin-view #app-version {
   flex-direction: column-reverse;
   align-items: flex-end;
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  right: calc(var(--safe-area-right) + 16px);
+  bottom: calc(var(--safe-area-bottom) + 16px);
   gap: 8px;
   padding: 0;
   margin: 0;
@@ -207,8 +214,8 @@ body.admin-view #app-version {
 
 #app-version {
   position: fixed;
-  left: 8px;
-  bottom: 7px;
+  left: calc(var(--safe-area-left) + 8px);
+  bottom: calc(var(--safe-area-bottom) + 7px);
   z-index: 800;
   color: rgba(29, 42, 46, 0.34);
   font-size: 10px;
@@ -919,21 +926,37 @@ body.admin-view #app-version {
   box-shadow: 0 10px 30px rgba(20, 37, 42, 0.16);
 }
 
+.leaflet-top {
+  top: var(--safe-area-top);
+}
+
+.leaflet-right {
+  right: var(--safe-area-right);
+}
+
+.leaflet-bottom {
+  bottom: var(--safe-area-bottom);
+}
+
+.leaflet-left {
+  left: var(--safe-area-left);
+}
+
 @media (max-width: 560px) {
   #map-search-mod {
-    top: 10px;
-    left: 10px;
-    width: calc(100vw - 20px);
+    top: calc(var(--safe-area-top) + 10px);
+    left: calc(var(--safe-area-left) + 10px);
+    width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 20px);
   }
 
   #map-menu {
-    right: 12px;
-    bottom: 12px;
+    right: calc(var(--safe-area-right) + 12px);
+    bottom: calc(var(--safe-area-bottom) + 12px);
   }
 
   #app-version {
-    left: 7px;
-    bottom: 6px;
+    left: calc(var(--safe-area-left) + 7px);
+    bottom: calc(var(--safe-area-bottom) + 6px);
   }
 
   .admin-shell {
@@ -1172,10 +1195,10 @@ body.admin-view #app-version {
 /* KML 面板样式 */
 .kml-panel {
   position: fixed;
-  top: 14px;
-  right: 68px;
+  top: calc(var(--safe-area-top) + 14px);
+  right: calc(var(--safe-area-right) + 68px);
   width: 320px;
-  max-height: calc(100vh - 28px);
+  max-height: calc(100vh - var(--safe-area-top) - var(--safe-area-bottom) - 28px);
   z-index: 9999;
   display: flex;
   flex-direction: column;
@@ -1198,10 +1221,10 @@ body.admin-view #app-version {
 @media (max-width: 640px) {
   .kml-panel {
     top: auto;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    width: 100%;
+    right: var(--safe-area-right);
+    bottom: var(--safe-area-bottom);
+    left: var(--safe-area-left);
+    width: calc(100% - var(--safe-area-left) - var(--safe-area-right));
     max-height: 70vh;
     border-radius: 16px 16px 0 0;
     border-top: 1px solid rgba(18, 57, 63, 0.14);
@@ -1580,7 +1603,7 @@ body.admin-view #app-version {
 /* 拾取状态提示 */
 .kml-pickup-toast {
   position: fixed;
-  top: 20px;
+  top: calc(var(--safe-area-top) + 20px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 10000;

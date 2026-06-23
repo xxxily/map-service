@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'map-service-v1.2.2'
+const CACHE_VERSION = 'map-service-v1.2.3'
 const APP_SHELL = [
   '/',
   '/offline.html',
