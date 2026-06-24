@@ -10,6 +10,8 @@ body,
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
+  --control-top-desktop: max(14px, calc(var(--safe-area-top) + 6px));
+  --control-top-mobile: max(10px, calc(var(--safe-area-top) + 4px));
 }
 
 body {
@@ -126,7 +128,7 @@ body.admin-view #app-version {
   display: none;
   position: absolute;
   z-index: 9999;
-  top: calc(var(--safe-area-top) + 14px);
+  top: var(--control-top-desktop);
   left: calc(var(--safe-area-left) + 14px);
   width: min(280px, calc(100vw - 28px));
   box-sizing: border-box;
@@ -927,7 +929,7 @@ body.admin-view #app-version {
 }
 
 .leaflet-top {
-  top: var(--safe-area-top);
+  top: calc(var(--control-top-desktop) - 10px);
 }
 
 .leaflet-right {
@@ -944,9 +946,13 @@ body.admin-view #app-version {
 
 @media (max-width: 560px) {
   #map-search-mod {
-    top: calc(var(--safe-area-top) + 10px);
+    top: var(--control-top-mobile);
     left: calc(var(--safe-area-left) + 10px);
     width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 20px);
+  }
+
+  .leaflet-top {
+    top: calc(var(--control-top-mobile) - 10px);
   }
 
   #map-menu {
@@ -1195,10 +1201,10 @@ body.admin-view #app-version {
 /* KML 面板样式 */
 .kml-panel {
   position: fixed;
-  top: calc(var(--safe-area-top) + 14px);
+  top: var(--control-top-desktop);
   right: calc(var(--safe-area-right) + 68px);
   width: 320px;
-  max-height: calc(100vh - var(--safe-area-top) - var(--safe-area-bottom) - 28px);
+  max-height: calc(100vh - var(--control-top-desktop) - var(--safe-area-bottom) - 14px);
   z-index: 9999;
   display: flex;
   flex-direction: column;
@@ -1603,7 +1609,7 @@ body.admin-view #app-version {
 /* 拾取状态提示 */
 .kml-pickup-toast {
   position: fixed;
-  top: calc(var(--safe-area-top) + 20px);
+  top: calc(var(--control-top-desktop) + 6px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 10000;
@@ -1671,3 +1677,140 @@ body.admin-view #app-version {
   border-color: #ef4444;
   color: #ef4444;
 }
+
+/* 辅助线样式 */
+.guideline-toolbar[hidden] {
+  display: none !important;
+}
+
+.guideline-toolbar {
+  position: fixed;
+  top: var(--control-top-desktop);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border: 1px solid rgba(15, 118, 110, 0.2);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px) saturate(120%);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  box-shadow: 0 10px 30px rgba(15, 118, 110, 0.15);
+  color: #102528;
+  font-size: 13px;
+  font-weight: 500;
+  animation: slideDown 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (max-width: 560px) {
+  .guideline-toolbar {
+    top: var(--control-top-mobile);
+    padding: 6px 12px;
+    gap: 8px;
+    width: auto;
+    max-width: calc(100% - 32px);
+  }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translate(-50%, -20px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.guideline-toolbar-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: #0f766e;
+}
+
+.guideline-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(15, 118, 110, 0.25);
+  border-radius: 14px;
+  background: #fff;
+  color: #0f766e;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.guideline-btn:hover {
+  background: #f0fdfa;
+  border-color: #0f766e;
+}
+
+.guideline-btn.danger {
+  color: #be123c;
+  border-color: rgba(190, 18, 60, 0.2);
+}
+
+.guideline-btn.danger:hover {
+  background: #fff1f2;
+  border-color: #be123c;
+}
+
+.map-guideline-active {
+  cursor: crosshair !important;
+}
+
+.map-guideline-active .leaflet-grab,
+.map-guideline-active .leaflet-interactive {
+  cursor: crosshair !important;
+}
+
+.guideline-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* 辅助线浮动删除气泡样式 */
+.guideline-leaflet-popup .leaflet-popup-content-wrapper {
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(190, 18, 60, 0.15);
+  box-shadow: 0 4px 12px rgba(190, 18, 60, 0.12);
+  border-radius: 8px;
+  padding: 0;
+}
+
+.guideline-leaflet-popup .leaflet-popup-content {
+  margin: 4px 8px;
+}
+
+.guideline-leaflet-popup .leaflet-popup-tip {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(190, 18, 60, 0.15);
+  box-shadow: none;
+}
+
+.guideline-popup-del-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: #be123c;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.guideline-popup-del-btn:hover {
+  background: rgba(190, 18, 60, 0.08);
+}
+

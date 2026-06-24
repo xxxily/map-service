@@ -17,6 +17,7 @@ import { registerServiceWorker } from './pwa.js'
 import { getAccessStatus, verifyAccessPassword } from './admin/api.js'
 import { initKmlSupport } from './map/kml.js'
 import { escapeHtml } from './admin/utils.js'
+import { initGuidelines, toggleGuidelineMode } from './map/guidelines.js'
 
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
 
@@ -137,6 +138,7 @@ async function initLeafletMap () {
   const layerControl = initLayerControl(map, defaultView.layerName)
 
   initKmlSupport(map)
+  initGuidelines(map)
 
   map.on('moveend', () => writeMapViewToUrl(map))
   map.on('zoomend', () => writeMapViewToUrl(map))
@@ -177,6 +179,7 @@ async function initLeafletMap () {
         window.toggleKmlPanel()
       }
     },
+    toggleGuidelineMode,
     toggleSearchMode,
     updatePosition: () => updatePosition(map),
     resetBearing: () => {

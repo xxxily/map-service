@@ -8,8 +8,8 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/pwa-icon.svg">
     <title>混合地图</title>
-    <script type="module" crossorigin src="/assets/index-72CIUDBS.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CbIYlPSe.css">
+    <script type="module" crossorigin src="/assets/index-C51wCr_G.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-D58GUCxn.css">
   </head>
   <body>
     <div id="map-search-mod">
@@ -17,10 +17,19 @@
       <input id="tipinput" autocomplete="off">
     </div>
 
+    <div id="guideline-toolbar" class="guideline-toolbar" hidden>
+      <span class="guideline-toolbar-title">📐 辅助线模式</span>
+      <button type="button" class="guideline-btn" data-guideline-action="undo" title="撤销 (Ctrl+Z)">撤销</button>
+      <button type="button" class="guideline-btn" data-guideline-action="redo" title="重做 (Ctrl+Y)">重做</button>
+      <button type="button" class="guideline-btn danger" data-guideline-action="clear" title="清除所有辅助线">清除所有</button>
+      <button type="button" class="guideline-btn" data-guideline-action="exit" title="退出辅助线模式">退出</button>
+    </div>
+
     <ul id="map-menu" aria-label="地图工具">
       <li><button type="button" data-action="resetBearing" aria-label="重置方向" id="reset-bearing-btn" style="display: none;"><span class="compass-icon">🧭</span></button></li>
       <li><button type="button" data-action="toggleLayerControl" aria-label="更多工具与图层" aria-expanded="false" title="更多工具与图层">☰</button></li>
       <li data-more-item><button type="button" data-action="toggleKmlPanel" aria-label="KML管理" title="KML 数据管理">📂</button></li>
+      <li data-more-item><button type="button" data-action="toggleGuidelineMode" aria-label="辅助线管理" title="地图辅助线">📐</button></li>
       <li><button type="button" data-action="toggleSearchMode" aria-label="搜索地点">⌕</button></li>
       <li><button type="button" data-action="updatePosition" aria-label="定位当前位置">⌖</button></li>
       <li data-more-item><button type="button" data-action="openAdmin" aria-label="管理后台">⚙</button></li>
