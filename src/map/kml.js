@@ -534,6 +534,9 @@ async function createPointAtLatLng (map, latlng, options = {}) {
     })
   }
 
+  // 在弹出对话框前绘制临时的标记点，提供直观的定位位置感知
+  const tempMarker = L.marker(latlng).addTo(map)
+
   const result = await showEditDialog({
     title: '新增地图标注',
     fields,
@@ -543,6 +546,9 @@ async function createPointAtLatLng (map, latlng, options = {}) {
       description: '',
     },
   })
+
+  // 对话框关闭后立即清除临时标记点
+  tempMarker.remove()
 
   if (!result) return
 
