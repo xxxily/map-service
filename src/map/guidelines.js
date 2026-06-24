@@ -207,8 +207,13 @@ function updateGuidelineStyles () {
       group.eachLayer(layer => {
         if (layer instanceof L.Polyline) {
           layer.setStyle({ color, weight })
-        } else if (layer instanceof L.CircleMarker) {
-          layer.setStyle({ color: pointColor, radius })
+        } else if (layer instanceof L.Marker) {
+          const newIcon = L.divIcon({
+            className: isSelected ? 'guideline-center-icon is-selected' : 'guideline-center-icon',
+            iconSize: isSelected ? [14, 14] : [12, 12],
+            iconAnchor: isSelected ? [7, 7] : [6, 6]
+          })
+          layer.setIcon(newIcon)
         }
       })
     }
@@ -284,15 +289,41 @@ function renderGuidelines () {
     })
     verticalLine._direction = 'vertical'
 
-    // 中心交点圆圈
-    const centerPoint = L.circleMarker([lat, lng], {
-      radius: isSelected ? 7 : 6,
-      color: pointColor,
-      fillColor: '#fff',
-      fillOpacity: 0.95,
-      weight: 2,
+    // 中心交点圆圈，使用 L.Marker + L.divIcon 以支持原生拖拽
+    const centerIcon = L.divIcon({
+      className: isSelected ? 'guideline-center-icon is-selected' : 'guideline-center-icon',
+      iconSize: isSelected ? [14, 14] : [12, 12],
+      iconAnchor: isSelected ? [7, 7] : [6, 6]
+    })
+
+    const centerPoint = L.marker([lat, lng], {
+      icon: centerIcon,
+      draggable: true,
       interactive: true,
       bubblingMouseEvents: false
+    })
+
+    // 监听拖拽事件以实时更新位置并支持撤销重做
+    centerPoint.on('dragstart', () => {
+      console.log('[Guideline Debug] Guideline dragstart:', id)
+      pushHistory()
+      activeMap.closePopup()
+    })
+
+    centerPoint.on('drag', (e) => {
+      const latlng = e.target.getLatLng()
+      item.lat = latlng.lat
+      item.lng = latlng.lng
+
+      // 实时更新正交线段的端点坐标
+      const pts = getGuidelineLatLngs(activeMap, latlng, item.bearing)
+      horizontalLine.setLatLngs(pts.horizontal)
+      verticalLine.setLatLngs(pts.vertical)
+    })
+
+    centerPoint.on('dragend', () => {
+      console.log('[Guideline Debug] Guideline dragend:', id)
+      saveGuidelinesData()
     })
 
     // 绑定浮动删除 popup 气泡
@@ -451,7 +482,7 @@ function onMapClick (e) {
     const group = renderedLayers[clickedGuideline.id]
     if (group) {
       group.eachLayer(layer => {
-        if (layer instanceof L.CircleMarker) {
+        if (layer instanceof L.Marker) {
           setTimeout(() => {
             layer.openPopup()
           }, 100)
@@ -498,10 +529,10 @@ function onMapClick (e) {
   const group = renderedLayers[newId]
   if (group) {
     group.eachLayer(layer => {
-      if (layer instanceof L.CircleMarker) {
+      if (layer instanceof L.Marker) {
         setTimeout(() => {
           layer.openPopup()
-        }, 50)
+        }, 100) // 延迟调整为100ms以避开事件分发周期的关闭
       }
     })
   }
