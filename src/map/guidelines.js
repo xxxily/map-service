@@ -210,8 +210,8 @@ function updateGuidelineStyles () {
         } else if (layer instanceof L.Marker) {
           const newIcon = L.divIcon({
             className: isSelected ? 'guideline-center-icon is-selected' : 'guideline-center-icon',
-            iconSize: isSelected ? [14, 14] : [12, 12],
-            iconAnchor: isSelected ? [7, 7] : [6, 6]
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
           })
           layer.setIcon(newIcon)
         }
@@ -292,8 +292,8 @@ function renderGuidelines () {
     // 中心交点圆圈，使用 L.Marker + L.divIcon 以支持原生拖拽
     const centerIcon = L.divIcon({
       className: isSelected ? 'guideline-center-icon is-selected' : 'guideline-center-icon',
-      iconSize: isSelected ? [14, 14] : [12, 12],
-      iconAnchor: isSelected ? [7, 7] : [6, 6]
+      iconSize: [32, 32],
+      iconAnchor: [16, 16]
     })
 
     const centerPoint = L.marker([lat, lng], {
@@ -303,11 +303,38 @@ function renderGuidelines () {
       bubblingMouseEvents: false
     })
 
+    let dragContext = null
+    let dragFrameId = null
+
     // 监听拖拽事件以实时更新位置并支持撤销重做
     centerPoint.on('dragstart', () => {
       console.log('[Guideline Debug] Guideline dragstart:', id)
       pushHistory()
       activeMap.closePopup()
+
+      // 性能优化：拖拽开始时缓存当前地图边界计算参数，避免拖拽（drag）阶段高频调用 getBounds 重度逆矩阵方法导致丢帧脱靶
+      const crs = activeMap.options.crs
+      const bounds = activeMap.getBounds()
+      const p_ne = crs.project(bounds.getNorthEast())
+      const p_sw = crs.project(bounds.getSouthWest())
+      const W = Math.abs(p_ne.x - p_sw.x)
+      const H = Math.abs(p_ne.y - p_sw.y)
+      const D = Math.sqrt(W * W + H * H) || 1000000
+      const L_dist = D * 2
+
+      const rad = ((item.bearing || 0) * Math.PI) / 180
+      const sinT = Math.sin(rad)
+      const cosT = Math.cos(rad)
+
+      const v_vert = L.point(-sinT, cosT)
+      const v_horiz = L.point(cosT, sinT)
+
+      dragContext = {
+        crs,
+        L_dist,
+        v_vert,
+        v_horiz
+      }
     })
 
     centerPoint.on('drag', (e) => {
@@ -315,14 +342,48 @@ function renderGuidelines () {
       item.lat = latlng.lat
       item.lng = latlng.lng
 
-      // 实时更新正交线段的端点坐标
-      const pts = getGuidelineLatLngs(activeMap, latlng, item.bearing)
-      horizontalLine.setLatLngs(pts.horizontal)
-      verticalLine.setLatLngs(pts.vertical)
+      // 使用 requestAnimationFrame 帧率对齐节流，防止 1000Hz 等高频电竞鼠标移动重绘压垮渲染主线程
+      if (dragFrameId) {
+        cancelAnimationFrame(dragFrameId)
+      }
+
+      dragFrameId = requestAnimationFrame(() => {
+        dragFrameId = null
+        if (dragContext) {
+          const { crs, L_dist, v_vert, v_horiz } = dragContext
+          const p0 = crs.project(latlng)
+
+          const Y_MAX = 20037508.34
+          const clampPt = (pt) => {
+            let { x, y } = pt
+            if (y > Y_MAX) y = Y_MAX
+            if (y < -Y_MAX) y = -Y_MAX
+            return L.point(x, y)
+          }
+
+          const pt_v1 = clampPt(L.point(p0.x + L_dist * v_vert.x, p0.y + L_dist * v_vert.y))
+          const pt_v2 = clampPt(L.point(p0.x - L_dist * v_vert.x, p0.y - L_dist * v_vert.y))
+          const pt_h1 = clampPt(L.point(p0.x + L_dist * v_horiz.x, p0.y + L_dist * v_horiz.y))
+          const pt_h2 = clampPt(L.point(p0.x - L_dist * v_horiz.x, p0.y - L_dist * v_horiz.y))
+
+          const latlng_v1 = crs.unproject(pt_v1)
+          const latlng_v2 = crs.unproject(pt_v2)
+          const latlng_h1 = crs.unproject(pt_h1)
+          const latlng_h2 = crs.unproject(pt_h2)
+
+          horizontalLine.setLatLngs([latlng_h1, latlng_h2])
+          verticalLine.setLatLngs([latlng_v1, latlng_v2])
+        }
+      })
     })
 
     centerPoint.on('dragend', () => {
       console.log('[Guideline Debug] Guideline dragend:', id)
+      if (dragFrameId) {
+        cancelAnimationFrame(dragFrameId)
+        dragFrameId = null
+      }
+      dragContext = null
       saveGuidelinesData()
     })
 

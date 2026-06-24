@@ -1816,6 +1816,23 @@ body.admin-view #app-version {
 
 /* 辅助线中心拖拽圆点样式 */
 .guideline-center-icon {
+  width: 32px !important;
+  height: 32px !important;
+  margin-left: -16px !important;
+  margin-top: -16px !important;
+  background: transparent !important;
+  border: none !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+}
+.guideline-center-icon:active {
+  cursor: grabbing;
+}
+/* 视觉上的小圆圈点 */
+.guideline-center-icon::after {
+  content: '';
   width: 12px;
   height: 12px;
   background-color: #ffffff;
@@ -1823,12 +1840,10 @@ body.admin-view #app-version {
   border-radius: 50%;
   box-sizing: border-box;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  cursor: grab;
+  transition: border-color 0.2s, width 0.2s, height 0.2s;
 }
-.guideline-center-icon:active {
-  cursor: grabbing;
-}
-.guideline-center-icon.is-selected {
+/* 选中高亮下的视觉圆点 */
+.guideline-center-icon.is-selected::after {
   width: 14px;
   height: 14px;
   border-color: #be123c;
