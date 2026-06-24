@@ -921,6 +921,9 @@ export function initKmlSupport (map) {
     const popup = e.popup
     const container = popup.getElement()
     if (!container) return
+
+    // 彻底切断 KML 气泡外壳上一切鼠标、触摸、指针事件的向上传播，阻止穿透至地图
+    preventAllKmlPropagation(container)
     
     const editBtn = container.querySelector('.kml-edit-btn')
     const deleteBtn = container.querySelector('.kml-delete-btn')
@@ -929,7 +932,9 @@ export function initKmlSupport (map) {
       const kId = editBtn.getAttribute('data-kml-id')
       const fId = editBtn.getAttribute('data-feature-id')
       
-      editBtn.addEventListener('click', () => {
+      editBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        ev.preventDefault()
         handleEditFeature(map, kId, fId)
       })
     }
@@ -938,7 +943,9 @@ export function initKmlSupport (map) {
       const kId = deleteBtn.getAttribute('data-kml-id')
       const fId = deleteBtn.getAttribute('data-feature-id')
       
-      deleteBtn.addEventListener('click', () => {
+      deleteBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        ev.preventDefault()
         map.closePopup(popup)
         handleDeleteFeature(map, kId, fId)
       })
@@ -1009,4 +1016,21 @@ export function redoKml (map) {
   saveToStorage()
   renderAllKmls(map)
   updateKmlPanelUI(map)
+}
+
+// 阻止 KML 气泡 DOM 上的所有交互事件向地图冒泡，防止点击穿透
+function preventAllKmlPropagation (el) {
+  if (!el) return
+  const events = [
+    'click', 'dblclick',
+    'mousedown', 'mouseup',
+    'touchstart', 'touchend', 'touchmove',
+    'pointerdown', 'pointerup', 'pointermove',
+    'contextmenu'
+  ]
+  events.forEach(evt => {
+    el.addEventListener(evt, (e) => {
+      e.stopPropagation()
+    })
+  })
 }
