@@ -221,6 +221,12 @@ function renderFeature (map, kmlFile, feature) {
     layer = L.marker(latlng, {
       draggable: true
     })
+
+    // 监听拖动开始：保存撤销快照，并在拖动时关闭 popup 气泡
+    layer.on('dragstart', () => {
+      pushKmlHistory()
+      layer.closePopup()
+    })
     
     layer.on('dragend', () => {
       const newLatLng = layer.getLatLng()
@@ -698,6 +704,7 @@ function initLongPressPointCreation (map) {
 }
 
 export function initKmlSupport (map) {
+  window.getActiveKmlMarkers = getActiveKmlMarkers
   loadFromStorage()
   renderAllKmls(map)
   updateKmlPanelUI(map)
@@ -937,4 +944,69 @@ export function initKmlSupport (map) {
       })
     }
   })
+
+  // 监听键盘事件，在非辅助线模式下支持 KML 位置与数据的撤销与重做
+  document.addEventListener('keydown', (event) => {
+    // 规避冲突：若当前已激活辅助线模式，键盘快捷键优先给辅助线模块使用
+    if (typeof window.getIsGuidelineModeActive === 'function' && window.getIsGuidelineModeActive()) return
+
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0
+    const modifier = isMac ? event.metaKey : event.ctrlKey
+
+    if (modifier) {
+      const key = event.key.toLowerCase()
+      if (key === 'z') {
+        event.preventDefault()
+        if (event.shiftKey) {
+          redoKml(map)
+        } else {
+          undoKml(map)
+        }
+      } else if (key === 'y') {
+        event.preventDefault()
+        redoKml(map)
+      }
+    }
+  })
+}
+
+// 导出所有当前在地图上渲染的 KML 标记点图层，供碰撞检测与反点击穿透使用
+export function getActiveKmlMarkers () {
+  const markers = []
+  featureLayers.forEach(layer => {
+    if (layer instanceof L.Marker) {
+      markers.push(layer)
+    }
+  })
+  return markers
+}
+
+// KML 历史堆栈及撤销/反撤销状态实现
+const kmlUndoStack = []
+const kmlRedoStack = []
+
+export function pushKmlHistory () {
+  kmlUndoStack.push(JSON.parse(JSON.stringify(kmlList)))
+  if (kmlUndoStack.length > 50) {
+    kmlUndoStack.shift()
+  }
+  kmlRedoStack.length = 0
+}
+
+export function undoKml (map) {
+  if (kmlUndoStack.length === 0) return
+  kmlRedoStack.push(JSON.parse(JSON.stringify(kmlList)))
+  kmlList = kmlUndoStack.pop()
+  saveToStorage()
+  renderAllKmls(map)
+  updateKmlPanelUI(map)
+}
+
+export function redoKml (map) {
+  if (kmlRedoStack.length === 0) return
+  kmlUndoStack.push(JSON.parse(JSON.stringify(kmlList)))
+  kmlList = kmlRedoStack.pop()
+  saveToStorage()
+  renderAllKmls(map)
+  updateKmlPanelUI(map)
 }

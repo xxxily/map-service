@@ -49,12 +49,10 @@ function preventAllPropagation (el) {
 function loadGuidelinesData () {
   try {
     const raw = localStorage.getItem('map_guidelines')
-    console.log('[Guideline Debug] Loading guidelines data from localStorage:', raw)
     if (raw) {
       guidelinesData = JSON.parse(raw)
     }
   } catch (e) {
-    console.error('[Guideline Debug] Failed to load guidelines from localStorage', e)
     guidelinesData = []
   }
 }
@@ -63,10 +61,8 @@ function loadGuidelinesData () {
 function saveGuidelinesData () {
   try {
     const raw = JSON.stringify(guidelinesData)
-    console.log('[Guideline Debug] Saving guidelines data to localStorage:', raw)
     localStorage.setItem('map_guidelines', raw)
   } catch (e) {
-    console.error('[Guideline Debug] Failed to save guidelines to localStorage', e)
   }
 }
 
@@ -74,7 +70,6 @@ function saveGuidelinesData () {
 function updateToolbarButtons () {
   const undoBtn = document.querySelector('[data-guideline-action="undo"]')
   const redoBtn = document.querySelector('[data-guideline-action="redo"]')
-  console.log('[Guideline Debug] updateToolbarButtons, undoStack size:', undoStack.length, 'redoStack size:', redoStack.length)
   if (undoBtn) {
     undoBtn.disabled = undoStack.length === 0
     undoBtn.style.display = undoStack.length === 0 ? 'none' : 'inline-flex'
@@ -97,7 +92,6 @@ function pushHistory () {
 
 // 执行撤销
 export function undo () {
-  console.log('[Guideline Debug] Undo triggered')
   if (undoStack.length === 0) return
 
   redoStack.push(JSON.parse(JSON.stringify(guidelinesData)))
@@ -114,7 +108,6 @@ export function undo () {
 
 // 执行反撤销/重做
 export function redo () {
-  console.log('[Guideline Debug] Redo triggered')
   if (redoStack.length === 0) return
 
   undoStack.push(JSON.parse(JSON.stringify(guidelinesData)))
@@ -194,7 +187,6 @@ function updateGuidelineEndpoints () {
 
 // 动态改变现有辅助线图层的样式
 function updateGuidelineStyles () {
-  console.log('[Guideline Debug] updateGuidelineStyles, selectedGuidelineId:', selectedGuidelineId)
   guidelinesData.forEach(item => {
     const group = renderedLayers[item.id]
     if (group) {
@@ -222,7 +214,6 @@ function updateGuidelineStyles () {
 
 // 直接删除辅助线
 export function deleteGuidelineDirectly (id) {
-  console.log('[Guideline Debug] deleteGuidelineDirectly, id:', id)
   const item = guidelinesData.find(g => g.id === id)
   if (!item) return
 
@@ -247,11 +238,9 @@ export function deleteGuidelineDirectly (id) {
 // 渲染所有已固定的辅助线
 function renderGuidelines () {
   if (!activeMap) {
-    console.warn('[Guideline Debug] renderGuidelines failed: activeMap is null')
     return
   }
 
-  console.log('[Guideline Debug] renderGuidelines called, guidelinesData count:', guidelinesData.length)
 
   // 先清空当前的图层
   Object.keys(renderedLayers).forEach(id => {
@@ -308,7 +297,6 @@ function renderGuidelines () {
 
     // 监听拖拽事件以实时更新位置并支持撤销重做
     centerPoint.on('dragstart', () => {
-      console.log('[Guideline Debug] Guideline dragstart:', id)
       pushHistory()
       activeMap.closePopup()
 
@@ -378,7 +366,6 @@ function renderGuidelines () {
     })
 
     centerPoint.on('dragend', () => {
-      console.log('[Guideline Debug] Guideline dragend:', id)
       if (dragFrameId) {
         cancelAnimationFrame(dragFrameId)
         dragFrameId = null
@@ -398,7 +385,6 @@ function renderGuidelines () {
     popupContent.querySelector('.guideline-popup-del-btn').addEventListener('click', (e) => {
       e.stopPropagation()
       e.preventDefault()
-      console.log('[Guideline Debug] Popup delete button clicked for guideline:', id)
       deleteGuidelineDirectly(id)
     })
 
@@ -412,7 +398,6 @@ function renderGuidelines () {
 
     // 监听 popup 开启，记录选中 ID 并通过 setStyle 动态变红
     centerPoint.on('popupopen', (e) => {
-      console.log('[Guideline Debug] Popup opened for guideline:', id)
       selectedGuidelineId = id
       updateGuidelineStyles()
       
@@ -425,7 +410,6 @@ function renderGuidelines () {
 
     // 监听 popup 关闭，延迟还原普通状态
     centerPoint.on('popupclose', () => {
-      console.log('[Guideline Debug] Popup closed for guideline:', id)
       setTimeout(() => {
         if (selectedGuidelineId === id) {
           selectedGuidelineId = null
@@ -436,13 +420,10 @@ function renderGuidelines () {
 
     // 常态化交互分发，点击后无论当前处于何种模式均会激活并呼出工具栏
     const handleSelect = (e) => {
-      console.log('[Guideline Debug] handleSelect triggered on guideline:', id, 'isGuidelineModeActive:', isGuidelineModeActive)
       L.DomEvent.stopPropagation(e)
       if (!isGuidelineModeActive) {
-        console.log('[Guideline Debug] Auto-activating guideline mode from select')
         enterGuidelineMode()
       }
-      console.log('[Guideline Debug] Calling openPopup on centerPoint for:', id)
       centerPoint.openPopup()
     }
 
@@ -505,9 +486,32 @@ function onMapMouseOut () {
 function onMapClick (e) {
   if (!activeMap) return
 
-  // 1. 距离和线段碰撞检测（全模式下皆生效）：在投影坐标空间下做高精度碰撞检测，避开 leaflet-rotate 的坐标变换 Bug
   const zoom = activeMap.getZoom()
   const clickPt = activeMap.project(e.latlng, zoom)
+
+  // 1. 优先对 KML 点位进行高精度投影碰撞检测（全模式皆生效）：解决地图旋转下点击穿透至地图导致 KML 气泡无法弹出的 Bug
+  const activeKmlMarkers = (window.getActiveKmlMarkers && typeof window.getActiveKmlMarkers === 'function') ? window.getActiveKmlMarkers() : []
+  let clickedKmlMarker = null
+  for (const marker of activeKmlMarkers) {
+    const markerPt = activeMap.project(marker.getLatLng(), zoom)
+    // 偏移修正：默认水滴图标高 41px，锚点在底部尖角。我们将其向上平移 20px 以对齐图标几何视觉中心
+    markerPt.y -= 20
+    // 增大点击探测感应半径到 24px，确保能完整包裹整个图标范围
+    if (clickPt.distanceTo(markerPt) < 24) {
+      clickedKmlMarker = marker
+      break
+    }
+  }
+
+  if (clickedKmlMarker) {
+    // 延迟 100ms 异步弹出 KML 标注点的编辑气泡，规避 Leaflet 同步关闭行为
+    setTimeout(() => {
+      clickedKmlMarker.openPopup()
+    }, 100)
+    return // 拦截，不创建任何新辅助线
+  }
+
+  // 2. 距离和线段碰撞检测（全模式下皆生效）：在投影坐标空间下做高精度碰撞检测，避开 leaflet-rotate 的坐标变换 Bug
   let clickedGuideline = null
 
   for (const item of guidelinesData) {
@@ -534,7 +538,6 @@ function onMapClick (e) {
   }
 
   if (clickedGuideline) {
-    console.log('[Guideline Debug] Existing guideline clicked via hit-test:', clickedGuideline.id)
     if (!isGuidelineModeActive) {
       enterGuidelineMode()
     }
@@ -561,9 +564,7 @@ function onMapClick (e) {
 
   // 限制旋转误触：如果最近 300ms 内发生过真实的地图偏转，则拦截本次误点击
   const deltaT = Date.now() - lastRotateTime
-  console.log('[Guideline Debug] onMapClick triggered. MS since last rotate:', deltaT)
   if (deltaT < 300) {
-    console.log('[Guideline Debug] onMapClick blocked by rotation timer')
     return
   }
 
@@ -580,7 +581,6 @@ function onMapClick (e) {
     bearing: currentBearing
   }
 
-  console.log('[Guideline Debug] Adding new guideline:', newGuideline)
   guidelinesData.push(newGuideline)
   saveGuidelinesData()
   renderGuidelines()
@@ -601,7 +601,6 @@ function onMapClick (e) {
 
 // 进入辅助线模式
 export function enterGuidelineMode () {
-  console.log('[Guideline Debug] enterGuidelineMode, currentActive:', isGuidelineModeActive)
   if (!activeMap || isGuidelineModeActive) return
   isGuidelineModeActive = true
 
@@ -624,7 +623,6 @@ export function enterGuidelineMode () {
 
 // 退出辅助线模式
 export function exitGuidelineMode () {
-  console.log('[Guideline Debug] exitGuidelineMode')
   if (!activeMap || !isGuidelineModeActive) return
   isGuidelineModeActive = false
 
@@ -654,7 +652,6 @@ export function exitGuidelineMode () {
 
 // 清除所有辅助线
 export async function clearAllGuidelines () {
-  console.log('[Guideline Debug] clearAllGuidelines triggered')
   if (guidelinesData.length === 0) return
 
   const confirmed = await showConfirm('确定要清除地图上的所有辅助线吗？该操作不可撤销。', {
@@ -684,7 +681,7 @@ export async function clearAllGuidelines () {
 
 // 初始化辅助线功能
 export function initGuidelines (map) {
-  console.log('[Guideline Debug] initGuidelines called')
+  window.getIsGuidelineModeActive = () => isGuidelineModeActive
   activeMap = map
   loadGuidelinesData()
   renderGuidelines()
@@ -701,7 +698,6 @@ export function initGuidelines (map) {
     const currentBearing = map.getBearing ? map.getBearing() : 0
     if (Math.abs(currentBearing - lastBearing) > 0.01) {
       lastRotateTime = Date.now()
-      console.log('[Guideline Debug] rotate event detected, angle delta > 0.01, updating lastRotateTime')
     }
     lastBearing = currentBearing
   })
@@ -712,7 +708,6 @@ export function initGuidelines (map) {
     toolbar.addEventListener('click', (event) => {
       const actionTarget = event.target.closest('[data-guideline-action]')
       const action = actionTarget?.getAttribute('data-guideline-action')
-      console.log('[Guideline Debug] Toolbar button clicked, action:', action)
       if (action === 'clear') {
         clearAllGuidelines()
       } else if (action === 'exit') {
@@ -728,7 +723,6 @@ export function initGuidelines (map) {
   // 监听键盘事件：支持 ESC 退出及 Ctrl+Z (Cmd+Z) / Ctrl+Y (Cmd+Y/Cmd+Shift+Z) 撤销重做
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && isGuidelineModeActive) {
-      console.log('[Guideline Debug] Escape key pressed, exiting mode')
       exitGuidelineMode()
       return
     }
@@ -737,7 +731,6 @@ export function initGuidelines (map) {
 
     // 支持 Delete 或 Backspace 键直接删除当前选中的辅助线
     if ((event.key === 'Delete' || event.key === 'Backspace') && selectedGuidelineId) {
-      console.log('[Guideline Debug] Delete/Backspace key pressed on selected guideline:', selectedGuidelineId)
       event.preventDefault()
       deleteGuidelineDirectly(selectedGuidelineId)
       return
@@ -765,10 +758,13 @@ export function initGuidelines (map) {
 
 // 切换辅助线模式
 export function toggleGuidelineMode () {
-  console.log('[Guideline Debug] toggleGuidelineMode')
   if (isGuidelineModeActive) {
     exitGuidelineMode()
   } else {
     enterGuidelineMode()
   }
+}
+
+export function getIsGuidelineModeActive () {
+  return isGuidelineModeActive
 }
