@@ -21,6 +21,21 @@ body {
   font-family: ui-sans-serif, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+/* 全局 SVG 图标样式 */
+.svg-icon {
+  display: inline-block;
+  width: 1.2em;
+  height: 1.2em;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+
 button,
 input,
 select {
@@ -205,6 +220,12 @@ body.admin-view #app-version {
   font-size: 20px;
   line-height: 1;
 }
+
+#map-menu button .svg-icon {
+  width: 20px;
+  height: 20px;
+}
+
 
 #map-menu button:hover,
 #map-menu button:focus-visible,
@@ -1708,10 +1729,27 @@ body.admin-view #app-version {
 @media (max-width: 560px) {
   .guideline-toolbar {
     top: var(--control-top-mobile);
-    padding: 6px 12px;
-    gap: 8px;
+    padding: 6px 10px;
+    gap: 6px;
     width: auto;
     max-width: calc(100% - 32px);
+  }
+  .guideline-toolbar .guideline-toolbar-title {
+    display: none !important;
+  }
+  .guideline-btn {
+    width: 32px;
+    height: 32px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 50%;
+  }
+  .guideline-btn .btn-text {
+    display: none !important;
+  }
+  .guideline-btn .svg-icon {
+    margin-right: 0 !important;
+    font-size: 16px;
   }
 }
 
@@ -1723,9 +1761,13 @@ body.admin-view #app-version {
 .guideline-toolbar-title {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   font-weight: 600;
   color: #0f766e;
+}
+
+.guideline-toolbar-title .svg-icon {
+  font-size: 16px;
 }
 
 .guideline-btn {
@@ -1743,6 +1785,12 @@ body.admin-view #app-version {
   cursor: pointer;
   transition: all 0.2s;
 }
+
+.guideline-btn .svg-icon {
+  margin-right: 4px;
+  font-size: 13px;
+}
+
 
 .guideline-btn:hover {
   background: #f0fdfa;
@@ -1809,6 +1857,12 @@ body.admin-view #app-version {
   border-radius: 4px;
   transition: all 0.15s ease;
 }
+
+.guideline-popup-del-btn .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
 
 .guideline-popup-del-btn:hover {
   background: rgba(190, 18, 60, 0.08);

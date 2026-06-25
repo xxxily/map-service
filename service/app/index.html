@@ -8,8 +8,8 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/pwa-icon.svg">
     <title>混合地图</title>
-    <script type="module" crossorigin src="/assets/index-CmgVDmTA.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BC4MXBoh.css">
+    <script type="module" crossorigin src="/assets/index-Oj1q0fG-.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DogrruWe.css">
   </head>
   <body>
     <div id="map-search-mod">
@@ -18,32 +18,47 @@
     </div>
 
     <div id="guideline-toolbar" class="guideline-toolbar" hidden>
-      <span class="guideline-toolbar-title">📐 辅助线模式</span>
-      <button type="button" class="guideline-btn" data-guideline-action="undo" title="撤销 (Ctrl+Z)">撤销</button>
-      <button type="button" class="guideline-btn" data-guideline-action="redo" title="重做 (Ctrl+Y)">重做</button>
-      <button type="button" class="guideline-btn danger" data-guideline-action="clear" title="清除所有辅助线">清除所有</button>
-      <button type="button" class="guideline-btn" data-guideline-action="exit" title="退出辅助线模式">退出</button>
+      <span class="guideline-toolbar-title">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 22V2l20 20H2Z"/><path d="M6 18V10l8 8H6Z"/></svg>
+        <span class="guideline-title-text">辅助线模式</span>
+      </span>
+      <button type="button" class="guideline-btn" data-guideline-action="undo" title="撤销 (Ctrl+Z)">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+        <span class="btn-text">撤销</span>
+      </button>
+      <button type="button" class="guideline-btn" data-guideline-action="redo" title="重做 (Ctrl+Y)">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></svg>
+        <span class="btn-text">重做</span>
+      </button>
+      <button type="button" class="guideline-btn danger" data-guideline-action="clear" title="清除所有辅助线">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+        <span class="btn-text">清除所有</span>
+      </button>
+      <button type="button" class="guideline-btn" data-guideline-action="exit" title="退出辅助线模式">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+        <span class="btn-text">退出</span>
+      </button>
     </div>
 
     <ul id="map-menu" aria-label="地图工具">
-      <li><button type="button" data-action="resetBearing" aria-label="重置方向" id="reset-bearing-btn" style="display: none;"><span class="compass-icon">🧭</span></button></li>
-      <li><button type="button" data-action="toggleLayerControl" aria-label="更多工具与图层" aria-expanded="false" title="更多工具与图层">☰</button></li>
-      <li data-more-item><button type="button" data-action="toggleKmlPanel" aria-label="KML管理" title="KML 数据管理">📂</button></li>
-      <li data-more-item><button type="button" data-action="toggleGuidelineMode" aria-label="辅助线管理" title="地图辅助线">📐</button></li>
-      <li><button type="button" data-action="toggleSearchMode" aria-label="搜索地点">⌕</button></li>
-      <li><button type="button" data-action="updatePosition" aria-label="定位当前位置">⌖</button></li>
-      <li data-more-item><button type="button" data-action="openAdmin" aria-label="管理后台">⚙</button></li>
+      <li><button type="button" data-action="resetBearing" aria-label="重置方向" id="reset-bearing-btn" style="display: none;"><svg class="compass-icon svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg></button></li>
+      <li><button type="button" data-action="toggleLayerControl" aria-label="更多工具与图层" aria-expanded="false" title="更多工具与图层"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg></button></li>
+      <li data-more-item><button type="button" data-action="toggleKmlPanel" aria-label="KML管理" title="KML 数据管理"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg></button></li>
+      <li data-more-item><button type="button" data-action="toggleGuidelineMode" aria-label="辅助线管理" title="地图辅助线"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 22V2l20 20H2Z"/><path d="M6 18V10l8 8H6Z"/></svg></button></li>
+      <li><button type="button" data-action="toggleSearchMode" aria-label="搜索地点"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button></li>
+      <li><button type="button" data-action="updatePosition" aria-label="定位当前位置"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/></svg></button></li>
+      <li data-more-item><button type="button" data-action="openAdmin" aria-label="管理后台"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></li>
     </ul>
 
     <!-- KML 控制面板 -->
     <aside id="kml-panel" class="kml-panel" hidden>
       <div class="kml-panel-header">
         <h2>KML 数据管理</h2>
-        <button type="button" class="kml-close-btn" data-action="closeKmlPanel" aria-label="关闭">×</button>
+        <button type="button" class="kml-close-btn" data-action="closeKmlPanel" aria-label="关闭"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
       </div>
       <div class="kml-panel-body">
         <div class="kml-import-section" id="kml-import-dropzone">
-          <span class="kml-import-icon">📂</span>
+          <span class="kml-import-icon"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg></span>
           <span class="kml-import-text">点击或拖拽 KML 文件导入</span>
           <span class="kml-import-subtext">仅支持标准 .kml 格式</span>
           <input type="file" id="kml-file-input" accept=".kml" style="display: none;">
