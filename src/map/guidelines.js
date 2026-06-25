@@ -131,7 +131,7 @@ function getGuidelineLatLngs (map, latlng, bearing) {
   const W = Math.abs(p_ne.x - p_sw.x)
   const H = Math.abs(p_ne.y - p_sw.y)
   const D = Math.sqrt(W * W + H * H) || 1000000
-  const L_dist = Math.max(D * 4, 20000000)
+  const L_dist = Math.max(D * 4, 1000000)
 
   const rad = (bearing * Math.PI) / 180
   const sinT = Math.sin(rad)
@@ -308,7 +308,7 @@ function renderGuidelines () {
       const W = Math.abs(p_ne.x - p_sw.x)
       const H = Math.abs(p_ne.y - p_sw.y)
       const D = Math.sqrt(W * W + H * H) || 1000000
-      const L_dist = Math.max(D * 4, 20000000)
+      const L_dist = Math.max(D * 4, 1000000)
 
       const rad = ((item.bearing || 0) * Math.PI) / 180
       const sinT = Math.sin(rad)
