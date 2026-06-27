@@ -2310,7 +2310,6 @@ body.admin-view #app-version {
   background: #0f766e !important;
 }
 
-/* 10. 地图截图提示飘窗 */
 .screenshot-toast {
   position: fixed;
   top: 20px;
@@ -2327,6 +2326,12 @@ body.admin-view #app-version {
   backdrop-filter: blur(8px) !important;
   -webkit-backdrop-filter: blur(8px) !important;
   animation: adminFadeIn 0.2s ease-out;
+}
+
+/* 11. 消除地图瓦片微小缝隙（1px白线/格子缝） */
+.leaflet-tile-container img {
+  /* 使用 1px 负外边距，在不拉伸图片（无 scale、保持 256px/512px 原生点对点画质）的前提下，让绝对定位的瓦片在渲染边界上产生 1px 物理重叠，完美遮盖亚像素缝隙，且 3D 动画毫无影响 */
+  margin: -1px !important;
 }
 
 
