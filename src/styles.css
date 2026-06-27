@@ -947,6 +947,21 @@ body.admin-view #app-version {
 .leaflet-control-layers {
   border-radius: 8px;
   box-shadow: 0 10px 30px rgba(20, 37, 42, 0.16);
+  border: none !important;
+}
+
+.leaflet-control-layers-toggle {
+  width: 30px !important;
+  height: 30px !important;
+  background-size: 16px 16px !important;
+  border-radius: 8px !important;
+}
+
+.leaflet-control-layers-expanded {
+  width: auto !important;
+  height: auto !important;
+  padding: 10px 14px !important;
+  border-radius: 8px;
 }
 
 .leaflet-top {
