@@ -634,16 +634,17 @@ function initLongPressPointCreation (map) {
 
   const onPointerDown = (event) => {
     activePointerIds.add(event.pointerId)
-    try {
-      container.setPointerCapture?.(event.pointerId)
-    } catch (err) {
-      // 部分浏览器不允许对当前事件捕获指针，忽略即可。
-    }
     if (activePointerIds.size > 1 || event.isPrimary === false) {
       clearPress()
       return
     }
     if (isAddingPoint || event.button > 0 || isInteractiveTarget(event.target)) return
+
+    try {
+      container.setPointerCapture?.(event.pointerId)
+    } catch (err) {
+      // 部分浏览器不允许对当前事件捕获指针，忽略即可。
+    }
 
     const startX = event.clientX
     const startY = event.clientY
