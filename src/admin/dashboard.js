@@ -1,8 +1,27 @@
 import { adminApi, getAdminToken, loginAdmin, logoutAdmin } from './api.js'
 import { renderLogin, renderShell } from './layout.js'
-import { adminState, setActiveTab, setNotice } from './state.js'
+import { adminState, setActiveTab, setNotice, registerNoticeListener } from './state.js'
 import { buildAdminPageUrl, getAdminPage, getAdminTabFromLocation } from './routes.js'
 import { showCheckboxConfirm, showConfirm } from '../ui/dialog.js'
+
+let noticeTimeoutId = null
+registerNoticeListener((message, error) => {
+  if (noticeTimeoutId) {
+    clearTimeout(noticeTimeoutId)
+    noticeTimeoutId = null
+  }
+  const text = error || message
+  if (text && text !== '正在加载' && text !== '正在登录') {
+    noticeTimeoutId = setTimeout(() => {
+      setNotice('')
+      if (document.querySelector('[data-admin-login]')) {
+        renderLogin(adminState)
+      } else {
+        renderDashboard()
+      }
+    }, 4000)
+  }
+})
 
 function getAdminTabFromUrl () {
   return getAdminTabFromLocation(window.location)
@@ -174,6 +193,16 @@ async function handleClick (event) {
 
     if (action === 'refresh') {
       await loadDashboard()
+      return
+    }
+
+    if (action === 'close-notice') {
+      setNotice('')
+      if (document.querySelector('[data-admin-login]')) {
+        renderLogin(adminState)
+      } else {
+        renderDashboard()
+      }
       return
     }
   }

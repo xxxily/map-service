@@ -4,7 +4,14 @@ import { escapeHtml } from './utils.js'
 export function renderNotice (state) {
   if (!state.message && !state.error && !state.loading) return ''
   const text = state.error || state.message || '正在加载'
-  return `<div class="admin-notice ${state.error ? 'is-error' : ''}">${escapeHtml(text)}</div>`
+  const isError = Boolean(state.error)
+  const isLoading = !state.error && (state.message === '正在加载' || state.message === '正在登录' || state.loading)
+  return `
+    <div class="admin-notice ${isError ? 'is-error' : ''}">
+      <span>${escapeHtml(text)}</span>
+      ${!isLoading ? '<button type="button" class="admin-notice-close" data-admin-action="close-notice" aria-label="关闭提示">×</button>' : ''}
+    </div>
+  `
 }
 
 export function renderLogin (state) {

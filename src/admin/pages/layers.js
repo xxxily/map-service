@@ -14,7 +14,7 @@ export function renderLayersPage (state) {
           <article class="admin-layer-card">
             <header>
               <h3>${escapeHtml(provider.name)}</h3>
-              <span>${escapeHtml(provider.id)}</span>
+              <span class="admin-status">${escapeHtml(provider.id)}</span>
             </header>
             <dl>
               <div><dt>厂商</dt><dd>${escapeHtml(provider.vendor)}</dd></div>

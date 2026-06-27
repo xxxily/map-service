@@ -28,22 +28,32 @@ export function renderOverviewPage (state) {
           <span class="admin-badge">${escapeHtml(visitStatus || visits.total || 0)}</span>
         </div>
         <div class="admin-stat-row">
-          ${Object.entries(visits.statusGroups || {}).map(([group, count]) => `
-            <div><span>${escapeHtml(group)}</span><strong>${count}</strong></div>
-          `).join('') || `<div><span>请求</span><strong>${escapeHtml(visitStatus || 0)}</strong></div>`}
+          ${Object.entries(visits.statusGroups || {}).map(([group, count]) => {
+            let statusClass = ''
+            if (group.startsWith('2')) statusClass = 'status-2xx'
+            else if (group.startsWith('3')) statusClass = 'status-3xx'
+            else if (group.startsWith('4') || group.startsWith('5')) statusClass = 'status-err'
+            return `<div class="${statusClass}"><span>${escapeHtml(group)}</span><strong>${count}</strong></div>`
+          }).join('') || `<div><span>请求</span><strong>${escapeHtml(visitStatus || 0)}</strong></div>`}
         </div>
         <div class="admin-table-wrap">
           <table class="admin-table">
             <thead><tr><th>方法</th><th>路径</th><th>状态</th><th>时间</th></tr></thead>
             <tbody>
-              ${(visits.recentRequests || []).slice(0, 8).map(record => `
-                <tr>
-                  <td>${escapeHtml(record.method)}</td>
-                  <td>${escapeHtml(record.path)}</td>
-                  <td>${escapeHtml(record.status)}</td>
-                  <td>${escapeHtml(record.timestamp)}</td>
-                </tr>
-              `).join('') || '<tr><td colspan="4">暂无访问记录</td></tr>'}
+              ${(visits.recentRequests || []).slice(0, 8).map(record => {
+                let statusBadge = ''
+                if (String(record.status).startsWith('2')) statusBadge = 'badge-2xx'
+                else if (String(record.status).startsWith('3')) statusBadge = 'badge-3xx'
+                else if (String(record.status).startsWith('4') || String(record.status).startsWith('5')) statusBadge = 'badge-err'
+                return `
+                  <tr>
+                    <td><code class="admin-method-code">${escapeHtml(record.method)}</code></td>
+                    <td class="admin-path-td">${escapeHtml(record.path)}</td>
+                    <td><span class="admin-status-badge ${statusBadge}">${escapeHtml(record.status)}</span></td>
+                    <td class="admin-time-td">${escapeHtml(record.timestamp)}</td>
+                  </tr>
+                `
+              }).join('') || '<tr><td colspan="4">暂无访问记录</td></tr>'}
             </tbody>
           </table>
         </div>

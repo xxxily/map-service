@@ -39,11 +39,21 @@ export const adminState = {
   AMap: null,
   map: null,
   rectangle: null,
+  precacheMapHeight: 260,
+}
+
+let noticeListener = null
+
+export function registerNoticeListener (listener) {
+  noticeListener = listener
 }
 
 export function setNotice (message = '', error = '') {
   adminState.message = message
   adminState.error = error
+  if (noticeListener) {
+    noticeListener(message, error)
+  }
 }
 
 export function setActiveTab (tabId) {

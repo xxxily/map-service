@@ -27,6 +27,22 @@ function getTaskStatusLabel (status) {
   return TASK_STATUS_LABELS[status] || status
 }
 
+const TASK_STATUS_ICONS = {
+  queued: '⏳',
+  running: '⚙',
+  pausing: '⏸',
+  paused: '⏸',
+  completed: '✓',
+  completed_with_errors: '⚠',
+  failed: '✗',
+  interrupted: '⏹',
+  deleting: '🗑',
+}
+
+function getTaskStatusIcon (status) {
+  return TASK_STATUS_ICONS[status] || '•'
+}
+
 function getPrecacheFormState (state, providers) {
   const firstProvider = providers[0]
   const form = state.precacheForm || {}
@@ -73,8 +89,8 @@ export function renderPrecachePage (state) {
   const tasks = getTasksForRender(state)
 
   return `
-    <div class="admin-grid">
-      <section class="admin-panel admin-panel-wide">
+    <div class="admin-precache-stack">
+      <section class="admin-panel admin-panel-wide admin-precache-form-panel">
         <div class="admin-panel-head">
           <h2>预缓存区域</h2>
           <button type="button" data-admin-action="sync-bounds">取当前视野</button>
@@ -85,6 +101,7 @@ export function renderPrecachePage (state) {
         </form>
         <div class="admin-search-results" data-place-search-results></div>
         <div id="admin-precache-map" class="admin-precache-map"></div>
+        <div class="admin-map-resizer" title="拖动调整地图高度"><span class="admin-map-resizer-line"></span></div>
         <form class="admin-form admin-precache-form" data-precache-form>
           <label>
             <span>缓存图层</span>
@@ -158,7 +175,7 @@ function renderRangeSummary (ranges) {
 
 function renderTaskPanel (tasks) {
   return `
-    <section class="admin-panel admin-panel-wide" data-precache-task-panel>
+    <section class="admin-panel admin-panel-wide admin-precache-task-panel" data-precache-task-panel>
       <div class="admin-panel-head">
         <h2>任务</h2>
         <span class="admin-badge">${tasks.length}</span>
@@ -176,7 +193,7 @@ function renderTaskCard (task) {
     <article class="admin-task-card">
       <div class="admin-task-main">
         <div class="admin-task-title">
-          <span class="admin-status">${escapeHtml(getTaskStatusLabel(task.status))}</span>
+          <span class="admin-status admin-status-${task.status}" title="${escapeHtml(getTaskStatusLabel(task.status))}">${escapeHtml(getTaskStatusIcon(task.status))}</span>
           <strong>${escapeHtml(task.providerId)}</strong>
           <small>${formatTime(task.updatedAt)}</small>
         </div>
@@ -667,6 +684,9 @@ export function initPrecacheMap (state, api) {
 
   const container = state.root.querySelector('#admin-precache-map')
   if (!container) return
+  if (state.precacheMapHeight) {
+    container.style.height = `${state.precacheMapHeight}px`
+  }
   state.onPrecacheBoundsChange = () => schedulePrecacheEstimate(state, api)
 
   // 移除之前切换面板残留的高德搜索建议气泡 DOM 节点，防止内存泄露和气泡悬空
@@ -732,6 +752,40 @@ export function initPrecacheMap (state, api) {
         })
       }
     })
+  }
+
+  // 绑定地图高度拖拽调整
+  const resizer = state.root.querySelector('.admin-map-resizer')
+  if (resizer && container) {
+    let startY = 0
+    let startHeight = 0
+
+    const handlePointerDown = (e) => {
+      startY = e.clientY
+      startHeight = container.offsetHeight
+      document.addEventListener('pointermove', handlePointerMove)
+      document.addEventListener('pointerup', handlePointerUp)
+      resizer.classList.add('is-dragging')
+      e.preventDefault()
+    }
+
+    const handlePointerMove = (e) => {
+      const deltaY = e.clientY - startY
+      const newHeight = Math.min(800, Math.max(150, startHeight + deltaY))
+      container.style.height = `${newHeight}px`
+      state.precacheMapHeight = newHeight
+      if (state.map) {
+        state.map.invalidateSize()
+      }
+    }
+
+    const handlePointerUp = () => {
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', handlePointerUp)
+      resizer.classList.remove('is-dragging')
+    }
+
+    resizer.addEventListener('pointerdown', handlePointerDown)
   }
 }
 
