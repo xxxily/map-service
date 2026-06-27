@@ -43,7 +43,7 @@ if (L.Map.TouchGestures) {
       if (vector.y < 0) { bearingDelta += 180 }
 
       // 旋转角度阈值（度），只有两指旋转超过此角度才触发旋转，防止单纯捏合放大缩小时误触
-      const ROTATION_THRESHOLD = 20
+      const ROTATION_THRESHOLD = 30
       if (!this._rotationThresholdTriggered) {
         let normalizedDelta = bearingDelta
         while (normalizedDelta > 180) normalizedDelta -= 360
