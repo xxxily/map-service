@@ -10,6 +10,10 @@ export default {
     'webrd02.is.autonavi.com',
     'webrd03.is.autonavi.com',
     'webrd04.is.autonavi.com',
+    'wprd01.is.autonavi.com',
+    'wprd02.is.autonavi.com',
+    'wprd03.is.autonavi.com',
+    'wprd04.is.autonavi.com',
   ],
   allowedPathPatterns: [
     /^\/maps\/vt$/,

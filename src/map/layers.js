@@ -25,10 +25,14 @@ function relayTileUrl (targetUrl) {
   return `${tileRelayEndpoint}?url=${encodedTarget}`
 }
 
-const googleSatellite = relayTileUrl('https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}')
-const googleStreet = relayTileUrl('https://www.google.com/maps/vt?lyrs=m@189&gl=cn&x={x}&y={y}&z={z}')
-const autonaviSatellite = relayTileUrl('https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}')
-const autonaviRoad = relayTileUrl('https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}')
+const isRetina = L.Browser.retina
+const autonaviScale = isRetina ? '2' : '1'
+const googleScale = isRetina ? '2' : '1'
+
+const googleSatellite = relayTileUrl(`https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}&scale=${googleScale}`)
+const googleStreet = relayTileUrl(`https://www.google.com/maps/vt?lyrs=m@189&gl=cn&x={x}&y={y}&z={z}&scale=${googleScale}`)
+const autonaviSatellite = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=6&x={x}&y={y}&z={z}&scl=${autonaviScale}`)
+const autonaviRoad = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}&scl=${autonaviScale}`)
 
 function createTileLayer (url, options) {
   return L.tileLayer(url, {
