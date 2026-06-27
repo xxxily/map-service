@@ -283,9 +283,9 @@ async function initLeafletMap () {
     }
   })
 
-  // 绑定全局截图快捷键 (Alt+S)
+  // 绑定全局截图快捷键 (Alt+Shift+S)
   document.addEventListener('keydown', (e) => {
-    if (e.altKey && e.key.toLowerCase() === 's') {
+    if (e.altKey && e.shiftKey && e.code === 'KeyS') {
       e.preventDefault()
       if (window.triggerMapScreenshot) {
         window.triggerMapScreenshot(map)

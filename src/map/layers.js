@@ -277,7 +277,7 @@ function initScreenshotControl (map) {
       const container = L.DomUtil.create('div', 'leaflet-control-screenshot leaflet-bar leaflet-control')
       const button = L.DomUtil.create('a', 'leaflet-control-screenshot-btn', container)
       button.href = '#'
-      button.title = '地图截图保存 (Alt+S / ⌥+S)'
+      button.title = '地图截图保存 (Alt+Shift+S / ⌥+⇧+S)'
       button.role = 'button'
       button.style.display = 'flex'
       button.style.alignItems = 'center'
