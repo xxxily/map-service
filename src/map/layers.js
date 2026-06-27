@@ -211,6 +211,38 @@ export function triggerMapScreenshot (map) {
         link.download = `map_screenshot_${timeStr}.png`
         link.href = dataUrl
         link.click()
+
+        const showToast = (text, bg) => {
+          const t = document.createElement('div')
+          t.className = 'screenshot-toast'
+          if (bg) t.style.background = bg
+          t.innerText = text
+          document.body.appendChild(t)
+          setTimeout(() => t.remove(), 3500)
+        }
+
+        if (navigator.clipboard && window.ClipboardItem) {
+          canvas.toBlob(blob => {
+            if (!blob) {
+              showToast('截图已下载')
+              return
+            }
+            try {
+              const item = new ClipboardItem({ 'image/png': blob })
+              navigator.clipboard.write([item]).then(() => {
+                showToast('截图已保存并已复制到剪贴板！', '#0f766e')
+              }).catch(err => {
+                console.warn('复制到剪贴板失败，可能由于安全域/权限限制:', err)
+                showToast('截图已下载 (浏览器安全限制，无法自动复制)', '#d97706')
+              })
+            } catch (err) {
+              console.warn('创建 ClipboardItem 失败:', err)
+              showToast('截图已下载')
+            }
+          }, 'image/png')
+        } else {
+          showToast('截图已下载 (当前浏览器不支持剪贴板图片写入)', '#0f766e')
+        }
       }).catch(err => {
         elementsToHide.forEach(el => {
           if (el) el.style.removeProperty('display')
