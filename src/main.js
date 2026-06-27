@@ -19,6 +19,89 @@ import { initKmlSupport } from './map/kml.js'
 import { escapeHtml } from './admin/utils.js'
 import { initGuidelines, toggleGuidelineMode } from './map/guidelines.js'
 
+// 优化移动端手势缩放时容易误触旋转的问题：加入旋转阈值(12度)与无缝软启动交互
+if (L.Map.TouchGestures) {
+  const originalTouchStart = L.Map.TouchGestures.prototype._onTouchStart
+  L.Map.TouchGestures.prototype._onTouchStart = function (e) {
+    originalTouchStart.call(this, e)
+    this._rotationThresholdTriggered = false
+  }
+
+  L.Map.TouchGestures.prototype._onTouchMove = function (e) {
+    if (!e.touches || e.touches.length !== 2 || !(this._zooming || this._rotating)) { return }
+
+    const map = this._map
+    const p1 = map.mouseEventToContainerPoint(e.touches[0])
+    const p2 = map.mouseEventToContainerPoint(e.touches[1])
+    const vector = p1.subtract(p2)
+    const scale = p1.distanceTo(p2) / this._startDist
+    let delta
+
+    if (this._rotating) {
+      const theta = Math.atan(vector.x / vector.y)
+      let bearingDelta = (theta - this._startTheta) * L.DomUtil.RAD_TO_DEG
+      if (vector.y < 0) { bearingDelta += 180 }
+
+      // 旋转角度阈值（度），只有两指旋转超过此角度才触发旋转，防止单纯捏合放大缩小时误触
+      const ROTATION_THRESHOLD = 12
+      if (!this._rotationThresholdTriggered) {
+        let normalizedDelta = bearingDelta
+        while (normalizedDelta > 180) normalizedDelta -= 360
+        while (normalizedDelta < -180) normalizedDelta += 360
+
+        if (Math.abs(normalizedDelta) >= ROTATION_THRESHOLD) {
+          this._rotationThresholdTriggered = true
+          // 首次触发时重新锁定起始角度（软启动），防止画面发生角度突变跳跃，提供丝滑体验
+          this._startTheta = theta
+          if (vector.y < 0) {
+            this._startBearing = map.getBearing() + 180
+          } else {
+            this._startBearing = map.getBearing()
+          }
+          bearingDelta = 0
+        }
+      }
+
+      if (this._rotationThresholdTriggered && bearingDelta) {
+        map.setBearing(this._startBearing - bearingDelta)
+      }
+    }
+
+    if (this._zooming) {
+      this._zoom = map.getScaleZoom(scale, this._startZoom)
+
+      if (!map.options.bounceAtZoomLimits && (
+        (this._zoom < map.getMinZoom() && scale < 1) ||
+        (this._zoom > map.getMaxZoom() && scale > 1))) {
+        this._zoom = map._limitZoom(this._zoom)
+      }
+
+      if (map.options.touchZoom === 'center') {
+        this._center = this._startLatLng
+        if (scale === 1) { return }
+      } else {
+        delta = p1._add(p2)._divideBy(2)._subtract(this._centerPoint)
+        if (scale === 1 && delta.x === 0 && delta.y === 0) { return }
+
+        const alpha = -map.getBearing() * L.DomUtil.DEG_TO_RAD
+        this._center = map.unproject(map.project(this._pinchStartLatLng).subtract(delta.rotate(alpha)))
+      }
+    }
+
+    if (!this._moved) {
+      map._moveStart(true, false)
+      this._moved = true
+    }
+
+    L.Util.cancelAnimFrame(this._animRequest)
+
+    const moveFn = map._move.bind(map, this._center, this._zoom, { pinch: true, round: false }, undefined)
+    this._animRequest = L.Util.requestAnimFrame(moveFn, this, true)
+
+    L.DomEvent.preventDefault(e)
+  }
+}
+
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
 
 L.Icon.Default.mergeOptions({
