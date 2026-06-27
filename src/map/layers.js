@@ -32,7 +32,7 @@ const googleScale = isRetina ? '2' : '1'
 const googleSatellite = relayTileUrl(`https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}&scale=${googleScale}`)
 const googleStreet = relayTileUrl(`https://www.google.com/maps/vt?lyrs=m@189&gl=cn&x={x}&y={y}&z={z}&scale=${googleScale}`)
 const autonaviSatellite = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=6&x={x}&y={y}&z={z}&scl=${autonaviScale}`)
-const autonaviRoad = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}&scl=${autonaviScale}`)
+const autonaviRoad = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}&scl=1`)
 
 function createTileLayer (url, options) {
   return L.tileLayer(url, {
@@ -85,7 +85,7 @@ export function initLayerControl (map, initialLayerName = '') {
         maxNativeZoom: 18,
         attribution: '高德地图 AutoNavi.com',
         subdomains: '1234',
-        opacity: 0.8,
+        opacity: 0.7,
       }),
     ]),
 
