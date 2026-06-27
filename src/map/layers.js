@@ -123,19 +123,29 @@ export function initLayerControl (map, initialLayerName = '') {
 
 export function setLayerControlVisible (layerControl, map, visible) {
   layerControl._container.style.display = visible ? 'block' : 'none'
-  const zoomControl = document.getElementsByClassName('leaflet-control-zoom')[0]
-  if (zoomControl) {
-    zoomControl.style.display = visible ? 'block' : 'none'
-    return
+  let zoomControl = document.getElementsByClassName('leaflet-control-zoom')[0]
+  let screenshotControl = document.getElementsByClassName('leaflet-control-screenshot')[0]
+
+  if (!zoomControl && visible) {
+    L.control.zoom({
+      zoomInTitle: '放大',
+      zoomOutTitle: '缩小',
+    }).addTo(map)
+    zoomControl = document.getElementsByClassName('leaflet-control-zoom')[0]
+    if (zoomControl) {
+      zoomControl.style.display = 'block'
+    }
+
+    initScreenshotControl(map)
+    screenshotControl = document.getElementsByClassName('leaflet-control-screenshot')[0]
   }
 
-  if (!visible) return
-
-  L.control.zoom({
-    zoomInTitle: '放大',
-    zoomOutTitle: '缩小',
-  }).addTo(map)
-  document.getElementsByClassName('leaflet-control-zoom')[0].style.display = 'block'
+  if (zoomControl) {
+    zoomControl.style.display = visible ? 'block' : 'none'
+  }
+  if (screenshotControl) {
+    screenshotControl.style.display = visible ? 'block' : 'none'
+  }
 }
 
 export function toggleLayerControl (layerControl, map) {
@@ -143,3 +153,136 @@ export function toggleLayerControl (layerControl, map) {
   setLayerControlVisible(layerControl, map, visible)
   return visible
 }
+
+function loadHtml2Canvas () {
+  if (window.html2canvas) return Promise.resolve(window.html2canvas)
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js'
+    script.onload = () => resolve(window.html2canvas)
+    script.onerror = reject
+    document.head.appendChild(script)
+  })
+}
+
+export function triggerMapScreenshot (map) {
+  const toast = document.createElement('div')
+  toast.className = 'screenshot-toast'
+  toast.innerText = '正在生成地图截图...'
+  document.body.appendChild(toast)
+
+  loadHtml2Canvas().then(html2canvas => {
+    const mapContainer = map.getContainer()
+    const elementsToHide = [
+      mapContainer.querySelector('.leaflet-control-container'),
+      document.getElementById('map-menu'),
+      document.getElementById('guideline-toolbar'),
+      document.getElementById('kml-panel'),
+      ...document.querySelectorAll('.amap-sug-result')
+    ]
+
+    elementsToHide.forEach(el => {
+      if (el) el.style.setProperty('display', 'none', 'important')
+    })
+
+    window.requestAnimationFrame(() => {
+      html2canvas(mapContainer, {
+        useCORS: true,
+        logging: false,
+        backgroundColor: null,
+        ignoreElements: (element) => {
+          if (element.classList.contains('leaflet-control-container') ||
+              element.id === 'map-menu' ||
+              element.id === 'guideline-toolbar' ||
+              element.id === 'kml-panel') {
+            return true
+          }
+          return false
+        }
+      }).then(canvas => {
+        elementsToHide.forEach(el => {
+          if (el) el.style.removeProperty('display')
+        })
+        toast.remove()
+
+        const dataUrl = canvas.toDataURL('image/png')
+        const link = document.createElement('a')
+        const timeStr = new Date().toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/:/g, '-')
+        link.download = `map_screenshot_${timeStr}.png`
+        link.href = dataUrl
+        link.click()
+      }).catch(err => {
+        elementsToHide.forEach(el => {
+          if (el) el.style.removeProperty('display')
+        })
+        toast.remove()
+        console.error('截图失败:', err)
+
+        const errorToast = document.createElement('div')
+        errorToast.className = 'screenshot-toast'
+        errorToast.style.background = '#dc2626'
+        errorToast.innerText = '截图生成失败，请重试'
+        document.body.appendChild(errorToast)
+        setTimeout(() => errorToast.remove(), 3000)
+      })
+    })
+  }).catch(err => {
+    toast.remove()
+    console.error('加载 html2canvas 失败:', err)
+  })
+}
+
+function initScreenshotControl (map) {
+  const ScreenshotControl = L.Control.extend({
+    options: {
+      position: 'topleft'
+    },
+    onAdd: function (map) {
+      const container = L.DomUtil.create('div', 'leaflet-control-screenshot leaflet-bar leaflet-control')
+      const button = L.DomUtil.create('a', 'leaflet-control-screenshot-btn', container)
+      button.href = '#'
+      button.title = '地图截图保存 (Alt+S / ⌥+S)'
+      button.role = 'button'
+      button.style.display = 'flex'
+      button.style.alignItems = 'center'
+      button.style.justifyContent = 'center'
+      button.style.width = '30px'
+      button.style.height = '30px'
+      button.style.background = '#fff'
+      button.style.color = '#0f766e'
+      button.innerHTML = `
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+      `
+
+      L.DomEvent.disableClickPropagation(container)
+      L.DomEvent.disableScrollPropagation(container)
+
+      // 使用原生捕获模式 (capture: true)，确保在事件分发给 Leaflet 前优先处理，防止被 Leaflet 手势或地图点击拦截
+      const handleScreenshotClick = (e) => {
+        e.stopPropagation()
+        e.preventDefault()
+        triggerMapScreenshot(map)
+      }
+
+      container.addEventListener('click', handleScreenshotClick, true)
+      button.addEventListener('click', handleScreenshotClick, true)
+
+      // 阻止 mousedown/touchstart/pointerdown 阶段冒泡，避免被 Leaflet 地图误认作拖拽或缩放操作
+      const preventDefaultPropagation = (e) => {
+        e.stopPropagation()
+      }
+      container.addEventListener('mousedown', preventDefaultPropagation, true)
+      container.addEventListener('touchstart', preventDefaultPropagation, true)
+      container.addEventListener('pointerdown', preventDefaultPropagation, true)
+
+      return container
+    }
+  })
+
+  new ScreenshotControl().addTo(map)
+}
+
+window.triggerMapScreenshot = triggerMapScreenshot

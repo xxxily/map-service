@@ -282,6 +282,16 @@ async function initLeafletMap () {
       actionMap[action]()
     }
   })
+
+  // 绑定全局截图快捷键 (Alt+S)
+  document.addEventListener('keydown', (e) => {
+    if (e.altKey && e.key.toLowerCase() === 's') {
+      e.preventDefault()
+      if (window.triggerMapScreenshot) {
+        window.triggerMapScreenshot(map)
+      }
+    }
+  })
 }
 
 async function checkMapAccessBeforeInit () {

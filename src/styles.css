@@ -2310,6 +2310,25 @@ body.admin-view #app-version {
   background: #0f766e !important;
 }
 
+/* 10. 地图截图提示飘窗 */
+.screenshot-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20000;
+  padding: 10px 20px;
+  background: rgba(15, 118, 110, 0.9) !important;
+  color: #ffffff !important;
+  border-radius: 20px !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  animation: adminFadeIn 0.2s ease-out;
+}
+
 
 
 
