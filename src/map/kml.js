@@ -13,6 +13,202 @@ const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
 let kmlList = []
 
+let publicKmlList = []
+let isEditingPublicKml = false
+let editingPublicKmlId = null
+let editingPublicKml = null
+let isPublicKmlDirty = false
+
+const PUBLIC_PREFS_KEY = 'map_shared_kml_prefs'
+let publicKmlPrefs = {}
+
+function loadPublicPrefs () {
+  try {
+    publicKmlPrefs = JSON.parse(localStorage.getItem(PUBLIC_PREFS_KEY) || '{}')
+  } catch (err) {
+    publicKmlPrefs = {}
+  }
+}
+
+function savePublicPrefs () {
+  localStorage.setItem(PUBLIC_PREFS_KEY, JSON.stringify(publicKmlPrefs))
+}
+
+function isAdminLoggedIn () {
+  return Boolean(localStorage.getItem('mapServiceAdminToken'))
+}
+
+function isKmlEditable (kmlFile) {
+  if (kmlFile.isPublic) {
+    return isEditingPublicKml && editingPublicKmlId === kmlFile.id
+  }
+  return true
+}
+
+function saveKmlChanges (kmlFile) {
+  if (kmlFile.isPublic) {
+    isPublicKmlDirty = true
+  } else {
+    saveToStorage()
+  }
+}
+
+async function loadPublicKmls (map) {
+  loadPublicPrefs()
+  try {
+    const list = await window.fetch('/api/v1/kml/shared').then(res => res.json()).then(payload => payload.result || [])
+    
+    const oldPublicKmls = new Map(publicKmlList.map(k => [k.id, k]))
+    
+    publicKmlList = list.map(kml => {
+      const oldKml = oldPublicKmls.get(kml.id)
+      return {
+        ...kml,
+        isPublic: true,
+        enabled: Boolean(publicKmlPrefs[kml.id]),
+        features: oldKml ? oldKml.features : [],
+      }
+    })
+
+    await Promise.all(publicKmlList.map(async kml => {
+      if (kml.enabled && (!kml.features || kml.features.length === 0)) {
+        try {
+          const detail = await window.fetch(`/api/v1/kml/shared/${kml.id}`).then(res => res.json()).then(payload => payload.result)
+          kml.features = detail.features || []
+          renderKmlLayers(map, kml)
+        } catch (err) {
+          console.error(`Failed to load public KML detail for ${kml.id}`, err)
+        }
+      }
+    }))
+  } catch (err) {
+    console.error('Failed to load public KML list', err)
+  }
+}
+
+async function checkPublicKmlEditMode (map) {
+  const params = new URLSearchParams(window.location.search)
+  const editId = params.get('editPublicKml')
+  if (!editId) return
+
+  const token = localStorage.getItem('mapServiceAdminToken')
+  if (!token) {
+    showAlert('您未登录管理员，无法编辑公共 KML 图层')
+    return
+  }
+
+  try {
+    const detail = await window.fetch(`/api/v1/admin/kml/${editId}`, {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }).then(res => {
+      if (!res.ok) throw new Error('加载公共 KML 数据失败')
+      return res.json()
+    }).then(payload => payload.result)
+
+    isEditingPublicKml = true
+    editingPublicKmlId = editId
+    editingPublicKml = {
+      ...detail,
+      isPublic: true,
+      enabled: true
+    }
+    isPublicKmlDirty = false
+
+    const existing = publicKmlList.find(k => k.id === editId)
+    if (existing) {
+      existing.enabled = true
+      existing.features = editingPublicKml.features
+    } else {
+      publicKmlList.push(editingPublicKml)
+    }
+
+    renderKmlLayers(map, editingPublicKml)
+    updateKmlPanelUI(map)
+    showEditingBanner(map)
+  } catch (err) {
+    showAlert(`加载公共 KML 编辑数据失败: ${err.message}`)
+  }
+}
+
+function showEditingBanner (map) {
+  document.getElementById('public-kml-edit-banner')?.remove()
+
+  const banner = document.createElement('div')
+  banner.id = 'public-kml-edit-banner'
+  banner.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; height: 50px;
+    background: #0f766e; color: #fff; z-index: 9999;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    font-size: 14px; box-sizing: border-box;
+  `
+  banner.innerHTML = `
+    <div style="font-weight: 500;">
+      🎯 <span style="background: #14b8a6; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 6px;">编辑公共图层</span>正在编辑：<strong>${escapeHtml(editingPublicKml.name)}</strong>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button type="button" id="public-kml-save-btn" style="padding: 6px 12px; font-size: 12px; font-weight: bold; background: #3182ce; color: white; border: none; border-radius: 4px; cursor: pointer; min-height: 28px; line-height: 1.25;">保存草稿</button>
+      <button type="button" id="public-kml-publish-btn" style="padding: 6px 12px; font-size: 12px; font-weight: bold; background: #48bb78; color: white; border: none; border-radius: 4px; cursor: pointer; min-height: 28px; line-height: 1.25;">保存并发布</button>
+      <button type="button" id="public-kml-exit-btn" style="padding: 6px 12px; font-size: 12px; font-weight: bold; background: #e53e3e; color: white; border: none; border-radius: 4px; cursor: pointer; min-height: 28px; line-height: 1.25;">退出</button>
+    </div>
+  `
+  document.body.appendChild(banner)
+
+  document.getElementById('public-kml-save-btn').addEventListener('click', () => saveEditingPublicKml(map, 'draft'))
+  document.getElementById('public-kml-publish-btn').addEventListener('click', () => saveEditingPublicKml(map, 'published'))
+  document.getElementById('public-kml-exit-btn').addEventListener('click', () => exitEditingPublicKml(map))
+}
+
+async function saveEditingPublicKml (map, status) {
+  const token = localStorage.getItem('mapServiceAdminToken')
+  try {
+    await window.fetch(`/api/v1/admin/kml/${editingPublicKml.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        features: editingPublicKml.features,
+        status: status
+      })
+    }).then(res => {
+      if (!res.ok) throw new Error('保存失败')
+      return res.json()
+    })
+
+    isPublicKmlDirty = false
+    editingPublicKml.status = status
+    showAlert(status === 'published' ? '保存并发布成功！' : '保存草稿成功！')
+  } catch (err) {
+    showAlert(`保存失败: ${err.message}`)
+  }
+}
+
+async function exitEditingPublicKml (map) {
+  if (isPublicKmlDirty) {
+    const confirmed = await showConfirm('有未保存的修改，确定退出编辑吗？')
+    if (!confirmed) return
+  }
+
+  document.getElementById('public-kml-edit-banner')?.remove()
+
+  isEditingPublicKml = false
+  editingPublicKmlId = null
+  editingPublicKml = null
+  isPublicKmlDirty = false
+
+  const url = new URL(window.location.href)
+  url.searchParams.delete('editPublicKml')
+  window.history.replaceState(null, '', url.pathname + url.search)
+  
+  await loadPublicKmls(map)
+  renderAllKmls(map)
+  updateKmlPanelUI(map)
+}
+
 const kmlLayerGroups = new Map()
 const featureLayers = new Map()
 const expandedKmlIds = new Set()
@@ -165,6 +361,9 @@ function getEnabledKmlFiles () {
 }
 
 function resolveTargetKmlId (preferredKmlId = '') {
+  if (isEditingPublicKml && editingPublicKmlId) {
+    return editingPublicKmlId
+  }
   const enabledFiles = getEnabledKmlFiles()
   const candidates = [
     preferredKmlId,
@@ -176,10 +375,17 @@ function resolveTargetKmlId (preferredKmlId = '') {
 }
 
 function buildKmlTargetOptions () {
-  return getEnabledKmlFiles().map(kmlFile => ({
+  const options = getEnabledKmlFiles().map(kmlFile => ({
     value: kmlFile.id,
     label: `${kmlFile.name}${kmlFile.isDefault ? '（默认）' : ''}`,
   }))
+  if (isEditingPublicKml && editingPublicKml) {
+    options.push({
+      value: editingPublicKml.id,
+      label: `${editingPublicKml.name} (公共 - 编辑中)`,
+    })
+  }
+  return options
 }
 
 function createPointFeature (kmlFile, latlng, result) {
@@ -199,15 +405,20 @@ function getFeatureLabel (feature) {
   return `${name.slice(0, KML_POINT_LABEL_MAX_LENGTH)}...`
 }
 
-function renderFeaturePopup (kmlId, feature) {
-  return `
-    <div class="kml-popup-content">
-      <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
-      <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
+function renderFeaturePopup (kmlId, feature, isEditable) {
+  const actionsHtml = isEditable
+    ? `
       <div class="kml-popup-actions">
         <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">编辑</button>
         <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">删除</button>
       </div>
+    `
+    : ''
+  return `
+    <div class="kml-popup-content">
+      <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
+      <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
+      ${actionsHtml}
     </div>
   `
 }
@@ -215,25 +426,28 @@ function renderFeaturePopup (kmlId, feature) {
 function renderFeature (map, kmlFile, feature) {
   const kmlId = kmlFile.id
   let layer
+  const editable = isKmlEditable(kmlFile)
   
   if (feature.type === 'Point') {
     const latlng = getMapPoint(kmlFile, feature)
     layer = L.marker(latlng, {
-      draggable: true
+      draggable: editable
     })
 
-    // 监听拖动开始：保存撤销快照，并在拖动时关闭 popup 气泡
-    layer.on('dragstart', () => {
-      pushKmlHistory()
-      layer.closePopup()
-    })
-    
-    layer.on('dragend', () => {
-      const newLatLng = layer.getLatLng()
-      feature.coordinates = mapLatLngToStoredCoordinate(kmlFile, newLatLng)
-      saveToStorage()
-      updateKmlPanelUI(map)
-    })
+    if (editable) {
+      // 监听拖动开始：保存撤销快照，并在拖动时关闭 popup 气泡
+      layer.on('dragstart', () => {
+        pushKmlHistory()
+        layer.closePopup()
+      })
+      
+      layer.on('dragend', () => {
+        const newLatLng = layer.getLatLng()
+        feature.coordinates = mapLatLngToStoredCoordinate(kmlFile, newLatLng)
+        saveKmlChanges(kmlFile)
+        updateKmlPanelUI(map)
+      })
+    }
     layer.bindTooltip(escapeHtml(getFeatureLabel(feature)), {
       permanent: true,
       direction: 'top',
@@ -257,7 +471,7 @@ function renderFeature (map, kmlFile, feature) {
   }
   
   if (layer) {
-    layer.bindPopup(renderFeaturePopup(kmlId, feature), { closeButton: false })
+    layer.bindPopup(renderFeaturePopup(kmlId, feature, editable), { closeButton: false })
     featureLayers.set(feature.id, layer)
   }
   
@@ -272,8 +486,10 @@ function removeKmlLayers (map, kmlFile) {
     kmlLayerGroups.delete(kmlId)
   }
 
-  const targetKml = typeof kmlFile === 'string' ? kmlList.find(k => k.id === kmlFile) : kmlFile
-  targetKml?.features.forEach(feature => {
+  const targetKml = typeof kmlFile === 'string'
+    ? (kmlList.find(k => k.id === kmlFile) || publicKmlList.find(k => k.id === kmlFile))
+    : kmlFile
+  targetKml?.features?.forEach(feature => {
     featureLayers.delete(feature.id)
   })
 }
@@ -313,81 +529,181 @@ function renderAllKmls (map) {
   kmlList.forEach(kmlFile => {
     renderKmlLayers(map, kmlFile)
   })
+
+  publicKmlList.forEach(kmlFile => {
+    renderKmlLayers(map, kmlFile)
+  })
 }
 
 function updateKmlPanelUI (map) {
   ensureDefaultKmlFile()
   const container = document.getElementById('kml-files-list')
   if (!container) return
+
+  let html = ''
+
+  // 1. 公共图层分区
+  const publicCount = publicKmlList.length
+  const publicExpanded = !expandedKmlIds.has('public-section')
   
-  container.innerHTML = kmlList.map(kmlFile => {
-    const enabled = isKmlEnabled(kmlFile)
-    const expanded = expandedKmlIds.has(kmlFile.id)
-    const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
-    const visibilityButton = kmlFile.isDefault
-      ? ''
-      : `
-        <button type="button" class="kml-file-btn kml-visibility-btn ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-visible" data-kml-id="${kmlFile.id}" aria-label="${visibilityTitle}" aria-pressed="${enabled}" title="${visibilityTitle}">
-          <span class="kml-eye-icon" aria-hidden="true"></span>
+  html += `
+    <div class="kml-section-header" style="margin-top: 8px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(22, 61, 61, 0.12); display: flex; justify-content: space-between; align-items: center; cursor: pointer;" data-kml-action="toggle-section" data-section-id="public-section">
+      <span style="font-weight: bold; color: #0f766e; font-size: 13px;">公共图层 (${publicCount})</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <button type="button" class="kml-file-btn" data-kml-action="refresh-public" title="刷新公共图层" style="padding: 2px; width: auto; height: auto;" onclick="event.stopPropagation()">
+          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
         </button>
-      `
-    const deleteButton = kmlFile.isDefault
-      ? ''
-      : `<button type="button" class="kml-file-btn delete" data-kml-action="delete-file" data-kml-id="${kmlFile.id}" title="删除此 KML 文件" aria-label="删除此 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>`
-    return `
-      <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${kmlFile.id}">
-        <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${kmlFile.id}" aria-expanded="${expanded}" title="点击展开更多 KML 操作">
-          <div class="kml-file-title">
-            <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
-            <span class="kml-file-count">${kmlFile.features.length}</span>
-            ${kmlFile.isDefault ? '<span class="kml-file-state is-default">默认</span>' : ''}
-            ${enabled ? '' : '<span class="kml-file-state">已隐藏</span>'}
-          </div>
-          <div class="kml-file-actions">
-            <button type="button" class="kml-file-btn" data-kml-action="rename-file" data-kml-id="${kmlFile.id}" aria-label="重命名 KML 文件" title="重命名 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z"/></svg></button>
-            ${visibilityButton}
-          </div>
-        </div>
-        <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
-          <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
-            <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
-              <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
-              <span>坐标纠偏</span>
-            </label>
-            <div class="kml-file-tool-actions">
-              <button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="在此文件下新增标注点" aria-label="新增标注点"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
-              <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
-              ${deleteButton}
+        <span style="font-size: 11px; color: #6b7280;">${publicExpanded ? '▲' : '▼'}</span>
+      </div>
+    </div>
+    <div id="kml-public-list" style="display: ${publicExpanded ? 'flex' : 'none'}; flex-direction: column; gap: 8px; margin-bottom: 16px;">
+      ${publicKmlList.map(kmlFile => {
+        const enabled = isKmlEnabled(kmlFile)
+        const expanded = expandedKmlIds.has(kmlFile.id)
+        const visibilityTitle = enabled ? '隐藏此公共图层' : '显示此公共图层'
+        const isEditingThis = isEditingPublicKml && editingPublicKmlId === kmlFile.id
+        return `
+          <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${kmlFile.id}">
+            <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${kmlFile.id}">
+              <div class="kml-file-title">
+                <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
+                <span class="kml-file-count">${kmlFile.features ? kmlFile.features.length : (kmlFile.featureCount || 0)}</span>
+                <span class="kml-file-state is-default" style="background: #e0f2fe; color: #0369a1; padding: 1px 4px; font-size: 10px; font-weight: bold; border-radius: 4px;">公共</span>
+                ${isEditingThis ? '<span class="kml-file-state is-default" style="background: #fef3c7; color: #d97706; padding: 1px 4px; font-size: 10px; font-weight: bold; border-radius: 4px;">编辑中</span>' : ''}
+                ${enabled ? '' : '<span class="kml-file-state">已隐藏</span>'}
+              </div>
+              <div class="kml-file-actions">
+                <button type="button" class="kml-file-btn kml-visibility-btn ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-visible" data-kml-id="${kmlFile.id}" aria-label="${visibilityTitle}" aria-pressed="${enabled}" title="${visibilityTitle}">
+                  <span class="kml-eye-icon" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+            <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
+              <div class="kml-file-toolbox">
+                <label class="kml-correction-switch" title="公共图层不可在此修改纠偏配置">
+                  <input type="checkbox" disabled checked ${kmlFile.coordCorrection !== 'none' ? 'checked' : ''}>
+                  <span>坐标纠偏</span>
+                </label>
+                <div class="kml-file-tool-actions">
+                  ${isEditingThis ? `<button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="新增标注点" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>` : ''}
+                  <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
+                </div>
+              </div>
+              <div class="kml-features-list">
+                ${(kmlFile.features || []).map(feat => {
+                  let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
+                  if (feat.type === 'LineString') {
+                    iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>'
+                  }
+                  if (feat.type === 'Polygon') {
+                    iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
+                  }
+                  return `
+                    <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
+                      <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
+                        <span class="kml-feature-icon">${iconSvg}</span>
+                        <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
+                      </div>
+                      ${isEditingThis ? `
+                        <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
+                      ` : ''}
+                    </div>
+                  `
+                }).join('')}
+              </div>
             </div>
           </div>
-          <div class="kml-features-list">
-            ${kmlFile.features.map(feat => {
-              let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
-              if (feat.type === 'LineString') {
-                iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>'
-              }
-              if (feat.type === 'Polygon') {
-                iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
-              }
-              return `
-                <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
-                  <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
-                    <span class="kml-feature-icon">${iconSvg}</span>
-                    <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
-                  </div>
-                  <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
+        `
+      }).join('') || '<div style="font-size: 12px; color: #9ca3af; text-align: center; padding: 8px 0;">无已发布公共图层</div>'}
+    </div>
+  `
+
+  // 2. 个人图层分区
+  html += `
+    <div style="font-weight: bold; color: #0f766e; font-size: 13px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(22, 61, 61, 0.12);">
+      个人图层 (${kmlList.length})
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      ${kmlList.map(kmlFile => {
+        const enabled = isKmlEnabled(kmlFile)
+        const expanded = expandedKmlIds.has(kmlFile.id)
+        const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
+        const visibilityButton = kmlFile.isDefault
+          ? ''
+          : `
+            <button type="button" class="kml-file-btn kml-visibility-btn ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-visible" data-kml-id="${kmlFile.id}" aria-label="${visibilityTitle}" aria-pressed="${enabled}" title="${visibilityTitle}">
+              <span class="kml-eye-icon" aria-hidden="true"></span>
+            </button>
+          `
+        const shareButton = isAdminLoggedIn()
+          ? `
+            <button type="button" class="kml-file-btn" data-kml-action="share-file" data-kml-id="${kmlFile.id}" title="共享为公共 KML" aria-label="共享为公共 KML" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;">
+              <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 14px; height: 14px; stroke-linecap: round; stroke-linejoin: round;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+            </button>
+          `
+          : ''
+        const deleteButton = kmlFile.isDefault
+          ? ''
+          : `<button type="button" class="kml-file-btn delete" data-kml-action="delete-file" data-kml-id="${kmlFile.id}" title="删除此 KML 文件" aria-label="删除此 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>`
+        return `
+          <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${kmlFile.id}">
+            <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${kmlFile.id}" aria-expanded="${expanded}" title="点击展开更多 KML 操作">
+              <div class="kml-file-title">
+                <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
+                <span class="kml-file-count">${kmlFile.features.length}</span>
+                ${kmlFile.isDefault ? '<span class="kml-file-state is-default">默认</span>' : ''}
+                ${enabled ? '' : '<span class="kml-file-state">已隐藏</span>'}
+              </div>
+              <div class="kml-file-actions">
+                <button type="button" class="kml-file-btn" data-kml-action="rename-file" data-kml-id="${kmlFile.id}" aria-label="重命名 KML 文件" title="重命名 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+                ${shareButton}
+                ${visibilityButton}
+              </div>
+            </div>
+            <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
+              <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
+                <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
+                  <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
+                  <span>坐标纠偏</span>
+                </label>
+                <div class="kml-file-tool-actions">
+                  <button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="在此文件下新增标注点" aria-label="新增标注点"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
+                  <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
+                  ${deleteButton}
                 </div>
-              `
-            }).join('')}
+              </div>
+              <div class="kml-features-list">
+                ${kmlFile.features.map(feat => {
+                  let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
+                  if (feat.type === 'LineString') {
+                    iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>'
+                  }
+                  if (feat.type === 'Polygon') {
+                    iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
+                  }
+                  return `
+                    <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
+                      <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
+                        <span class="kml-feature-icon">${iconSvg}</span>
+                        <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
+                      </div>
+                      <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
+                    </div>
+                  `
+                }).join('')}
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
-    `
-  }).join('')
+        `
+      }).join('')}
+    </div>
+  `
+
+  container.innerHTML = html
 }
 
 function focusFeature (map, kmlId, featureId) {
-  const kmlFile = kmlList.find(k => k.id === kmlId)
+  const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
   if (!kmlFile) return
   if (!isKmlEnabled(kmlFile)) {
     showAlert('该 KML 文件已隐藏，请先启用后查看。')
@@ -413,7 +729,7 @@ function focusFeature (map, kmlId, featureId) {
 }
 
 async function handleEditFeature (map, kmlId, featureId) {
-  const kmlFile = kmlList.find(k => k.id === kmlId)
+  const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
   if (!kmlFile) return
   const feature = kmlFile.features.find(f => f.id === featureId)
   if (!feature) return
@@ -433,11 +749,11 @@ async function handleEditFeature (map, kmlId, featureId) {
   if (result) {
     feature.name = result.name.trim() || '未命名要素'
     feature.description = result.description.trim()
-    saveToStorage()
+    saveKmlChanges(kmlFile)
     
     const layer = featureLayers.get(featureId)
     if (layer) {
-      layer.setPopupContent(renderFeaturePopup(kmlId, feature))
+      layer.setPopupContent(renderFeaturePopup(kmlId, feature, isKmlEditable(kmlFile)))
       if (feature.type === 'Point') {
         layer.setTooltipContent(escapeHtml(getFeatureLabel(feature)))
       }
@@ -453,14 +769,14 @@ async function handleDeleteFeature (map, kmlId, featureId) {
   const confirmed = await showConfirm('确认删除此地图标注？')
   if (!confirmed) return
   
-  const kmlFile = kmlList.find(k => k.id === kmlId)
+  const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
   if (!kmlFile) return
   
   const index = kmlFile.features.findIndex(f => f.id === featureId)
   if (index === -1) return
   
   kmlFile.features.splice(index, 1)
-  saveToStorage()
+  saveKmlChanges(kmlFile)
   
   const layer = featureLayers.get(featureId)
   if (layer) {
@@ -557,7 +873,7 @@ async function createPointAtLatLng (map, latlng, options = {}) {
   if (!result) return
 
   const selectedKmlId = allowFileSelection ? result.kmlId : targetKmlId
-  const kmlFile = kmlList.find(k => k.id === selectedKmlId)
+  const kmlFile = kmlList.find(k => k.id === selectedKmlId) || publicKmlList.find(k => k.id === selectedKmlId)
   if (!isKmlEnabled(kmlFile)) {
     showAlert('该 KML 文件已隐藏，请先启用后再新增标注。')
     return
@@ -567,7 +883,7 @@ async function createPointAtLatLng (map, latlng, options = {}) {
   kmlFile.features.push(newFeat)
   expandedKmlIds.add(kmlFile.id)
   rememberTargetKmlId(kmlFile.id)
-  saveToStorage()
+  saveKmlChanges(kmlFile)
 
   const group = kmlLayerGroups.get(kmlFile.id)
   const layer = renderFeature(map, kmlFile, newFeat)
@@ -717,8 +1033,13 @@ function initLongPressPointCreation (map) {
 export function initKmlSupport (map) {
   window.getActiveKmlMarkers = getActiveKmlMarkers
   loadFromStorage()
-  renderAllKmls(map)
-  updateKmlPanelUI(map)
+  
+  loadPublicKmls(map).then(() => {
+    renderAllKmls(map)
+    updateKmlPanelUI(map)
+    checkPublicKmlEditMode(map)
+  })
+
   initLongPressPointCreation(map)
   
   const panel = document.getElementById('kml-panel')
@@ -810,6 +1131,62 @@ export function initKmlSupport (map) {
       return
     }
 
+    if (action === 'toggle-section') {
+      const sectionId = actionTarget.getAttribute('data-section-id')
+      if (expandedKmlIds.has(sectionId)) {
+        expandedKmlIds.delete(sectionId)
+      } else {
+        expandedKmlIds.add(sectionId)
+      }
+      updateKmlPanelUI(map)
+      return
+    }
+
+    if (action === 'refresh-public') {
+      event.stopPropagation()
+      loadPublicKmls(map).then(() => {
+        renderAllKmls(map)
+        updateKmlPanelUI(map)
+        showAlert('公共图层已刷新')
+      })
+      return
+    }
+
+    if (action === 'share-file') {
+      event.stopPropagation()
+      const kmlFile = kmlList.find(k => k.id === kmlId)
+      if (!kmlFile) return
+
+      const confirmed = await showConfirm(`确认将个人图层“${escapeHtml(kmlFile.name)}”共享为公共 KML 图层吗？`)
+      if (!confirmed) return
+
+      const token = localStorage.getItem('mapServiceAdminToken')
+      try {
+        await window.fetch('/api/v1/admin/kml', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            name: kmlFile.name,
+            features: kmlFile.features,
+            coordCorrection: kmlFile.coordCorrection,
+            status: 'published'
+          })
+        }).then(res => {
+          if (!res.ok) throw new Error('共享失败')
+          return res.json()
+        })
+        showAlert('共享成功！所有用户刷新页面后可见。')
+        await loadPublicKmls(map)
+        updateKmlPanelUI(map)
+      } catch (err) {
+        showAlert(`共享失败: ${err.message}`)
+      }
+      return
+    }
+
     if (action === 'toggle-collapse') {
       const listDiv = document.getElementById(`features-${kmlId}`)
       if (listDiv) {
@@ -817,6 +1194,18 @@ export function initKmlSupport (map) {
         listDiv.style.display = willExpand ? 'flex' : 'none'
         if (willExpand) {
           expandedKmlIds.add(kmlId)
+          
+          const kmlFile = publicKmlList.find(k => k.id === kmlId)
+          if (kmlFile && kmlFile.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
+            try {
+              const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
+              kmlFile.features = detail.features || []
+              renderKmlLayers(map, kmlFile)
+              updateKmlPanelUI(map)
+            } catch (err) {
+              showAlert('加载公共图层详情失败')
+            }
+          }
         } else {
           expandedKmlIds.delete(kmlId)
         }
@@ -826,7 +1215,27 @@ export function initKmlSupport (map) {
 
     if (action === 'toggle-visible') {
       event.stopPropagation()
-      const kmlFile = kmlList.find(k => k.id === kmlId)
+      let kmlFile = publicKmlList.find(k => k.id === kmlId)
+      if (kmlFile) {
+        kmlFile.enabled = !kmlFile.enabled
+        publicKmlPrefs[kmlFile.id] = kmlFile.enabled
+        savePublicPrefs()
+
+        if (kmlFile.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
+          try {
+            const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
+            kmlFile.features = detail.features || []
+          } catch (err) {
+            showAlert('加载公共图层详情失败')
+          }
+        }
+
+        renderKmlLayers(map, kmlFile)
+        updateKmlPanelUI(map)
+        return
+      }
+
+      kmlFile = kmlList.find(k => k.id === kmlId)
       if (!kmlFile) return
       if (kmlFile.isDefault) return
 
@@ -892,7 +1301,23 @@ export function initKmlSupport (map) {
     
     if (action === 'export') {
       event.stopPropagation()
-      const kmlFile = kmlList.find(k => k.id === kmlId)
+      let kmlFile = publicKmlList.find(k => k.id === kmlId)
+      if (kmlFile) {
+        if (!kmlFile.features || kmlFile.features.length === 0) {
+          try {
+            const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
+            kmlFile.features = detail.features || []
+          } catch (err) {
+            showAlert('获取数据失败')
+            return
+          }
+        }
+        const kmlText = generateKmlText(kmlFile.name, kmlFile.features)
+        downloadKmlFile(kmlFile.name, kmlText)
+        return
+      }
+
+      kmlFile = kmlList.find(k => k.id === kmlId)
       if (kmlFile) {
         const kmlText = generateKmlText(kmlFile.name, kmlFile.features)
         downloadKmlFile(kmlFile.name, kmlText)
@@ -902,7 +1327,7 @@ export function initKmlSupport (map) {
     
     if (action === 'add-point') {
       event.stopPropagation()
-      const kmlFile = kmlList.find(k => k.id === kmlId)
+      const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
       if (!isKmlEnabled(kmlFile)) {
         showAlert('该 KML 文件已隐藏，请先启用后再新增标注。')
         return

@@ -16,7 +16,8 @@
     "pm2-stop": "pm2 stop pm2.config.js",
     "pm2-restart": "pm2 restart pm2.config.js",
     "pm2-reload": "pm2 reload pm2.config.js",
-    "pm2-delete": "pm2 delete pm2.config.js"
+    "pm2-delete": "pm2 delete pm2.config.js",
+    "version": "npm run build && git add service/app"
   },
   "dependencies": {
     "@amap/amap-jsapi-loader": "^1.0.1",
@@ -29,6 +30,7 @@
     "leaflet": "^1.9.4",
     "leaflet-rotate": "^0.2.8",
     "morgan": "^1.11.0",
+    "multer": "^2.2.0",
     "rotating-file-stream": "^3.2.9",
     "simple-git": "^3.36.0",
     "url-join": "^5.0.0"

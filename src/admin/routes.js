@@ -9,6 +9,7 @@ import {
   handlePrecacheSubmit,
   schedulePrecacheEstimate,
 } from './pages/precache.js'
+import { renderKmlPage, handleKmlClick, handleKmlChange } from './pages/kml.js'
 
 export const ADMIN_PAGES = [
   {
@@ -21,6 +22,13 @@ export const ADMIN_PAGES = [
     label: '缓存',
     render: renderCachePage,
     handleClick: handleCacheClick,
+  },
+  {
+    id: 'kml',
+    label: 'KML管理',
+    render: renderKmlPage,
+    handleClick: handleKmlClick,
+    handleChange: handleKmlChange,
   },
   {
     id: 'precache',

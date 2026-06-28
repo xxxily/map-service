@@ -113,12 +113,13 @@ async function loadDashboard () {
   renderDashboard()
 
   try {
-    const [session, system, settings, providers, tasks] = await Promise.all([
+    const [session, system, settings, providers, tasks, kmls] = await Promise.all([
       adminApi.session(),
       adminApi.system(),
       adminApi.settings(),
       adminApi.providers(),
       adminApi.tasks(),
+      adminApi.kmls(),
     ])
 
     Object.assign(adminState, {
@@ -127,6 +128,7 @@ async function loadDashboard () {
       settings,
       providers,
       tasks,
+      kmls,
       loading: false,
     })
     setNotice('')

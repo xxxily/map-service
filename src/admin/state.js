@@ -17,6 +17,7 @@ export const adminState = {
   settings: null,
   providers: [],
   tasks: [],
+  kmls: [],
   precacheForm: {
     providerId: '',
     bounds: {

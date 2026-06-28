@@ -20,7 +20,11 @@ async function request (path, options = {}) {
   }
 
   if (options.body !== undefined) {
-    headers['Content-Type'] = 'application/json'
+    if (typeof window !== 'undefined' && options.body instanceof window.FormData) {
+      // Browser automatically sets boundary, do not set Content-Type
+    } else {
+      headers['Content-Type'] = 'application/json'
+    }
   }
 
   if (options.auth !== false) {
@@ -33,7 +37,7 @@ async function request (path, options = {}) {
   const response = await window.fetch(`${API_BASE}${path}`, {
     method: options.method || 'GET',
     headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    body: options.body === undefined ? undefined : (typeof window !== 'undefined' && options.body instanceof window.FormData ? options.body : JSON.stringify(options.body)),
   })
 
   const payload = await response.json().catch(() => null)
@@ -84,6 +88,20 @@ export const adminApi = {
     const query = params.toString()
     return request(`/admin/precache/tasks/${encodeURIComponent(taskId)}${query ? `?${query}` : ''}`, { method: 'DELETE' })
   },
+  kmls: () => request('/admin/kml'),
+  getKml: (id) => request(`/admin/kml/${encodeURIComponent(id)}`),
+  createKml: (body) => request('/admin/kml', { method: 'POST', body }),
+  updateKml: (id, body) => request(`/admin/kml/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteKml: (id) => request(`/admin/kml/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  importKml: (formData) => request('/admin/kml/import', { method: 'POST', body: formData }),
+}
+
+export async function getSharedKmlList () {
+  return request('/kml/shared', { auth: false })
+}
+
+export async function getSharedKml (id) {
+  return request(`/kml/shared/${encodeURIComponent(id)}`, { auth: false })
 }
 
 export async function getAccessStatus () {

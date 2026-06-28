@@ -7,12 +7,14 @@
  * @github       https://github.com/xxxily
  */
 import urlJoin from 'url-join'
+import multer from 'multer'
 import utils from './utils/index.js'
 import baseConfig from '../config.js'
 import service from './service.js'
 import whitelist from './whitelist.js'
 
 const serviceConfig = baseConfig.staticService
+const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } })
 const routeSet = {}
 const CACHE_CONTROL_SECONDS = Math.floor((serviceConfig.fetchRelay?.browserMaxAge || 0) / 1000)
 const STALE_SECONDS = Math.floor((serviceConfig.fetchRelay?.browserStaleWhileRevalidate || 0) / 1000)
@@ -23,6 +25,19 @@ const ACCESS_VERIFY_LIMIT = {
   blockMs: 1000 * 60 * 15,
 }
 const accessVerifyAttempts = new Map()
+
+async function requireAccess (req) {
+  const accessEnabled = await service.isAccessEnabled()
+  if (accessEnabled) {
+    const token = accessTokenFromRequest(req)
+    const verified = await service.verifyAccess(token)
+    if (!verified) {
+      const err = new Error('拒绝访问：未提供有效的地图访问授权')
+      err.statusCode = 401
+      throw err
+    }
+  }
+}
 
 function jsonError (res, error, statusCode = 500) {
   res.status(statusCode)
@@ -482,6 +497,102 @@ const simpleApi = {
         const session = await service.createAccessToken()
         res.cookie(ACCESS_COOKIE_NAME, session.token, accessCookieOptions(req, session.maxAge))
         res.jsonSuc({ expiresAt: session.expiresAt })
+      },
+    },
+    {
+      path: '/kml/shared',
+      method: 'get',
+      describe: '获取已发布的公共 KML 列表',
+      tags: ['kml'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        res.jsonSuc(await service.getSharedKmlList(false))
+      },
+    },
+    {
+      path: '/kml/shared/:id',
+      method: 'get',
+      describe: '获取已发布的公共 KML 详情',
+      tags: ['kml'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        res.jsonSuc(await service.getSharedKml(req.params.id, false))
+      },
+    },
+    {
+      path: '/admin/kml',
+      method: 'get',
+      describe: '管理员获取所有公共 KML 列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.getSharedKmlList(true))
+      },
+    },
+    {
+      path: '/admin/kml/:id',
+      method: 'get',
+      describe: '管理员获取指定公共 KML 详情',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.getSharedKml(req.params.id, true))
+      },
+    },
+    {
+      path: '/admin/kml',
+      method: 'post',
+      describe: '管理员创建公共 KML',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createSharedKml(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/kml/:id',
+      method: 'put',
+      describe: '管理员更新公共 KML',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.updateSharedKml(req.params.id, req.body || {}))
+      },
+    },
+    {
+      path: '/admin/kml/:id',
+      method: 'delete',
+      describe: '管理员删除公共 KML',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.deleteSharedKml(req.params.id))
+      },
+    },
+    {
+      path: '/admin/kml/import',
+      method: 'post',
+      describe: '管理员导入 KML 文件并创建公共 KML',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        await new Promise((resolve, reject) => {
+          upload.single('file')(req, res, (err) => {
+            if (err) reject(err)
+            else resolve()
+          })
+        })
+        if (!req.file) {
+          const err = new Error('未上传 KML 文件')
+          err.statusCode = 400
+          throw err
+        }
+        const options = {
+          name: req.body.name,
+          status: req.body.status,
+          coordCorrection: req.body.coordCorrection,
+        }
+        res.jsonSuc(await service.importSharedKml(req.file.buffer, req.file.originalname, options))
       },
     },
   ],

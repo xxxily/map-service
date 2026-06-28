@@ -15,6 +15,7 @@ import AdminSettings from './admin/settings.js'
 import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
 import { getTileProviderByUrl } from './admin/tileProviders.js'
+import SharedKmlManager from './admin/sharedKml.js'
 import fs from 'fs-extra'
 import path from 'path'
 
@@ -35,6 +36,7 @@ const precacheManager = new PrecacheManager({
   fetchTile: async (url, options = {}) => service.fetchRelay(url, options),
   clearTileCache: async (urls) => fetchRelay.clearMany(urls),
 })
+const sharedKmlManager = new SharedKmlManager({ store: adminStore })
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
 
@@ -144,6 +146,30 @@ const service = {
 
   deletePrecacheTask (taskId, options = {}) {
     return precacheManager.deleteTask(taskId, options)
+  },
+
+  getSharedKmlList (isAdmin = false) {
+    return sharedKmlManager.list(isAdmin)
+  },
+
+  getSharedKml (id, isAdmin = false) {
+    return sharedKmlManager.get(id, isAdmin)
+  },
+
+  createSharedKml (input) {
+    return sharedKmlManager.create(input)
+  },
+
+  updateSharedKml (id, input) {
+    return sharedKmlManager.update(id, input)
+  },
+
+  deleteSharedKml (id) {
+    return sharedKmlManager.delete(id)
+  },
+
+  importSharedKml (fileBuffer, originalName, options = {}) {
+    return sharedKmlManager.import(fileBuffer, originalName, options)
   },
 
   isAccessEnabled () {
