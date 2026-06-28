@@ -39,6 +39,7 @@ function renderDashboard () {
   renderShell(adminState, renderActivePanel())
   getAdminPage(adminState.activeTab).afterRender?.(adminState, adminApi)
 }
+window.renderDashboard = renderDashboard
 
 function getPageContext (event) {
   return {

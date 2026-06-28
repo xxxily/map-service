@@ -16,6 +16,7 @@ import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
 import { getTileProviderByUrl } from './admin/tileProviders.js'
 import SharedKmlManager from './admin/sharedKml.js'
+import TileApiLogger from './admin/tileApiLogger.js'
 import fs from 'fs-extra'
 import path from 'path'
 
@@ -37,6 +38,7 @@ const precacheManager = new PrecacheManager({
   clearTileCache: async (urls) => fetchRelay.clearMany(urls),
 })
 const sharedKmlManager = new SharedKmlManager({ store: adminStore })
+const tileApiLogger = new TileApiLogger({ store: adminStore })
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
 
@@ -186,6 +188,24 @@ const service = {
 
   createAccessToken () {
     return adminSettings.createAccessToken()
+  },
+
+  async logTileApiRequest (entry) {
+    const settings = await adminSettings.readRaw()
+    const maxLogCount = settings.tileApi?.maxLogCount || 500
+    await tileApiLogger.addLog(entry, maxLogCount)
+  },
+
+  listTileApiLogs () {
+    return tileApiLogger.list()
+  },
+
+  clearTileApiLogs () {
+    return tileApiLogger.clear()
+  },
+
+  getRawSettings () {
+    return adminSettings.readRaw()
   },
 }
 

@@ -94,6 +94,8 @@ export const adminApi = {
   updateKml: (id, body) => request(`/admin/kml/${encodeURIComponent(id)}`, { method: 'PUT', body }),
   deleteKml: (id) => request(`/admin/kml/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   importKml: (formData) => request('/admin/kml/import', { method: 'POST', body: formData }),
+  tileApiLogs: () => request('/admin/tile-api/logs'),
+  clearTileApiLogs: () => request('/admin/tile-api/logs', { method: 'DELETE' }),
 }
 
 export async function getSharedKmlList () {

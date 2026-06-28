@@ -40,9 +40,18 @@ async function requireAccess (req) {
 }
 
 function jsonError (res, error, statusCode = 500) {
+  let message = error instanceof Error ? error.message : String(error || '处理失败')
+  if (
+    message.includes('ECONNREFUSED') ||
+    message.includes('ENOTFOUND') ||
+    message.includes('ETIMEDOUT') ||
+    message.includes('ECONNRESET')
+  ) {
+    message = '获取图层资源失败，连接上游服务超时或被拒绝'
+  }
   res.status(statusCode)
   res.jsonErr({
-    message: error instanceof Error ? error.message : error,
+    message,
   })
 }
 
@@ -594,6 +603,125 @@ const simpleApi = {
         }
         res.jsonSuc(await service.importSharedKml(req.file.buffer, req.file.originalname, options))
       },
+    },
+    {
+      path: '/external/tile',
+      method: 'get',
+      describe: '对外开放的地图瓦片反代接口',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const startTime = Date.now()
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const { x, y, z, token, scale } = req.query
+
+        const reqUrl = req.originalUrl || req.url || ''
+        const logEntry = {
+          timestamp: new Date().toISOString(),
+          clientIp,
+          coordinates: `Z:${z || ''} X:${x || ''} Y:${y || ''}`,
+          reqUrl,
+          upstreamUrl: '',
+          userAgent,
+          statusCode: 200,
+          duration: 0,
+          errorMessage: null,
+          cacheStatus: 'MISS',
+        }
+
+        const logAndRespond = async (status, errMessage = null) => {
+          logEntry.statusCode = status
+          logEntry.duration = Date.now() - startTime
+          logEntry.errorMessage = errMessage
+          service.logTileApiRequest(logEntry).catch(e => console.error('[tileApi log error]', e))
+          jsonError(res, errMessage || '处理失败', status)
+        }
+
+        const settings = await service.getRawSettings()
+        const tileApi = settings.tileApi || {}
+
+        if (!tileApi.enabled) {
+          return logAndRespond(403, '对外图层接口未开放')
+        }
+
+        if (x === undefined || y === undefined || z === undefined) {
+          return logAndRespond(400, '缺少坐标参数 x, y, z')
+        }
+
+        if (tileApi.tokenEnabled) {
+          if (!token || token !== tileApi.token) {
+            return logAndRespond(401, '拒绝访问：Token 校验失败')
+          }
+        }
+
+        let upstreamTarget = tileApi.upstreamUrl || ''
+        const scaleVal = scale || '2'
+        upstreamTarget = upstreamTarget
+          .replace('{x}', x)
+          .replace('{y}', y)
+          .replace('{z}', z)
+          .replace('{scale}', scaleVal)
+
+        try {
+          const urlObj = new URL(upstreamTarget)
+          Object.entries(req.query).forEach(([key, val]) => {
+            if (key === 'token') return
+            if (key === 'x' || key === 'y' || key === 'z') return
+            if (val !== undefined) {
+              urlObj.searchParams.set(key, String(val))
+            }
+          })
+          upstreamTarget = urlObj.toString()
+        } catch (e) {
+          // If URL parsing fails, fall back to replaced string
+        }
+
+        logEntry.upstreamUrl = upstreamTarget
+
+        try {
+          const fetchOptions = {
+            useProxy: tileApi.useProxy,
+            cache: tileApi.cacheEnabled !== false,
+            headers: {
+              'User-Agent': userAgent || 'Mozilla/5.0'
+            }
+          }
+          const result = await service.fetchRelay(upstreamTarget, fetchOptions)
+          logEntry.cacheStatus = result.cacheStatus || 'MISS'
+          if (result.statusCode === 200) {
+            logEntry.statusCode = 200
+            logEntry.duration = Date.now() - startTime
+            service.logTileApiRequest(logEntry).catch(e => console.error('[tileApi log error]', e))
+            await sendRelayResponse(res, result)
+          } else {
+            return logAndRespond(result.statusCode, `上游服务器返回错误: ${result.statusCode}`)
+          }
+        } catch (err) {
+          logEntry.cacheStatus = 'MISS'
+          return logAndRespond(502, `反向上游请求失败: ${err.message}`)
+        }
+      }
+    },
+    {
+      path: '/admin/tile-api/logs',
+      method: 'get',
+      describe: '获取对外开放图层接口的访问日志',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listTileApiLogs())
+      }
+    },
+    {
+      path: '/admin/tile-api/logs',
+      method: 'delete',
+      describe: '清空对外开放图层接口的访问日志',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        await service.clearTileApiLogs()
+        res.jsonSuc()
+      }
     },
   ],
   /**

@@ -10,6 +10,7 @@ import {
   schedulePrecacheEstimate,
 } from './pages/precache.js'
 import { renderKmlPage, handleKmlClick, handleKmlChange } from './pages/kml.js'
+import { renderTileApiPage, handleTileApiClick, handleTileApiSubmit, loadTileApiLogs } from './pages/tileApi.js'
 
 export const ADMIN_PAGES = [
   {
@@ -45,6 +46,15 @@ export const ADMIN_PAGES = [
     id: 'layers',
     label: '图层',
     render: renderLayersPage,
+  },
+  {
+    id: 'tile-api',
+    label: '对外 API',
+    render: renderTileApiPage,
+    afterEnter: (state, api) => loadTileApiLogs(state, api),
+    afterLoad: (state, api) => loadTileApiLogs(state, api),
+    handleClick: handleTileApiClick,
+    handleSubmit: handleTileApiSubmit,
   },
   {
     id: 'settings',
