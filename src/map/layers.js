@@ -30,6 +30,7 @@ const autonaviScale = isRetina ? '2' : '1'
 const googleScale = isRetina ? '2' : '1'
 
 const googleSatellite = relayTileUrl(`https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}&scale=${googleScale}`)
+const googleSatelliteHd = relayTileUrl(`https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}&scale=3`)
 const googleStreet = relayTileUrl(`https://www.google.com/maps/vt?lyrs=m@189&gl=cn&x={x}&y={y}&z={z}&scale=${googleScale}`)
 const autonaviSatellite = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=6&x={x}&y={y}&z={z}&scl=${autonaviScale}`)
 const autonaviRoad = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}&scl=1`)
@@ -79,6 +80,20 @@ export function initLayerControl (map, initialLayerName = '') {
       createTileLayer(googleSatellite, {
         maxZoom: 22,
         attribution: '谷歌提供卫星图，高德提供街道图',
+      }),
+      createTileLayer(autonaviRoad, {
+        maxZoom: 22,
+        maxNativeZoom: 18,
+        attribution: '高德地图 AutoNavi.com',
+        subdomains: '1234',
+        opacity: 0.7,
+      }),
+    ]),
+
+    '谷歌高德/卫星（HD）': L.layerGroup([
+      createTileLayer(googleSatelliteHd, {
+        maxZoom: 22,
+        attribution: '谷歌提供卫星图(3倍HD)，高德提供街道图',
       }),
       createTileLayer(autonaviRoad, {
         maxZoom: 22,
