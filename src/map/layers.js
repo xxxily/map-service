@@ -299,8 +299,8 @@ function initScreenshotControl (map) {
       button.style.justifyContent = 'center'
       button.style.width = '30px'
       button.style.height = '30px'
-      button.style.background = '#fff'
-      button.style.color = '#0f766e'
+      button.style.background = 'transparent'
+      button.style.color = 'inherit'
       button.innerHTML = `
         <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;">
           <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>

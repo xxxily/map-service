@@ -211,14 +211,17 @@ body.admin-view #app-version {
   width: 38px;
   height: 38px;
   place-items: center;
-  border: 1px solid rgba(18, 57, 63, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
-  background-color: #fff;
-  color: #183338;
-  box-shadow: 0 8px 24px rgba(20, 37, 42, 0.18);
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
   cursor: pointer;
   font-size: 20px;
   line-height: 1;
+  transition: background-color 0.2s, color 0.2s, border-color 0.2s;
 }
 
 #map-menu button .svg-icon {
@@ -230,9 +233,10 @@ body.admin-view #app-version {
 #map-menu button:hover,
 #map-menu button:focus-visible,
 #map-menu button[aria-expanded="true"] {
-  border-color: #167a7f;
+  border-color: #14b8a6;
   outline: none;
-  color: #0a666b;
+  background-color: rgba(0, 0, 0, 0.75);
+  color: #2dd4bf;
 }
 
 #app-version {
@@ -946,8 +950,22 @@ body.admin-view #app-version {
 
 .leaflet-control-layers {
   border-radius: 8px;
-  box-shadow: 0 10px 30px rgba(20, 37, 42, 0.16);
-  border: none !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  background-color: rgba(0, 0, 0, 0.6) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+/* 当图层面板未展开时，让它整体看起来只是一个半透明的按钮，并且 hover 时高亮 */
+.leaflet-control-layers:not(.leaflet-control-layers-expanded) {
+  background-color: rgba(0, 0, 0, 0.6) !important;
+}
+
+.leaflet-control-layers:not(.leaflet-control-layers-expanded):hover {
+  background-color: rgba(0, 0, 0, 0.75) !important;
+  border-color: #14b8a6 !important;
 }
 
 .leaflet-control-layers-toggle {
@@ -955,6 +973,8 @@ body.admin-view #app-version {
   height: 30px !important;
   background-size: 16px 16px !important;
   border-radius: 8px !important;
+  background-color: transparent !important;
+  filter: brightness(0) invert(1);
 }
 
 .leaflet-control-layers-expanded {
@@ -962,6 +982,45 @@ body.admin-view #app-version {
   height: auto !important;
   padding: 10px 14px !important;
   border-radius: 8px;
+  color: #ffffff !important;
+}
+
+/* Leaflet 控件按钮统一半透明背景 */
+.leaflet-bar {
+  border: none !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2) !important;
+}
+
+.leaflet-bar a,
+.leaflet-bar a:first-child,
+.leaflet-bar a:last-child {
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  background-color: rgba(0, 0, 0, 0.6) !important;
+  color: #ffffff !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.leaflet-bar a:hover {
+  background-color: rgba(0, 0, 0, 0.75) !important;
+  color: #2dd4bf !important;
+  border-color: #14b8a6 !important;
+}
+
+.leaflet-bar a:first-child {
+  border-top-left-radius: 8px !important;
+  border-top-right-radius: 8px !important;
+}
+
+.leaflet-bar a:last-child {
+  border-bottom-left-radius: 8px !important;
+  border-bottom-right-radius: 8px !important;
+  border-bottom: 1px solid rgba(18, 57, 63, 0.14) !important;
+}
+
+.leaflet-bar a:not(:last-child) {
+  border-bottom: none !important;
 }
 
 .leaflet-top {
@@ -1792,10 +1851,12 @@ body.admin-view #app-version {
   justify-content: center;
   min-height: 28px;
   padding: 0 10px;
-  border: 1px solid rgba(15, 118, 110, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
-  background: #fff;
-  color: #0f766e;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  color: #ffffff;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -1810,18 +1871,20 @@ body.admin-view #app-version {
 
 
 .guideline-btn:hover {
-  background: #f0fdfa;
-  border-color: #0f766e;
+  background: rgba(0, 0, 0, 0.7);
+  border-color: #14b8a6;
+  color: #2dd4bf;
 }
 
 .guideline-btn.danger {
-  color: #be123c;
-  border-color: rgba(190, 18, 60, 0.2);
+  color: #fda4af;
+  border-color: rgba(244, 63, 94, 0.3);
 }
 
 .guideline-btn.danger:hover {
-  background: #fff1f2;
-  border-color: #be123c;
+  background: rgba(225, 29, 72, 0.2);
+  border-color: #f43f5e;
+  color: #ffe4e6;
 }
 
 .map-guideline-active {
