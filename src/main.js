@@ -273,6 +273,9 @@ async function initLeafletMap () {
     openAdmin: () => {
       window.location.href = '/admin/overview'
     },
+    open3d: () => {
+      window.location.href = '/3d' + window.location.search
+    },
   }
 
   mapMenu.addEventListener('click', (event) => {

@@ -13,7 +13,10 @@ export default defineConfig({
     outDir: 'service/app',
     emptyOutDir: true,
     rollupOptions: {
-      input: 'index.html',
+      input: {
+        main: 'index.html',
+        map3d: '3d.html',
+      },
     },
   },
   server: {
