@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0f766e">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/pwa-icon.svg">
+    <title>三维地球 - 混合地图</title>
+    <script type="module" crossorigin src="/assets/map3d-C8z1t7Qg.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/utils-NyfMa3iU.js">
+    <link rel="stylesheet" crossorigin href="/assets/utils-DlrO-3Jb.css">
+    <link rel="stylesheet" crossorigin href="/assets/map3d-KZv0WvIT.css">
+  </head>
+  <body>
+    <!-- 三维地球容器 -->
+    <div id="cesiumContainer"></div>
+
+    <!-- 仿 Leaflet 的右上角图层控制面板（完全继承 styles.css 中 Leaflet 控件的暗黑毛玻璃风格） -->
+    <div id="map3d-layer-control" class="leaflet-control-layers" style="position: fixed; top: calc(var(--control-top-desktop) - 4px); right: calc(var(--safe-area-right) + 16px); z-index: 9999; display: none;">
+      <a class="leaflet-control-layers-toggle" href="#" title="图层" onclick="event.preventDefault()"></a>
+      <form class="leaflet-control-layers-list">
+        <div class="leaflet-control-layers-base">
+          <label>
+            <input type="radio" name="leaflet-base-layers" data-layer="amap-hybrid" checked>
+            <span> 高德/卫星</span>
+          </label>
+          <label>
+            <input type="radio" name="leaflet-base-layers" data-layer="google-amap-hybrid">
+            <span> 谷歌高德/卫星</span>
+          </label>
+          <label>
+            <input type="radio" name="leaflet-base-layers" data-layer="google-sat">
+            <span> 谷歌/卫星</span>
+          </label>
+          <label>
+            <input type="radio" name="leaflet-base-layers" data-layer="amap-road">
+            <span> 高德/街道</span>
+          </label>
+          <label>
+            <input type="radio" name="leaflet-base-layers" data-layer="google-road">
+            <span> 谷歌/街道</span>
+          </label>
+        </div>
+      </form>
+    </div>
+
+    <!-- 右下角悬浮工具条（与 2D 地图视觉、布局高度对齐） -->
+    <ul id="map-menu" aria-label="地图工具">
+      <li>
+        <button type="button" data-action="resetBearing" aria-label="重置方向" id="reset-bearing-btn" style="transform: rotate(0deg); display: none;" title="重置方向 (偏航角/Heading)">
+          <svg class="compass-icon svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10"/>
+            <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+          </svg>
+        </button>
+      </li>
+      <li>
+        <button type="button" data-action="toggleLayerControl" aria-label="更多工具与图层" aria-expanded="false" title="更多工具与图层">
+          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <line x1="4" x2="20" y1="12" y2="12"/>
+            <line x1="4" x2="20" y1="6" y2="6"/>
+            <line x1="4" x2="20" y1="18" y2="18"/>
+          </svg>
+        </button>
+      </li>
+      <li data-more-item>
+        <button type="button" data-action="toggleRotation" aria-label="地球自转" title="开启/关闭地球自转">
+          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l.56-1.54"/>
+          </svg>
+        </button>
+      </li>
+      <li data-more-item>
+        <button type="button" data-action="resetView" aria-label="视角复位" title="重置视角到中国上空">
+          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <polygon points="12 2 2 22 12 17 22 22 12 2"/>
+          </svg>
+        </button>
+      </li>
+      <li data-more-item>
+        <button type="button" data-action="back2d" aria-label="切换回2D地图" title="切换回 2D 地图">
+          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" x2="9" y1="12" y2="12"/>
+          </svg>
+        </button>
+      </li>
+    </ul>
+
+    <!-- 相机姿态与高度定位信息 -->
+    <div id="camera-status" class="camera-status" style="position: fixed; left: calc(var(--safe-area-left) + 8px); bottom: calc(var(--safe-area-bottom) + 26px); z-index: 800; color: rgba(29, 42, 46, 0.42); font-size: 10px; pointer-events: none;">正在定位相机...</div>
+
+    <div id="app-version" aria-label="当前版本"></div>
+
+  </body>
+</html>
