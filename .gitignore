@@ -25,3 +25,6 @@ yarn-error.log*
 # 生产环境 PM2 配置文件
 pm2.prod.config.cjs
 
+# Cesium 运行时静态缓存
+public/cesium/
+
