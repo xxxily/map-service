@@ -8,7 +8,8 @@ import markerIcon from 'leaflet/dist/images/marker-icon.png'
 import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 import { amapConfig } from './config.js'
 import { initLayerControl, setLayerControlVisible } from './map/layers.js'
-import { addTargetMarker, initAmapGeolocation, updatePosition } from './map/location.js'
+import { initAmapGeolocation } from './map/geolocation.js'
+import { addTargetMarker, updatePosition } from './map/location.js'
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
@@ -210,9 +211,10 @@ async function initLeafletMap () {
   window.map = map
   initDesktopShiftDragRotate(map)
 
+  let amapGeolocation = null
   if (AMap) {
     initAmapSearch(map, AMap)
-    initAmapGeolocation(AMap)
+    amapGeolocation = initAmapGeolocation(AMap)
   }
 
   addTargetMarker(map, defaultView.center)
@@ -263,7 +265,7 @@ async function initLeafletMap () {
     },
     toggleGuidelineMode,
     toggleSearchMode,
-    updatePosition: () => updatePosition(map),
+    updatePosition: () => updatePosition(map, amapGeolocation),
     resetBearing: () => {
       if (map.setBearing) {
         map.setBearing(0)

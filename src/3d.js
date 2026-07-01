@@ -25,6 +25,7 @@ import { initAdminApp } from './admin/dashboard.js'
 import { isAdminLocation } from './admin/routes.js'
 import { amapConfig, terrainConfig } from './config.js'
 import { initAfterAccessCheck } from './map/access-control.js'
+import { initAmapGeolocation } from './map/geolocation.js'
 import { createCesiumLayerSources, LAYER_NAME_MAPPING, REVERSE_LAYER_MAPPING } from './map/tile-sources.js'
 import { registerServiceWorker } from './pwa.js'
 import { initGuidelines3d, toggleGuidelineMode3d } from './map3d/guidelines.js'
@@ -88,6 +89,7 @@ let viewer = null
 let isRotating = false
 let lastTime = 0
 let interactionMode = '2d'
+let amapGeolocation = null
 let terrainRuntime = {
   key: '',
   terrain: null,
@@ -1036,6 +1038,7 @@ async function init3dEarth () {
   const AMap = await loadAmap()
   if (AMap) {
     initAmapSearch3d(viewer, AMap)
+    amapGeolocation = initAmapGeolocation(AMap)
   }
   initKmlSupport3d(viewer)
   initGuidelines3d(viewer)
@@ -1347,7 +1350,7 @@ function bindUiEvents () {
   const positionBtn = menu.querySelector('[data-action="updatePosition"]')
   if (positionBtn) {
     positionBtn.addEventListener('click', () => {
-      updatePosition3d(viewer)
+      updatePosition3d(viewer, amapGeolocation)
     })
   }
 

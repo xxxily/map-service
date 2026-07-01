@@ -8,44 +8,9 @@ import {
   Math as CesiumMath,
 } from 'cesium'
 import { showAlert } from '../ui/dialog.js'
-import { wgs84ToGcj02 } from '../map/coord-transform.js'
+import { getBestPosition, isValidPosition, positionToGcj02 } from '../map/geolocation.js'
 
 let targetEntity = null
-
-function getBrowserPosition () {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error('你的浏览器不支持当前地理位置信息获取'))
-      return
-    }
-
-    navigator.geolocation.getCurrentPosition((position) => {
-      resolve({
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-      })
-    }, reject)
-  })
-}
-
-function isValidGpsPosition (position) {
-  const lat = Number(position?.lat)
-  const lng = Number(position?.lng)
-  return Number.isFinite(lat) &&
-    Number.isFinite(lng) &&
-    Math.abs(lat) <= 90 &&
-    Math.abs(lng) <= 180
-}
-
-function getMapPositionFromGps (position) {
-  const lat = Number(position.lat)
-  const lng = Number(position.lng)
-  const [convertedLng, convertedLat] = wgs84ToGcj02([lng, lat])
-  return {
-    lat: convertedLat,
-    lng: convertedLng,
-  }
-}
 
 export function flyToLngLat (viewer, lng, lat, options = {}) {
   if (!viewer) return
@@ -95,18 +60,18 @@ export function addTargetMarker3d (viewer, location, options = {}) {
   return targetEntity
 }
 
-export async function updatePosition3d (viewer) {
-  const result = await getBrowserPosition().catch((err) => {
+export async function updatePosition3d (viewer, geolocation = null) {
+  const result = await getBestPosition(geolocation).catch((err) => {
     console.error('获取地理位置失败', err)
     return null
   })
 
-  if (!isValidGpsPosition(result)) {
+  if (!isValidPosition(result)) {
     await showAlert('获取地理位置失败，请手动选择')
     return
   }
 
-  const mapPosition = getMapPositionFromGps(result)
+  const mapPosition = positionToGcj02(result)
   addTargetMarker3d(viewer, mapPosition, { label: '当前位置' })
   flyToLngLat(viewer, mapPosition.lng, mapPosition.lat, { height: 1200 })
 }
