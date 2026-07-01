@@ -14,10 +14,9 @@ import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
 import { isAdminLocation } from './admin/routes.js'
 import { registerServiceWorker } from './pwa.js'
-import { getAccessStatus, verifyAccessPassword } from './admin/api.js'
 import { initKmlSupport } from './map/kml.js'
-import { escapeHtml } from './admin/utils.js'
 import { initGuidelines, toggleGuidelineMode } from './map/guidelines.js'
+import { initAfterAccessCheck } from './map/access-control.js'
 
 // 优化移动端手势缩放时容易误触旋转的问题：加入旋转阈值(12度)与无缝软启动交互
 if (L.Map.TouchGestures) {
@@ -297,87 +296,15 @@ async function initLeafletMap () {
   })
 }
 
-async function checkMapAccessBeforeInit () {
-  try {
-    const status = await getAccessStatus()
-    if (status.required) {
-      showPasswordLockScreen()
-    } else {
-      initLeafletMap()
-    }
-  } catch (err) {
-    console.error('Failed to check map access status', err)
-    showPasswordLockScreen({
-      message: '访问状态检查失败，请稍后重试',
-      allowRetry: true,
-    })
-  }
-}
-
-function showPasswordLockScreen (options = {}) {
-  document.getElementById('map-lock-screen')?.remove()
-
-  const lockScreen = document.createElement('div')
-  lockScreen.id = 'map-lock-screen'
-  lockScreen.className = 'lock-screen-backdrop'
-  const message = options.message || '管理员启用了访问控制，请输入密码解锁'
-  lockScreen.innerHTML = `
-    <div class="lock-screen-card">
-      <div class="lock-screen-icon">🔒</div>
-      <h2>私有地图服务</h2>
-      <p>${escapeHtml(message)}</p>
-      <form id="lock-screen-form" autocomplete="off">
-        <div class="lock-screen-field">
-          <input type="password" name="password" placeholder="请输入访问密码" required autofocus>
-        </div>
-        <div id="lock-screen-error" class="lock-screen-error" style="${options.message ? '' : 'display: none;'}">${escapeHtml(options.message || '')}</div>
-        <button type="submit">载入地图</button>
-        ${options.allowRetry ? '<button type="button" class="lock-screen-secondary" data-lock-retry>重试检查</button>' : ''}
-      </form>
-    </div>
-  `
-
-  document.body.appendChild(lockScreen)
-
-  const form = document.getElementById('lock-screen-form')
-  const errorNode = document.getElementById('lock-screen-error')
-  const retryButton = lockScreen.querySelector('[data-lock-retry]')
-
-  retryButton?.addEventListener('click', () => {
-    lockScreen.remove()
-    checkMapAccessBeforeInit()
-  })
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault()
-    errorNode.style.display = 'none'
-    const password = form.elements.password.value.trim()
-    if (!password) return
-
-    try {
-      const btn = form.querySelector('button')
-      btn.disabled = true
-      btn.textContent = '正在验证...'
-
-      await verifyAccessPassword(password)
-
-      lockScreen.remove()
-      initLeafletMap()
-    } catch (err) {
-      const btn = form.querySelector('button')
-      btn.disabled = false
-      btn.textContent = '载入地图'
-      errorNode.textContent = err.message || '访问密码错误'
-      errorNode.style.display = 'block'
-    }
-  })
-}
-
 if (isAdminLocation(window.location)) {
   initAdminApp({ amapLoader: AMapLoader })
 } else {
   renderAppVersion()
-  checkMapAccessBeforeInit()
+  initAfterAccessCheck({
+    init: initLeafletMap,
+    title: '私有地图服务',
+    submitText: '载入地图',
+  })
 }
 
 registerServiceWorker()

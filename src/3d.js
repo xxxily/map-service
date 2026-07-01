@@ -4,31 +4,59 @@ import {
   Math as CesiumMath,
   Cartesian3,
   Cartesian2,
-  CameraEventType,
-  KeyboardEventModifier,
+  Cartographic,
+  CesiumTerrainProvider,
+  EllipsoidTerrainProvider,
+  Ion,
   Terrain,
   Matrix4,
   HeadingPitchRange,
   Quaternion,
-  Matrix3
+  Matrix3,
+  sampleTerrainMostDetailed
 } from 'cesium'
+import AMapLoader from '@amap/amap-jsapi-loader'
 
 import 'cesium/Source/Widgets/widgets.css'
 import './styles.css'
 import './map3d-styles.css'
 
-import { getAccessStatus, verifyAccessPassword } from './admin/api.js'
-import { escapeHtml } from './admin/utils.js'
-import { tileRelayEndpoint } from './config.js'
+import { initAdminApp } from './admin/dashboard.js'
+import { isAdminLocation } from './admin/routes.js'
+import { amapConfig, terrainConfig } from './config.js'
+import { initAfterAccessCheck } from './map/access-control.js'
+import { createCesiumLayerSources, LAYER_NAME_MAPPING, REVERSE_LAYER_MAPPING } from './map/tile-sources.js'
+import { registerServiceWorker } from './pwa.js'
+import { initGuidelines3d, toggleGuidelineMode3d } from './map3d/guidelines.js'
+import { initKmlSupport3d } from './map3d/kml.js'
+import { updatePosition3d } from './map3d/location.js'
+import { initAmapSearch3d, toggleSearchMode3d } from './map3d/search.js'
 
 // 配置 Cesium 资源基础路径
 window.CESIUM_BASE_URL = '/cesium/'
 
-function relayTileUrl (targetUrl) {
-  const encodedTarget = encodeURIComponent(targetUrl)
-    .replace(/%7B/g, '{')
-    .replace(/%7D/g, '}')
-  return `${tileRelayEndpoint}?url=${encodedTarget}`
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
+
+function renderAppVersion () {
+  const versionNode = document.getElementById('app-version')
+  if (versionNode && APP_VERSION) {
+    versionNode.textContent = `v${APP_VERSION}`
+  }
+}
+
+async function loadAmap () {
+  window._AMapSecurityConfig = {
+    securityJsCode: amapConfig.securityJsCode,
+  }
+
+  return AMapLoader.load({
+    key: amapConfig.key,
+    version: '2.0',
+    plugins: amapConfig.plugins,
+  }).catch((err) => {
+    console.warn('高德 JSAPI 加载失败，搜索功能不可用', err)
+    return null
+  })
 }
 
 // 2D 缩放级（Zoom）与 3D 相机高度（Height，单位：米）的指数映射转换公式
@@ -52,74 +80,602 @@ function debounce (func, wait) {
 }
 
 // 预定义底图源组（支持多层叠加与透明度）
-const layerSources = {
-  'amap-hybrid': [
-    {
-      url: relayTileUrl('https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=6&x={x}&y={y}&z={z}&scl=1'),
-      subdomains: ['1', '2', '3', '4']
-    },
-    {
-      url: relayTileUrl('https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}&scl=1'),
-      subdomains: ['1', '2', '3', '4'],
-      opacity: 0.5
-    }
-  ],
-  'google-amap-hybrid': [
-    {
-      url: relayTileUrl('https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}'),
-      subdomains: []
-    },
-    {
-      url: relayTileUrl('https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}&scl=1'),
-      subdomains: ['1', '2', '3', '4'],
-      opacity: 0.7
-    }
-  ],
-  'google-sat': [
-    {
-      url: relayTileUrl('https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}'),
-      subdomains: []
-    }
-  ],
-  'amap-road': [
-    {
-      url: relayTileUrl('https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}&scl=1'),
-      subdomains: ['1', '2', '3', '4']
-    }
-  ],
-  'google-road': [
-    {
-      url: relayTileUrl('https://www.google.com/maps/vt?lyrs=m@189&gl=cn&x={x}&y={y}&z={z}'),
-      subdomains: []
-    }
-  ]
-}
-
-// 2D 汉字图层名与 3D 英文图层 key 的双向对齐映射表
-const layerNameMapping = {
-  'amap-hybrid': '高德/卫星',
-  'google-amap-hybrid': '谷歌高德/卫星',
-  'google-sat': '谷歌/卫星',
-  'amap-road': '高德/街道',
-  'google-road': '谷歌/街道'
-}
-
-const reverseLayerMapping = {
-  '高德/卫星': 'amap-hybrid',
-  '谷歌高德/卫星': 'google-amap-hybrid',
-  '谷歌高德/卫星（HD）': 'google-amap-hybrid',
-  '谷歌/卫星': 'google-sat',
-  '高德/街道': 'amap-road',
-  '谷歌/街道': 'google-road'
-}
+const layerSources = createCesiumLayerSources()
+const layerNameMapping = LAYER_NAME_MAPPING
+const reverseLayerMapping = REVERSE_LAYER_MAPPING
 
 let viewer = null
 let isRotating = false
 let lastTime = 0
+let interactionMode = '2d'
+let terrainRuntime = {
+  key: '',
+  terrain: null,
+  loading: false,
+  ready: false,
+  verified: false,
+  loadId: 0,
+}
 const spinRate = 0.035 // 自转速度（弧度/秒）
+const MIN_CAMERA_HEIGHT = 150.0
+const MAX_CAMERA_DISTANCE = 18000000.0
+const MIN_CAMERA_PITCH = CesiumMath.toRadians(-85.0)
+const MAX_CAMERA_PITCH = CesiumMath.toRadians(-15.0)
+const MOUSE_ORBIT_SENSITIVITY = 0.003
+const TOUCH_ORBIT_SENSITIVITY = 0.0042
+const PINCH_ZOOM_SENSITIVITY = 3.0
+const MAX_PINCH_ZOOM_FRACTION = 0.62
+const MAX_SINGLE_PINCH_MOVE = 4200000.0
+
+function clamp (value, min, max) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function isMapToolInteractionActive () {
+  return Boolean(
+    (typeof window.getIsGuidelineModeActive === 'function' && window.getIsGuidelineModeActive()) ||
+    (typeof window.getIsKmlPickupModeActive === 'function' && window.getIsKmlPickupModeActive())
+  )
+}
+
+function getCameraHeight () {
+  return viewer?.camera?.positionCartographic?.height || 8000000.0
+}
+
+function getCanvasCenterPosition () {
+  const canvas = viewer?.canvas
+  if (!canvas) return new Cartesian2(0, 0)
+  return new Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2)
+}
+
+function pickEllipsoidAt (screenPosition) {
+  if (!viewer || !screenPosition) return null
+  try {
+    return viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid)
+  } catch (err) {
+    return null
+  }
+}
+
+function getOrbitTarget (screenPosition) {
+  return pickEllipsoidAt(screenPosition) || pickEllipsoidAt(getCanvasCenterPosition()) || Cartesian3.ZERO
+}
+
+function enforceCameraDistanceLimits () {
+  if (!viewer) return
+  const camera = viewer.camera
+  const distanceToCenter = Cartesian3.magnitude(camera.position)
+  if (distanceToCenter > MAX_CAMERA_DISTANCE) {
+    const normalizedPos = Cartesian3.normalize(camera.position, new Cartesian3())
+    Cartesian3.multiplyByScalar(normalizedPos, MAX_CAMERA_DISTANCE, camera.position)
+  }
+}
+
+function orbitCameraAroundTarget (targetPosition, deltaX, deltaY, sensitivity = MOUSE_ORBIT_SENSITIVITY) {
+  if (!viewer || !targetPosition) return
+  const camera = viewer.camera
+  const headingDelta = -deltaX * sensitivity
+  const pitchDelta = -deltaY * sensitivity
+  const offset = Cartesian3.subtract(camera.position, targetPosition, new Cartesian3())
+
+  const rotationAxis = Cartesian3.normalize(targetPosition, new Cartesian3())
+  if (Cartesian3.magnitude(rotationAxis) > 0.001) {
+    const quaternionHeading = Quaternion.fromAxisAngle(rotationAxis, headingDelta, new Quaternion())
+    const rotationMatrixHeading = Matrix3.fromQuaternion(quaternionHeading, new Matrix3())
+    Matrix3.multiplyByVector(rotationMatrixHeading, offset, offset)
+    Matrix3.multiplyByVector(rotationMatrixHeading, camera.direction, camera.direction)
+    Matrix3.multiplyByVector(rotationMatrixHeading, camera.up, camera.up)
+    Matrix3.multiplyByVector(rotationMatrixHeading, camera.right, camera.right)
+  }
+
+  const pitchAxis = camera.right
+  if (Cartesian3.magnitude(pitchAxis) > 0.001) {
+    const quaternionPitch = Quaternion.fromAxisAngle(pitchAxis, pitchDelta, new Quaternion())
+    const rotationMatrixPitch = Matrix3.fromQuaternion(quaternionPitch, new Matrix3())
+    Matrix3.multiplyByVector(rotationMatrixPitch, offset, offset)
+    Matrix3.multiplyByVector(rotationMatrixPitch, camera.direction, camera.direction)
+    Matrix3.multiplyByVector(rotationMatrixPitch, camera.up, camera.up)
+    Matrix3.multiplyByVector(rotationMatrixPitch, camera.right, camera.right)
+  }
+
+  Cartesian3.add(targetPosition, offset, camera.position)
+  Cartesian3.normalize(camera.direction, camera.direction)
+  Cartesian3.normalize(camera.up, camera.up)
+  Cartesian3.cross(camera.direction, camera.up, camera.right)
+  Cartesian3.normalize(camera.right, camera.right)
+
+  if (camera.pitch > MAX_CAMERA_PITCH || camera.pitch < MIN_CAMERA_PITCH) {
+    const targetPitch = clamp(camera.pitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
+    const distance = Math.max(MIN_CAMERA_HEIGHT, Cartesian3.distance(camera.position, targetPosition))
+    camera.lookAt(targetPosition, new HeadingPitchRange(camera.heading, targetPitch, distance))
+    camera.lookAtTransform(Matrix4.IDENTITY)
+  }
+
+  enforceCameraDistanceLimits()
+}
+
+function getPinchHeightFactor (height) {
+  if (height > 3000000) return 1.5
+  if (height > 300000) return 1.25
+  if (height < 1500) return 0.55
+  if (height < 10000) return 0.78
+  return 1
+}
+
+function zoomCameraAtScreenPoint (screenPosition, ratio) {
+  if (!viewer || !Number.isFinite(ratio) || ratio <= 0) return
+
+  const camera = viewer.camera
+  const height = Math.max(MIN_CAMERA_HEIGHT, getCameraHeight())
+  const zoomFraction = clamp(
+    Math.log(ratio) * PINCH_ZOOM_SENSITIVITY * getPinchHeightFactor(height),
+    -MAX_PINCH_ZOOM_FRACTION,
+    MAX_PINCH_ZOOM_FRACTION
+  )
+  if (Math.abs(zoomFraction) < 0.002) return
+
+  const targetPosition = pickEllipsoidAt(screenPosition) || pickEllipsoidAt(getCanvasCenterPosition())
+  const zoomDistance = Math.min(Math.abs(height * zoomFraction), MAX_SINGLE_PINCH_MOVE)
+
+  if (!targetPosition) {
+    if (zoomFraction > 0) {
+      camera.moveForward(zoomDistance)
+    } else {
+      camera.moveBackward(zoomDistance)
+    }
+    return
+  }
+
+  const direction = Cartesian3.subtract(targetPosition, camera.position, new Cartesian3())
+  const distanceToTarget = Cartesian3.magnitude(direction)
+  if (distanceToTarget <= 0) return
+  Cartesian3.normalize(direction, direction)
+
+  if (zoomFraction > 0) {
+    const moveDistance = Math.min(zoomDistance, Math.max(0, distanceToTarget - MIN_CAMERA_HEIGHT))
+    if (moveDistance > 0) {
+      camera.move(direction, moveDistance)
+    }
+  } else {
+    camera.move(direction, -zoomDistance)
+  }
+
+  enforceCameraDistanceLimits()
+}
+
+function panCameraByScreenDelta (previousMidpoint, currentMidpoint) {
+  if (!viewer || !previousMidpoint || !currentMidpoint) return
+  const camera = viewer.camera
+  const previousTarget = pickEllipsoidAt(previousMidpoint)
+  const currentTarget = pickEllipsoidAt(currentMidpoint)
+
+  if (previousTarget && currentTarget) {
+    const delta = Cartesian3.subtract(previousTarget, currentTarget, new Cartesian3())
+    Cartesian3.add(camera.position, delta, camera.position)
+    enforceCameraDistanceLimits()
+    return
+  }
+
+  const height = getCameraHeight()
+  const dx = currentMidpoint.x - previousMidpoint.x
+  const dy = currentMidpoint.y - previousMidpoint.y
+  const pixelScale = clamp(height * 0.0014, 0.8, 9000)
+  camera.moveRight(-dx * pixelScale)
+  camera.moveUp(dy * pixelScale)
+  enforceCameraDistanceLimits()
+}
+
+function setInteractionMode (mode, options = {}) {
+  const nextMode = mode === '3d' ? '3d' : '2d'
+  const previousMode = interactionMode
+  interactionMode = nextMode
+  window.getMap3dInteractionMode = () => interactionMode
+  restoreDefaultControllerState()
+
+  if (interactionMode === '3d') {
+    updateTerrainStatus('地形：3D 操作模式，当前使用平面底图', 'warn')
+  } else {
+    useFlatTerrain('2D 平面模式')
+    if (options.flatten !== false && previousMode !== '2d') {
+      flattenCameraView({ keepHeading: true, duration: 0.35 })
+    }
+  }
+
+  const button = document.getElementById('map3d-mode-toggle')
+  if (!button) return
+
+  const is3d = interactionMode === '3d'
+  button.classList.toggle('is-3d', is3d)
+  button.setAttribute('aria-pressed', String(is3d))
+  const text = button.querySelector('span')
+  if (text) {
+    text.textContent = is3d ? '3D' : '2D'
+  }
+  document.body.classList.toggle('map3d-interaction-3d', is3d)
+}
+
+function restoreDefaultControllerState () {
+  if (!viewer) return
+  const controller = viewer.scene.screenSpaceCameraController
+  controller.enableZoom = true
+  controller.enableTranslate = true
+  controller.enableRotate = true
+  controller.enableTilt = false
+  controller.enableLook = false
+}
+
+function flattenCameraView (options = {}) {
+  if (!viewer) return
+  const {
+    keepHeading = true,
+    duration = 0.4,
+  } = options
+  const camera = viewer.camera
+  camera.flyTo({
+    destination: camera.position,
+    orientation: {
+      heading: keepHeading ? camera.heading : 0.0,
+      pitch: CesiumMath.toRadians(-90.0),
+      roll: 0.0,
+    },
+    duration,
+  })
+}
+
+function installMobileGestureControls (canvas, controller) {
+  if (!canvas || !controller || !window.PointerEvent) return
+
+  const activePointers = new Map()
+  let gestureState = null
+  let savedControllerState = null
+
+  const saveAndSuspendController = () => {
+    if (!savedControllerState) {
+      savedControllerState = {
+        enableZoom: controller.enableZoom,
+        enableTranslate: controller.enableTranslate,
+        enableRotate: controller.enableRotate,
+        enableTilt: controller.enableTilt,
+      }
+    }
+    controller.enableZoom = false
+    controller.enableTranslate = false
+    controller.enableRotate = false
+    controller.enableTilt = false
+  }
+
+  const restoreController = () => {
+    if (!savedControllerState) return
+    controller.enableZoom = savedControllerState.enableZoom
+    controller.enableTranslate = savedControllerState.enableTranslate
+    controller.enableRotate = savedControllerState.enableRotate
+    controller.enableTilt = false
+    savedControllerState = null
+  }
+
+  const getFirstTwoPointers = () => Array.from(activePointers.values()).slice(0, 2)
+
+  const getMidpoint = (first, second) => new Cartesian2(
+    (first.x + second.x) / 2,
+    (first.y + second.y) / 2
+  )
+
+  const getDistance = (first, second) => Math.hypot(first.x - second.x, first.y - second.y)
+
+  const beginPinchGesture = () => {
+    const [first, second] = getFirstTwoPointers()
+    if (!first || !second) return
+    saveAndSuspendController()
+    gestureState = {
+      type: 'pinch',
+      previousDistance: Math.max(1, getDistance(first, second)),
+      previousMidpoint: getMidpoint(first, second),
+    }
+  }
+
+  const beginOrbitGesture = (point) => {
+    if (interactionMode !== '3d' || isMapToolInteractionActive()) return
+    saveAndSuspendController()
+    const screenPosition = new Cartesian2(point.x, point.y)
+    gestureState = {
+      type: 'orbit',
+      previousPosition: screenPosition,
+      targetPosition: getOrbitTarget(screenPosition),
+    }
+  }
+
+  const endGestureIfNeeded = () => {
+    if (activePointers.size === 0) {
+      gestureState = null
+      restoreController()
+      return
+    }
+
+    if (activePointers.size === 1 && gestureState?.type === 'pinch') {
+      const [point] = Array.from(activePointers.values())
+      gestureState = null
+      restoreController()
+      beginOrbitGesture(point)
+    }
+  }
+
+  canvas.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'touch') return
+    activePointers.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    })
+
+    try {
+      canvas.setPointerCapture(event.pointerId)
+    } catch (err) {
+    }
+
+    if (activePointers.size >= 2) {
+      event.preventDefault()
+      beginPinchGesture()
+      return
+    }
+
+    if (interactionMode === '3d' && !isMapToolInteractionActive()) {
+      beginOrbitGesture({ x: event.clientX, y: event.clientY })
+    }
+  }, { passive: false })
+
+  canvas.addEventListener('pointermove', (event) => {
+    if (event.pointerType !== 'touch' || !activePointers.has(event.pointerId)) return
+
+    activePointers.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    })
+
+    if (activePointers.size >= 2) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (gestureState?.type !== 'pinch') {
+        beginPinchGesture()
+        return
+      }
+
+      const [first, second] = getFirstTwoPointers()
+      if (!first || !second) return
+
+      const currentDistance = Math.max(1, getDistance(first, second))
+      const currentMidpoint = getMidpoint(first, second)
+      const ratio = currentDistance / Math.max(1, gestureState.previousDistance)
+
+      zoomCameraAtScreenPoint(currentMidpoint, ratio)
+      if (interactionMode === '3d') {
+        panCameraByScreenDelta(gestureState.previousMidpoint, currentMidpoint)
+      }
+
+      gestureState.previousDistance = currentDistance
+      gestureState.previousMidpoint = currentMidpoint
+      return
+    }
+
+    if (gestureState?.type === 'orbit' && interactionMode === '3d' && !isMapToolInteractionActive()) {
+      event.preventDefault()
+      event.stopPropagation()
+      const currentPosition = new Cartesian2(event.clientX, event.clientY)
+      const deltaX = currentPosition.x - gestureState.previousPosition.x
+      const deltaY = currentPosition.y - gestureState.previousPosition.y
+      orbitCameraAroundTarget(gestureState.targetPosition, deltaX, deltaY, TOUCH_ORBIT_SENSITIVITY)
+      gestureState.previousPosition = currentPosition
+    }
+  }, { passive: false })
+
+  const onPointerEnd = (event) => {
+    if (event.pointerType !== 'touch') return
+    activePointers.delete(event.pointerId)
+    try {
+      canvas.releasePointerCapture(event.pointerId)
+    } catch (err) {
+    }
+    endGestureIfNeeded()
+  }
+
+  const cancelAllGestures = () => {
+    activePointers.clear()
+    gestureState = null
+    restoreController()
+  }
+
+  canvas.addEventListener('pointerup', onPointerEnd, { passive: false })
+  canvas.addEventListener('pointercancel', onPointerEnd, { passive: false })
+  canvas.addEventListener('pointerleave', onPointerEnd, { passive: false })
+  window.addEventListener('blur', cancelAllGestures)
+  window.addEventListener('pagehide', cancelAllGestures)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      cancelAllGestures()
+    }
+  })
+}
+
+function updateTerrainStatus (message, state = '') {
+  const statusEl = document.getElementById('terrain-status')
+  if (!statusEl) return
+  statusEl.textContent = message
+  statusEl.classList.remove('is-ready', 'is-warn', 'is-error')
+  if (state) {
+    statusEl.classList.add(`is-${state}`)
+  }
+}
+
+function getEffectiveTerrainConfig () {
+  const override = (typeof window !== 'undefined' && window.mapServiceTerrainConfig && typeof window.mapServiceTerrainConfig === 'object')
+    ? window.mapServiceTerrainConfig
+    : {}
+  return {
+    ...terrainConfig,
+    ...override,
+    demoView: {
+      ...terrainConfig.demoView,
+      ...(override.demoView || {}),
+    },
+  }
+}
+
+function fallbackToEllipsoidTerrain (reason) {
+  if (!viewer || viewer.isDestroyed()) return
+  useFlatTerrain(`地形回退：${reason}`, 'error')
+  updateTerrainStatus(`地形：平面回退（${reason}）`, 'error')
+  console.warn('3D terrain fallback to ellipsoid:', reason)
+}
+
+function verifyTerrainProvider (provider, config, loadId) {
+  if (!provider || interactionMode !== '3d' || terrainRuntime.loadId !== loadId) return
+  const demoView = config.demoView || terrainConfig.demoView
+  const position = Cartographic.fromDegrees(demoView.lng, demoView.lat)
+  sampleTerrainMostDetailed(provider, [position]).then(([sample]) => {
+    if (interactionMode !== '3d' || terrainRuntime.loadId !== loadId) return
+    const height = Number(sample?.height)
+    if (Number.isFinite(height) && Math.abs(height) > 20) {
+      terrainRuntime.verified = true
+      updateTerrainStatus(`地形：真实地形已启用 · 采样 ${Math.round(height)} m · ${config.exaggeration}x`, 'ready')
+      console.info('3D terrain verified with sampled height:', height)
+    } else {
+      updateTerrainStatus('地形：已启用，但采样高度异常，可能仍是平面数据', 'warn')
+      console.warn('3D terrain sample returned an abnormal height:', height)
+    }
+  }).catch((err) => {
+    if (interactionMode !== '3d' || terrainRuntime.loadId !== loadId) return
+    updateTerrainStatus('地形：已启用，采样自检失败', 'warn')
+    console.warn('3D terrain sample check failed:', err)
+  })
+}
+
+function getTerrainKey (config) {
+  return [
+    config.enabled ? '1' : '0',
+    config.provider || 'world',
+    config.url || '',
+    config.ionToken ? 'token' : 'no-token',
+  ].join('|')
+}
+
+function getTerrainExaggeration (config) {
+  const value = Number(config.exaggeration)
+  if (!Number.isFinite(value)) return 1.35
+  return clamp(value, 1, 2)
+}
+
+function useFlatTerrain (reason = '平面模式', state = 'warn') {
+  if (!viewer || viewer.isDestroyed()) return
+  terrainRuntime.loadId += 1
+  viewer.terrainProvider = new EllipsoidTerrainProvider()
+  viewer.scene.verticalExaggeration = 1
+  viewer.scene.verticalExaggerationRelativeHeight = 0
+  viewer.scene.globe.enableLighting = false
+  updateTerrainStatus(`地形：${reason}，未采样`, state)
+}
+
+function enableConfiguredTerrain () {
+  if (!viewer) return
+  const config = getEffectiveTerrainConfig()
+
+  if (!config.enabled || config.provider === 'none') {
+    useFlatTerrain('配置关闭', 'warn')
+    return
+  }
+
+  try {
+    if (config.ionToken) {
+      Ion.defaultAccessToken = config.ionToken
+    }
+
+    const terrainKey = getTerrainKey(config)
+    const loadId = terrainRuntime.loadId + 1
+    terrainRuntime.loadId = loadId
+    viewer.scene.verticalExaggeration = getTerrainExaggeration(config)
+    viewer.scene.verticalExaggerationRelativeHeight = 0
+    viewer.scene.globe.enableLighting = true
+
+    if (terrainRuntime.terrain && terrainRuntime.key === terrainKey) {
+      viewer.scene.setTerrain(terrainRuntime.terrain)
+      updateTerrainStatus(terrainRuntime.ready
+        ? `地形：真实地形已启用 · ${viewer.scene.verticalExaggeration}x`
+        : '地形：继续加载真实地形...', terrainRuntime.ready ? 'ready' : 'warn')
+      if (terrainRuntime.ready && !terrainRuntime.verified && terrainRuntime.terrain.provider) {
+        verifyTerrainProvider(terrainRuntime.terrain.provider, {
+          ...config,
+          exaggeration: viewer.scene.verticalExaggeration,
+        }, loadId)
+      }
+      return
+    }
+
+    let terrain = null
+    if ((config.provider === 'url' || config.provider === 'self-hosted') && config.url) {
+      updateTerrainStatus('地形：加载自托管地形...', 'warn')
+      terrain = new Terrain(CesiumTerrainProvider.fromUrl(config.url, {
+        requestWaterMask: true,
+        requestVertexNormals: true,
+      }))
+    } else {
+      updateTerrainStatus(config.ionToken ? '地形：加载 Cesium World Terrain...' : '地形：加载 World Terrain（未配置 token）...', 'warn')
+      terrain = Terrain.fromWorldTerrain({
+        requestWaterMask: true,
+        requestVertexNormals: true,
+      })
+    }
+
+    terrainRuntime = {
+      key: terrainKey,
+      terrain,
+      loading: true,
+      ready: false,
+      verified: false,
+      loadId,
+    }
+
+    terrain.readyEvent.addEventListener((provider) => {
+      if (!viewer || viewer.isDestroyed() || interactionMode !== '3d' || terrainRuntime.loadId !== loadId) return
+      terrainRuntime.ready = true
+      terrainRuntime.loading = false
+      updateTerrainStatus(`地形：真实地形已启用 · ${viewer.scene.verticalExaggeration}x`, 'ready')
+      provider.errorEvent.addEventListener((err) => {
+        if (interactionMode !== '3d') return
+        updateTerrainStatus('地形：瓦片加载异常，已继续保留当前视图', 'warn')
+        console.warn('3D terrain tile provider error:', err)
+      })
+      verifyTerrainProvider(provider, {
+        ...config,
+        exaggeration: viewer.scene.verticalExaggeration,
+      }, loadId)
+    })
+
+    terrain.errorEvent.addEventListener((err) => {
+      if (terrainRuntime.loadId !== loadId) return
+      fallbackToEllipsoidTerrain(err?.message || '加载失败')
+    })
+
+    viewer.scene.setTerrain(terrain)
+  } catch (err) {
+    fallbackToEllipsoidTerrain(err?.message || '初始化失败')
+  }
+}
+
+function flyToTerrainDemoView () {
+  if (!viewer) return
+  const { demoView } = getEffectiveTerrainConfig()
+  setInteractionMode('3d')
+  enableConfiguredTerrain()
+  viewer.camera.flyTo({
+    destination: Cartesian3.fromDegrees(demoView.lng, demoView.lat, demoView.height),
+    orientation: {
+      heading: CesiumMath.toRadians(demoView.heading),
+      pitch: CesiumMath.toRadians(demoView.pitch),
+      roll: 0.0,
+    },
+    duration: 1.6,
+  })
+}
 
 // 初始化 Cesium 地球
-function init3dEarth () {
+async function init3dEarth () {
   // 1. 初始化 Viewer 并移除大部分内置控件，打造极简前卫外观
   viewer = new Viewer('cesiumContainer', {
     animation: false,
@@ -143,16 +699,36 @@ function init3dEarth () {
   controller.enableRotate = true // 高空下必须允许旋转（Rotate）以提供太空视角的拖拽滚动体验，防止地球成为死球
   controller.enableLook = false
   
-  // 默认情况下（未按住 Shift 时）关闭倾斜（Tilt），仅在低空允许平移，高空允  // 声明手动拖拽状态变量及局部 ENU 坐标系下的累加角度状态，防止参考系切换产生位置和方向突变抖动
+  // 默认情况下（未按住 Shift 时）关闭倾斜（Tilt），仅在低空允许平移，高空允许旋转球体。
   let isShiftDragging = false
   let lastMousePosition = null
   let dragTargetPosition = null
-  let currentHeading = 0
-  let currentPitch = 0
-  let currentRange = 0
+  let activeManualPointerId = null
+  let manual3dGestureUntil = 0
+
+  const resetManualDrag = (event = null) => {
+    if (event?.pointerId !== undefined && activeManualPointerId !== null && event.pointerId !== activeManualPointerId) {
+      return
+    }
+    if (event?.pointerId !== undefined && activeManualPointerId === null && !isShiftDragging) {
+      return
+    }
+    if (activeManualPointerId !== null && canvas) {
+      try {
+        canvas.releasePointerCapture(activeManualPointerId)
+      } catch (err) {
+      }
+    }
+    isShiftDragging = false
+    lastMousePosition = null
+    dragTargetPosition = null
+    activeManualPointerId = null
+    restoreDefaultControllerState()
+  }
 
   // 动态控制交互权限：当按住 Shift 或使用中/右键进行手动操作时，挂起原生控制器，防止操作互斥冲突
   const handleGestureCheck = (e) => {
+    if (e.pointerType === 'touch' || isMapToolInteractionActive()) return
     const isShift = !!e.shiftKey
     const isMiddle = e.button === 1
     const isRight = e.button === 2
@@ -175,17 +751,24 @@ function init3dEarth () {
       handleGestureCheck(e)
 
       const isShift = !!e.shiftKey
-      if (isShift && e.button === 0) { // Shift + 左键按下
+      const shouldStartManualDrag = e.pointerType !== 'touch' &&
+        !isMapToolInteractionActive() &&
+        ((e.button === 0 && isShift) || e.button === 1 || e.button === 2)
+      if (shouldStartManualDrag) { // Shift + 左键、中键或右键进入手动 3D 调整
+        if (interactionMode === '2d') {
+          setInteractionMode('3d')
+        }
+        controller.enableRotate = false
+        controller.enableTranslate = false
+        controller.enableTilt = false
+        manual3dGestureUntil = Date.now() + 1200
         isShiftDragging = true
+        activeManualPointerId = e.pointerId
         lastMousePosition = new Cartesian2(e.clientX, e.clientY)
-
-        const camera = viewer.camera
-        const scene = viewer.scene
-        
-        // 核心优化：以用户“鼠标点击/手指按压”的那个地面点，作为 3D 旋转和俯仰倾角变化的中心点
-        dragTargetPosition = camera.pickEllipsoid(lastMousePosition, scene.globe.ellipsoid)
-        if (!dragTargetPosition) {
-          dragTargetPosition = Cartesian3.ZERO // 回退地心
+        dragTargetPosition = getOrbitTarget(lastMousePosition)
+        try {
+          canvas.setPointerCapture(e.pointerId)
+        } catch (err) {
         }
       }
     }, true)
@@ -195,8 +778,12 @@ function init3dEarth () {
       handleGestureCheck(e)
 
       if (isShiftDragging && lastMousePosition && dragTargetPosition) {
-        const camera = viewer.camera
-
+        if (typeof e.buttons === 'number' && (e.buttons & 1) === 0) {
+          resetManualDrag(e)
+          return
+        }
+        e.preventDefault()
+        e.stopPropagation()
         // 计算当前鼠标相对上一帧屏幕坐标的位移量
         const deltaX = e.clientX - lastMousePosition.x
         const deltaY = e.clientY - lastMousePosition.y
@@ -205,100 +792,36 @@ function init3dEarth () {
         lastMousePosition.x = e.clientX
         lastMousePosition.y = e.clientY
 
-        // 根据屏幕位移量转换为 Heading (左右) 和 Pitch (俯仰) 变化增量
-        const sens = 0.003
-        const headingDelta = -deltaX * sens
-        const pitchDelta = -deltaY * sens
-
-        // 获取相机当前到公转支点的位置向量 V = position - center
-        const V = Cartesian3.subtract(camera.position, dragTargetPosition, new Cartesian3())
-
-        // 1. 左右旋转：绕过支点处的地球法线轴（即 dragTargetPosition 归一化方向）进行旋转
-        const rotationAxis = Cartesian3.normalize(dragTargetPosition, new Cartesian3())
-        if (Cartesian3.magnitude(rotationAxis) > 0.001) {
-          const quaternionHeading = Quaternion.fromAxisAngle(rotationAxis, headingDelta, new Quaternion())
-          const rotationMatrixHeading = Matrix3.fromQuaternion(quaternionHeading, new Matrix3())
-
-          // 旋转相机到支点的位置向量
-          Matrix3.multiplyByVector(rotationMatrixHeading, V, V)
-          // 旋转相机的正交姿态基向量
-          Matrix3.multiplyByVector(rotationMatrixHeading, camera.direction, camera.direction)
-          Matrix3.multiplyByVector(rotationMatrixHeading, camera.up, camera.up)
-          Matrix3.multiplyByVector(rotationMatrixHeading, camera.right, camera.right)
-        }
-
-        // 2. 上下倾斜：绕相机的右向量轴（camera.right）进行倾斜
-        const pitchAxis = camera.right
-        if (Cartesian3.magnitude(pitchAxis) > 0.001) {
-          const quaternionPitch = Quaternion.fromAxisAngle(pitchAxis, pitchDelta, new Quaternion())
-          const rotationMatrixPitch = Matrix3.fromQuaternion(quaternionPitch, new Matrix3())
-
-          // 旋转相机到支点的位置向量
-          Matrix3.multiplyByVector(rotationMatrixPitch, V, V)
-          // 旋转相机的正交姿态基向量
-          Matrix3.multiplyByVector(rotationMatrixPitch, camera.direction, camera.direction)
-          Matrix3.multiplyByVector(rotationMatrixPitch, camera.up, camera.up)
-          Matrix3.multiplyByVector(rotationMatrixPitch, camera.right, camera.right)
-        }
-
-        // 3. 更新相机在世界坐标系下的新物理位置 P = center + V
-        Cartesian3.add(dragTargetPosition, V, camera.position)
-
-        // 4. 正交归一化相机姿态（Orthonormalize），防止多次旋转累加产生的拉伸/剪切畸变
-        Cartesian3.normalize(camera.direction, camera.direction)
-        Cartesian3.normalize(camera.up, camera.up)
-        // 叉乘计算出相互垂直的右向量
-        Cartesian3.cross(camera.direction, camera.up, camera.right)
-        Cartesian3.normalize(camera.right, camera.right)
-
-        // 5. 夹角安全截断：限制俯仰角，防止地底穿透和过度平视
-        const minPitch = CesiumMath.toRadians(-85.0)
-        const maxPitch = CesiumMath.toRadians(-15.0)
-        if (camera.pitch > maxPitch || camera.pitch < minPitch) {
-          const targetPitch = Math.max(minPitch, Math.min(maxPitch, camera.pitch))
-          const distance = Cartesian3.distance(camera.position, dragTargetPosition)
-          // 仅在越界需要拉回时，一次性调用 lookAt 进行安全限位重置，日常无抖动
-          camera.lookAt(dragTargetPosition, new HeadingPitchRange(camera.heading, targetPitch, distance))
-          camera.lookAtTransform(Matrix4.IDENTITY)
-        }
+        orbitCameraAroundTarget(dragTargetPosition, deltaX, deltaY, MOUSE_ORBIT_SENSITIVITY)
+        manual3dGestureUntil = Date.now() + 1200
       }
     }, true)
 
     // 3. 监听指针抬起 (拖拽结束)
     canvas.addEventListener('pointerup', (e) => {
-      isShiftDragging = false
-      lastMousePosition = null
-      dragTargetPosition = null
-      handleGestureCheck(e)
+      resetManualDrag(e)
     }, true)
+    canvas.addEventListener('pointercancel', resetManualDrag, true)
+    canvas.addEventListener('pointerleave', resetManualDrag, true)
+    window.addEventListener('pointerup', resetManualDrag, true)
+    window.addEventListener('blur', resetManualDrag)
+    window.addEventListener('pagehide', resetManualDrag)
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        resetManualDrag()
+      }
+    })
   }
+  installMobileGestureControls(canvas, controller)
+  setInteractionMode('2d', { flatten: false })
 
   // 限制最小缩放高度为 150.0 米，防止过度贴地或穿透进入地形内部
-  controller.minimumZoomDistance = 150.0
+  controller.minimumZoomDistance = MIN_CAMERA_HEIGHT
 
   // 1.1. 重写 showErrorPanel 阻止在未配置 Ion Token 时弹出报错黄条面板，改为在控制台输出
   viewer.showErrorPanel = (title, message, error) => {
     console.warn('Cesium non-fatal warning/error:', title, message, error)
   }
-
-  // 1.3. 开启三维世界地形起伏，展现逼真的立体山脉与高低落差
-  try {
-    Terrain.fromWorldTerrain({
-      requestWaterMask: true,
-      requestVertexNormals: true // 开启地形光照法线，大幅增强 3D 立体山川视觉质感
-    }).then(provider => {
-      if (viewer && !viewer.isDestroyed()) {
-        viewer.terrainProvider = provider
-      }
-    }).catch(err => {
-      console.warn('Failed to initialize Cesium World Terrain:', err)
-    })
-  } catch (err) {
-    console.warn('Failed to initialize Cesium World Terrain provider:', err)
-  }
-
-  // 1.4. 开启地形夸张效果（2.2倍），大幅强化山脉起伏和三维立体落差感
-  viewer.scene.terrainExaggeration = 2.2
 
   // 1.6. 限制相机俯仰角（Pitch）防止视锥过长，并在高空时将视线对齐地心，防止平移将地球移出视野
   viewer.scene.preRender.addEventListener(() => {
@@ -306,21 +829,31 @@ function init3dEarth () {
     const camera = viewer.camera
     
     // 约束 1：限制最大偏离距离（防止太空视图下地球无限拉远缩小）
-    const distanceToCenter = Cartesian3.magnitude(camera.position)
-    const maxDistance = 18000000.0 // 限制最大距离为 1.8 万千米
-    if (distanceToCenter > maxDistance) {
-      const normalizedPos = Cartesian3.normalize(camera.position, new Cartesian3())
-      Cartesian3.multiplyByScalar(normalizedPos, maxDistance, camera.position)
-    }
+    enforceCameraDistanceLimits()
 
     // 约束 2：高空默认允许 rotate 旋转球体以平移视野，地球本身不会偏移出屏幕，此处无需额外逻辑
 
-    // 约束 3：限制相机倾斜角（Pitch），防止过度平视平视导致视锥极长触发疯狂瓦片加载
-    const minPitch = CesiumMath.toRadians(-85.0) // 垂直向下偏上限，防止极点旋转异常
-    const maxPitch = CesiumMath.toRadians(-15.0) // 接近水平视角的下限，防止视线平行于地平面
+    if (interactionMode === '2d') {
+      if (isShiftDragging || Date.now() < manual3dGestureUntil) {
+        return
+      }
+      const targetPitch = CesiumMath.toRadians(-90.0)
+      if (Math.abs(camera.pitch - targetPitch) > 0.00001 || Math.abs(camera.roll) > 0.00001) {
+        camera.setView({
+          destination: camera.position,
+          orientation: {
+            heading: camera.heading,
+            pitch: targetPitch,
+            roll: 0.0
+          }
+        })
+      }
+      return
+    }
 
-    if (camera.pitch > maxPitch || camera.pitch < minPitch) {
-      const targetPitch = Math.max(minPitch, Math.min(maxPitch, camera.pitch))
+    // 约束 3：3D 模式限制相机倾斜角（Pitch），防止过度平视导致视锥极长触发疯狂瓦片加载
+    if (camera.pitch > MAX_CAMERA_PITCH || camera.pitch < MIN_CAMERA_PITCH) {
+      const targetPitch = clamp(camera.pitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
       camera.setView({
         destination: camera.position,
         orientation: {
@@ -340,23 +873,22 @@ function init3dEarth () {
   if (canvas) {
     canvas.addEventListener('wheel', (e) => {
       // A. 如果是按住 Shift 键的触摸板双指滑动（或鼠标滚轮滚动）
-      if (e.shiftKey && !e.ctrlKey) {
+      if (e.shiftKey && !e.ctrlKey && !isMapToolInteractionActive()) {
         e.preventDefault()
+        if (interactionMode === '2d') {
+          setInteractionMode('3d')
+        }
+        manual3dGestureUntil = Date.now() + 1200
 
         const camera = viewer.camera
-        const scene = viewer.scene
 
         // 1. 获取当前鼠标底下的三维世界坐标作为旋转/倾斜中心点
         const mousePosition = new Cartesian2(e.clientX, e.clientY)
-        let targetPosition = camera.pickEllipsoid(mousePosition, scene.globe.ellipsoid)
-        if (!targetPosition) {
-          // 如果没有指向地球，就用屏幕中心的地面点，或者地球球心
-          targetPosition = Cartesian3.ZERO
-        }
+        const targetPosition = getOrbitTarget(mousePosition)
 
         // 2. 获取当前相机的 heading, pitch, 以及到目标点的距离 range
         const distance = Cartesian3.distance(camera.position, targetPosition)
-        const range = Math.max(150.0, distance) // 限制最小距离
+        const range = Math.max(MIN_CAMERA_HEIGHT, distance) // 限制最小距离
 
         // 3. 计算旋转和倾斜增量
         // e.deltaX 代表水平滑动（用于旋转），deltaY 代表垂直滑动（用于倾斜视角）
@@ -369,9 +901,7 @@ function init3dEarth () {
         let newPitch = camera.pitch + pitchDelta
 
         // 限制倾斜角范围，防止穿透或者过度平视
-        const minPitch = CesiumMath.toRadians(-85.0)
-        const maxPitch = CesiumMath.toRadians(-15.0)
-        newPitch = Math.max(minPitch, Math.min(maxPitch, newPitch))
+        newPitch = clamp(newPitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
 
         // 4. 让相机绕着 targetPosition 进行中心偏航和俯仰，并释放锁定
         camera.lookAt(targetPosition, new HeadingPitchRange(newHeading, newPitch, range))
@@ -502,7 +1032,15 @@ function init3dEarth () {
   // 初次加载也运行一次状态更新
   updateCameraStatus()
 
-  // 7. 绑定界面交互事件
+  // 7. 初始化与首页对标的地图工具能力
+  const AMap = await loadAmap()
+  if (AMap) {
+    initAmapSearch3d(viewer, AMap)
+  }
+  initKmlSupport3d(viewer)
+  initGuidelines3d(viewer)
+
+  // 8. 绑定界面交互事件
   bindUiEvents()
 }
 
@@ -684,6 +1222,13 @@ function bindUiEvents () {
   const layerControlPanel = document.getElementById('map3d-layer-control')
   if (!menu) return
 
+  const modeToggleBtn = document.getElementById('map3d-mode-toggle')
+  if (modeToggleBtn) {
+    modeToggleBtn.addEventListener('click', () => {
+      setInteractionMode(interactionMode === '3d' ? '2d' : '3d')
+    })
+  }
+
   // 1. 图层面板选项切换绑定（Radio 方式，对齐 2D 底层逻辑）
   if (layerControlPanel) {
     layerControlPanel.addEventListener('change', (e) => {
@@ -693,10 +1238,11 @@ function bindUiEvents () {
         if (layerId) {
           switchLayer(layerId)
           try {
-            localStorage.setItem('last_map_layer', layerId)
+            localStorage.setItem('last_map_layer', layerNameMapping[layerId] || layerId)
           } catch (err) {
             console.error('Failed to save last_map_layer in localStorage', err)
           }
+          syncCameraStateToUrl()
         }
       }
     })
@@ -760,6 +1306,10 @@ function bindUiEvents () {
   const resetBearingBtn = document.getElementById('reset-bearing-btn')
   if (resetBearingBtn) {
     resetBearingBtn.addEventListener('click', () => {
+      if (interactionMode === '2d') {
+        flattenCameraView({ keepHeading: false, duration: 0.6 })
+        return
+      }
       const camera = viewer.camera
       camera.flyTo({
         destination: camera.position,
@@ -770,6 +1320,34 @@ function bindUiEvents () {
         },
         duration: 0.6
       })
+    })
+  }
+
+  const kmlBtn = menu.querySelector('[data-action="toggleKmlPanel"]')
+  if (kmlBtn) {
+    kmlBtn.addEventListener('click', () => {
+      window.toggleKmlPanel?.()
+    })
+  }
+
+  const guidelineBtn = menu.querySelector('[data-action="toggleGuidelineMode"]')
+  if (guidelineBtn) {
+    guidelineBtn.addEventListener('click', () => {
+      toggleGuidelineMode3d()
+    })
+  }
+
+  const searchBtn = menu.querySelector('[data-action="toggleSearchMode"]')
+  if (searchBtn) {
+    searchBtn.addEventListener('click', () => {
+      toggleSearchMode3d()
+    })
+  }
+
+  const positionBtn = menu.querySelector('[data-action="updatePosition"]')
+  if (positionBtn) {
+    positionBtn.addEventListener('click', () => {
+      updatePosition3d(viewer)
     })
   }
 
@@ -800,6 +1378,20 @@ function bindUiEvents () {
     })
   }
 
+  const terrainDemoBtn = menu.querySelector('[data-action="flyTerrainDemo"]')
+  if (terrainDemoBtn) {
+    terrainDemoBtn.addEventListener('click', () => {
+      flyToTerrainDemoView()
+    })
+  }
+
+  const adminBtn = menu.querySelector('[data-action="openAdmin"]')
+  if (adminBtn) {
+    adminBtn.addEventListener('click', () => {
+      window.location.href = '/admin/overview'
+    })
+  }
+
   // 6. 返回 2D 视图
   const backBtn = menu.querySelector('[data-action="back2d"]')
   if (backBtn) {
@@ -809,82 +1401,15 @@ function bindUiEvents () {
   }
 }
 
-// 密码验证逻辑 - 与 2D 主页一致以保证安全性
-async function checkMapAccessBeforeInit () {
-  try {
-    const status = await getAccessStatus()
-    if (status.required) {
-      showPasswordLockScreen()
-    } else {
-      init3dEarth()
-    }
-  } catch (err) {
-    console.error('Failed to check map access status', err)
-    showPasswordLockScreen({
-      message: '访问状态检查失败，请稍后重试',
-      allowRetry: true,
-    })
-  }
-}
-
-function showPasswordLockScreen (options = {}) {
-  document.getElementById('map-lock-screen')?.remove()
-
-  const lockScreen = document.createElement('div')
-  lockScreen.id = 'map-lock-screen'
-  lockScreen.className = 'lock-screen-backdrop'
-  const message = options.message || '管理员启用了访问控制，请输入密码解锁'
-  lockScreen.innerHTML = `
-    <div class="lock-screen-card">
-      <div class="lock-screen-icon">🔒</div>
-      <h2>私有地图三维视图</h2>
-      <p>${escapeHtml(message)}</p>
-      <form id="lock-screen-form" autocomplete="off">
-        <div class="lock-screen-field">
-          <input type="password" name="password" placeholder="请输入访问密码" required autofocus>
-        </div>
-        <div id="lock-screen-error" class="lock-screen-error" style="${options.message ? '' : 'display: none;'}">${escapeHtml(options.message || '')}</div>
-        <button type="submit">载入三维地球</button>
-        ${options.allowRetry ? '<button type="button" class="lock-screen-secondary" data-lock-retry>重试检查</button>' : ''}
-      </form>
-    </div>
-  `
-
-  document.body.appendChild(lockScreen)
-
-  const form = document.getElementById('lock-screen-form')
-  const errorNode = document.getElementById('lock-screen-error')
-  const retryButton = lockScreen.querySelector('[data-lock-retry]')
-
-  retryButton?.addEventListener('click', () => {
-    lockScreen.remove()
-    checkMapAccessBeforeInit()
-  })
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault()
-    errorNode.style.display = 'none'
-    const password = form.elements.password.value.trim()
-    if (!password) return
-
-    try {
-      const btn = form.querySelector('button')
-      btn.disabled = true
-      btn.textContent = '正在验证...'
-
-      await verifyAccessPassword(password)
-
-      lockScreen.remove()
-      init3dEarth()
-    } catch (err) {
-      const btn = form.querySelector('button')
-      btn.disabled = false
-      btn.textContent = '载入三维地球'
-      errorNode.textContent = err.message || '访问密码错误'
-      errorNode.style.display = 'block'
-    }
+if (isAdminLocation(window.location)) {
+  initAdminApp({ amapLoader: AMapLoader })
+} else {
+  renderAppVersion()
+  initAfterAccessCheck({
+    init: init3dEarth,
+    title: '私有地图三维视图',
+    submitText: '载入三维地球',
   })
 }
 
-// 启动入口
-checkMapAccessBeforeInit()
+registerServiceWorker()

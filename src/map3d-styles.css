@@ -11,6 +11,25 @@ html, body, #cesiumContainer {
   user-select: none;
 }
 
+body.admin-view {
+  overflow: auto;
+  background: #f4f7f6;
+  user-select: auto;
+}
+
+body.admin-view #cesiumContainer,
+body.admin-view #map3d-layer-control,
+body.admin-view #map-menu,
+body.admin-view #map-search-mod,
+body.admin-view #guideline-toolbar,
+body.admin-view #kml-panel,
+body.admin-view #camera-status,
+body.admin-view #map3d-mode-toggle,
+body.admin-view #terrain-status,
+body.admin-view #app-version {
+  display: none !important;
+}
+
 /* 隐藏 Cesium 默认多余版权及导航信息 */
 .cesium-viewer-bottom {
   display: none !important;
@@ -34,6 +53,83 @@ html, body, #cesiumContainer {
   border-color: #fbbf24 !important;
   color: #fbbf24 !important;
   background-color: rgba(0, 0, 0, 0.75) !important;
+}
+
+.map3d-pickup-active,
+.map3d-guideline-active {
+  cursor: crosshair !important;
+}
+
+.map3d-mode-toggle {
+  position: fixed;
+  top: calc(var(--control-top-desktop) - 4px);
+  right: calc(var(--safe-area-right) + 62px);
+  z-index: 9999;
+  display: inline-flex;
+  width: 58px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.68);
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.map3d-mode-toggle .svg-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.map3d-mode-toggle.is-3d {
+  border-color: rgba(251, 191, 36, 0.82);
+  background: rgba(30, 41, 59, 0.86);
+  color: #fbbf24;
+}
+
+.map3d-mode-toggle:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: 2px;
+}
+
+.terrain-status {
+  position: fixed;
+  top: calc(var(--control-top-desktop) + 42px);
+  right: calc(var(--safe-area-right) + 16px);
+  z-index: 9800;
+  max-width: min(300px, calc(100vw - 32px));
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: rgba(0, 0, 0, 0.58);
+  color: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.terrain-status.is-ready {
+  border-color: rgba(20, 184, 166, 0.55);
+  color: #ccfbf1;
+}
+
+.terrain-status.is-warn {
+  border-color: rgba(251, 191, 36, 0.55);
+  color: #fde68a;
+}
+
+.terrain-status.is-error {
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #fecaca;
 }
 
 /* 仿 Leaflet 的 3D 右上角图层切换面板基准样式 */
@@ -117,4 +213,180 @@ html, body, #cesiumContainer {
 
 .leaflet-control-layers-expanded .leaflet-control-layers-list {
   display: block !important;
+}
+
+.map3d-feature-popup {
+  position: fixed;
+  z-index: 12000;
+  width: min(260px, calc(100vw - 24px));
+  box-sizing: border-box;
+  border: 1px solid rgba(18, 57, 63, 0.14);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24);
+  color: #1d2a2e;
+  transform: translate(-50%, -100%);
+  user-select: text;
+}
+
+.map3d-guideline-popup {
+  position: fixed;
+  z-index: 12100;
+  box-sizing: border-box;
+  border: 1px solid rgba(190, 18, 60, 0.16);
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
+  color: #be123c;
+  transform: translate(-50%, -100%);
+  user-select: none;
+}
+
+.map3d-guideline-popup[hidden] {
+  display: none !important;
+}
+
+.map3d-popup-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.map3d-popup-close:hover,
+.map3d-popup-close:focus-visible {
+  outline: none;
+  background: rgba(15, 118, 110, 0.08);
+  color: #0f766e;
+}
+
+.map3d-feature-popup .kml-popup-content {
+  padding-right: 16px;
+}
+
+.map3d-public-kml-edit-banner {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 13000;
+  display: flex;
+  min-height: 50px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-sizing: border-box;
+  padding: 8px 16px;
+  background: #0f766e;
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+  font-size: 14px;
+}
+
+.map3d-edit-badge {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  margin-right: 6px;
+  border-radius: 4px;
+  padding: 0 6px;
+  background: #14b8a6;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.map3d-public-kml-edit-banner > div:last-child {
+  display: flex;
+  gap: 8px;
+}
+
+.map3d-public-kml-edit-banner button {
+  min-height: 28px;
+  border: none;
+  border-radius: 4px;
+  padding: 0 10px;
+  background: #fff;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.kml-section-header,
+.kml-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(22, 61, 61, 0.12);
+  padding-bottom: 4px;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.kml-section-header {
+  cursor: pointer;
+}
+
+.kml-section-header > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.kml-section-header .kml-file-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.kml-section-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.kml-empty {
+  padding: 8px 0;
+  color: #9ca3af;
+  font-size: 12px;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .map3d-mode-toggle {
+    top: calc(var(--safe-area-top) + 12px);
+    right: calc(var(--safe-area-right) + 58px);
+    width: 54px;
+  }
+
+  .terrain-status {
+    top: calc(var(--safe-area-top) + 58px);
+    right: calc(var(--safe-area-right) + 12px);
+    max-width: min(280px, calc(100vw - 24px));
+    font-size: 11px;
+  }
+
+  .map3d-feature-popup {
+    left: 50% !important;
+    top: auto !important;
+    bottom: calc(var(--safe-area-bottom) + 76px);
+    transform: translateX(-50%);
+  }
+
+  .map3d-public-kml-edit-banner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }

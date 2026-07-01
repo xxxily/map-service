@@ -1,8 +1,6 @@
 import L from 'leaflet'
-import { tileRelayEndpoint } from '../config.js'
+import { createTileUrls, DEFAULT_LAYER_NAME } from './tile-sources.js'
 import { writeMapViewToUrl } from './url-state.js'
-
-const DEFAULT_LAYER_NAME = '高德/卫星'
 
 // 对 L.GridLayer 扩展以支持可视区域外一部分瓦片图的预加载
 const originalGetTiledPixelBounds = L.GridLayer.prototype._getTiledPixelBounds
@@ -17,23 +15,13 @@ L.GridLayer.prototype._getTiledPixelBounds = function (center) {
   return pixelBounds
 }
 
-function relayTileUrl (targetUrl) {
-  const encodedTarget = encodeURIComponent(targetUrl)
-    .replace(/%7B/g, '{')
-    .replace(/%7D/g, '}')
-
-  return `${tileRelayEndpoint}?url=${encodedTarget}`
-}
-
-const isRetina = L.Browser.retina
-const autonaviScale = isRetina ? '2' : '1'
-const googleScale = isRetina ? '2' : '1'
-
-const googleSatellite = relayTileUrl(`https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}&scale=${googleScale}`)
-const googleSatelliteHd = relayTileUrl(`https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}&scale=3`)
-const googleStreet = relayTileUrl(`https://www.google.com/maps/vt?lyrs=m@189&gl=cn&x={x}&y={y}&z={z}&scale=${googleScale}`)
-const autonaviSatellite = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=6&x={x}&y={y}&z={z}&scl=${autonaviScale}`)
-const autonaviRoad = relayTileUrl(`https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}&scl=1`)
+const {
+  googleSatellite,
+  googleSatelliteHd,
+  googleStreet,
+  autonaviSatellite,
+  autonaviRoad,
+} = createTileUrls({ isRetina: L.Browser.retina })
 
 function createTileLayer (url, options) {
   return L.tileLayer(url, {

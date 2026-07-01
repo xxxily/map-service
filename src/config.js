@@ -14,3 +14,18 @@ export const defaultMapView = {
 }
 
 export const tileRelayEndpoint = '/api/v1/tiles/relay'
+
+export const terrainConfig = {
+  enabled: true,
+  provider: import.meta.env.VITE_CESIUM_TERRAIN_PROVIDER || 'world',
+  ionToken: import.meta.env.VITE_CESIUM_ION_TOKEN || '',
+  url: import.meta.env.VITE_CESIUM_TERRAIN_URL || '',
+  exaggeration: Number(import.meta.env.VITE_CESIUM_TERRAIN_EXAGGERATION || 1.35),
+  demoView: {
+    lng: 86.925,
+    lat: 27.988,
+    height: 9000,
+    heading: 28,
+    pitch: -34,
+  },
+}
