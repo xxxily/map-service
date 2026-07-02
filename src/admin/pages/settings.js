@@ -2,90 +2,11 @@ import { escapeHtml } from '../utils.js'
 
 const ACCESS_PASSWORD_MIN_LENGTH = 4
 
-function collectProxyForm (form, state) {
-  const providerPolicy = {}
-  ;[...form.elements].forEach((element) => {
-    if (element.name?.startsWith('providerPolicy:')) {
-      providerPolicy[element.name.replace('providerPolicy:', '')] = element.checked
-    }
-  })
-
-  const proxy = {
-    enabled: form.elements.enabled.checked,
-    protocol: form.elements.protocol.value,
-    host: form.elements.host.value,
-    port: Number(form.elements.port.value),
-    username: form.elements.proxyUsername.value,
-    providerPolicy,
-  }
-  const password = form.elements.proxyPassword.value
-  if (password || !state.settings?.proxy?.hasPassword) {
-    proxy.password = password
-  }
-
-  return {
-    proxy,
-  }
-}
-
 export function renderSettingsPage (state) {
-  const proxy = state.settings?.proxy || {}
   const access = state.settings?.access || {}
-  const providers = state.providers || []
 
   return `
     <div class="admin-grid">
-      <section class="admin-panel">
-        <div class="admin-panel-head">
-          <h2>代理设置</h2>
-          <span class="admin-badge">${proxy.enabled ? 'ON' : 'OFF'}</span>
-        </div>
-        <form class="admin-form" data-proxy-form autocomplete="off">
-          <label class="admin-check">
-            <input type="checkbox" name="enabled" ${proxy.enabled ? 'checked' : ''}>
-            <span>启用代理策略</span>
-          </label>
-          <div class="admin-field-row">
-            <label>
-              <span>协议</span>
-              <select name="protocol">
-                <option value="http" ${proxy.protocol === 'http' ? 'selected' : ''}>http</option>
-                <option value="https" ${proxy.protocol === 'https' ? 'selected' : ''}>https</option>
-              </select>
-            </label>
-            <label>
-              <span>端口</span>
-              <input name="port" type="number" min="1" max="65535" value="${escapeHtml(proxy.port || 10809)}" required>
-            </label>
-          </div>
-          <label>
-            <span>主机</span>
-            <input name="host" value="${escapeHtml(proxy.host || '127.0.0.1')}" required>
-          </label>
-          <label>
-            <span>用户名</span>
-            <input name="proxyUsername" autocomplete="off" value="${escapeHtml(proxy.username || '')}">
-          </label>
-          <label>
-            <span>密码</span>
-            <input name="proxyPassword" type="password" autocomplete="new-password" placeholder="${proxy.hasPassword ? '已设置' : ''}">
-          </label>
-          <fieldset class="admin-provider-policy">
-            <legend>按图层启用代理</legend>
-            ${providers.map(provider => {
-              const checked = Boolean(proxy.providerPolicy?.[provider.id])
-              return `
-                <label class="admin-check">
-                  <input type="checkbox" name="providerPolicy:${escapeHtml(provider.id)}" ${checked ? 'checked' : ''}>
-                  <span>${escapeHtml(provider.name)}</span>
-                </label>
-              `
-            }).join('')}
-          </fieldset>
-          <button type="submit">保存代理</button>
-        </form>
-      </section>
-
       <section class="admin-panel">
         <div class="admin-panel-head">
           <h2>访问控制</h2>
@@ -135,22 +56,8 @@ export function renderSettingsPage (state) {
 }
 
 export async function handleSettingsSubmit ({ api, event, renderDashboard, setNotice, state }) {
-  const proxyForm = event.target.closest('[data-proxy-form]')
   const accessForm = event.target.closest('[data-access-form]')
   const adminPasswordForm = event.target.closest('[data-admin-password-form]')
-
-  if (proxyForm) {
-    event.preventDefault()
-    try {
-      state.settings = await api.updateSettings(collectProxyForm(proxyForm, state))
-      setNotice('代理设置已保存')
-      renderDashboard()
-    } catch (err) {
-      setNotice('', err.message)
-      renderDashboard()
-    }
-    return true
-  }
 
   if (accessForm) {
     event.preventDefault()

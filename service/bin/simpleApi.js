@@ -311,7 +311,6 @@ const simpleApi = {
         }
 
         const result = await service.fetchRelay(targetUrl, {
-          useProxy: utils.strToBoolean(req.query.useProxy),
           refresh: utils.strToBoolean(req.query.refresh),
           noCache: utils.strToBoolean(req.query.noCache),
           cache: req.query.cache === undefined ? true : utils.strToBoolean(req.query.cache),

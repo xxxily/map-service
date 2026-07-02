@@ -14,7 +14,6 @@ import createAdminAuth from './admin/auth.js'
 import AdminSettings from './admin/settings.js'
 import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
-import { getTileProviderByUrl } from './admin/tileProviders.js'
 import SharedKmlManager from './admin/sharedKml.js'
 import TileCatalogManager from './admin/tileCatalog.js'
 import fs from 'fs-extra'
@@ -31,9 +30,6 @@ const adminSettings = new AdminSettings(adminStore, {
 })
 const tileCatalogManager = new TileCatalogManager({
   store: adminStore,
-  defaults: {
-    proxy: adminConfig.settings?.proxy,
-  },
 })
 const precacheManager = new PrecacheManager({
   store: adminStore,
@@ -79,16 +75,9 @@ async function readPackageInfo () {
 
 const service = {
   async fetchRelay (url, options = {}) {
-    const providerId = options.providerId || getTileProviderByUrl(url)?.id || ''
-    const proxy = Object.hasOwn(options, 'proxy')
-      ? options.proxy
-      : await adminSettings.getProxyForRequest({
-        forceProxy: options.useProxy,
-        providerId,
-      })
     return fetchRelay.fetch(url, {
       ...options,
-      proxy,
+      proxy: Object.hasOwn(options, 'proxy') ? options.proxy : null,
     })
   },
 

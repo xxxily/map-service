@@ -30,14 +30,6 @@ function normalizeProxyConfig (proxy) {
     return null
   }
 
-  if (proxy === true) {
-    return {
-      host: '127.0.0.1',
-      port: 10809,
-      protocol: 'http',
-    }
-  }
-
   const host = String(proxy.host || '').trim()
   const port = Number(proxy.port)
   if (!host || !Number.isInteger(port)) {
@@ -213,11 +205,7 @@ class FetchRelay {
       }
     }
 
-    const proxySource = Object.hasOwn(options, 'proxy')
-      ? options.proxy
-      : normalizeBoolean(options.useProxy)
-          ? this.config.proxy || true
-          : null
+    const proxySource = Object.hasOwn(options, 'proxy') ? options.proxy : null
     const proxy = normalizeProxyConfig(proxySource)
     if (proxy) {
       axiosConf.proxy = proxy

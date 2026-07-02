@@ -77,7 +77,6 @@ export const adminApi = {
   settings: () => request('/admin/settings'),
   updateSettings: (body) => request('/admin/settings', { method: 'PUT', body }),
   updatePassword: (body) => request('/admin/auth/password', { method: 'POST', body }),
-  providers: () => request('/admin/precache/providers'),
   precacheCatalog: () => request('/admin/precache/catalog'),
   tasks: () => request('/admin/precache/tasks'),
   estimateTask: (body) => request('/admin/precache/estimate', { method: 'POST', body }),

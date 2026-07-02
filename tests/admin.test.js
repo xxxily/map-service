@@ -71,19 +71,10 @@ test('admin auth supports custom store and password updates', async () => {
   }
 })
 
-test('admin settings persist proxy config and sanitize password', async () => {
+test('admin settings only manage access control and ignore legacy proxy input', async () => {
   const dataDir = tempDir('admin-settings')
   const store = new AdminStore({ dataDir })
-  const settings = new AdminSettings(store, {
-    proxy: {
-      enabled: false,
-      protocol: 'http',
-      host: '127.0.0.1',
-      port: 10809,
-      username: '',
-      password: '',
-    },
-  })
+  const settings = new AdminSettings(store)
 
   try {
     const sanitized = await settings.update({
@@ -97,88 +88,10 @@ test('admin settings persist proxy config and sanitize password', async () => {
       },
     })
 
-    assert.equal(sanitized.proxy.enabled, true)
-    assert.equal(sanitized.proxy.host, '10.0.0.2')
-    assert.equal(sanitized.proxy.hasPassword, true)
-    assert.equal(Object.hasOwn(sanitized.proxy, 'password'), false)
+    assert.equal(Object.hasOwn(sanitized, 'proxy'), false)
 
     const raw = await settings.readRaw()
-    assert.equal(raw.proxy.password, 'proxy-pass')
-
-    const googleProxy = await settings.getProxyForRequest({ providerId: 'google-satellite' })
-    const amapProxy = await settings.getProxyForRequest({ providerId: 'amap-road' })
-    assert.equal(googleProxy.enabled, false)
-    assert.equal(amapProxy.enabled, false)
-  } finally {
-    await fs.remove(dataDir)
-  }
-})
-
-test('admin settings support provider-level proxy policy', async () => {
-  const dataDir = tempDir('admin-provider-proxy')
-  const store = new AdminStore({ dataDir })
-  const settings = new AdminSettings(store, {
-    proxy: {
-      enabled: true,
-      protocol: 'http',
-      host: '127.0.0.1',
-      port: 10809,
-      username: '',
-      password: '',
-      providerPolicy: {
-        'amap-road': false,
-        'google-satellite': true,
-      },
-    },
-  })
-
-  try {
-    const googleProxy = await settings.getProxyForRequest({ providerId: 'google-satellite' })
-    const amapProxy = await settings.getProxyForRequest({ providerId: 'amap-road' })
-    const forcedProxy = await settings.getProxyForRequest({ providerId: 'amap-road', forceProxy: true })
-
-    assert.equal(googleProxy.enabled, true)
-    assert.equal(amapProxy.enabled, false)
-    assert.equal(forcedProxy.enabled, true)
-
-    const sanitized = await settings.update({
-      proxy: {
-        providerPolicy: {
-          'amap-road': true,
-        },
-      },
-    })
-    assert.equal(sanitized.proxy.providerPolicy['amap-road'], true)
-    assert.equal(sanitized.proxy.providerPolicy['google-satellite'], true)
-  } finally {
-    await fs.remove(dataDir)
-  }
-})
-
-test('admin settings default proxy policy targets google layers', async () => {
-  const dataDir = tempDir('admin-default-provider-proxy')
-  const store = new AdminStore({ dataDir })
-  const settings = new AdminSettings(store, {
-    proxy: {
-      enabled: true,
-      protocol: 'http',
-      host: '127.0.0.1',
-      port: 10809,
-      username: '',
-      password: '',
-      providerPolicy: {
-        'amap-satellite': false,
-        'amap-road': false,
-        'google-satellite': true,
-        'google-street': true,
-      },
-    },
-  })
-
-  try {
-    assert.equal((await settings.getProxyForRequest({ providerId: 'google-satellite' })).enabled, true)
-    assert.equal((await settings.getProxyForRequest({ providerId: 'google-street' })).enabled, true)
-    assert.equal((await settings.getProxyForRequest({ providerId: 'amap-road' })).enabled, false)
+    assert.equal(Object.hasOwn(raw, 'proxy'), false)
   } finally {
     await fs.remove(dataDir)
   }
@@ -241,42 +154,6 @@ test('fetch relay forwards configured proxy to upstream request', async () => {
         username: 'u',
         password: 'p',
       },
-    })
-  } finally {
-    await fs.remove(cacheDir)
-  }
-})
-
-test('fetch relay keeps default proxy behavior for useProxy option', async () => {
-  const cacheDir = tempDir('fetch-relay-default-proxy')
-  const calls = []
-  const relay = new FetchRelay({
-    cacheDir,
-    minCacheBytes: 1,
-    httpClient: async (config) => {
-      calls.push(config)
-      return {
-        status: 200,
-        headers: {
-          'content-type': 'image/png',
-        },
-        data: Readable.from([Buffer.from('tile')]),
-      }
-    },
-  })
-
-  try {
-    const result = await relay.fetch('https://www.google.com/maps/vt?lyrs=s&x=2&y=3&z=4', {
-      useProxy: true,
-    })
-    for await (const chunk of result.stream) {
-      void chunk
-    }
-
-    assert.deepEqual(calls[0].proxy, {
-      host: '127.0.0.1',
-      port: 10809,
-      protocol: 'http',
     })
   } finally {
     await fs.remove(cacheDir)

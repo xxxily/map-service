@@ -37,22 +37,6 @@ const config = {
         tokenSecret: process.env.MAP_SERVICE_ADMIN_TOKEN_SECRET || 'map-service-dev-admin-secret',
         tokenTtl: 1000 * 60 * 60 * 8,
       },
-      settings: {
-        proxy: {
-          enabled: false,
-          protocol: 'http',
-          host: '127.0.0.1',
-          port: 10809,
-          username: '',
-          password: '',
-          providerPolicy: {
-            'amap-satellite': false,
-            'amap-road': false,
-            'google-satellite': true,
-            'google-street': true,
-          },
-        },
-      },
       precache: {
         maxTiles: 5000,
         defaultConcurrency: 4,

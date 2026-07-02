@@ -37,8 +37,9 @@ service/app/               构建后的静态产物
 - `overview.js`：系统和访问概览。
 - `cache.js`：缓存统计和清空。
 - `precache.js`：高德搜索、地图选区、预缓存任务。
-- `layers.js`：图层配置查看。
-- `settings.js`：代理和图层级代理策略。
+- `tileSources.js`：图源、图层组合、对外发布和诊断日志。
+- `proxy.js`：代理出口和代理池。
+- `settings.js`：访问控制和管理密码。
 
 ## 后端结构
 
@@ -76,23 +77,25 @@ Bearer Token 保存在浏览器 localStorage。
 ```text
 .db/admin/settings.json
 .db/admin/precache-tasks.json
+.db/admin/tile-sources.json
+.db/admin/map-layers.json
+.db/admin/proxy-outbounds.json
+.db/admin/proxy-pools.json
 ```
 
-后台设置当前包含代理配置和按图层代理策略。预缓存任务会把 bounds 和 zoom
-展开为 Web Mercator 瓦片坐标，并复用 fetchRelay 管线下载和写入缓存。
+后台设置只保留访问控制等全局运行时配置。代理配置统一收敛到代理出口、代理池和图源代理策略，避免和设置页产生第二套代理规则。预缓存任务会把 bounds 和 zoom 展开为 Web Mercator 瓦片坐标，并复用 fetchRelay 管线下载和写入缓存。
 
 ## 图层与代理策略
 
-图层目录由 `service/bin/admin/tileProviders.js` 统一维护。每个图层包含厂商、
-类型、URL 模板、缩放范围和默认代理建议。
+前台图层目录由 `service/bin/admin/tileCatalog.js` 统一维护。图层是一个或多个图源的叠加组合，图源包含 URL 模板、缓存策略和代理策略。
 
-代理策略按 providerId 判断：
+代理策略按图源解析：
 
-- Google 图层默认建议走代理。
-- 高德图层默认不走代理。
-- 普通瓦片请求会尝试根据 URL 自动识别图层。
-- 预缓存任务天然带有 providerId。
-- `useProxy=true` 可以强制单次请求走代理。
+- `proxy.mode=never`：始终直连。
+- `proxy.mode=fixed`：使用指定代理出口。
+- `proxy.mode=pool` 或 `inherit`：使用指定或默认代理池。
+- 发布项可以通过 `overrides.proxy` 覆盖图源代理策略。
+- 历史 `/tiles/relay?url=` 接口只做白名单 relay，不再支持 `useProxy` 隐式代理。
 
 ## PWA
 

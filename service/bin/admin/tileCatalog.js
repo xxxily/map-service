@@ -172,21 +172,21 @@ function timingSafeEqualString (left, right) {
   return crypto.timingSafeEqual(leftBuffer, rightBuffer)
 }
 
-function defaultProxyOutbounds (legacyProxy = {}) {
+function defaultProxyOutbounds () {
   return [
     {
       id: 'default-proxy-outbound',
       name: '默认代理出口',
-      enabled: Boolean(legacyProxy.enabled),
-      protocol: legacyProxy.protocol || 'http',
-      host: legacyProxy.host || '127.0.0.1',
-      port: legacyProxy.port || 10809,
-      username: legacyProxy.username || '',
-      password: legacyProxy.password || '',
+      enabled: false,
+      protocol: 'http',
+      host: '127.0.0.1',
+      port: 10809,
+      username: '',
+      password: '',
       testUrl: 'https://www.google.com/generate_204',
       timeoutMs: 8000,
       tags: ['default'],
-      description: '从旧版全局代理配置初始化的默认代理出口。',
+      description: '默认代理出口占位配置，请在代理管理中按需启用和调整。',
     },
   ]
 }
@@ -676,9 +676,8 @@ export class TileCatalogManager {
   async ensureLoaded () {
     if (this.loaded) return
 
-    const legacyProxy = this.defaults.proxy || {}
     const stores = await Promise.all([
-      this.loadOrInit(STORE_PROXY_OUTBOUNDS, defaultProxyOutbounds(legacyProxy)),
+      this.loadOrInit(STORE_PROXY_OUTBOUNDS, defaultProxyOutbounds()),
       this.loadOrInit(STORE_PROXY_POOLS, defaultProxyPools()),
       this.loadOrInit(STORE_SOURCES, defaultSources()),
       this.loadOrInit(STORE_LAYERS, defaultLayers()),

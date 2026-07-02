@@ -15,7 +15,6 @@ export const adminState = {
   visitsLoading: false,
   visitsError: '',
   settings: null,
-  providers: [],
   tasks: [],
   kmls: [],
   precacheForm: {

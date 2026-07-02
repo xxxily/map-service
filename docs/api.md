@@ -205,33 +205,22 @@ Authorization: Bearer <admin-token>
 
 ### `GET /api/v1/admin/settings`
 
-返回脱敏后的运行时设置。目前只保留全局代理兼容配置和前台访问控制配置；旧 `tileApi` 单 upstream 配置已移除。
+返回脱敏后的运行时设置。目前只保留前台访问控制配置；代理统一在代理出口、代理池和图源策略中管理。
 
 ### `PUT /api/v1/admin/settings`
 
-更新运行时设置。代理密码不会在查询接口返回，只返回 `hasPassword`。
+更新运行时设置。
 
 ```json
 {
   "access": {
     "enabled": true,
     "password": "front-access-password"
-  },
-  "proxy": {
-    "enabled": true,
-    "protocol": "http",
-    "host": "127.0.0.1",
-    "port": 10809,
-    "username": "",
-    "password": "",
-    "providerPolicy": {
-      "google-satellite": true
-    }
   }
 }
 ```
 
-新图源能力优先使用代理出口和代理池；`settings.proxy.providerPolicy` 仅服务历史代理策略。
+设置接口不再接收或返回 `proxy` 配置，避免和图源代理策略、代理池产生交叉影响。
 
 ## 缓存接口
 
