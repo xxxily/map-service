@@ -26,7 +26,6 @@ import { isAdminLocation } from './admin/routes.js'
 import { amapConfig, terrainConfig } from './config.js'
 import { initAfterAccessCheck } from './map/access-control.js'
 import { initAmapGeolocation } from './map/geolocation.js'
-import { createCesiumLayerSources, LAYER_NAME_MAPPING, REVERSE_LAYER_MAPPING } from './map/tile-sources.js'
 import { registerServiceWorker } from './pwa.js'
 import { initGuidelines3d, toggleGuidelineMode3d } from './map3d/guidelines.js'
 import { initKmlSupport3d } from './map3d/kml.js'
@@ -80,10 +79,48 @@ function debounce (func, wait) {
   }
 }
 
-// 预定义底图源组（支持多层叠加与透明度）
-const layerSources = createCesiumLayerSources()
-const layerNameMapping = LAYER_NAME_MAPPING
-const reverseLayerMapping = REVERSE_LAYER_MAPPING
+let globalCatalogLayers = []
+let globalCatalogSources = new Map()
+const FALLBACK_3D_CATALOG = {
+  sources: [
+    {
+      id: 'amap-satellite',
+      tileUrl: '/api/v1/tiles/amap-satellite/{z}/{x}/{y}',
+      minZoom: 3,
+      maxZoom: 18,
+      maxNativeZoom: 18,
+      tileSize: 256,
+    },
+    {
+      id: 'amap-road',
+      tileUrl: '/api/v1/tiles/amap-road/{z}/{x}/{y}',
+      minZoom: 3,
+      maxZoom: 18,
+      maxNativeZoom: 18,
+      tileSize: 256,
+    },
+  ],
+  layers: [
+    {
+      id: 'amap-hybrid',
+      name: '高德/卫星',
+      enabled: true,
+      default: true,
+      clients: ['2d', '3d'],
+      minZoom: 3,
+      maxZoom: 18,
+      items: [
+        { sourceId: 'amap-satellite', opacity: 1 },
+        { sourceId: 'amap-road', opacity: 0.5 },
+      ],
+    },
+  ],
+}
+
+function escapeHtml (str) {
+  if (!str) return ''
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;')
+}
 
 let viewer = null
 let isRotating = false
@@ -965,21 +1002,73 @@ async function init3dEarth () {
     }, { passive: false })
   }
 
-  // 2. 加载默认底图（自适应读取 URL 或本地图层缓存，对齐 2D）
-  const urlParams = new URLSearchParams(window.location.search)
-  let initialLayer = urlParams.get('layer') || localStorage.getItem('last_map_layer') || 'amap-hybrid'
+  // 2. 动态加载底图（自适应读取 URL 或本地图层缓存，从 `/api/v1/map/catalog` 异步获取图层列表）
+  let defaultLayerId = 'amap-hybrid'
+  try {
+    const res = await fetch('/api/v1/map/catalog')
+    const payload = await res.json()
+    if (!res.ok || payload?.code !== 0 || !payload?.result || !Array.isArray(payload.result.layers)) {
+      throw new Error(payload?.error?.message || res.statusText || '地图图层目录加载失败')
+    }
+    const catalog = payload.result
+    globalCatalogSources = new Map((catalog.sources || []).map(source => [source.id, source]))
+    const rawLayers = catalog.layers || []
+    globalCatalogLayers = rawLayers.filter(l => l.enabled !== false && (l.clients || []).includes('3d'))
 
-  // 自适应中英文图层名转换，保证 2D/3D 高度关联
-  if (reverseLayerMapping[initialLayer]) {
-    initialLayer = reverseLayerMapping[initialLayer]
-  } else if (!layerSources[initialLayer]) {
-    initialLayer = 'amap-hybrid' // 兜底
+    // 动态生成 layer-control 单选框
+    const baseLayersContainer = document.querySelector('#map3d-layer-control .leaflet-control-layers-base')
+    if (baseLayersContainer && globalCatalogLayers.length > 0) {
+      baseLayersContainer.innerHTML = globalCatalogLayers.map((l, index) => `
+        <label>
+          <input type="radio" name="leaflet-base-layers" data-layer="${escapeHtml(l.id)}">
+          <span> ${escapeHtml(l.name)}</span>
+        </label>
+      `).join('')
+    }
+
+    const defaultLayer = globalCatalogLayers.find(l => l.default) || globalCatalogLayers[0]
+    if (defaultLayer) {
+      defaultLayerId = defaultLayer.id
+    }
+  } catch (err) {
+    console.error('Failed to load 3D map catalog, using backend fallback sources', err)
+    globalCatalogSources = new Map(FALLBACK_3D_CATALOG.sources.map(source => [source.id, source]))
+    globalCatalogLayers = FALLBACK_3D_CATALOG.layers
+    defaultLayerId = 'amap-hybrid'
+  }
+
+  const urlParams = new URLSearchParams(window.location.search)
+  const queryLayer = urlParams.get('layer') || ''
+  const cachedLayerId = localStorage.getItem('last_map_layer_id') || ''
+  const cachedLayerName = localStorage.getItem('last_map_layer') || ''
+  
+  let initialLayer = queryLayer || cachedLayerId || cachedLayerName || defaultLayerId
+  let needFallbackAlert = false
+
+  // 匹配 id 或 name
+  const matchedByIdOrName = globalCatalogLayers.find(l => l.id === initialLayer || l.name === initialLayer)
+  if (matchedByIdOrName) {
+    initialLayer = matchedByIdOrName.id
+  } else {
+    if (queryLayer) {
+      needFallbackAlert = true
+    }
+    initialLayer = defaultLayerId
   }
 
   switchLayer(initialLayer)
   const activeRadio = document.querySelector(`#map3d-layer-control input[data-layer="${initialLayer}"]`)
   if (activeRadio) {
     activeRadio.checked = true
+  }
+
+  if (needFallbackAlert) {
+    const toast = document.createElement('div')
+    toast.className = 'screenshot-toast'
+    toast.style.background = '#d97706' // 警告颜色
+    toast.innerText = '原图层不可用，已切换到默认图层'
+    document.body.appendChild(toast)
+    setTimeout(() => toast.remove(), 3500)
   }
 
   // 3. 从 URL 或者缓存初始化相机视角（对齐 2D）
@@ -1050,23 +1139,28 @@ async function init3dEarth () {
 // 切换底图图层（支持多层叠加与透明度）
 function switchLayer (layerId) {
   if (!viewer) return
-  const configs = layerSources[layerId]
-  if (!configs || !Array.isArray(configs)) return
+  const layer = globalCatalogLayers.find(l => l.id === layerId)
+  if (!layer) return
 
   const layers = viewer.imageryLayers
   layers.removeAll()
 
   // 依次添加配置中的所有子图层
-  configs.forEach(config => {
+  ;(layer.items || []).forEach(item => {
+    const source = globalCatalogSources.get(item.sourceId)
+    if (!source) return
     const provider = new UrlTemplateImageryProvider({
-      url: config.url,
-      subdomains: config.subdomains
+      url: source.tileUrl || `/api/v1/tiles/${encodeURIComponent(source.id)}/{z}/{x}/{y}`,
+      minimumLevel: source.minZoom ?? layer.minZoom ?? 0,
+      maximumLevel: source.maxNativeZoom ?? source.maxZoom ?? layer.maxZoom,
+      tileWidth: source.tileSize || 256,
+      tileHeight: source.tileSize || 256,
     })
     const addedLayer = layers.addImageryProvider(provider)
     
     // 如果子图层配置了不透明度 (alpha)，则予以应用，以保证图层正确叠加显示
-    if (config.opacity !== undefined) {
-      addedLayer.alpha = config.opacity
+    if (item.opacity !== undefined) {
+      addedLayer.alpha = item.opacity
     }
   })
 }
@@ -1241,7 +1335,10 @@ function bindUiEvents () {
         if (layerId) {
           switchLayer(layerId)
           try {
-            localStorage.setItem('last_map_layer', layerNameMapping[layerId] || layerId)
+            const matchedLayer = globalCatalogLayers.find(l => l.id === layerId)
+            const layerName = matchedLayer ? matchedLayer.name : layerId
+            localStorage.setItem('last_map_layer_id', layerId)
+            localStorage.setItem('last_map_layer', layerName)
           } catch (err) {
             console.error('Failed to save last_map_layer in localStorage', err)
           }

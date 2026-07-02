@@ -57,31 +57,6 @@ function normalizeProviderPolicy (input = {}, current = {}) {
   return result
 }
 
-function normalizeInteger (value, defaultValue) {
-  const parsed = parseInt(value, 10)
-  return Number.isNaN(parsed) ? defaultValue : parsed
-}
-
-function clamp (val, min, max) {
-  return Math.max(min, Math.min(max, val))
-}
-
-function generateRandomToken () {
-  return crypto.randomBytes(16).toString('hex')
-}
-
-function normalizeTileApi (input = {}, fallback = {}) {
-  return {
-    enabled: normalizeBoolean(Object.hasOwn(input, 'enabled') ? input.enabled : fallback.enabled),
-    upstreamUrl: String(Object.hasOwn(input, 'upstreamUrl') ? input.upstreamUrl : fallback.upstreamUrl || ''),
-    useProxy: normalizeBoolean(Object.hasOwn(input, 'useProxy') ? input.useProxy : fallback.useProxy),
-    tokenEnabled: normalizeBoolean(Object.hasOwn(input, 'tokenEnabled') ? input.tokenEnabled : fallback.tokenEnabled),
-    token: String(Object.hasOwn(input, 'token') ? input.token : (fallback.token || generateRandomToken())),
-    maxLogCount: clamp(normalizeInteger(Object.hasOwn(input, 'maxLogCount') ? input.maxLogCount : fallback.maxLogCount, 500), 200, 1000),
-    cacheEnabled: normalizeBoolean(Object.hasOwn(input, 'cacheEnabled') ? input.cacheEnabled : (fallback.cacheEnabled ?? true)),
-  }
-}
-
 function base64urlEncode (value) {
   return Buffer.from(value).toString('base64url')
 }
@@ -224,15 +199,6 @@ export class AdminSettings {
         version: 0,
         updatedAt: 0,
       }),
-      tileApi: normalizeTileApi(defaults.tileApi || {
-        enabled: false,
-        upstreamUrl: 'https://www.google.com/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}&scale={scale}',
-        useProxy: false,
-        tokenEnabled: false,
-        token: '',
-        maxLogCount: 500,
-        cacheEnabled: true,
-      }),
     }
     this.cache = null
   }
@@ -259,7 +225,6 @@ export class AdminSettings {
     this.cache = {
       proxy: normalizeProxy(saved?.proxy || {}, this.defaults.proxy),
       access: normalizeAccess(saved?.access || {}, this.defaults.access),
-      tileApi: normalizeTileApi(saved?.tileApi || {}, this.defaults.tileApi),
     }
     return clone(this.cache)
   }
@@ -269,7 +234,6 @@ export class AdminSettings {
     return {
       proxy: sanitizeProxy(settings.proxy),
       access: sanitizeAccess(settings.access),
-      tileApi: settings.tileApi,
     }
   }
 
@@ -314,9 +278,6 @@ export class AdminSettings {
         ? normalizeProxy(input.proxy || {}, current.proxy)
         : current.proxy,
       access,
-      tileApi: Object.hasOwn(input, 'tileApi')
-        ? normalizeTileApi(input.tileApi || {}, current.tileApi)
-        : current.tileApi,
     }
 
     await this.store.write('settings', next)

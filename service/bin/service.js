@@ -16,7 +16,7 @@ import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
 import { getTileProviderByUrl } from './admin/tileProviders.js'
 import SharedKmlManager from './admin/sharedKml.js'
-import TileApiLogger from './admin/tileApiLogger.js'
+import TileCatalogManager from './admin/tileCatalog.js'
 import fs from 'fs-extra'
 import path from 'path'
 
@@ -29,16 +29,32 @@ const adminSettings = new AdminSettings(adminStore, {
   ...(adminConfig.settings || {}),
   accessTokenSecret: adminConfig.auth?.tokenSecret,
 })
+const tileCatalogManager = new TileCatalogManager({
+  store: adminStore,
+  defaults: {
+    proxy: adminConfig.settings?.proxy,
+  },
+})
 const precacheManager = new PrecacheManager({
   store: adminStore,
+  tileCatalogManager,
   maxTiles: adminConfig.precache?.maxTiles,
   defaultConcurrency: adminConfig.precache?.defaultConcurrency,
   maxConcurrency: adminConfig.precache?.maxConcurrency,
-  fetchTile: async (url, options = {}) => service.fetchRelay(url, options),
+  fetchTile: async (url, options = {}) => {
+    if (options.providerId && options.tile) {
+      const source = tileCatalogManager.findSource(options.providerId)
+      if (source) {
+        return service.fetchTileSource(options.providerId, options.tile, {
+          refresh: options.refresh,
+        })
+      }
+    }
+    return service.fetchRelay(url, options)
+  },
   clearTileCache: async (urls) => fetchRelay.clearMany(urls),
 })
 const sharedKmlManager = new SharedKmlManager({ store: adminStore })
-const tileApiLogger = new TileApiLogger({ store: adminStore })
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
 
@@ -64,22 +80,82 @@ async function readPackageInfo () {
 const service = {
   async fetchRelay (url, options = {}) {
     const providerId = options.providerId || getTileProviderByUrl(url)?.id || ''
-    const proxy = await adminSettings.getProxyForRequest({
-      forceProxy: options.useProxy,
-      providerId,
-    })
+    const proxy = Object.hasOwn(options, 'proxy')
+      ? options.proxy
+      : await adminSettings.getProxyForRequest({
+        forceProxy: options.useProxy,
+        providerId,
+      })
     return fetchRelay.fetch(url, {
       ...options,
       proxy,
     })
   },
 
+  async fetchTileSource (sourceId, tile, options = {}) {
+    const request = await tileCatalogManager.createSourceTileRequest(sourceId, tile, options)
+    const relayResult = await service.fetchRelay(request.url, {
+      proxy: request.proxy,
+      cache: request.cache,
+      cacheMeta: request.cacheMeta,
+      cacheTtlMs: request.cacheTtlMs,
+      staleCacheTtlMs: request.staleCacheTtlMs,
+      providerId: request.source.id,
+      headers: options.headers,
+    })
+    return {
+      ...relayResult,
+      source: request.source,
+      proxy: request.proxy,
+    }
+  },
+
+  async fetchExternalPublishTile (publishId, tile, options = {}) {
+    const request = await tileCatalogManager.createExternalTileRequest(publishId, tile, options)
+    const relayResult = await service.fetchRelay(request.url, {
+      proxy: request.proxy,
+      cache: request.cache,
+      cacheMeta: request.cacheMeta,
+      cacheTtlMs: request.cacheTtlMs,
+      staleCacheTtlMs: request.staleCacheTtlMs,
+      providerId: request.source.id,
+      headers: options.headers,
+    })
+    return {
+      ...relayResult,
+      source: request.source,
+      publish: request.publish,
+      proxy: request.proxy,
+    }
+  },
+
+  async fetchExternalLayerSourceTile (publishId, sourceId, tile, options = {}) {
+    const request = await tileCatalogManager.createExternalLayerSourceTileRequest(publishId, sourceId, tile, options)
+    const relayResult = await service.fetchRelay(request.url, {
+      proxy: request.proxy,
+      cache: request.cache,
+      cacheMeta: request.cacheMeta,
+      cacheTtlMs: request.cacheTtlMs,
+      staleCacheTtlMs: request.staleCacheTtlMs,
+      providerId: request.source.id,
+      headers: options.headers,
+    })
+    return {
+      ...relayResult,
+      source: request.source,
+      publish: request.publish,
+      layer: request.layer,
+      layerItem: request.layerItem,
+      proxy: request.proxy,
+    }
+  },
+
   getFetchRelayCacheStats () {
     return fetchRelay.getStats()
   },
 
-  clearFetchRelayCache (targetUrl) {
-    return fetchRelay.clear(targetUrl)
+  clearFetchRelayCache (targetUrl, sourceId) {
+    return fetchRelay.clear(targetUrl, sourceId)
   },
 
   async loginAdmin (credentials) {
@@ -190,22 +266,128 @@ const service = {
     return adminSettings.createAccessToken()
   },
 
-  async logTileApiRequest (entry) {
-    const settings = await adminSettings.readRaw()
-    const maxLogCount = settings.tileApi?.maxLogCount || 500
-    await tileApiLogger.addLog(entry, maxLogCount)
+  listTileSources () {
+    return tileCatalogManager.listTileSources()
   },
 
-  listTileApiLogs () {
-    return tileApiLogger.list()
+  getTileSource (id) {
+    return tileCatalogManager.getTileSource(id)
   },
 
-  clearTileApiLogs () {
-    return tileApiLogger.clear()
+  createTileSource (input) {
+    return tileCatalogManager.createTileSource(input)
   },
 
-  getRawSettings () {
-    return adminSettings.readRaw()
+  updateTileSource (id, input) {
+    return tileCatalogManager.updateTileSource(id, input)
+  },
+
+  deleteTileSource (id) {
+    return tileCatalogManager.deleteTileSource(id)
+  },
+
+  listMapLayers () {
+    return tileCatalogManager.listMapLayers()
+  },
+
+  createMapLayer (input) {
+    return tileCatalogManager.createMapLayer(input)
+  },
+
+  updateMapLayer (id, input) {
+    return tileCatalogManager.updateMapLayer(id, input)
+  },
+
+  deleteMapLayer (id) {
+    return tileCatalogManager.deleteMapLayer(id)
+  },
+
+  setDefaultMapLayer (id) {
+    return tileCatalogManager.setDefaultMapLayer(id)
+  },
+
+  listProxyOutbounds () {
+    return tileCatalogManager.listProxyOutbounds()
+  },
+
+  createProxyOutbound (input) {
+    return tileCatalogManager.createProxyOutbound(input)
+  },
+
+  updateProxyOutbound (id, input) {
+    return tileCatalogManager.updateProxyOutbound(id, input)
+  },
+
+  deleteProxyOutbound (id) {
+    return tileCatalogManager.deleteProxyOutbound(id)
+  },
+
+  listProxyPools () {
+    return tileCatalogManager.listProxyPools()
+  },
+
+  createProxyPool (input) {
+    return tileCatalogManager.createProxyPool(input)
+  },
+
+  updateProxyPool (id, input) {
+    return tileCatalogManager.updateProxyPool(id, input)
+  },
+
+  deleteProxyPool (id) {
+    return tileCatalogManager.deleteProxyPool(id)
+  },
+
+  getPublicMapCatalog () {
+    return tileCatalogManager.getPublicCatalog()
+  },
+
+  listExternalPublishes () {
+    return tileCatalogManager.listExternalPublishes()
+  },
+
+  createExternalPublish (input) {
+    return tileCatalogManager.createExternalPublish(input)
+  },
+
+  updateExternalPublish (id, input) {
+    return tileCatalogManager.updateExternalPublish(id, input)
+  },
+
+  deleteExternalPublish (id) {
+    return tileCatalogManager.deleteExternalPublish(id)
+  },
+
+  resetExternalPublishToken (id) {
+    return tileCatalogManager.resetExternalPublishToken(id)
+  },
+
+  getExternalPublishTileJson (id, options = {}) {
+    return tileCatalogManager.getExternalPublishTileJson(id, options)
+  },
+
+  listExternalPublishLogs (id = '') {
+    return tileCatalogManager.listExternalLogs(id)
+  },
+
+  logExternalPublishRequest (entry, maxLogCount) {
+    return tileCatalogManager.addExternalLog(entry, maxLogCount)
+  },
+
+  testTileSource (id) {
+    return tileCatalogManager.testTileSource(id)
+  },
+
+  testProxyOutbound (id) {
+    return tileCatalogManager.testProxyOutbound(id)
+  },
+
+  testProxyPool (id) {
+    return tileCatalogManager.testProxyPool(id)
+  },
+
+  testExternalPublish (id) {
+    return tileCatalogManager.testExternalPublish(id)
   },
 }
 

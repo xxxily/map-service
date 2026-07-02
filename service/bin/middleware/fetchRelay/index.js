@@ -226,13 +226,13 @@ class FetchRelay {
     return axiosConf
   }
 
-  async updateMetaFromNotModified (entry) {
+  async updateMetaFromNotModified (entry, options = {}) {
     const updatedAt = now()
     const meta = {
       ...entry.meta,
       updatedAt,
-      expiresAt: updatedAt + this.config.ttl,
-      staleExpiresAt: updatedAt + this.config.staleTtl,
+      expiresAt: updatedAt + Number(options.cacheTtlMs ?? this.config.ttl),
+      staleExpiresAt: updatedAt + Number(options.staleCacheTtlMs ?? this.config.staleTtl),
     }
 
     await fs.writeJson(entry.metaPath, meta, { spaces: 2 })
@@ -243,7 +243,7 @@ class FetchRelay {
     }
   }
 
-  async writeResponseToCache (url, response, paths) {
+  async writeResponseToCache (url, response, paths, options = {}) {
     const statusCode = response.status
     const headers = pickHeaders(response.headers)
     const contentType = headers['content-type'] || ''
@@ -275,13 +275,16 @@ class FetchRelay {
     const meta = {
       key: utils.md5(url),
       url,
+      sourceId: options.cacheMeta?.sourceId || null,
+      layerId: options.cacheMeta?.layerId || null,
+      publishId: options.cacheMeta?.publishId || null,
       statusCode,
       headers,
       size: stat.size,
       createdAt: updatedAt,
       updatedAt,
-      expiresAt: updatedAt + this.config.ttl,
-      staleExpiresAt: updatedAt + this.config.staleTtl,
+      expiresAt: updatedAt + Number(options.cacheTtlMs ?? this.config.ttl),
+      staleExpiresAt: updatedAt + Number(options.staleCacheTtlMs ?? this.config.staleTtl),
     }
 
     await fs.move(tempPath, paths.cachePath, { overwrite: true })
@@ -303,11 +306,11 @@ class FetchRelay {
     const response = await this.httpClient(this.createAxiosConfig(url, options, entry))
 
     if (response.status === 304 && entry && entry.exists) {
-      const refreshedEntry = await this.updateMetaFromNotModified(entry)
+      const refreshedEntry = await this.updateMetaFromNotModified(entry, options)
       return this.createCachedResponse(refreshedEntry, 'REVALIDATED')
     }
 
-    const cachedEntry = await this.writeResponseToCache(url, response, paths)
+    const cachedEntry = await this.writeResponseToCache(url, response, paths, options)
     return this.createCachedResponse(cachedEntry, 'MISS')
   }
 
@@ -454,10 +457,29 @@ class FetchRelay {
       stale: 0,
       expired: 0,
       providers: {},
+      bySource: {},
+      byLayer: {},
+      byPublish: {},
       entries: [],
       generatedAt: now(),
       refreshing: false,
     }
+  }
+
+  incrementStatsGroup (group, id, state, size) {
+    if (!id) return
+    if (!group[id]) {
+      group[id] = {
+        files: 0,
+        bytes: 0,
+        fresh: 0,
+        stale: 0,
+        expired: 0,
+      }
+    }
+    group[id].files += 1
+    group[id].bytes += size
+    group[id][state] += 1
   }
 
   async collectStats () {
@@ -469,6 +491,9 @@ class FetchRelay {
     let stale = 0
     let expired = 0
     const providers = {}
+    const bySource = {}
+    const byLayer = {}
+    const byPublish = {}
     const entries = []
 
     const walk = async (dir) => {
@@ -499,10 +524,16 @@ class FetchRelay {
           if (state === 'fresh') fresh += 1
           if (state === 'stale') stale += 1
           if (state === 'expired') expired += 1
+          this.incrementStatsGroup(bySource, meta?.sourceId, state, stat.size)
+          this.incrementStatsGroup(byLayer, meta?.layerId, state, stat.size)
+          this.incrementStatsGroup(byPublish, meta?.publishId, state, stat.size)
 
           entries.push({
             key: meta?.key || path.basename(itemPath),
             url: meta?.url || null,
+            sourceId: meta?.sourceId || null,
+            layerId: meta?.layerId || null,
+            publishId: meta?.publishId || null,
             state,
             size: stat.size,
             updatedAt: meta?.updatedAt || stat.mtimeMs,
@@ -522,6 +553,9 @@ class FetchRelay {
       stale,
       expired,
       providers,
+      bySource,
+      byLayer,
+      byPublish,
       entries: entries
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 100),
@@ -530,7 +564,33 @@ class FetchRelay {
     }
   }
 
-  async clear (targetUrl) {
+  async clear (targetUrl, sourceId) {
+    if (sourceId) {
+      await fs.ensureDir(this.config.cacheDir)
+      const walk = async (dir) => {
+        const items = await fs.readdir(dir, { withFileTypes: true })
+        for (const item of items) {
+          const itemPath = path.join(dir, item.name)
+          if (item.isDirectory()) {
+            await walk(itemPath)
+          } else if (!item.name.endsWith(META_SUFFIX) && item.name !== STATS_STATE_FILE) {
+            const metaPath = `${itemPath}${META_SUFFIX}`
+            const meta = await this.readMeta(metaPath)
+            if (meta && meta.sourceId === sourceId) {
+              await fs.remove(itemPath)
+              await fs.remove(metaPath)
+            }
+          }
+        }
+      }
+      await walk(this.config.cacheDir)
+      await this.invalidateStatsSnapshot()
+      return {
+        removed: 'source',
+        target: sourceId,
+      }
+    }
+
     if (targetUrl) {
       const paths = this.getCachePaths(targetUrl)
       await Promise.all([

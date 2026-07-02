@@ -155,6 +155,42 @@ function accessCookieOptions (req, maxAge) {
   }
 }
 
+function maskSensitiveQueryParams (value) {
+  const raw = String(value || '')
+  if (!raw) return raw
+
+  try {
+    const parsed = new URL(raw, 'http://localhost')
+    let changed = false
+    ;['token', 'access_token'].forEach((key) => {
+      if (parsed.searchParams.has(key)) {
+        parsed.searchParams.set(key, '****')
+        changed = true
+      }
+    })
+    if (!changed) return raw
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`
+  } catch (err) {
+    return raw.replace(/([?&](?:token|access_token)=)[^&]*/gi, '$1****')
+  }
+}
+
+function externalPublishLogLimit (publish) {
+  if (publish?.log?.enabled === false) return 0
+  if (publish?.log && Object.hasOwn(publish.log, 'maxLogCount')) {
+    return Number(publish.log.maxLogCount || 0)
+  }
+  return 1000
+}
+
+function writeExternalPublishLog (entry, publish) {
+  const limit = externalPublishLogLimit(publish)
+  if (limit <= 0) return
+  service.logExternalPublishRequest(entry, limit).catch(err => {
+    console.error('[external publish log error]', err)
+  })
+}
+
 function buildOpenApiSpec () {
   const paths = {}
 
@@ -351,11 +387,12 @@ const simpleApi = {
       handler: async (req, res) => {
         requireAdmin(req)
         const targetUrl = req.query.url ? decodeURIComponent(req.query.url) : ''
+        const sourceId = req.query.sourceId || ''
         if (targetUrl && !whitelist.isAllowed(targetUrl)) {
           jsonError(res, '请求的 URL 不在白名单内，不允许清理', 403)
           return
         }
-        res.jsonSuc(await service.clearFetchRelayCache(targetUrl))
+        res.jsonSuc(await service.clearFetchRelayCache(targetUrl, sourceId))
       },
     },
     {
@@ -392,6 +429,16 @@ const simpleApi = {
       path: '/admin/precache/providers',
       method: 'get',
       describe: '获取可预缓存瓦片提供方',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(service.getPrecacheProviders())
+      },
+    },
+    {
+      path: '/admin/precache/catalog',
+      method: 'get',
+      describe: '获取可预缓存的图源和图层',
       tags: ['admin'],
       handler: async (req, res) => {
         requireAdmin(req)
@@ -605,123 +652,454 @@ const simpleApi = {
       },
     },
     {
-      path: '/external/tile',
+      path: '/map/catalog',
       method: 'get',
-      describe: '对外开放的地图瓦片反代接口',
+      describe: '获取前台地图图源和图层目录',
+      tags: ['map'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        res.jsonSuc(await service.getPublicMapCatalog())
+      },
+    },
+    {
+      path: '/tiles/:sourceId/:z/:x/:y',
+      method: 'get',
+      describe: '按图源获取地图瓦片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchTileSource(req.params.sourceId, {
+          z: req.params.z,
+          x: req.params.x,
+          y: req.params.y,
+        }, {
+          scale: req.query.scale,
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/admin/tile-sources',
+      method: 'get',
+      describe: '获取图源列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listTileSources())
+      },
+    },
+    {
+      path: '/admin/tile-sources',
+      method: 'post',
+      describe: '创建图源',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createTileSource(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/tile-sources/:id',
+      method: 'get',
+      describe: '获取图源详情',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.getTileSource(req.params.id))
+      },
+    },
+    {
+      path: '/admin/tile-sources/:id',
+      method: 'put',
+      describe: '更新图源',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.updateTileSource(req.params.id, req.body || {}))
+      },
+    },
+    {
+      path: '/admin/tile-sources/:id',
+      method: 'delete',
+      describe: '删除图源',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.deleteTileSource(req.params.id))
+      },
+    },
+    {
+      path: '/admin/tile-sources/:id/test',
+      method: 'post',
+      describe: '测试图源连通性',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.testTileSource(req.params.id))
+      },
+    },
+    {
+      path: '/admin/map-layers',
+      method: 'get',
+      describe: '获取地图图层列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listMapLayers())
+      },
+    },
+    {
+      path: '/admin/map-layers',
+      method: 'post',
+      describe: '创建地图图层',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createMapLayer(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/map-layers/:id',
+      method: 'put',
+      describe: '更新地图图层',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.updateMapLayer(req.params.id, req.body || {}))
+      },
+    },
+    {
+      path: '/admin/map-layers/:id',
+      method: 'delete',
+      describe: '删除地图图层',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.deleteMapLayer(req.params.id))
+      },
+    },
+    {
+      path: '/admin/map-layers-default',
+      method: 'put',
+      describe: '设置默认地图图层',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.setDefaultMapLayer(req.body?.id || req.body?.layerId))
+      },
+    },
+    {
+      path: '/admin/proxy-outbounds',
+      method: 'get',
+      describe: '获取代理出口列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listProxyOutbounds())
+      },
+    },
+    {
+      path: '/admin/proxy-outbounds',
+      method: 'post',
+      describe: '创建代理出口',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createProxyOutbound(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/proxy-outbounds/:id',
+      method: 'put',
+      describe: '更新代理出口',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.updateProxyOutbound(req.params.id, req.body || {}))
+      },
+    },
+    {
+      path: '/admin/proxy-outbounds/:id',
+      method: 'delete',
+      describe: '删除代理出口',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.deleteProxyOutbound(req.params.id))
+      },
+    },
+    {
+      path: '/admin/proxy-outbounds/:id/test',
+      method: 'post',
+      describe: '测试代理出口',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.testProxyOutbound(req.params.id))
+      },
+    },
+    {
+      path: '/admin/proxy-pools',
+      method: 'get',
+      describe: '获取代理池列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listProxyPools())
+      },
+    },
+    {
+      path: '/admin/proxy-pools',
+      method: 'post',
+      describe: '创建代理池',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createProxyPool(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/proxy-pools/:id',
+      method: 'put',
+      describe: '更新代理池',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.updateProxyPool(req.params.id, req.body || {}))
+      },
+    },
+    {
+      path: '/admin/proxy-pools/:id',
+      method: 'delete',
+      describe: '删除代理池',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.deleteProxyPool(req.params.id))
+      },
+    },
+    {
+      path: '/admin/proxy-pools/:id/test',
+      method: 'post',
+      describe: '测试代理池出口',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.testProxyPool(req.params.id))
+      },
+    },
+    {
+      path: '/admin/external-publishes',
+      method: 'get',
+      describe: '获取对外发布项列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listExternalPublishes())
+      },
+    },
+    {
+      path: '/admin/external-publishes',
+      method: 'post',
+      describe: '创建对外发布项',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createExternalPublish(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/external-publishes/:id',
+      method: 'put',
+      describe: '更新对外发布项',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.updateExternalPublish(req.params.id, req.body || {}))
+      },
+    },
+    {
+      path: '/admin/external-publishes/:id',
+      method: 'delete',
+      describe: '删除对外发布项',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.deleteExternalPublish(req.params.id))
+      },
+    },
+    {
+      path: '/admin/external-publishes/:id/token',
+      method: 'post',
+      describe: '重置对外发布项 Token',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.resetExternalPublishToken(req.params.id))
+      },
+    },
+    {
+      path: '/admin/external-publishes/:id/test',
+      method: 'post',
+      describe: '测试对外发布项瓦片请求',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.testExternalPublish(req.params.id))
+      },
+    },
+    {
+      path: '/admin/external-publish-logs',
+      method: 'get',
+      describe: '获取全部对外发布项日志',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listExternalPublishLogs())
+      },
+    },
+    {
+      path: '/admin/external-publishes/:id/logs',
+      method: 'get',
+      describe: '获取对外发布项日志',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listExternalPublishLogs(req.params.id))
+      },
+    },
+    {
+      path: '/external/:publishId/tilejson',
+      method: 'get',
+      describe: '获取对外发布项 TileJSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        res.jsonSuc(await service.getExternalPublishTileJson(req.params.publishId, {
+          token: req.query.token,
+          clientIp,
+        }))
+      },
+    },
+    {
+      path: '/external/:publishId/sources/:sourceId/:z/:x/:y',
+      method: 'get',
+      describe: '按对外发布图层中的图源获取瓦片',
       tags: ['tiles'],
       handler: async (req, res) => {
         const startTime = Date.now()
         const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
         const userAgent = req.headers['user-agent'] || ''
-        const { x, y, z, token, scale } = req.query
-
-        const reqUrl = req.originalUrl || req.url || ''
+        const publishId = req.params.publishId
+        const sourceId = req.params.sourceId
         const logEntry = {
           timestamp: new Date().toISOString(),
+          publishId,
+          sourceId,
+          layerId: '',
           clientIp,
-          coordinates: `Z:${z || ''} X:${x || ''} Y:${y || ''}`,
-          reqUrl,
-          upstreamUrl: '',
           userAgent,
+          coordinates: `Z:${req.params.z || ''} X:${req.params.x || ''} Y:${req.params.y || ''}`,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
           statusCode: 200,
           duration: 0,
-          errorMessage: null,
           cacheStatus: 'MISS',
+          proxyPoolId: '',
+          proxyOutboundId: '',
+          errorMessage: null,
         }
 
-        const logAndRespond = async (status, errMessage = null) => {
+        try {
+          const result = await service.fetchExternalLayerSourceTile(publishId, sourceId, {
+            z: req.params.z,
+            x: req.params.x,
+            y: req.params.y,
+          }, {
+            token: req.query.token,
+            scale: req.query.scale,
+            clientIp,
+            headers: {
+              'User-Agent': userAgent || 'Mozilla/5.0',
+            },
+          })
+          logEntry.publishId = result.publish?.id || publishId
+          logEntry.sourceId = result.source?.id || sourceId
+          logEntry.layerId = result.layer?.id || ''
+          logEntry.statusCode = result.statusCode || 200
+          logEntry.duration = Date.now() - startTime
+          logEntry.cacheStatus = result.cacheStatus || 'MISS'
+          logEntry.proxyPoolId = result.proxy?.poolId || ''
+          logEntry.proxyOutboundId = result.proxy?.outboundId || ''
+          writeExternalPublishLog(logEntry, result.publish)
+          await sendRelayResponse(res, result)
+        } catch (err) {
+          const status = err.statusCode || 502
           logEntry.statusCode = status
           logEntry.duration = Date.now() - startTime
-          logEntry.errorMessage = errMessage
-          service.logTileApiRequest(logEntry).catch(e => console.error('[tileApi log error]', e))
-          jsonError(res, errMessage || '处理失败', status)
+          logEntry.errorMessage = err.message
+          service.logExternalPublishRequest(logEntry, 1000).catch(e => console.error('[external publish log error]', e))
+          jsonError(res, err.message || '对外发布图源瓦片请求失败', status)
         }
-
-        const settings = await service.getRawSettings()
-        const tileApi = settings.tileApi || {}
-
-        if (!tileApi.enabled) {
-          return logAndRespond(403, '对外图层接口未开放')
-        }
-
-        if (x === undefined || y === undefined || z === undefined) {
-          return logAndRespond(400, '缺少坐标参数 x, y, z')
-        }
-
-        if (tileApi.tokenEnabled) {
-          if (!token || token !== tileApi.token) {
-            return logAndRespond(401, '拒绝访问：Token 校验失败')
-          }
-        }
-
-        let upstreamTarget = tileApi.upstreamUrl || ''
-        const scaleVal = scale || '2'
-        upstreamTarget = upstreamTarget
-          .replace('{x}', x)
-          .replace('{y}', y)
-          .replace('{z}', z)
-          .replace('{scale}', scaleVal)
-
-        try {
-          const urlObj = new URL(upstreamTarget)
-          Object.entries(req.query).forEach(([key, val]) => {
-            if (key === 'token') return
-            if (key === 'x' || key === 'y' || key === 'z') return
-            if (val !== undefined) {
-              urlObj.searchParams.set(key, String(val))
-            }
-          })
-          upstreamTarget = urlObj.toString()
-        } catch (e) {
-          // If URL parsing fails, fall back to replaced string
-        }
-
-        logEntry.upstreamUrl = upstreamTarget
-
-        try {
-          const fetchOptions = {
-            useProxy: tileApi.useProxy,
-            cache: tileApi.cacheEnabled !== false,
-            headers: {
-              'User-Agent': userAgent || 'Mozilla/5.0'
-            }
-          }
-          const result = await service.fetchRelay(upstreamTarget, fetchOptions)
-          logEntry.cacheStatus = result.cacheStatus || 'MISS'
-          if (result.statusCode === 200) {
-            logEntry.statusCode = 200
-            logEntry.duration = Date.now() - startTime
-            service.logTileApiRequest(logEntry).catch(e => console.error('[tileApi log error]', e))
-            await sendRelayResponse(res, result)
-          } else {
-            return logAndRespond(result.statusCode, `上游服务器返回错误: ${result.statusCode}`)
-          }
-        } catch (err) {
-          logEntry.cacheStatus = 'MISS'
-          return logAndRespond(502, `反向上游请求失败: ${err.message}`)
-        }
-      }
+      },
     },
     {
-      path: '/admin/tile-api/logs',
+      path: '/external/:publishId/:z/:x/:y',
       method: 'get',
-      describe: '获取对外开放图层接口的访问日志',
-      tags: ['admin'],
+      describe: '按对外发布项获取瓦片',
+      tags: ['tiles'],
       handler: async (req, res) => {
-        requireAdmin(req)
-        res.jsonSuc(await service.listTileApiLogs())
-      }
-    },
-    {
-      path: '/admin/tile-api/logs',
-      method: 'delete',
-      describe: '清空对外开放图层接口的访问日志',
-      tags: ['admin'],
-      handler: async (req, res) => {
-        requireAdmin(req)
-        await service.clearTileApiLogs()
-        res.jsonSuc()
-      }
+        const startTime = Date.now()
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const publishId = req.params.publishId
+        const logEntry = {
+          timestamp: new Date().toISOString(),
+          publishId,
+          sourceId: '',
+          layerId: '',
+          clientIp,
+          userAgent,
+          coordinates: `Z:${req.params.z || ''} X:${req.params.x || ''} Y:${req.params.y || ''}`,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          statusCode: 200,
+          duration: 0,
+          cacheStatus: 'MISS',
+          proxyPoolId: '',
+          proxyOutboundId: '',
+          errorMessage: null,
+        }
+
+        try {
+          const result = await service.fetchExternalPublishTile(publishId, {
+            z: req.params.z,
+            x: req.params.x,
+            y: req.params.y,
+          }, {
+            token: req.query.token,
+            scale: req.query.scale,
+            clientIp,
+            headers: {
+              'User-Agent': userAgent || 'Mozilla/5.0',
+            },
+          })
+          logEntry.publishId = result.publish?.id || publishId
+          logEntry.sourceId = result.source?.id || ''
+          logEntry.statusCode = result.statusCode || 200
+          logEntry.duration = Date.now() - startTime
+          logEntry.cacheStatus = result.cacheStatus || 'MISS'
+          logEntry.proxyPoolId = result.proxy?.poolId || ''
+          logEntry.proxyOutboundId = result.proxy?.outboundId || ''
+          writeExternalPublishLog(logEntry, result.publish)
+          await sendRelayResponse(res, result)
+        } catch (err) {
+          const status = err.statusCode || 502
+          logEntry.statusCode = status
+          logEntry.duration = Date.now() - startTime
+          logEntry.errorMessage = err.message
+          service.logExternalPublishRequest(logEntry, 1000).catch(e => console.error('[external publish log error]', e))
+          jsonError(res, err.message || '对外发布瓦片请求失败', status)
+        }
+      },
     },
   ],
   /**

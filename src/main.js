@@ -219,7 +219,7 @@ async function initLeafletMap () {
 
   addTargetMarker(map, defaultView.center)
 
-  const layerControl = initLayerControl(map, defaultView.layerName)
+  const layerControl = await initLayerControl(map, defaultView.layerName)
 
   initKmlSupport(map)
   initGuidelines(map)

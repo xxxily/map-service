@@ -43,12 +43,12 @@ function getTaskStatusIcon (status) {
   return TASK_STATUS_ICONS[status] || '•'
 }
 
-function getPrecacheFormState (state, providers) {
-  const firstProvider = providers[0]
+function getPrecacheFormState (state, catalog) {
+  const firstItem = catalog[0]
   const form = state.precacheForm || {}
-  const providerId = providers.some(provider => provider.id === form.providerId)
+  const providerId = catalog.some(item => item.id === form.providerId)
     ? form.providerId
-    : firstProvider?.id || ''
+    : firstItem?.id || ''
 
   return {
     providerId,
@@ -66,8 +66,8 @@ function getPrecacheFormState (state, providers) {
   }
 }
 
-function getSelectedProvider (providers, formState) {
-  return providers.find(provider => provider.id === formState.providerId) || providers[0] || null
+function getSelectedProvider (catalog, formState) {
+  return catalog.find(item => item.id === formState.providerId) || catalog[0] || null
 }
 
 function getTasksForRender (state) {
@@ -83,9 +83,9 @@ function hasActiveTasks (tasks = []) {
 }
 
 export function renderPrecachePage (state) {
-  const providers = state.providers || []
-  const formState = getPrecacheFormState(state, providers)
-  const selectedProvider = getSelectedProvider(providers, formState)
+  const catalog = state.precacheCatalog || []
+  const formState = getPrecacheFormState(state, catalog)
+  const selectedProvider = getSelectedProvider(catalog, formState)
   const tasks = getTasksForRender(state)
 
   return `
@@ -104,13 +104,22 @@ export function renderPrecachePage (state) {
         <div class="admin-map-resizer" title="拖动调整地图高度"><span class="admin-map-resizer-line"></span></div>
         <form class="admin-form admin-precache-form" data-precache-form>
           <label>
-            <span>缓存图层</span>
+            <span>缓存图源/图层</span>
             <select name="providerId">
-              ${providers.map(provider => `
-                <option value="${escapeHtml(provider.id)}" ${provider.id === formState.providerId ? 'selected' : ''}>
-                  ${escapeHtml(provider.name)} (${provider.minZoom}-${provider.maxZoom})
-                </option>
-              `).join('')}
+              <optgroup label="系统图源 (可预缓存)">
+                ${catalog.filter(p => p.type === 'source').map(p => `
+                  <option value="${escapeHtml(p.id)}" data-type="source" ${p.id === formState.providerId ? 'selected' : ''}>
+                    ${escapeHtml(p.name)} (Z${p.minZoom}-Z${p.maxZoom})
+                  </option>
+                `).join('')}
+              </optgroup>
+              <optgroup label="组合图层 (将自动拆分为多个预缓存任务)">
+                ${catalog.filter(p => p.type === 'layer').map(p => `
+                  <option value="${escapeHtml(p.id)}" data-type="layer" ${p.id === formState.providerId ? 'selected' : ''}>
+                    ${escapeHtml(p.name)} (Z${p.minZoom}-Z${p.maxZoom})
+                  </option>
+                `).join('')}
+              </optgroup>
             </select>
           </label>
           <div class="admin-field-grid">
@@ -157,7 +166,7 @@ export function renderPrecacheEstimate (state) {
         <div><dt>建议上限</dt><dd>${escapeHtml(estimate.maxTiles || 0)}</dd></div>
         <div><dt>建议</dt><dd>${estimate.withinLimit ? '可以创建' : '任务较大，建议设置请求间隔'}</dd></div>
       </dl>
-      <p>${renderRangeSummary(estimate.ranges || [])}</p>
+      <p>${renderEstimateDetail(estimate)}</p>
     </div>
   `
 }
@@ -171,6 +180,17 @@ export function updatePrecacheEstimateView (state) {
 function renderRangeSummary (ranges) {
   if (!ranges.length) return '暂无分级明细'
   return ranges.map(range => `Z${range.z}: ${range.count}`).join('，')
+}
+
+function renderEstimateDetail (estimate) {
+  if (estimate.targetType === 'layer') {
+    const sources = estimate.sources || []
+    if (!sources.length) return '暂无可预缓存图源明细'
+    return sources
+      .map(source => `${source.sourceName || source.sourceId}: ${source.total || 0} 张，约 ${formatBytes(source.estimatedBytes || 0)}`)
+      .join('，')
+  }
+  return renderRangeSummary(estimate.ranges || [])
 }
 
 function renderTaskPanel (tasks) {
@@ -273,8 +293,15 @@ function renderTaskDetails (task) {
 
 function collectPrecacheForm (state, form) {
   updatePrecacheFormState(state, form)
+  const select = form.elements.providerId
+  const selectedOption = select.options[select.selectedIndex]
+  const targetType = selectedOption?.getAttribute('data-type') || 'source'
+  const targetId = select.value
+
   return {
-    providerId: form.elements.providerId.value,
+    targetType,
+    targetId,
+    providerId: targetId,
     bounds: {
       west: Number(form.elements.west.value),
       south: Number(form.elements.south.value),
@@ -401,16 +428,22 @@ export async function handlePrecacheSubmit ({ api, event, renderDashboard, setNo
 
   if (precacheForm) {
     event.preventDefault()
-    try {
-      const task = await api.createTask(collectPrecacheForm(state, precacheForm))
-      state.tasks = [task, ...state.tasks]
-      setNotice('预缓存任务已创建')
-      renderDashboard()
-      schedulePrecacheTaskRefresh(state, api, 300)
-    } catch (err) {
-      setNotice('', err.message)
-      renderDashboard()
-    }
+    api.createTask(collectPrecacheForm(state, precacheForm))
+      .then((result) => {
+        if (Array.isArray(result)) {
+          state.tasks = [...result, ...state.tasks]
+          setNotice(`成功创建了 ${result.length} 个图源缓存子任务`)
+        } else {
+          state.tasks = [result, ...state.tasks]
+          setNotice('预缓存任务已创建')
+        }
+        renderDashboard()
+        schedulePrecacheTaskRefresh(state, api, 300)
+      })
+      .catch((err) => {
+        setNotice('', err.message)
+        renderDashboard()
+      })
     return true
   }
 

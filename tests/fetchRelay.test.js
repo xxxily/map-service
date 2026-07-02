@@ -91,6 +91,40 @@ test('fetch relay writes metadata and serves fresh cache without upstream call',
   }
 })
 
+test('fetch relay stores source/layer/publish metadata and source ttl policy', async () => {
+  const targetUrl = 'https://www.google.com/maps/vt?lyrs=s&x=41&y=42&z=12'
+  const { relay, cleanup } = createRelay([{}])
+
+  try {
+    const before = Date.now()
+    const result = await relay.fetch(targetUrl, {
+      cacheTtlMs: 1234,
+      staleCacheTtlMs: 5678,
+      cacheMeta: {
+        sourceId: 'google-satellite',
+        layerId: 'google-amap-hybrid',
+        publishId: 'google-public',
+      },
+    })
+    await readStream(result.stream)
+
+    const meta = await fs.readJson(relay.getCachePaths(targetUrl).metaPath)
+    assert.equal(meta.sourceId, 'google-satellite')
+    assert.equal(meta.layerId, 'google-amap-hybrid')
+    assert.equal(meta.publishId, 'google-public')
+    assert.ok(meta.expiresAt >= before + 1234)
+    assert.ok(meta.staleExpiresAt >= before + 5678)
+
+    const stats = await relay.getStats()
+    assert.equal(stats.bySource['google-satellite'].files, 1)
+    assert.equal(stats.byLayer['google-amap-hybrid'].files, 1)
+    assert.equal(stats.byPublish['google-public'].files, 1)
+    assert.equal(stats.entries[0].sourceId, 'google-satellite')
+  } finally {
+    await cleanup()
+  }
+})
+
 test('fetch relay revalidates stale cache with conditional headers', async () => {
   const targetUrl = 'https://www.google.com/maps/vt?lyrs=s&x=4&y=5&z=6'
   const { relay, calls, cleanup } = createRelay([
@@ -252,6 +286,31 @@ test('fetch relay persists cache stats and reuses snapshot without cache changes
     const reusedStats = await reusedRelay.getStats()
     assert.equal(reusedStats.files, 1)
     assert.equal(reusedStats.generatedAt, stats.generatedAt)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('fetch relay clears cache entries by sourceId', async () => {
+  const firstUrl = 'https://www.google.com/maps/vt?lyrs=s&x=50&y=51&z=12'
+  const secondUrl = 'https://www.google.com/maps/vt?lyrs=s&x=52&y=53&z=12'
+  const { relay, cleanup } = createRelay([{}, {}])
+
+  try {
+    await readStream((await relay.fetch(firstUrl, { cacheMeta: { sourceId: 'source-a' } })).stream)
+    await readStream((await relay.fetch(secondUrl, { cacheMeta: { sourceId: 'source-b' } })).stream)
+
+    let stats = await relay.getStats()
+    assert.equal(stats.files, 2)
+
+    const clearResult = await relay.clear(null, 'source-a')
+    assert.equal(clearResult.removed, 'source')
+    assert.equal(clearResult.target, 'source-a')
+
+    assert.equal(await fs.pathExists(relay.getCachePaths(firstUrl).cachePath), false)
+    assert.equal(await fs.pathExists(relay.getCachePaths(firstUrl).metaPath), false)
+    assert.equal(await fs.pathExists(relay.getCachePaths(secondUrl).cachePath), true)
+    assert.equal(await fs.pathExists(relay.getCachePaths(secondUrl).metaPath), true)
   } finally {
     await cleanup()
   }

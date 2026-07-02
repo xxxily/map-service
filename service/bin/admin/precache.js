@@ -173,7 +173,8 @@ export function getTileRange (bounds, zoom) {
 }
 
 export function createTilePlan (input = {}, options = {}) {
-  const provider = getTileProvider(input.providerId || input.provider)
+  const getSourceOrProvider = options.getSourceOrProvider || getTileProvider
+  const provider = getSourceOrProvider(input.providerId || input.provider)
   if (!provider) {
     throw createHttpError('不支持的瓦片提供方')
   }
@@ -265,6 +266,7 @@ export class PrecacheManager {
   constructor (options = {}) {
     this.store = options.store
     this.fetchTile = options.fetchTile
+    this.tileCatalogManager = options.tileCatalogManager
     this.maxTiles = Number(options.maxTiles || 5000)
     this.defaultConcurrency = Number(options.defaultConcurrency || 4)
     this.maxConcurrency = Number(options.maxConcurrency || DEFAULT_MAX_CONCURRENCY)
@@ -335,22 +337,175 @@ export class PrecacheManager {
       .map(withoutRuntimeFlags)
   }
 
+  getSourceOrProvider (id) {
+    if (this.tileCatalogManager) {
+      const source = this.tileCatalogManager.sources.find(s => s.id === id)
+      if (source) {
+        return {
+          id: source.id,
+          name: source.name,
+          minZoom: source.minZoom,
+          maxZoom: source.maxZoom,
+          category: source.category,
+          template: source.template,
+          subdomains: source.subdomains,
+        }
+      }
+    }
+    return getTileProvider(id)
+  }
+
   getProviders () {
+    if (this.tileCatalogManager) {
+      const sources = this.tileCatalogManager.sources
+        .filter(s => s.enabled && s.permissions.precacheAllowed)
+        .map(s => ({
+          id: s.id,
+          name: s.name,
+          type: 'source',
+          minZoom: s.minZoom,
+          maxZoom: s.maxZoom,
+          description: s.description || '',
+        }))
+      const layers = this.tileCatalogManager.layers
+        .filter(l => l.enabled && l.items.some(item => {
+          const source = this.tileCatalogManager.findSource(item.sourceId)
+          return source && source.enabled && source.permissions.precacheAllowed
+        }))
+        .map(l => ({
+          id: l.id,
+          name: l.name,
+          type: 'layer',
+          minZoom: l.minZoom,
+          maxZoom: l.maxZoom,
+          description: l.description || '',
+        }))
+      return [...sources, ...layers]
+    }
     return listTileProviders()
   }
 
   async estimateTask (input = {}) {
     await this.ready
-    return estimateTilePlan(input, { maxTiles: this.maxTiles })
+    const getSourceOrProvider = (id) => this.getSourceOrProvider(id)
+
+    if (input.targetType === 'layer') {
+      const layer = this.tileCatalogManager?.findLayer(input.targetId)
+      if (!layer) throw createHttpError('图层不存在或已禁用')
+
+      const results = []
+      let total = 0
+      let estimatedBytes = 0
+      let estimatedBytesMin = 0
+      let estimatedBytesMax = 0
+      let withinLimit = true
+
+      for (const item of layer.items) {
+        const source = this.tileCatalogManager?.findSource(item.sourceId)
+        if (!source || !source.enabled || !source.permissions.precacheAllowed) continue
+
+        const est = estimateTilePlan({
+          ...input,
+          providerId: source.id,
+        }, {
+          maxTiles: this.maxTiles,
+          getSourceOrProvider,
+        })
+
+        results.push({
+          sourceId: source.id,
+          sourceName: source.name,
+          total: est.total,
+          estimatedBytes: est.estimatedBytes,
+        })
+        total += est.total
+        estimatedBytes += est.estimatedBytes
+        estimatedBytesMin += est.estimatedBytesRange.min
+        estimatedBytesMax += est.estimatedBytesRange.max
+        if (!est.withinLimit) withinLimit = false
+      }
+
+      return {
+        targetType: 'layer',
+        targetId: input.targetId,
+        total,
+        withinLimit,
+        estimatedBytes,
+        estimatedBytesRange: {
+          min: estimatedBytesMin,
+          max: estimatedBytesMax,
+        },
+        sources: results,
+      }
+    }
+
+    const sourceId = input.targetId || input.providerId || input.provider
+    const source = this.tileCatalogManager?.findSource(sourceId)
+    if (source && !source.permissions.precacheAllowed) {
+      throw createHttpError('图源未允许预缓存')
+    }
+
+    const est = estimateTilePlan({
+      ...input,
+      providerId: sourceId,
+    }, {
+      maxTiles: this.maxTiles,
+      getSourceOrProvider,
+    })
+    return {
+      targetType: 'source',
+      targetId: sourceId,
+      ...est,
+    }
   }
 
   async createTask (input = {}) {
     await this.ready
+    const getSourceOrProvider = (id) => this.getSourceOrProvider(id)
+
+    if (input.targetType === 'layer') {
+      const layer = this.tileCatalogManager?.findLayer(input.targetId)
+      if (!layer) throw createHttpError('图层不存在或已禁用')
+
+      const tasksCreated = []
+      for (const item of layer.items) {
+        const source = this.tileCatalogManager?.findSource(item.sourceId)
+        if (!source || !source.enabled || !source.permissions.precacheAllowed) continue
+
+        const taskInput = {
+          ...input,
+          targetType: 'source',
+          targetId: source.id,
+          providerId: source.id,
+        }
+        const task = await this.createTaskSingle(taskInput, getSourceOrProvider)
+        tasksCreated.push(task)
+      }
+      return tasksCreated
+    }
+
+    const sourceId = input.targetId || input.providerId || input.provider
+    const source = this.tileCatalogManager?.findSource(sourceId)
+    if (source && !source.permissions.precacheAllowed) {
+      throw createHttpError('图源未允许预缓存')
+    }
+
+    return this.createTaskSingle({
+      ...input,
+      providerId: sourceId,
+    }, getSourceOrProvider)
+  }
+
+  async createTaskSingle (input, getSourceOrProvider) {
     const plan = createTilePlan(input, {
       maxTiles: this.maxTiles,
       enforceMaxTiles: false,
+      getSourceOrProvider,
     })
-    const estimate = estimateTilePlan(input, { maxTiles: this.maxTiles })
+    const estimate = estimateTilePlan(input, {
+      maxTiles: this.maxTiles,
+      getSourceOrProvider,
+    })
     const requestedConcurrency = toInteger(input.concurrency || this.defaultConcurrency, '并发数')
     const concurrency = clamp(
       requestedConcurrency,
@@ -793,7 +948,8 @@ export class PrecacheManager {
 }
 
 export function estimateTilePlan (input = {}, options = {}) {
-  const provider = getTileProvider(input.providerId || input.provider)
+  const getSourceOrProvider = options.getSourceOrProvider || getTileProvider
+  const provider = getSourceOrProvider(input.providerId || input.provider)
   if (!provider) {
     throw createHttpError('不支持的瓦片提供方')
   }

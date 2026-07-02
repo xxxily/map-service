@@ -114,13 +114,32 @@ async function loadDashboard () {
   renderDashboard()
 
   try {
-    const [session, system, settings, providers, tasks, kmls] = await Promise.all([
+    const [
+      session,
+      system,
+      settings,
+      providers,
+      tasks,
+      kmls,
+      tileSources,
+      mapLayers,
+      proxyOutbounds,
+      proxyPools,
+      externalPublishes,
+      precacheCatalog
+    ] = await Promise.all([
       adminApi.session(),
       adminApi.system(),
       adminApi.settings(),
       adminApi.providers(),
       adminApi.tasks(),
       adminApi.kmls(),
+      adminApi.listTileSources(),
+      adminApi.listMapLayers(),
+      adminApi.listProxyOutbounds(),
+      adminApi.listProxyPools(),
+      adminApi.listExternalPublishes(),
+      adminApi.precacheCatalog(),
     ])
 
     Object.assign(adminState, {
@@ -130,6 +149,12 @@ async function loadDashboard () {
       providers,
       tasks,
       kmls,
+      tileSources,
+      mapLayers,
+      proxyOutbounds,
+      proxyPools,
+      externalPublishes,
+      precacheCatalog,
       loading: false,
     })
     setNotice('')

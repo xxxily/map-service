@@ -1,7 +1,6 @@
 import { renderOverviewPage } from './pages/overview.js'
 import { handleCacheClick, renderCachePage } from './pages/cache.js'
 import { initPrecacheMap, renderPrecachePage } from './pages/precache.js'
-import { renderLayersPage } from './pages/layers.js'
 import { handleSettingsSubmit, renderSettingsPage } from './pages/settings.js'
 import {
   handlePrecacheChange,
@@ -10,7 +9,21 @@ import {
   schedulePrecacheEstimate,
 } from './pages/precache.js'
 import { renderKmlPage, handleKmlClick, handleKmlChange } from './pages/kml.js'
-import { renderTileApiPage, handleTileApiClick, handleTileApiSubmit, loadTileApiLogs } from './pages/tileApi.js'
+import {
+  renderTileSourcesPage,
+  handleTileSourcesClick,
+  handleTileSourcesSubmit,
+  handleTileSourcesChange,
+  handleTileSourcesEnter
+} from './pages/tileSources.js'
+import {
+  renderProxyPage,
+  handleProxyClick,
+  handleProxySubmit,
+  handleProxyChange,
+  handleProxyEnter
+} from './pages/proxy.js'
+
 
 export const ADMIN_PAGES = [
   {
@@ -43,18 +56,24 @@ export const ADMIN_PAGES = [
     handleChange: handlePrecacheChange,
   },
   {
-    id: 'layers',
-    label: '图层',
-    render: renderLayersPage,
+    id: 'tile-sources',
+    label: '图源管理',
+    render: renderTileSourcesPage,
+    afterEnter: handleTileSourcesEnter,
+    afterLoad: handleTileSourcesEnter,
+    handleClick: handleTileSourcesClick,
+    handleSubmit: handleTileSourcesSubmit,
+    handleChange: handleTileSourcesChange,
   },
   {
-    id: 'tile-api',
-    label: '对外 API',
-    render: renderTileApiPage,
-    afterEnter: (state, api) => loadTileApiLogs(state, api),
-    afterLoad: (state, api) => loadTileApiLogs(state, api),
-    handleClick: handleTileApiClick,
-    handleSubmit: handleTileApiSubmit,
+    id: 'proxy',
+    label: '代理配置',
+    render: renderProxyPage,
+    afterEnter: handleProxyEnter,
+    afterLoad: handleProxyEnter,
+    handleClick: handleProxyClick,
+    handleSubmit: handleProxySubmit,
+    handleChange: handleProxyChange,
   },
   {
     id: 'settings',

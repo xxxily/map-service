@@ -1,6 +1,42 @@
 import L from 'leaflet'
-import { createTileUrls, DEFAULT_LAYER_NAME } from './tile-sources.js'
 import { writeMapViewToUrl } from './url-state.js'
+
+const DEFAULT_LAYER_NAME = '高德/卫星'
+const FALLBACK_CATALOG = {
+  sources: [
+    {
+      id: 'amap-satellite',
+      tileUrl: '/api/v1/tiles/amap-satellite/{z}/{x}/{y}',
+      minZoom: 3,
+      maxZoom: 18,
+      maxNativeZoom: 18,
+      tileSize: 256,
+    },
+    {
+      id: 'amap-road',
+      tileUrl: '/api/v1/tiles/amap-road/{z}/{x}/{y}',
+      minZoom: 3,
+      maxZoom: 18,
+      maxNativeZoom: 18,
+      tileSize: 256,
+    },
+  ],
+  layers: [
+    {
+      id: 'amap-hybrid',
+      name: DEFAULT_LAYER_NAME,
+      enabled: true,
+      default: true,
+      clients: ['2d', '3d'],
+      minZoom: 3,
+      maxZoom: 18,
+      items: [
+        { sourceId: 'amap-satellite', opacity: 1 },
+        { sourceId: 'amap-road', opacity: 0.5 },
+      ],
+    },
+  ],
+}
 
 // 对 L.GridLayer 扩展以支持可视区域外一部分瓦片图的预加载
 const originalGetTiledPixelBounds = L.GridLayer.prototype._getTiledPixelBounds
@@ -15,14 +51,6 @@ L.GridLayer.prototype._getTiledPixelBounds = function (center) {
   return pixelBounds
 }
 
-const {
-  googleSatellite,
-  googleSatelliteHd,
-  googleStreet,
-  autonaviSatellite,
-  autonaviRoad,
-} = createTileUrls({ isRetina: L.Browser.retina })
-
 function createTileLayer (url, options) {
   return L.tileLayer(url, {
     minZoom: 3,
@@ -32,80 +60,132 @@ function createTileLayer (url, options) {
   })
 }
 
-export function initLayerControl (map, initialLayerName = '') {
-  // 从 localStorage 获取用户上一次选择的图层，默认使用 '高德/卫星'
-  let savedLayerName = DEFAULT_LAYER_NAME
+function getLayerControlName (layer, usedNames) {
+  const baseName = layer.name || layer.id
+  if (!usedNames.has(baseName)) {
+    usedNames.add(baseName)
+    return baseName
+  }
+  const name = `${baseName} (${layer.id})`
+  usedNames.add(name)
+  return name
+}
+
+function normalizeCatalogPayload (payload) {
+  if (!payload || payload.code !== 0 || !payload.result || !Array.isArray(payload.result.layers)) {
+    throw new Error(payload?.error?.message || '地图图层目录响应格式不正确')
+  }
+  return payload.result
+}
+
+function createLayerFromCatalog (layer, sourceById) {
+  const tileLayers = (layer.items || [])
+    .map((item) => {
+      const source = sourceById.get(item.sourceId)
+      if (!source) return null
+      return createTileLayer(source.tileUrl || `/api/v1/tiles/${encodeURIComponent(source.id)}/{z}/{x}/{y}`, {
+        minZoom: source.minZoom ?? layer.minZoom ?? 3,
+        maxZoom: layer.maxZoom ?? source.maxZoom ?? 20,
+        maxNativeZoom: source.maxNativeZoom ?? source.maxZoom ?? layer.maxZoom,
+        tileSize: source.tileSize || 256,
+        opacity: item.opacity ?? 1,
+        attribution: source.attribution || '',
+      })
+    })
+    .filter(Boolean)
+
+  if (!tileLayers.length) return null
+  const group = L.layerGroup(tileLayers)
+  group._layerId = layer.id
+  group._layerName = layer.name
+  return group
+}
+
+export async function initLayerControl (map, initialLayerName = '') {
+  let savedLayerId = ''
+  let savedLayerName = ''
   try {
-    savedLayerName = localStorage.getItem('last_map_layer') || DEFAULT_LAYER_NAME
+    savedLayerId = localStorage.getItem('last_map_layer_id') || ''
+    savedLayerName = localStorage.getItem('last_map_layer') || ''
   } catch (e) {
-    console.error('Failed to read last_map_layer from localStorage', e)
+    console.error('Failed to read layer from localStorage', e)
   }
 
-  const mapLayers = {
-    '高德/卫星': L.layerGroup([
-      createTileLayer(autonaviSatellite, {
-        maxZoom: 20,
-        maxNativeZoom: 18,
-        attribution: '高德地图 AutoNavi.com',
-        subdomains: '1234',
-      }),
-      createTileLayer(autonaviRoad, {
-        maxZoom: 20,
-        maxNativeZoom: 18,
-        subdomains: '1234',
-        opacity: 0.5,
-      }),
-    ]),
+  let mapLayers = {}
+  let layerByControlName = new Map()
+  let catalogLayers = []
+  let defaultLayer = null
 
-    '高德/街道': createTileLayer(autonaviRoad, {
-      maxZoom: 20,
-      maxNativeZoom: 18,
-      attribution: '高德地图 AutoNavi.com',
-      subdomains: '1234',
-    }),
+  try {
+    const res = await fetch('/api/v1/map/catalog')
+    const payload = await res.json()
+    if (!res.ok) {
+      throw new Error(payload?.error?.message || res.statusText || '地图图层目录加载失败')
+    }
+    const catalog = normalizeCatalogPayload(payload)
+    const sourceById = new Map((catalog.sources || []).map(source => [source.id, source]))
+    const layers = catalog.layers || []
+    
+    // 过滤出启用且支持 2D 的图层
+    catalogLayers = layers.filter(l => l.enabled !== false && (l.clients || []).includes('2d'))
 
-    '谷歌高德/卫星': L.layerGroup([
-      createTileLayer(googleSatellite, {
-        maxZoom: 22,
-        attribution: '谷歌提供卫星图，高德提供街道图',
-      }),
-      createTileLayer(autonaviRoad, {
-        maxZoom: 22,
-        maxNativeZoom: 18,
-        attribution: '高德地图 AutoNavi.com',
-        subdomains: '1234',
-        opacity: 0.7,
-      }),
-    ]),
-
-    '谷歌高德/卫星（HD）': L.layerGroup([
-      createTileLayer(googleSatelliteHd, {
-        maxZoom: 22,
-        attribution: '谷歌提供卫星图(3倍HD)，高德提供街道图',
-      }),
-      createTileLayer(autonaviRoad, {
-        maxZoom: 22,
-        maxNativeZoom: 18,
-        attribution: '高德地图 AutoNavi.com',
-        subdomains: '1234',
-        opacity: 0.7,
-      }),
-    ]),
-
-    '谷歌/卫星': createTileLayer(googleSatellite, {
-      maxZoom: 22,
-      attribution: '谷歌 Google',
-    }),
-
-    '谷歌/街道': createTileLayer(googleStreet, {
-      maxZoom: 22,
-      attribution: '谷歌 Google',
-    }),
+    const usedNames = new Set()
+    catalogLayers.forEach(layer => {
+      const layerGroup = createLayerFromCatalog(layer, sourceById)
+      if (layerGroup) {
+        const controlName = getLayerControlName(layer, usedNames)
+        mapLayers[controlName] = layerGroup
+        layerByControlName.set(controlName, layer)
+        if (layer.default) {
+          defaultLayer = { ...layer, controlName }
+        }
+      }
+    })
+  } catch (err) {
+    console.error('Failed to fetch map catalog layers, using backend fallback sources', err)
   }
 
-  // 渲染选中的默认图层
-  const activeLayerName = [initialLayerName, savedLayerName, DEFAULT_LAYER_NAME].find(name => mapLayers[name]) || DEFAULT_LAYER_NAME
+  // 兜底底图
+  if (Object.keys(mapLayers).length === 0) {
+    const sourceById = new Map(FALLBACK_CATALOG.sources.map(source => [source.id, source]))
+    const fallbackLayer = FALLBACK_CATALOG.layers[0]
+    const fallbackGroup = createLayerFromCatalog(fallbackLayer, sourceById)
+    if (fallbackGroup) {
+      mapLayers[DEFAULT_LAYER_NAME] = fallbackGroup
+      layerByControlName.set(DEFAULT_LAYER_NAME, fallbackLayer)
+      catalogLayers = [fallbackLayer]
+      defaultLayer = { ...fallbackLayer, controlName: DEFAULT_LAYER_NAME }
+    }
+  }
+
+  const fallbackDefault = defaultLayer || { id: 'amap-hybrid', name: DEFAULT_LAYER_NAME, controlName: DEFAULT_LAYER_NAME }
+
+  // 决定要激活哪个图层
+  let activeLayerName = ''
+  let needFallbackAlert = false
+
+  const checkKeys = [initialLayerName, savedLayerId, savedLayerName].filter(Boolean)
+  for (const key of checkKeys) {
+    const matched = catalogLayers.find(l => l.id === key || l.name === key)
+    const controlName = matched
+      ? [...layerByControlName.entries()].find(([, layer]) => layer.id === matched.id)?.[0]
+      : ''
+    if (matched && controlName && mapLayers[controlName]) {
+      activeLayerName = controlName
+      break
+    }
+  }
+
+  if (initialLayerName && !activeLayerName) {
+    needFallbackAlert = true
+  }
+
+  if (!activeLayerName) {
+    activeLayerName = fallbackDefault.controlName || fallbackDefault.name
+  }
+
   map._activeLayerName = activeLayerName
+  map._activeLayerId = mapLayers[activeLayerName]?._layerId || ''
   mapLayers[activeLayerName].addTo(map)
 
   const layerControl = L.control.layers(mapLayers, {}, {
@@ -116,15 +196,30 @@ export function initLayerControl (map, initialLayerName = '') {
   // 监听基准底图切换事件，将用户当前选择记录进本地缓存中
   map.on('baselayerchange', (event) => {
     map._activeLayerName = event.name
+    const matchedLayer = layerByControlName.get(event.name)
+    const layerId = matchedLayer ? matchedLayer.id : (event.layer?._layerId || '')
+    map._activeLayerId = layerId
     try {
-      localStorage.setItem('last_map_layer', event.name)
+      localStorage.setItem('last_map_layer_id', layerId)
+      localStorage.setItem('last_map_layer', matchedLayer?.name || event.name)
     } catch (e) {
       console.error('Failed to save last_map_layer to localStorage', e)
     }
-    writeMapViewToUrl(map, { layerName: event.name })
+    writeMapViewToUrl(map, { layerName: layerId })
   })
 
   layerControl._container.style.display = 'none'
+
+  // 如果需要，显示原图层不可用，已切换到默认图层的非阻塞提示
+  if (needFallbackAlert) {
+    const toast = document.createElement('div')
+    toast.className = 'screenshot-toast'
+    toast.style.background = '#d97706' // 警告颜色
+    toast.innerText = '原图层不可用，已切换到默认图层'
+    document.body.appendChild(toast)
+    setTimeout(() => toast.remove(), 3500)
+  }
+
   return layerControl
 }
 
