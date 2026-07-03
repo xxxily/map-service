@@ -2460,6 +2460,24 @@ body.admin-view #app-version {
 .badge-red { background: #fee2e2; color: #b91c1c; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
 .badge-gray { background: #f1f5f9; color: #475569; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
 .badge-blue { background: #e0f2fe; color: #0369a1; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+.status-toggle {
+  border: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.status-toggle.is-enabled {
+  background: #dcfce7;
+  color: #15803d;
+}
+.status-toggle.is-disabled {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.status-toggle:hover {
+  filter: brightness(0.96);
+}
 .flex-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn-link { background: none; border: none; color: #0f766e; cursor: pointer; text-decoration: underline; font-size: 12px; padding: 0; }
 .btn-link:hover { color: #0d9488; }

@@ -195,6 +195,18 @@ function getScaleFromSource (source = {}) {
   return '1'
 }
 
+function renderStatusToggleButton (enabled, action, id, activeLabel, inactiveLabel) {
+  const nextLabel = enabled ? inactiveLabel : activeLabel
+  return `
+    <button
+      type="button"
+      class="status-toggle ${enabled ? 'is-enabled' : 'is-disabled'}"
+      data-tile-sources-toggle-${action}="${escapeHtml(id)}"
+      title="点击切换为${escapeHtml(nextLabel)}"
+    >${escapeHtml(enabled ? activeLabel : inactiveLabel)}</button>
+  `
+}
+
 async function reloadCatalogRelatedState (state, api, options = {}) {
   const {
     tileSources = false,
@@ -467,9 +479,7 @@ function renderSourcesView (state) {
                   : '<span class="badge-red">隐藏</span>'}
               </td>
               <td>
-                ${source.enabled 
-                  ? '<span class="badge-green">启用中</span>' 
-                  : '<span class="badge-red">已禁用</span>'}
+                ${renderStatusToggleButton(source.enabled, 'source', source.id, '启用中', '已禁用')}
               </td>
               <td>
                 <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px;">
@@ -650,9 +660,7 @@ function renderLayersView (state) {
               ${(layer.clients || []).map(c => `<span class="badge-blue">${c.toUpperCase()}</span>`).join(' ')}
             </td>
             <td>
-              ${layer.enabled 
-                ? '<span class="badge-green">启用中</span>' 
-                : '<span class="badge-red">已禁用</span>'}
+              ${renderStatusToggleButton(layer.enabled, 'layer', layer.id, '启用中', '已禁用')}
             </td>
             <td>
               ${layer.default 
@@ -861,9 +869,7 @@ function renderPublishesView (state) {
                 </div>
               </td>
               <td style="white-space: nowrap;">
-                ${p.enabled 
-                  ? '<span class="badge-green">已发布</span>' 
-                  : '<span class="badge-red">已禁用</span>'}
+                ${renderStatusToggleButton(p.enabled, 'publish', p.id, '已发布', '已禁用')}
               </td>
               <td style="white-space: nowrap;">
                 <div class="flex-actions" style="flex-wrap: nowrap;">
@@ -1043,6 +1049,26 @@ export async function handleTileSourcesClick (context) {
     renderDashboard()
     return true
   }
+  const toggleSourceBtn = event.target.closest('[data-tile-sources-toggle-source]')
+  if (toggleSourceBtn) {
+    const id = toggleSourceBtn.getAttribute('data-tile-sources-toggle-source')
+    const source = (state.tileSources || []).find(item => item.id === id)
+    if (!source) return true
+    const nextEnabled = !source.enabled
+    state.loading = true
+    renderDashboard()
+    try {
+      await api.updateTileSource(id, { enabled: nextEnabled })
+      await reloadCatalogRelatedState(state, api, { tileSources: true })
+      setNotice(`图源已${nextEnabled ? '启用' : '禁用'}`)
+    } catch (err) {
+      setNotice('', err.message)
+    } finally {
+      state.loading = false
+      renderDashboard()
+    }
+    return true
+  }
   const editSourceBtn = event.target.closest('[data-tile-sources-edit-source]')
   if (editSourceBtn) {
     const id = editSourceBtn.getAttribute('data-tile-sources-edit-source')
@@ -1112,6 +1138,30 @@ export async function handleTileSourcesClick (context) {
   if (event.target.closest('[data-tile-sources-cancel="layer"]')) {
     state.editingMapLayer = null
     renderDashboard()
+    return true
+  }
+  const toggleLayerBtn = event.target.closest('[data-tile-sources-toggle-layer]')
+  if (toggleLayerBtn) {
+    const id = toggleLayerBtn.getAttribute('data-tile-sources-toggle-layer')
+    const layer = (state.mapLayers || []).find(item => item.id === id)
+    if (!layer) return true
+    const nextEnabled = !layer.enabled
+    if (layer.default && !nextEnabled) {
+      setNotice('', '默认图层不能直接禁用，请先设置新的默认图层')
+      return true
+    }
+    state.loading = true
+    renderDashboard()
+    try {
+      await api.updateMapLayer(id, { enabled: nextEnabled })
+      await reloadCatalogRelatedState(state, api, { mapLayers: true })
+      setNotice(`组合图层已${nextEnabled ? '启用' : '禁用'}`)
+    } catch (err) {
+      setNotice('', err.message)
+    } finally {
+      state.loading = false
+      renderDashboard()
+    }
     return true
   }
   const editLayerBtn = event.target.closest('[data-tile-sources-edit-layer]')
@@ -1221,6 +1271,26 @@ export async function handleTileSourcesClick (context) {
   if (event.target.closest('[data-tile-sources-cancel="publish"]')) {
     state.editingExternalPublish = null
     renderDashboard()
+    return true
+  }
+  const togglePublishBtn = event.target.closest('[data-tile-sources-toggle-publish]')
+  if (togglePublishBtn) {
+    const id = togglePublishBtn.getAttribute('data-tile-sources-toggle-publish')
+    const publish = (state.externalPublishes || []).find(item => item.id === id)
+    if (!publish) return true
+    const nextEnabled = !publish.enabled
+    state.loading = true
+    renderDashboard()
+    try {
+      await api.updateExternalPublish(id, { enabled: nextEnabled })
+      await reloadCatalogRelatedState(state, api, { externalPublishes: true, precacheCatalog: false })
+      setNotice(`对外发布项已${nextEnabled ? '发布' : '禁用'}`)
+    } catch (err) {
+      setNotice('', err.message)
+    } finally {
+      state.loading = false
+      renderDashboard()
+    }
     return true
   }
   const editPublishBtn = event.target.closest('[data-tile-sources-edit-publish]')
