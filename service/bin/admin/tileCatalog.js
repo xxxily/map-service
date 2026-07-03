@@ -6,10 +6,12 @@ const STORE_PROXY_OUTBOUNDS = 'proxy-outbounds'
 const STORE_PROXY_POOLS = 'proxy-pools'
 const STORE_EXTERNAL_PUBLISHES = 'external-publishes'
 const STORE_EXTERNAL_LOGS = 'external-publish-logs'
+const STORE_SOURCE_ACCESS_LOGS = 'source-access-logs'
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/
 const DEFAULT_TOKEN_BYTES = 24
 const DEFAULT_EXTERNAL_LOG_LIMIT = 1000
+const DEFAULT_SOURCE_ACCESS_LOG_LIMIT = 1000
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60 * 1000
 const TEMPLATE_PLACEHOLDERS = ['s', 'x', 'y', 'z', 'scale', 'yTms']
 const ALLOWED_TILE_SIZES = [256]
@@ -252,6 +254,7 @@ function defaultSources () {
       tileSize: 256,
       retina: { mode: 'query', param: 'scale', normalValue: '1', retinaValue: '2' },
       cache: { enabled: true },
+      accessLog: { enabled: true, maxLogCount: DEFAULT_SOURCE_ACCESS_LOG_LIMIT },
       proxy: { mode: 'never', poolId: '', outboundId: '', fallbackToDirect: false },
       permissions: { frontendVisible: true, precacheAllowed: true, externalApiAllowed: true, userReferenceAllowed: true },
       visibility: { scope: 'system' },
@@ -273,6 +276,7 @@ function defaultSources () {
       tileSize: 256,
       retina: { mode: 'none', param: '', normalValue: '1', retinaValue: '1' },
       cache: { enabled: true },
+      accessLog: { enabled: true, maxLogCount: DEFAULT_SOURCE_ACCESS_LOG_LIMIT },
       proxy: { mode: 'never', poolId: '', outboundId: '', fallbackToDirect: false },
       permissions: { frontendVisible: true, precacheAllowed: true, externalApiAllowed: true, userReferenceAllowed: true },
       visibility: { scope: 'system' },
@@ -294,6 +298,7 @@ function defaultSources () {
       tileSize: 256,
       retina: { mode: 'query', param: 'scale', normalValue: '1', retinaValue: '2' },
       cache: { enabled: true },
+      accessLog: { enabled: true, maxLogCount: DEFAULT_SOURCE_ACCESS_LOG_LIMIT },
       proxy: { mode: 'pool', poolId: 'default-proxy-pool', outboundId: '', fallbackToDirect: false },
       permissions: { frontendVisible: true, precacheAllowed: true, externalApiAllowed: true, userReferenceAllowed: true },
       visibility: { scope: 'system' },
@@ -315,6 +320,7 @@ function defaultSources () {
       tileSize: 256,
       retina: { mode: 'fixed', param: 'scale', normalValue: '3', retinaValue: '3' },
       cache: { enabled: true },
+      accessLog: { enabled: true, maxLogCount: DEFAULT_SOURCE_ACCESS_LOG_LIMIT },
       proxy: { mode: 'pool', poolId: 'default-proxy-pool', outboundId: '', fallbackToDirect: false },
       permissions: { frontendVisible: true, precacheAllowed: true, externalApiAllowed: true, userReferenceAllowed: true },
       visibility: { scope: 'system' },
@@ -336,6 +342,7 @@ function defaultSources () {
       tileSize: 256,
       retina: { mode: 'query', param: 'scale', normalValue: '1', retinaValue: '2' },
       cache: { enabled: true },
+      accessLog: { enabled: true, maxLogCount: DEFAULT_SOURCE_ACCESS_LOG_LIMIT },
       proxy: { mode: 'pool', poolId: 'default-proxy-pool', outboundId: '', fallbackToDirect: false },
       permissions: { frontendVisible: true, precacheAllowed: true, externalApiAllowed: true, userReferenceAllowed: true },
       visibility: { scope: 'system' },
@@ -525,6 +532,18 @@ function normalizeCachePolicy (input = {}, current = null) {
   }
 }
 
+function normalizeAccessLogPolicy (input = {}, current = null) {
+  const accessLog = input ?? {}
+  return {
+    enabled: normalizeBoolean(accessLog.enabled ?? current?.enabled, true),
+    maxLogCount: normalizeInteger(accessLog.maxLogCount ?? current?.maxLogCount, '图源访问日志保留行数', {
+      min: 0,
+      max: 10000,
+      defaultValue: DEFAULT_SOURCE_ACCESS_LOG_LIMIT,
+    }),
+  }
+}
+
 function normalizeProxyPolicy (input = {}, current = null, defaultMode = 'never') {
   const proxy = input ?? {}
   const rawMode = normalizeString(proxy.mode ?? current?.mode ?? defaultMode).toLowerCase()
@@ -577,6 +596,7 @@ function normalizeSource (input = {}, current = null) {
     tileSize: normalizeTileSize(input.tileSize ?? current?.tileSize),
     retina: normalizeRetinaPolicy(input.retina, current?.retina),
     cache: normalizeCachePolicy(input.cache ?? current?.cache, current?.cache),
+    accessLog: normalizeAccessLogPolicy(input.accessLog ?? current?.accessLog, current?.accessLog),
     proxy: normalizeProxyPolicy(input.proxy ?? current?.proxy, current?.proxy),
     permissions: {
       frontendVisible: normalizeBoolean(permissions.frontendVisible, true),
@@ -698,6 +718,7 @@ export class TileCatalogManager {
     this.proxyPools = []
     this.externalPublishes = []
     this.externalLogs = []
+    this.sourceAccessLogs = []
     this.roundRobinState = new Map()
     this.proxyCooldowns = new Map()
     this.rateLimits = new Map()
@@ -713,6 +734,7 @@ export class TileCatalogManager {
       this.loadOrInit(STORE_LAYERS, defaultLayers()),
       this.loadOrInit(STORE_EXTERNAL_PUBLISHES, defaultExternalPublishes()),
       this.store.read(STORE_EXTERNAL_LOGS, []),
+      this.store.read(STORE_SOURCE_ACCESS_LOGS, []),
     ])
 
     this.proxyOutbounds = stores[0].map(item => normalizeProxyOutbound(item))
@@ -721,6 +743,7 @@ export class TileCatalogManager {
     this.layers = stores[3].map(item => normalizeLayer(item))
     this.externalPublishes = stores[4].map(item => normalizeExternalPublish(item))
     this.externalLogs = Array.isArray(stores[5]) ? stores[5] : []
+    this.sourceAccessLogs = Array.isArray(stores[6]) ? stores[6] : []
     this.validateAll()
     this.loaded = true
   }
@@ -1107,11 +1130,13 @@ export class TileCatalogManager {
     if (!source) throw createHttpError('图源不存在', 404)
     if (!source.enabled) throw createHttpError('图源已禁用', 403)
     const url = this.buildTileUrl(source, tile, options)
+    const proxyPolicy = options.proxyOverride || source.proxy || { mode: 'never' }
     const proxy = await this.resolveProxyForSource(source, options.proxyOverride || null)
     return {
       source,
       url,
       proxy,
+      proxyPolicy,
       cache: options.cacheOverride?.enabled ?? source.cache.enabled,
       cacheTtlMs: options.cacheOverride?.ttlMs ?? source.cache.ttlMs,
       staleCacheTtlMs: options.cacheOverride?.staleTtlMs ?? source.cache.staleTtlMs,
@@ -1367,6 +1392,32 @@ export class TileCatalogManager {
     const publish = publishId ? this.findExternalPublish(publishId) : null
     const normalizedPublishId = publish?.id || publishId
     return this.externalLogs.filter(log => !normalizedPublishId || log.publishId === normalizedPublishId)
+  }
+
+  async addSourceAccessLog (entry, maxLogCount = DEFAULT_SOURCE_ACCESS_LOG_LIMIT) {
+    await this.ensureLoaded()
+    if (maxLogCount <= 0) return
+    const sourceId = normalizeString(entry.sourceId)
+    if (!sourceId) return
+    this.sourceAccessLogs.unshift({
+      ...entry,
+      sourceId,
+    })
+
+    let countForSource = 0
+    this.sourceAccessLogs = this.sourceAccessLogs.filter((log) => {
+      if (log.sourceId !== sourceId) return true
+      countForSource += 1
+      return countForSource <= maxLogCount
+    })
+
+    await this.writeStore(STORE_SOURCE_ACCESS_LOGS, this.sourceAccessLogs)
+  }
+
+  async listSourceAccessLogs (sourceId = '') {
+    await this.ensureLoaded()
+    const normalizedSourceId = normalizeString(sourceId)
+    return this.sourceAccessLogs.filter(log => !normalizedSourceId || log.sourceId === normalizedSourceId)
   }
 
   async testProxyOutbound (id) {

@@ -119,10 +119,36 @@ test('tile catalog creates proxy pool and resolves source tile request through i
     })
 
     assert.equal(request.proxy.enabled, true)
+    assert.equal(request.proxyPolicy.mode, 'pool')
+    assert.equal(request.proxyPolicy.poolId, 'google-pool')
     assert.equal(request.proxy.host, 'proxy.example.com')
     assert.equal(request.proxy.username, 'user')
     assert.equal(request.url.includes('x=4'), true)
     assert.equal(request.cacheMeta.sourceId, 'google-satellite')
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('tile catalog keeps source access logs separate from external publish logs', async () => {
+  const dataDir = tempDir('tile-catalog-source-access-logs')
+  const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })
+
+  try {
+    await manager.addExternalLog({ publishId: 'public-a', sourceId: 'google-satellite', marker: 'external-1' }, 2)
+    await manager.addExternalLog({ publishId: 'public-a', sourceId: 'google-satellite', marker: 'external-2' }, 2)
+    await manager.addSourceAccessLog({ sourceId: 'google-satellite', proxyOutboundId: 'proxy-a', marker: 'source-1' }, 1)
+    await manager.addSourceAccessLog({ sourceId: 'amap-road', proxyOutboundId: '', marker: 'source-other' }, 1)
+    await manager.addSourceAccessLog({ sourceId: 'google-satellite', proxyOutboundId: 'proxy-b', marker: 'source-2' }, 1)
+
+    const externalLogs = await manager.listExternalLogs('public-a')
+    const allSourceLogs = await manager.listSourceAccessLogs()
+    const googleSourceLogs = await manager.listSourceAccessLogs('google-satellite')
+
+    assert.deepEqual(externalLogs.map(log => log.marker), ['external-2', 'external-1'])
+    assert.deepEqual(googleSourceLogs.map(log => log.marker), ['source-2'])
+    assert.equal(allSourceLogs.some(log => log.marker === 'source-other'), true)
+    assert.equal(externalLogs.some(log => log.marker === 'source-2'), false)
   } finally {
     await fs.remove(dataDir)
   }

@@ -136,6 +136,9 @@ export const adminApi = {
   listExternalPublishLogs: (id = '') => id
     ? request(`/admin/external-publishes/${encodeURIComponent(id)}/logs`)
     : request('/admin/external-publish-logs'),
+  listSourceAccessLogs: (id = '') => id
+    ? request(`/admin/tile-sources/${encodeURIComponent(id)}/access-logs`)
+    : request('/admin/source-access-logs'),
 }
 
 export async function getSharedKmlList () {

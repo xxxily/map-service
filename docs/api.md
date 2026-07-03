@@ -298,6 +298,10 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
     "ttlMs": 21600000,
     "staleTtlMs": 2592000000
   },
+  "accessLog": {
+    "enabled": true,
+    "maxLogCount": 1000
+  },
   "proxy": {
     "mode": "never",
     "poolId": "",
@@ -327,6 +331,38 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 ### `PUT /api/v1/admin/tile-sources/:id`
 
 更新图源。路径中的 `:id` 为准，不允许通过请求体改 ID。
+
+`accessLog` 为图源访问诊断日志策略，独立于对外发布项日志：
+
+- `enabled`：是否记录该图源的访问诊断日志。
+- `maxLogCount`：该图源最多保留的访问日志行数，范围 `0-10000`。只裁剪当前图源日志，不影响对外发布日志，也不影响其它图源。
+- 当前默认记录通过代理访问或发生错误的图源请求，用于分析代理出口、代理池命中、缓存命中和耗时。
+
+### `GET /api/v1/admin/tile-sources/:id/access-logs`
+
+获取指定图源访问日志。日志字段包括：
+
+- `timestamp`
+- `sourceId`
+- `publishId`：若访问来自对外发布项则记录发布项 ID，否则为空。
+- `layerId`：若访问来自组合图层发布项则记录图层 ID，否则为空。
+- `clientIp`
+- `userAgent`
+- `coordinates`
+- `reqUrl`：已脱敏，`token` 和 `access_token` 会写为 `****`
+- `statusCode`
+- `duration`
+- `cacheStatus`：`HIT`、`MISS`、`BYPASS`、`REVALIDATED`、`STALE` 或 `ERROR`
+- `proxyMode`
+- `proxyPoolId`
+- `proxyOutboundId`
+- `proxyConfigured`：该次请求是否配置过代理策略；若代理失败后允许直连，可能为 `true` 但 `proxyOutboundId` 为空。
+- `cacheEnabled`
+- `errorMessage`
+
+### `GET /api/v1/admin/source-access-logs`
+
+获取全部图源访问日志，供后台诊断页“图源访问”视图使用。返回字段与单图源日志接口一致。该接口不读取也不占用对外发布项的 `log.maxLogCount`。
 
 ### `DELETE /api/v1/admin/tile-sources/:id`
 

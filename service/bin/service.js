@@ -73,6 +73,50 @@ async function readPackageInfo () {
   }
 }
 
+function sourceAccessLogLimit (source) {
+  if (source?.accessLog?.enabled === false) return 0
+  if (source?.accessLog && Object.hasOwn(source.accessLog, 'maxLogCount')) {
+    return Number(source.accessLog.maxLogCount || 0)
+  }
+  return 1000
+}
+
+function shouldLogSourceAccess (entry, source) {
+  if (!source || sourceAccessLogLimit(source) <= 0) return false
+  return Boolean(entry.proxyConfigured || entry.proxyOutboundId || entry.proxyPoolId || entry.errorMessage)
+}
+
+function buildSourceAccessLogEntry (result, options = {}) {
+  const source = result.source || {}
+  const tile = options.tile || {}
+  return {
+    timestamp: new Date().toISOString(),
+    sourceId: source.id || options.sourceId || '',
+    publishId: options.publishId || '',
+    layerId: options.layerId || '',
+    clientIp: options.clientIp || '',
+    userAgent: options.userAgent || '',
+    coordinates: `Z:${tile.z ?? ''} X:${tile.x ?? ''} Y:${tile.y ?? ''}`,
+    reqUrl: options.reqUrl || '',
+    statusCode: result.statusCode || 200,
+    duration: Number(options.duration || 0),
+    cacheStatus: result.cacheStatus || 'MISS',
+    proxyMode: source.proxy?.mode || '',
+    proxyPoolId: result.proxy?.poolId || '',
+    proxyOutboundId: result.proxy?.outboundId || '',
+    proxyConfigured: Boolean(result.proxyPolicy && result.proxyPolicy.mode !== 'never'),
+    cacheEnabled: result.cacheStatus !== 'BYPASS',
+    errorMessage: options.errorMessage || null,
+  }
+}
+
+function writeSourceAccessLog (entry, source) {
+  if (!shouldLogSourceAccess(entry, source)) return
+  tileCatalogManager.addSourceAccessLog(entry, sourceAccessLogLimit(source)).catch((err) => {
+    console.error('[source access log error]', err)
+  })
+}
+
 const service = {
   async fetchRelay (url, options = {}) {
     return fetchRelay.fetch(url, {
@@ -82,6 +126,7 @@ const service = {
   },
 
   async fetchTileSource (sourceId, tile, options = {}) {
+    const startTime = Date.now()
     const request = await tileCatalogManager.createSourceTileRequest(sourceId, tile, options)
     const relayResult = await service.fetchRelay(request.url, {
       proxy: request.proxy,
@@ -92,14 +137,25 @@ const service = {
       providerId: request.source.id,
       headers: options.headers,
     })
-    return {
+    const result = {
       ...relayResult,
       source: request.source,
       proxy: request.proxy,
+      proxyPolicy: request.proxyPolicy,
     }
+    writeSourceAccessLog(buildSourceAccessLogEntry(result, {
+      sourceId,
+      tile,
+      clientIp: options.clientIp,
+      userAgent: options.userAgent,
+      reqUrl: options.reqUrl,
+      duration: Date.now() - startTime,
+    }), request.source)
+    return result
   },
 
   async fetchExternalPublishTile (publishId, tile, options = {}) {
+    const startTime = Date.now()
     const request = await tileCatalogManager.createExternalTileRequest(publishId, tile, options)
     const relayResult = await service.fetchRelay(request.url, {
       proxy: request.proxy,
@@ -110,15 +166,27 @@ const service = {
       providerId: request.source.id,
       headers: options.headers,
     })
-    return {
+    const result = {
       ...relayResult,
       source: request.source,
       publish: request.publish,
       proxy: request.proxy,
+      proxyPolicy: request.proxyPolicy,
     }
+    writeSourceAccessLog(buildSourceAccessLogEntry(result, {
+      sourceId: request.source.id,
+      publishId: request.publish.id,
+      tile,
+      clientIp: options.clientIp,
+      userAgent: options.userAgent,
+      reqUrl: options.reqUrl,
+      duration: Date.now() - startTime,
+    }), request.source)
+    return result
   },
 
   async fetchExternalLayerSourceTile (publishId, sourceId, tile, options = {}) {
+    const startTime = Date.now()
     const request = await tileCatalogManager.createExternalLayerSourceTileRequest(publishId, sourceId, tile, options)
     const relayResult = await service.fetchRelay(request.url, {
       proxy: request.proxy,
@@ -129,14 +197,26 @@ const service = {
       providerId: request.source.id,
       headers: options.headers,
     })
-    return {
+    const result = {
       ...relayResult,
       source: request.source,
       publish: request.publish,
       layer: request.layer,
       layerItem: request.layerItem,
       proxy: request.proxy,
+      proxyPolicy: request.proxyPolicy,
     }
+    writeSourceAccessLog(buildSourceAccessLogEntry(result, {
+      sourceId,
+      publishId: request.publish.id,
+      layerId: request.layer.id,
+      tile,
+      clientIp: options.clientIp,
+      userAgent: options.userAgent,
+      reqUrl: options.reqUrl,
+      duration: Date.now() - startTime,
+    }), request.source)
+    return result
   },
 
   getFetchRelayCacheStats () {
@@ -361,6 +441,18 @@ const service = {
 
   logExternalPublishRequest (entry, maxLogCount) {
     return tileCatalogManager.addExternalLog(entry, maxLogCount)
+  },
+
+  listSourceAccessLogs (sourceId = '') {
+    return tileCatalogManager.listSourceAccessLogs(sourceId)
+  },
+
+  logSourceAccessRequest (entry, source = null, maxLogCount = 1000) {
+    if (source) {
+      writeSourceAccessLog(entry, source)
+      return Promise.resolve()
+    }
+    return tileCatalogManager.addSourceAccessLog(entry, maxLogCount)
   },
 
   testTileSource (id) {

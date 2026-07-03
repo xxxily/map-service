@@ -207,6 +207,36 @@ function renderStatusToggleButton (enabled, action, id, activeLabel, inactiveLab
   `
 }
 
+function renderCacheStatusBadge (status) {
+  const normalized = String(status || '').toUpperCase()
+  if (normalized === 'HIT') return '<span class="badge-green">HIT</span>'
+  if (normalized === 'MISS') return '<span class="badge-red">MISS</span>'
+  if (normalized === 'BYPASS') return '<span class="badge-gray">BYPASS</span>'
+  if (normalized === 'REVALIDATED') return '<span class="badge-blue">REVAL</span>'
+  if (normalized === 'STALE') return '<span class="badge-blue">STALE</span>'
+  if (normalized === 'ERROR') return '<span class="badge-red">ERROR</span>'
+  return `<span class="badge-gray">${escapeHtml(normalized || '-')}</span>`
+}
+
+function renderStatusCodeBadge (log) {
+  const statusCode = Number(log.statusCode || 0)
+  if (statusCode >= 200 && statusCode < 300) return '<span class="badge-green">200 OK</span>'
+  return `<span class="badge-red" title="${escapeHtml(log.errorMessage || '')}">${escapeHtml(log.statusCode || '-')}</span>`
+}
+
+function renderProxyBadge (log) {
+  if (log.proxyOutboundId) {
+    return `<span class="badge-blue" title="池: ${escapeHtml(log.proxyPoolId || '')}">${escapeHtml(log.proxyOutboundId)}</span>`
+  }
+  if (log.proxyPoolId) {
+    return `<span class="badge-blue">${escapeHtml(log.proxyPoolId)}</span>`
+  }
+  if (log.proxyConfigured) {
+    return '<span class="badge-red" title="已配置代理，但本次未命中可用出口">代理未命中</span>'
+  }
+  return '<span style="color:#94a3b8;">直连</span>'
+}
+
 async function reloadCatalogRelatedState (state, api, options = {}) {
   const {
     tileSources = false,
@@ -385,6 +415,19 @@ function renderSourcesView (state) {
           <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
             <legend style="padding:0 5px; font-weight:600;">代理策略</legend>
             ${renderProxyPolicyFields(editing.proxy, outbounds, pools, 'proxy')}
+          </fieldset>
+
+          <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
+            <legend style="padding:0 5px; font-weight:600;">访问日志</legend>
+            <div class="checkbox-group">
+              <input type="checkbox" id="source_access_log_enabled" name="accessLog_enabled" ${editing.accessLog?.enabled !== false ? 'checked' : ''}>
+              <label for="source_access_log_enabled">记录通过代理或发生错误的图源访问</label>
+            </div>
+            <div class="field-group" style="margin-top:10px;">
+              <label>最大历史日志保留行数</label>
+              <input name="accessLog_maxLogCount" type="number" min="0" max="10000" value="${editing.accessLog?.maxLogCount ?? 1000}">
+              <small style="color:#64748b;">仅影响该图源访问日志，不影响对外 API 发布日志。</small>
+            </div>
           </fieldset>
 
           <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
@@ -890,29 +933,53 @@ function renderPublishesView (state) {
 
 // 5. 诊断日志视图
 function renderDiagnosticsView (state) {
+  state.diagnosticsLogType = state.diagnosticsLogType || 'source'
   const selectedPublishId = state.diagnosticsPublishId || ''
+  const selectedSourceId = state.diagnosticsSourceId || ''
   const publishes = state.externalPublishes || []
-  const logs = state.diagnosticLogs || []
-  const error = state.diagnosticLogsError || ''
+  const sources = state.tileSources || []
+  const isSourceLogs = state.diagnosticsLogType === 'source'
+  const logs = isSourceLogs ? (state.sourceAccessLogs || []) : (state.diagnosticLogs || [])
+  const error = isSourceLogs ? (state.sourceAccessLogsError || '') : (state.diagnosticLogsError || '')
 
   return `
     <div class="admin-panel-head">
-      <h3>运行诊断与对外日志</h3>
+      <h3>运行诊断日志</h3>
       <div style="display:flex; gap:10px; align-items:center;">
-        <span style="font-size:13px; color:#475569;">筛选发布项:</span>
-        <select data-tile-sources-diagnostic-filter style="padding:6px 10px; border-radius:4px; border:1px solid #cbd5e1; font-size:12px;">
-          <option value="">查看所有日志</option>
-          ${publishes.map(p => `<option value="${p.id}" ${p.id === selectedPublishId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
-        </select>
+        <div class="segmented-control">
+          <button type="button" class="${isSourceLogs ? 'is-active' : ''}" data-tile-sources-diagnostics-type="source">图源访问</button>
+          <button type="button" class="${!isSourceLogs ? 'is-active' : ''}" data-tile-sources-diagnostics-type="external">对外 API</button>
+        </div>
+        ${isSourceLogs
+          ? `
+            <span style="font-size:13px; color:#475569;">筛选图源:</span>
+            <select data-tile-sources-source-diagnostic-filter style="padding:6px 10px; border-radius:4px; border:1px solid #cbd5e1; font-size:12px;">
+              <option value="">查看所有图源</option>
+              ${sources.map(s => `<option value="${s.id}" ${s.id === selectedSourceId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+            </select>
+          `
+          : `
+            <span style="font-size:13px; color:#475569;">筛选发布项:</span>
+            <select data-tile-sources-diagnostic-filter style="padding:6px 10px; border-radius:4px; border:1px solid #cbd5e1; font-size:12px;">
+              <option value="">查看所有日志</option>
+              ${publishes.map(p => `<option value="${p.id}" ${p.id === selectedPublishId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+            </select>
+          `}
         <button type="button" data-tile-sources-refresh-logs>刷新日志</button>
       </div>
     </div>
+
+    <p style="margin: -4px 0 12px; color:#64748b; font-size:13px;">
+      ${isSourceLogs
+        ? '图源访问日志独立记录通过代理或发生错误的图源请求，保留行数由图源配置单独控制。'
+        : '对外 API 日志仅记录发布项访问，保留行数由发布项的日志配置控制。'}
+    </p>
 
     <table class="item-table log-table">
       <thead>
         <tr>
           <th>时间</th>
-          <th>发布项 ID</th>
+          <th>${isSourceLogs ? '图源 ID' : '发布项 ID'}</th>
           <th>关联图源</th>
           <th>客户端 IP</th>
           <th>坐标 (Z/X/Y)</th>
@@ -928,30 +995,16 @@ function renderDiagnosticsView (state) {
           : logs.map(log => `
           <tr>
             <td style="color:#64748b;">${new Date(log.timestamp).toLocaleString()}</td>
-            <td><strong>${escapeHtml(log.publishId)}</strong></td>
+            <td><strong>${escapeHtml(isSourceLogs ? (log.sourceId || '-') : (log.publishId || '-'))}</strong></td>
             <td><span class="badge-gray">${escapeHtml(log.sourceId || '-')}</span></td>
             <td><code>${escapeHtml(log.clientIp)}</code></td>
             <td><code>${escapeHtml(log.coordinates)}</code></td>
-            <td>
-              ${log.proxyOutboundId 
-                ? `<span class="badge-blue" title="池: ${escapeHtml(log.proxyPoolId || '')}">${escapeHtml(log.proxyOutboundId)}</span>` 
-                : '<span style="color:#94a3b8;">直连</span>'}
-            </td>
-            <td>${log.duration}ms</td>
-            <td>
-              ${log.cacheStatus === 'HIT' ? '<span class="badge-green">HIT</span>' : ''}
-              ${log.cacheStatus === 'MISS' ? '<span class="badge-red">MISS</span>' : ''}
-              ${log.cacheStatus === 'BYPASS' ? '<span class="badge-gray">BYPASS</span>' : ''}
-              ${log.cacheStatus === 'REVALIDATED' ? '<span class="badge-blue">REVAL</span>' : ''}
-              ${log.cacheStatus === 'STALE' ? '<span class="badge-blue">STALE</span>' : ''}
-            </td>
-            <td>
-              ${log.statusCode >= 200 && log.statusCode < 300 
-                ? '<span class="badge-green">200 OK</span>' 
-                : `<span class="badge-red" title="${escapeHtml(log.errorMessage || '')}">${log.statusCode}</span>`}
-            </td>
+            <td>${renderProxyBadge(log)}</td>
+            <td>${escapeHtml(log.duration ?? 0)}ms</td>
+            <td>${renderCacheStatusBadge(log.cacheStatus)}</td>
+            <td>${renderStatusCodeBadge(log)}</td>
           </tr>
-        `).join('') || '<tr><td colspan="9" style="text-align:center; color:#64748b; padding:20px;">暂无相关的对外访问日志</td></tr>'}
+        `).join('') || `<tr><td colspan="9" style="text-align:center; color:#64748b; padding:20px;">${isSourceLogs ? '暂无图源访问日志' : '暂无相关的对外访问日志'}</td></tr>`}
       </tbody>
     </table>
   `
@@ -962,8 +1015,17 @@ function renderDiagnosticsView (state) {
 export async function handleTileSourcesEnter (state, api) {
   // 载入诊断日志数据（如有日志展示）
   if (state.tileSourcesSubTab === 'diagnostics') {
-    await refreshDiagnosticLogs(state, api)
+    await refreshActiveDiagnosticLogs(state, api)
   }
+}
+
+async function refreshActiveDiagnosticLogs (state, api) {
+  state.diagnosticsLogType = state.diagnosticsLogType || 'source'
+  if (state.diagnosticsLogType === 'source') {
+    await refreshSourceAccessLogs(state, api)
+    return
+  }
+  await refreshDiagnosticLogs(state, api)
 }
 
 async function refreshDiagnosticLogs (state, api) {
@@ -975,6 +1037,20 @@ async function refreshDiagnosticLogs (state, api) {
   } catch (err) {
     state.diagnosticLogs = []
     state.diagnosticLogsError = err.message
+  } finally {
+    state.loading = false
+  }
+}
+
+async function refreshSourceAccessLogs (state, api) {
+  state.loading = true
+  try {
+    const sourceId = state.diagnosticsSourceId || ''
+    state.sourceAccessLogs = await api.listSourceAccessLogs(sourceId)
+    state.sourceAccessLogsError = ''
+  } catch (err) {
+    state.sourceAccessLogs = []
+    state.sourceAccessLogsError = err.message
   } finally {
     state.loading = false
   }
@@ -994,7 +1070,7 @@ export async function handleTileSourcesClick (context) {
     state.editingExternalPublish = null
     
     if (state.tileSourcesSubTab === 'diagnostics') {
-      await refreshDiagnosticLogs(state, api)
+      await refreshActiveDiagnosticLogs(state, api)
     }
     renderDashboard()
     return true
@@ -1009,7 +1085,15 @@ export async function handleTileSourcesClick (context) {
 
   // 3. 诊断面板日志刷新
   if (event.target.closest('[data-tile-sources-refresh-logs]')) {
-    await refreshDiagnosticLogs(state, api)
+    await refreshActiveDiagnosticLogs(state, api)
+    renderDashboard()
+    return true
+  }
+
+  const diagnosticsTypeBtn = event.target.closest('[data-tile-sources-diagnostics-type]')
+  if (diagnosticsTypeBtn) {
+    state.diagnosticsLogType = diagnosticsTypeBtn.getAttribute('data-tile-sources-diagnostics-type')
+    await refreshActiveDiagnosticLogs(state, api)
     renderDashboard()
     return true
   }
@@ -1400,6 +1484,10 @@ export async function handleTileSourcesSubmit (context) {
         description: formData.get('description'),
         cache: collectCachePolicy(form, formData, 'cache'),
         proxy: collectProxyPolicy(form, formData, 'proxy'),
+        accessLog: {
+          enabled: Boolean(form.elements.accessLog_enabled?.checked),
+          maxLogCount: parseInt(formData.get('accessLog_maxLogCount')) || 0
+        },
         permissions: {
           frontendVisible: form.elements.perm_frontendVisible.checked,
           precacheAllowed: form.elements.perm_precacheAllowed.checked,
@@ -1547,8 +1635,18 @@ export async function handleTileSourcesChange (context) {
   // 诊断日志视图筛选器
   const logFilter = event.target.closest('[data-tile-sources-diagnostic-filter]')
   if (logFilter) {
+    state.diagnosticsLogType = 'external'
     state.diagnosticsPublishId = logFilter.value
     await refreshDiagnosticLogs(state, context.api)
+    renderDashboard()
+    return true
+  }
+
+  const sourceLogFilter = event.target.closest('[data-tile-sources-source-diagnostic-filter]')
+  if (sourceLogFilter) {
+    state.diagnosticsLogType = 'source'
+    state.diagnosticsSourceId = sourceLogFilter.value
+    await refreshSourceAccessLogs(state, context.api)
     renderDashboard()
     return true
   }

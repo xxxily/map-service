@@ -2494,6 +2494,27 @@ body.admin-view #app-version {
 .status-toggle:hover {
   filter: brightness(0.96);
 }
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.segmented-control button {
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 10px;
+  background: transparent;
+  color: #475569;
+  font-size: 12px;
+}
+.segmented-control button.is-active {
+  background: #0f766e;
+  color: #ffffff;
+}
 .admin-token-notice {
   display: flex;
   align-items: center;

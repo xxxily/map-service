@@ -162,6 +162,33 @@ test('GET /api/v1/admin/external-publish-logs returns all logs for diagnostics',
   }
 })
 
+test('GET /api/v1/admin/source-access-logs returns source access diagnostics separately', async () => {
+  const restore = withMockedService({
+    verifyAdminToken: () => ({ username: 'operator' }),
+    listSourceAccessLogs: async (id = '') => [
+      { sourceId: id || 'google-satellite', proxyOutboundId: 'proxy-a', cacheStatus: 'HIT' },
+    ],
+  })
+
+  const app = createTestApp()
+  const { server, baseUrl } = await listen(app)
+
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/admin/source-access-logs`, {
+      headers: {
+        Authorization: 'Bearer test-token',
+      },
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.result[0].sourceId, 'google-satellite')
+    assert.equal(payload.result[0].proxyOutboundId, 'proxy-a')
+  } finally {
+    server.close()
+    restore()
+  }
+})
+
 test('external publish tile route respects disabled publish logging', async () => {
   let loggedEntry = null
   const restore = withMockedService({

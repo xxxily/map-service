@@ -191,6 +191,22 @@ function writeExternalPublishLog (entry, publish) {
   })
 }
 
+function sourceAccessLogLimit (source) {
+  if (source?.accessLog?.enabled === false) return 0
+  if (source?.accessLog && Object.hasOwn(source.accessLog, 'maxLogCount')) {
+    return Number(source.accessLog.maxLogCount || 0)
+  }
+  return 1000
+}
+
+function writeSourceAccessErrorLog (entry, source) {
+  const limit = sourceAccessLogLimit(source)
+  if (limit <= 0) return
+  service.logSourceAccessRequest(entry, null, limit).catch(err => {
+    console.error('[source access log error]', err)
+  })
+}
+
 function buildOpenApiSpec () {
   const paths = {}
 
@@ -666,15 +682,52 @@ const simpleApi = {
       describe: '按图源获取地图瓦片',
       tags: ['tiles'],
       handler: async (req, res) => {
+        const startTime = Date.now()
         await requireAccess(req)
-        const result = await service.fetchTileSource(req.params.sourceId, {
-          z: req.params.z,
-          x: req.params.x,
-          y: req.params.y,
-        }, {
-          scale: req.query.scale,
-        })
-        await sendRelayResponse(res, result)
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const sourceId = req.params.sourceId
+        try {
+          const result = await service.fetchTileSource(sourceId, {
+            z: req.params.z,
+            x: req.params.x,
+            y: req.params.y,
+          }, {
+            scale: req.query.scale,
+            clientIp,
+            userAgent,
+            reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+            headers: {
+              'User-Agent': userAgent || 'Mozilla/5.0',
+            },
+          })
+          await sendRelayResponse(res, result)
+        } catch (err) {
+          const status = err.statusCode || err.response?.status || 502
+          const source = await service.getTileSource(sourceId).catch(() => null)
+          if (source) {
+            writeSourceAccessErrorLog({
+              timestamp: new Date().toISOString(),
+              sourceId: source.id || sourceId,
+              publishId: '',
+              layerId: '',
+              clientIp,
+              userAgent,
+              coordinates: `Z:${req.params.z || ''} X:${req.params.x || ''} Y:${req.params.y || ''}`,
+              reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+              statusCode: status,
+              duration: Date.now() - startTime,
+              cacheStatus: 'ERROR',
+              proxyMode: source.proxy?.mode || '',
+              proxyPoolId: source.proxy?.poolId || '',
+              proxyOutboundId: source.proxy?.outboundId || '',
+              proxyConfigured: Boolean(source.proxy?.mode && source.proxy.mode !== 'never'),
+              cacheEnabled: source.cache?.enabled !== false,
+              errorMessage: err.message || '图源瓦片请求失败',
+            }, source)
+          }
+          jsonError(res, err.message || '图源瓦片请求失败', status)
+        }
       },
     },
     {
@@ -968,6 +1021,26 @@ const simpleApi = {
       },
     },
     {
+      path: '/admin/source-access-logs',
+      method: 'get',
+      describe: '获取全部图源访问日志',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listSourceAccessLogs())
+      },
+    },
+    {
+      path: '/admin/tile-sources/:id/access-logs',
+      method: 'get',
+      describe: '获取图源访问日志',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listSourceAccessLogs(req.params.id))
+      },
+    },
+    {
       path: '/external/:publishId/tilejson',
       method: 'get',
       describe: '获取对外发布项 TileJSON',
@@ -1017,6 +1090,8 @@ const simpleApi = {
             token: req.query.token,
             scale: req.query.scale,
             clientIp,
+            userAgent,
+            reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
             headers: {
               'User-Agent': userAgent || 'Mozilla/5.0',
             },
@@ -1077,6 +1152,8 @@ const simpleApi = {
             token: req.query.token,
             scale: req.query.scale,
             clientIp,
+            userAgent,
+            reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
             headers: {
               'User-Agent': userAgent || 'Mozilla/5.0',
             },
