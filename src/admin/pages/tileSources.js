@@ -804,9 +804,9 @@ function renderPublishesView (state) {
 
   // 明文 Token 提示展示
   const tokenMessage = state.lastGeneratedToken 
-    ? `<div class="admin-notice" style="margin-bottom:15px; background:#e0f2fe; color:#0369a1; border-color:#bae6fd;">
-        <span><strong>已成功重置 Token！您的明文 Token 是：</strong> <code style="background:white; padding:2px 8px; border-radius:4px; font-weight:bold; font-size:14px;">${escapeHtml(state.lastGeneratedToken)}</code> <br><small>请立即复制，刷新或离开本页后此明文 Token 将不再出现！</small></span>
-        <button type="button" class="admin-notice-close" data-tile-sources-close-token-notice>×</button>
+    ? `<div class="admin-token-notice">
+        <span><strong>已成功重置 Token！您的明文 Token 是：</strong> <code>${escapeHtml(state.lastGeneratedToken)}</code> <br><small>请立即复制，刷新或离开本页后此明文 Token 将不再出现！</small></span>
+        <button type="button" class="admin-token-notice-close" data-tile-sources-close-token-notice aria-label="关闭 Token 提示">×</button>
        </div>`
     : ''
 

@@ -334,9 +334,14 @@ body.admin-view #app-version {
 }
 
 .admin-notice {
+  position: fixed;
+  right: calc(20px + var(--safe-area-right));
+  bottom: calc(20px + var(--safe-area-bottom));
+  z-index: 21000;
   max-width: 1280px;
+  width: min(360px, calc(100vw - 32px));
   box-sizing: border-box;
-  margin: 0 auto 14px;
+  margin: 0;
   padding: 10px 12px;
   border: 1px solid rgba(15, 118, 110, 0.22);
   border-radius: 8px;
@@ -1994,14 +1999,25 @@ body.admin-view #app-version {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 14px;
-  animation: adminFadeIn 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.05);
+  animation: adminToastIn 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.16);
 }
 
 @keyframes adminFadeIn {
   from {
     opacity: 0;
     transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes adminToastIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -2477,6 +2493,50 @@ body.admin-view #app-version {
 }
 .status-toggle:hover {
   filter: brightness(0.96);
+}
+.admin-token-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-sizing: border-box;
+  margin-bottom: 15px;
+  padding: 10px 14px;
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 14px;
+  box-shadow: 0 4px 12px rgba(3, 105, 161, 0.06);
+}
+.admin-token-notice code {
+  display: inline-block;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #075985;
+  font-weight: 700;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.admin-token-notice-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: currentColor;
+  font-size: 18px;
+  line-height: 1;
+  opacity: 0.65;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.admin-token-notice-close:hover {
+  opacity: 1;
+  transform: scale(1.15);
 }
 .flex-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn-link { background: none; border: none; color: #0f766e; cursor: pointer; text-decoration: underline; font-size: 12px; padding: 0; }

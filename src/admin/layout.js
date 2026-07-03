@@ -6,8 +6,10 @@ export function renderNotice (state) {
   const text = state.error || state.message || '正在加载'
   const isError = Boolean(state.error)
   const isLoading = !state.error && (state.message === '正在加载' || state.message === '正在登录' || state.loading)
+  const role = isError ? 'alert' : 'status'
+  const live = isError ? 'assertive' : 'polite'
   return `
-    <div class="admin-notice ${isError ? 'is-error' : ''}">
+    <div class="admin-notice ${isError ? 'is-error' : ''}" role="${role}" aria-live="${live}">
       <span>${escapeHtml(text)}</span>
       ${!isLoading ? '<button type="button" class="admin-notice-close" data-admin-action="close-notice" aria-label="关闭提示">×</button>' : ''}
     </div>
