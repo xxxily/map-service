@@ -128,6 +128,60 @@ test('tile catalog creates proxy pool and resolves source tile request through i
   }
 })
 
+test('tile catalog normalizes legacy proxy inherit to direct and rejects arbitrary tile size', async () => {
+  const dataDir = tempDir('tile-catalog-policy')
+  const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })
+
+  try {
+    const source = await manager.updateTileSource('google-satellite', {
+      proxy: {
+        mode: 'inherit',
+        poolId: 'default-proxy-pool',
+      },
+    })
+
+    assert.equal(source.proxy.mode, 'never')
+    assert.equal(source.proxy.poolId, '')
+
+    const request = await manager.createSourceTileRequest('google-satellite', {
+      z: 3,
+      x: 4,
+      y: 5,
+    })
+    assert.equal(request.proxy.enabled, false)
+
+    await assert.rejects(() => manager.updateTileSource('google-satellite', {
+      tileSize: 512,
+    }), /瓦片网格尺寸当前固定为 256/)
+
+    const scaledSource = await manager.updateTileSource('google-satellite', {
+      tileSize: 256,
+      retina: {
+        mode: 'fixed',
+        param: 'scale',
+        normalValue: '3',
+        retinaValue: '3',
+      },
+    })
+    assert.equal(scaledSource.retina.normalValue, '3')
+    assert.equal(scaledSource.tileSize, 256)
+
+    const renamedSource = await manager.updateTileSource('google-satellite', {
+      name: 'Google Satellite Renamed',
+    })
+    assert.equal(renamedSource.retina.normalValue, '3')
+
+    const modeOnlySource = await manager.updateTileSource('google-satellite', {
+      retina: {
+        mode: 'fixed',
+      },
+    })
+    assert.equal(modeOnlySource.retina.normalValue, '3')
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
 test('external publish supports token reset and validates token for tile requests', async () => {
   const dataDir = tempDir('tile-catalog-external')
   const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })

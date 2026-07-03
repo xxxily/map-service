@@ -93,8 +93,9 @@ Bearer Token 保存在浏览器 localStorage。
 
 - `proxy.mode=never`：始终直连。
 - `proxy.mode=fixed`：使用指定代理出口。
-- `proxy.mode=pool` 或 `inherit`：使用指定或默认代理池。
+- `proxy.mode=pool`：使用指定代理池。
 - 发布项可以通过 `overrides.proxy` 覆盖图源代理策略。
+- 发布项不配置覆盖时使用 `overrides.proxy=null` 表示沿用目标图源自身策略；系统不再提供“继承系统默认代理”模式。
 - 历史 `/tiles/relay?url=` 接口只做白名单 relay，不再支持 `useProxy` 隐式代理。
 
 ## PWA

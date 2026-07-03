@@ -2,6 +2,14 @@ import { escapeHtml } from '../utils.js'
 
 const DEFAULT_CACHE_TTL_MS = 21600000
 const DEFAULT_STALE_TTL_MS = 2592000000
+const MINUTE_MS = 60 * 1000
+const HOUR_MS = 60 * MINUTE_MS
+const DAY_MS = 24 * HOUR_MS
+const SCALE_REQUEST_PIXELS = {
+  1: 256,
+  2: 512,
+  3: 768,
+}
 
 function getResultError (result) {
   return result?.errorMessage || result?.error || ''
@@ -88,13 +96,12 @@ function renderPublishExample (activePublish, state) {
 }
 
 function renderProxyPolicyFields (policy = {}, outbounds = [], pools = [], prefix = 'proxy') {
-  const mode = policy.mode || 'inherit'
+  const mode = ['fixed', 'pool'].includes(policy.mode) ? policy.mode : 'never'
   return `
     <div class="form-grid">
       <div class="field-group">
         <label>代理模式</label>
         <select name="${prefix}_mode" data-proxy-mode-select>
-          <option value="inherit" ${mode === 'inherit' ? 'selected' : ''}>继承系统默认</option>
           <option value="never" ${mode === 'never' ? 'selected' : ''}>始终直连</option>
           <option value="fixed" ${mode === 'fixed' ? 'selected' : ''}>固定代理出口</option>
           <option value="pool" ${mode === 'pool' ? 'selected' : ''}>代理出口池</option>
@@ -122,6 +129,29 @@ function renderProxyPolicyFields (policy = {}, outbounds = [], pools = [], prefi
   `
 }
 
+function decomposeDurationMs (value, defaultValue) {
+  const totalMs = Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : defaultValue
+  const days = Math.floor(totalMs / DAY_MS)
+  const hours = Math.floor((totalMs % DAY_MS) / HOUR_MS)
+  const minutes = Math.floor((totalMs % HOUR_MS) / MINUTE_MS)
+  return { days, hours, minutes }
+}
+
+function renderDurationInputs (name, label, value, defaultValue) {
+  const duration = decomposeDurationMs(value, defaultValue)
+  return `
+    <div class="field-group">
+      <label>${label}</label>
+      <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px;">
+        <input name="${name}_days" type="number" min="0" max="365" value="${duration.days}" aria-label="${label}天数">
+        <input name="${name}_hours" type="number" min="0" max="23" value="${duration.hours}" aria-label="${label}小时数">
+        <input name="${name}_minutes" type="number" min="0" max="59" value="${duration.minutes}" aria-label="${label}分钟数">
+      </div>
+      <small style="color:#64748b;">天 / 小时 / 分钟</small>
+    </div>
+  `
+}
+
 function renderCachePolicyFields (cache = {}, prefix = 'cache') {
   return `
     <div class="checkbox-group">
@@ -129,33 +159,40 @@ function renderCachePolicyFields (cache = {}, prefix = 'cache') {
       <label for="${prefix}_enabled">启用服务端缓存</label>
     </div>
     <div class="form-grid" style="margin-top:10px;">
-      <div class="field-group">
-        <label>缓存有效时间（毫秒）</label>
-        <input name="${prefix}_ttlMs" type="number" value="${cache.ttlMs ?? DEFAULT_CACHE_TTL_MS}">
-      </div>
-      <div class="field-group">
-        <label>软过期时间（毫秒）</label>
-        <input name="${prefix}_staleTtlMs" type="number" value="${cache.staleTtlMs ?? DEFAULT_STALE_TTL_MS}">
-      </div>
+      ${renderDurationInputs(`${prefix}_ttl`, '缓存有效时间', cache.ttlMs, DEFAULT_CACHE_TTL_MS)}
+      ${renderDurationInputs(`${prefix}_staleTtl`, '软过期时间', cache.staleTtlMs, DEFAULT_STALE_TTL_MS)}
     </div>
   `
 }
 
 function collectProxyPolicy (form, formData, prefix = 'proxy') {
   return {
-    mode: formData.get(`${prefix}_mode`) || 'inherit',
+    mode: formData.get(`${prefix}_mode`) || 'never',
     outboundId: formData.get(`${prefix}_outboundId`) || '',
     poolId: formData.get(`${prefix}_poolId`) || '',
     fallbackToDirect: Boolean(form.elements[`${prefix}_fallbackToDirect`]?.checked),
   }
 }
 
+function durationInputToMs (formData, prefix) {
+  const days = Math.max(0, parseInt(formData.get(`${prefix}_days`) || '0', 10) || 0)
+  const hours = Math.max(0, parseInt(formData.get(`${prefix}_hours`) || '0', 10) || 0)
+  const minutes = Math.max(0, parseInt(formData.get(`${prefix}_minutes`) || '0', 10) || 0)
+  return days * DAY_MS + hours * HOUR_MS + minutes * MINUTE_MS
+}
+
 function collectCachePolicy (form, formData, prefix = 'cache') {
   return {
     enabled: Boolean(form.elements[`${prefix}_enabled`]?.checked),
-    ttlMs: parseInt(formData.get(`${prefix}_ttlMs`), 10),
-    staleTtlMs: parseInt(formData.get(`${prefix}_staleTtlMs`), 10),
+    ttlMs: durationInputToMs(formData, `${prefix}_ttl`),
+    staleTtlMs: durationInputToMs(formData, `${prefix}_staleTtl`),
   }
+}
+
+function getScaleFromSource (source = {}) {
+  const fixedScale = Number(source.retina?.normalValue)
+  if (SCALE_REQUEST_PIXELS[fixedScale]) return String(fixedScale)
+  return '1'
 }
 
 async function reloadCatalogRelatedState (state, api, options = {}) {
@@ -250,6 +287,7 @@ function renderSourcesView (state) {
     const isNew = !sources.some(s => s.id === editing.id)
     const outbounds = state.proxyOutbounds || []
     const pools = state.proxyPools || []
+    const tileScale = getScaleFromSource(editing)
     return `
       <div class="form-card">
         <h3>${isNew ? '新增图源' : `编辑图源: ${escapeHtml(editing.id)}`}</h3>
@@ -307,8 +345,12 @@ function renderSourcesView (state) {
               <input name="subdomains" value="${escapeHtml((editing.subdomains || []).join(','))}" placeholder="例如: 1,2,3,4">
             </div>
             <div class="field-group">
-              <label>瓦片尺寸</label>
-              <input name="tileSize" type="number" value="${editing.tileSize ?? 256}">
+              <label>瓦片倍率</label>
+              <select name="tileScale">
+                <option value="1" ${tileScale === '1' ? 'selected' : ''}>1x（256px）</option>
+                <option value="2" ${tileScale === '2' ? 'selected' : ''}>2x（请求 512px，网格 256px）</option>
+                <option value="3" ${tileScale === '3' ? 'selected' : ''}>3x（请求 768px，网格 256px）</option>
+              </select>
             </div>
           </div>
 
@@ -418,7 +460,6 @@ function renderSourcesView (state) {
                 ${source.proxy?.mode === 'never' ? '<span class="badge-gray">直连</span>' : ''}
                 ${source.proxy?.mode === 'fixed' ? `<span class="badge-blue" title="出口: ${escapeHtml(source.proxy.outboundId)}">固定出口</span>` : ''}
                 ${source.proxy?.mode === 'pool' ? `<span class="badge-blue" title="池: ${escapeHtml(source.proxy.poolId)}">代理池</span>` : ''}
-                ${source.proxy?.mode === 'inherit' ? '<span class="badge-blue" title="继承系统设置">继承默认</span>' : ''}
               </td>
               <td>
                 ${source.permissions?.frontendVisible !== false 
@@ -727,7 +768,7 @@ function renderPublishesView (state) {
               <input type="checkbox" id="pub_proxy_override" name="proxy_override_enabled" ${proxyOverride ? 'checked' : ''}>
               <label for="pub_proxy_override">覆盖目标图源代理策略</label>
             </div>
-            ${renderProxyPolicyFields(proxyOverride || { mode: 'inherit' }, outbounds, pools, 'publish_proxy')}
+            ${renderProxyPolicyFields(proxyOverride || { mode: 'never' }, outbounds, pools, 'publish_proxy')}
           </fieldset>
 
           <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
@@ -987,9 +1028,10 @@ export async function handleTileSourcesClick (context) {
       maxZoom: 18,
       maxNativeZoom: 18,
       tileSize: 256,
+      retina: { mode: 'fixed', param: 'scale', normalValue: '1', retinaValue: '1' },
       subdomains: [],
       cache: { enabled: true, ttlMs: 21600000, staleTtlMs: 2592000000 },
-      proxy: { mode: 'inherit', fallbackToDirect: false },
+      proxy: { mode: 'never', fallbackToDirect: false },
       permissions: { frontendVisible: true, precacheAllowed: true, externalApiAllowed: true },
       visibility: { scope: 'system' }
     }
@@ -1264,6 +1306,7 @@ export async function handleTileSourcesSubmit (context) {
   try {
     if (formType === 'source') {
       const sourceId = formData.get('id')
+      const tileScale = formData.get('tileScale') || '1'
       const payload = {
         id: sourceId,
         name: formData.get('name'),
@@ -1276,14 +1319,16 @@ export async function handleTileSourcesSubmit (context) {
         minZoom: parseInt(formData.get('minZoom')),
         maxZoom: parseInt(formData.get('maxZoom')),
         maxNativeZoom: parseInt(formData.get('maxNativeZoom')),
-        tileSize: parseInt(formData.get('tileSize')),
+        tileSize: 256,
+        retina: {
+          mode: 'fixed',
+          param: 'scale',
+          normalValue: tileScale,
+          retinaValue: tileScale
+        },
         attribution: formData.get('attribution'),
         description: formData.get('description'),
-        cache: {
-          enabled: form.elements.cache_enabled.checked,
-          ttlMs: parseInt(formData.get('cache_ttlMs'), 10),
-          staleTtlMs: parseInt(formData.get('cache_staleTtlMs'), 10)
-        },
+        cache: collectCachePolicy(form, formData, 'cache'),
         proxy: collectProxyPolicy(form, formData, 'proxy'),
         permissions: {
           frontendVisible: form.elements.perm_frontendVisible.checked,

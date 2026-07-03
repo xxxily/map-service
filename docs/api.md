@@ -254,7 +254,10 @@ Authorization: Bearer <admin-token>
 
 - `kind`：`xyz`、`tms`
 - `retina.mode`：`none`、`query`、`fixed`
-- `proxy.mode`：`inherit`、`never`、`fixed`、`pool`、`manual`
+- `tileSize`：当前固定为 `256`，高清瓦片通过 `retina.normalValue` / `retina.retinaValue` 的 `scale` 控制，不允许配置任意像素网格。
+- `retina.normalValue` / `retina.retinaValue`：仅允许 `"1"`、`"2"`、`"3"`。
+- `cache.ttlMs` / `cache.staleTtlMs`：接口使用毫秒；管理端应展示为天、小时、分钟并提交前换算。
+- `proxy.mode`：`never`、`fixed`、`pool`
 - `permissions.frontendVisible`：是否进入前台 catalog
 - `permissions.precacheAllowed`：是否允许预缓存
 - `permissions.externalApiAllowed`：是否允许对外发布
@@ -388,7 +391,7 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 
 ## 代理管理
 
-代理出口表示一个具体代理连接；代理池是一组出口和选择策略。图源通过 `proxy.mode=fixed/pool/inherit` 关联代理。
+代理出口表示一个具体代理连接；代理池是一组出口和选择策略。图源通过 `proxy.mode=fixed/pool` 关联代理；不再提供“继承系统默认代理”模式，默认策略应使用 `proxy.mode=never` 始终直连。
 
 当前支持 HTTP/HTTPS 代理出口。复杂最优路由、地理位置优选、动态代理采购不在本系统内实现，可由外部代理工具暴露为普通代理出口后接入。
 
@@ -472,8 +475,8 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 - `rateLimit.enabled`：是否启用应用内每分钟限流
 - `rateLimit.maxRequestsPerMinute`：单客户端每分钟请求上限
 - `log.maxLogCount`：保留最近日志条数，`0` 表示不记录
-- `overrides.proxy`：可选，覆盖图源代理策略
-- `overrides.cache`：可选，覆盖图源缓存策略
+- `overrides.proxy`：可选，覆盖图源代理策略；为 `null` 时表示不覆盖，继续使用目标图源自身策略。
+- `overrides.cache`：可选，覆盖图源缓存策略；为 `null` 时表示不覆盖，继续使用目标图源自身策略。接口字段仍为毫秒，管理端展示为天、小时、分钟。
 
 ### `GET /api/v1/admin/external-publishes`
 

@@ -12,6 +12,8 @@ const DEFAULT_TOKEN_BYTES = 24
 const DEFAULT_EXTERNAL_LOG_LIMIT = 1000
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60 * 1000
 const TEMPLATE_PLACEHOLDERS = ['s', 'x', 'y', 'z', 'scale', 'yTms']
+const ALLOWED_TILE_SIZES = [256]
+const ALLOWED_TILE_SCALES = ['1', '2', '3']
 
 function clone (value) {
   return value === undefined ? value : JSON.parse(JSON.stringify(value))
@@ -60,6 +62,24 @@ function normalizeInteger (value, name, options = {}) {
     throw createHttpError(`${name} 不能大于 ${options.max}`)
   }
   return parsed
+}
+
+function normalizeTileSize (value) {
+  const tileSize = normalizeInteger(value, '瓦片尺寸', { defaultValue: 256 })
+  if (!ALLOWED_TILE_SIZES.includes(tileSize)) {
+    throw createHttpError('瓦片网格尺寸当前固定为 256，请通过 scale 配置高清瓦片')
+  }
+  return tileSize
+}
+
+function normalizeScaleValue (value, name, defaultValue) {
+  const scale = value === undefined || value === null || value === ''
+    ? String(defaultValue)
+    : normalizeString(value)
+  if (!ALLOWED_TILE_SCALES.includes(scale)) {
+    throw createHttpError(`${name} 只能是 ${ALLOWED_TILE_SCALES.join(', ')}`)
+  }
+  return scale
 }
 
 function normalizeNumber (value, name, options = {}) {
@@ -507,17 +527,32 @@ function normalizeCachePolicy (input = {}, current = null) {
 
 function normalizeProxyPolicy (input = {}, current = null, defaultMode = 'never') {
   const proxy = input ?? {}
+  const rawMode = normalizeString(proxy.mode ?? current?.mode ?? defaultMode).toLowerCase()
+  const mode = ['inherit', 'manual'].includes(rawMode) ? defaultMode : rawMode
+  const poolId = normalizeString(proxy.poolId ?? current?.poolId)
+  const outboundId = normalizeString(proxy.outboundId ?? current?.outboundId)
   return {
-    mode: pickEnum(proxy.mode ?? current?.mode, ['inherit', 'never', 'fixed', 'pool', 'manual'], '代理模式', defaultMode),
-    poolId: normalizeString(proxy.poolId ?? current?.poolId),
-    outboundId: normalizeString(proxy.outboundId ?? current?.outboundId),
+    mode: pickEnum(mode, ['never', 'fixed', 'pool'], '代理模式', defaultMode),
+    poolId: mode === 'pool' ? poolId : '',
+    outboundId: mode === 'fixed' ? outboundId : '',
     fallbackToDirect: normalizeBoolean(proxy.fallbackToDirect ?? current?.fallbackToDirect, false),
+  }
+}
+
+function normalizeRetinaPolicy (input = null, current = null) {
+  const retina = input ?? {}
+  const existing = current ?? {}
+  const mode = pickEnum(retina.mode ?? existing.mode, ['none', 'query', 'fixed'], 'retina 模式', 'none')
+  return {
+    mode,
+    param: mode === 'none' ? '' : normalizeString(retina.param ?? existing.param, 'scale'),
+    normalValue: normalizeScaleValue(retina.normalValue ?? existing.normalValue, '普通瓦片 scale', '1'),
+    retinaValue: normalizeScaleValue(retina.retinaValue ?? existing.retinaValue, '高清瓦片 scale', mode === 'none' ? '1' : '2'),
   }
 }
 
 function normalizeSource (input = {}, current = null) {
   const subdomains = normalizeStringList(input.subdomains ?? current?.subdomains)
-  const retina = input.retina ?? current?.retina ?? {}
   const permissions = input.permissions ?? current?.permissions ?? {}
   const visibility = input.visibility ?? current?.visibility ?? {}
 
@@ -539,13 +574,8 @@ function normalizeSource (input = {}, current = null) {
     minZoom,
     maxZoom,
     maxNativeZoom: normalizeInteger(input.maxNativeZoom ?? current?.maxNativeZoom, '最大原生缩放', { min: minZoom, max: 30, defaultValue: maxZoom }),
-    tileSize: normalizeInteger(input.tileSize ?? current?.tileSize, '瓦片尺寸', { min: 64, max: 1024, defaultValue: 256 }),
-    retina: {
-      mode: pickEnum(retina.mode, ['none', 'query', 'fixed'], 'retina 模式', 'none'),
-      param: normalizeString(retina.param),
-      normalValue: normalizeString(retina.normalValue, '1'),
-      retinaValue: normalizeString(retina.retinaValue, '2'),
-    },
+    tileSize: normalizeTileSize(input.tileSize ?? current?.tileSize),
+    retina: normalizeRetinaPolicy(input.retina, current?.retina),
     cache: normalizeCachePolicy(input.cache ?? current?.cache, current?.cache),
     proxy: normalizeProxyPolicy(input.proxy ?? current?.proxy, current?.proxy),
     permissions: {
@@ -647,7 +677,7 @@ function normalizeExternalPublish (input = {}, current = null, tokenValue = null
     },
     overrides: {
       proxy: proxyOverride
-        ? normalizeProxyPolicy(proxyOverride, currentOverrides.proxy, 'inherit')
+        ? normalizeProxyPolicy(proxyOverride, currentOverrides.proxy, 'never')
         : null,
       cache: cacheOverride
         ? normalizeCachePolicy(cacheOverride, currentOverrides.cache)
@@ -740,14 +770,11 @@ export class TileCatalogManager {
   }
 
   validateSourceRefs (source) {
-    if (source.proxy.mode === 'fixed' && !this.findProxyOutbound(source.proxy.outboundId)) {
+    if (source.proxy.mode === 'fixed' && (!source.proxy.outboundId || !this.findProxyOutbound(source.proxy.outboundId))) {
       throw createHttpError('图源关联的代理出口不存在')
     }
-    if (['pool', 'inherit'].includes(source.proxy.mode)) {
-      const poolId = source.proxy.mode === 'inherit' ? 'default-proxy-pool' : source.proxy.poolId
-      if (poolId && !this.findProxyPool(poolId)) {
-        throw createHttpError('图源关联的代理池不存在')
-      }
+    if (source.proxy.mode === 'pool' && (!source.proxy.poolId || !this.findProxyPool(source.proxy.poolId))) {
+      throw createHttpError('图源关联的代理池不存在')
     }
   }
 
@@ -918,7 +945,7 @@ export class TileCatalogManager {
   async deleteProxyOutbound (id) {
     await this.ensureLoaded()
     const poolRefs = this.proxyPools.filter(pool => pool.members.some(member => member.outboundId === id)).map(pool => pool.id)
-    const sourceRefs = this.sources.filter(source => source.proxy.outboundId === id).map(source => source.id)
+    const sourceRefs = this.sources.filter(source => source.proxy.mode === 'fixed' && source.proxy.outboundId === id).map(source => source.id)
     if (poolRefs.length || sourceRefs.length) {
       throw createHttpError(`代理出口仍被引用，不能删除：${[...poolRefs, ...sourceRefs].join(', ')}`)
     }
@@ -957,7 +984,7 @@ export class TileCatalogManager {
 
   async deleteProxyPool (id) {
     await this.ensureLoaded()
-    const sourceRefs = this.sources.filter(source => source.proxy.poolId === id || (source.proxy.mode === 'inherit' && id === 'default-proxy-pool')).map(source => source.id)
+    const sourceRefs = this.sources.filter(source => source.proxy.mode === 'pool' && source.proxy.poolId === id).map(source => source.id)
     if (sourceRefs.length) {
       throw createHttpError(`代理池仍被图源引用，不能删除：${sourceRefs.join(', ')}`)
     }
@@ -1033,10 +1060,9 @@ export class TileCatalogManager {
   async resolveProxyForSource (source, override = null) {
     await this.ensureLoaded()
     const proxyPolicy = override || source.proxy || { mode: 'never' }
-    const mode = proxyPolicy.mode === 'inherit' ? 'pool' : proxyPolicy.mode
-    const poolId = proxyPolicy.mode === 'inherit' ? 'default-proxy-pool' : proxyPolicy.poolId
+    const mode = proxyPolicy.mode
 
-    if (mode === 'never' || mode === 'manual') {
+    if (mode === 'never') {
       return { enabled: false }
     }
 
@@ -1049,7 +1075,7 @@ export class TileCatalogManager {
         throw createHttpError('代理出口不可用', 502)
       }
     } else if (mode === 'pool') {
-      pool = this.findProxyPool(poolId)
+      pool = this.findProxyPool(proxyPolicy.poolId)
       if (!pool?.enabled) {
         if (proxyPolicy.fallbackToDirect) return { enabled: false }
         throw createHttpError('代理池不可用', 502)
