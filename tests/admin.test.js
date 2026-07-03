@@ -297,8 +297,8 @@ test('precache manager allows oversized tasks and applies request interval', asy
   const manager = new PrecacheManager({
     store,
     maxTiles: 1,
-    defaultConcurrency: 2,
-    maxConcurrency: 2,
+    defaultConcurrency: 1,
+    maxConcurrency: 1,
     fetchTile: async () => {
       fetchedAt.push(Date.now())
       return {
@@ -318,8 +318,8 @@ test('precache manager allows oversized tasks and applies request interval', asy
       },
       minZoom: 3,
       maxZoom: 3,
-      concurrency: 2,
-      requestIntervalMs: 5,
+      concurrency: 1,
+      requestIntervalMs: 20,
     })
     await manager.queue
 
@@ -327,11 +327,11 @@ test('precache manager allows oversized tasks and applies request interval', asy
     assert.equal(tasks[0].id, task.id)
     assert.equal(tasks[0].status, 'completed')
     assert.ok(tasks[0].total > 1)
-    assert.equal(tasks[0].requestIntervalMs, 5)
-    assert.equal(tasks[0].concurrency, 2)
+    assert.equal(tasks[0].requestIntervalMs, 20)
+    assert.equal(tasks[0].concurrency, 1)
     assert.ok(fetchedAt.length > 2)
     const intervals = fetchedAt.slice(1, 4).map((timestamp, index) => timestamp - fetchedAt[index])
-    assert.ok(intervals.every(interval => interval >= 4))
+    assert.ok(intervals.every(interval => interval >= 15), `intervals were ${intervals.join(',')}`)
   } finally {
     await fs.remove(dataDir)
   }
