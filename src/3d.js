@@ -81,6 +81,8 @@ function debounce (func, wait) {
 
 let globalCatalogLayers = []
 let globalCatalogSources = new Map()
+const VECTOR_3D_UNSUPPORTED_KINDS = new Set(['mvt', 'vector-tilejson', 'vector-style', 'pmtiles-vector'])
+const PMTILES_3D_KINDS = new Set(['pmtiles-vector', 'pmtiles-raster'])
 const FALLBACK_3D_CATALOG = {
   sources: [
     {
@@ -120,6 +122,25 @@ const FALLBACK_3D_CATALOG = {
 function escapeHtml (str) {
   if (!str) return ''
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;')
+}
+
+function isCesiumRasterSource (source = {}) {
+  if (!source || VECTOR_3D_UNSUPPORTED_KINDS.has(source.kind) || PMTILES_3D_KINDS.has(source.kind)) return false
+  const tileUrl = source.tileUrl || ''
+  return Boolean(tileUrl && !tileUrl.endsWith('.pbf'))
+}
+
+function resolveCesiumRasterSource (source = {}) {
+  if (isCesiumRasterSource(source)) return source
+  const fallbackSourceId = source.rendering?.fallbackRasterSourceId || ''
+  return fallbackSourceId ? globalCatalogSources.get(fallbackSourceId) : null
+}
+
+function isCesiumRenderableLayer (layer = {}) {
+  return (layer.items || []).some((item) => {
+    const source = globalCatalogSources.get(item.sourceId)
+    return isCesiumRasterSource(resolveCesiumRasterSource(source))
+  })
 }
 
 let viewer = null
@@ -1013,7 +1034,7 @@ async function init3dEarth () {
     const catalog = payload.result
     globalCatalogSources = new Map((catalog.sources || []).map(source => [source.id, source]))
     const rawLayers = catalog.layers || []
-    globalCatalogLayers = rawLayers.filter(l => l.enabled !== false && (l.clients || []).includes('3d'))
+    globalCatalogLayers = rawLayers.filter(l => l.enabled !== false && (l.clients || []).includes('3d') && isCesiumRenderableLayer(l))
 
     // 动态生成 layer-control 单选框
     const baseLayersContainer = document.querySelector('#map3d-layer-control .leaflet-control-layers-base')
@@ -1148,13 +1169,14 @@ function switchLayer (layerId) {
   // 依次添加配置中的所有子图层
   ;(layer.items || []).forEach(item => {
     const source = globalCatalogSources.get(item.sourceId)
-    if (!source) return
+    const rasterSource = resolveCesiumRasterSource(source)
+    if (!isCesiumRasterSource(rasterSource)) return
     const provider = new UrlTemplateImageryProvider({
-      url: source.tileUrl || `/api/v1/tiles/${encodeURIComponent(source.id)}/{z}/{x}/{y}`,
-      minimumLevel: source.minZoom ?? layer.minZoom ?? 0,
-      maximumLevel: source.maxNativeZoom ?? source.maxZoom ?? layer.maxZoom,
-      tileWidth: source.tileSize || 256,
-      tileHeight: source.tileSize || 256,
+      url: rasterSource.tileUrl || `/api/v1/tiles/${encodeURIComponent(rasterSource.id)}/{z}/{x}/{y}`,
+      minimumLevel: rasterSource.minZoom ?? layer.minZoom ?? 0,
+      maximumLevel: rasterSource.maxNativeZoom ?? rasterSource.maxZoom ?? layer.maxZoom,
+      tileWidth: rasterSource.tileSize || 256,
+      tileHeight: rasterSource.tileSize || 256,
     })
     const addedLayer = layers.addImageryProvider(provider)
     

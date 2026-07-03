@@ -104,6 +104,17 @@ export const adminApi = {
   updateTileSource: (id, body) => request(`/admin/tile-sources/${encodeURIComponent(id)}`, { method: 'PUT', body }),
   deleteTileSource: (id) => request(`/admin/tile-sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   testTileSource: (id) => request(`/admin/tile-sources/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  listSourcePresets: () => request('/admin/source-presets'),
+  createSourceFromPreset: (presetId, body) => request(`/admin/source-presets/${encodeURIComponent(presetId)}/create-source`, { method: 'POST', body }),
+
+  // 密钥池 API
+  listKeyPools: () => request('/admin/key-pools'),
+  getKeyPool: (id) => request(`/admin/key-pools/${encodeURIComponent(id)}`),
+  createKeyPool: (body) => request('/admin/key-pools', { method: 'POST', body }),
+  updateKeyPool: (id, body) => request(`/admin/key-pools/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteKeyPool: (id) => request(`/admin/key-pools/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testKeyPool: (id) => request(`/admin/key-pools/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  testKeyPoolKey: (poolId, keyId) => request(`/admin/key-pools/${encodeURIComponent(poolId)}/keys/${encodeURIComponent(keyId)}/test`, { method: 'POST' }),
 
   // 图层组合 API
   listMapLayers: () => request('/admin/map-layers'),

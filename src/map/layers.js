@@ -1,7 +1,12 @@
 import L from 'leaflet'
+import 'maplibre-gl/dist/maplibre-gl.css'
+import '@maplibre/maplibre-gl-leaflet'
 import { writeMapViewToUrl } from './url-state.js'
 
 const DEFAULT_LAYER_NAME = '高德/卫星'
+const VECTOR_STYLE_KIND = 'vector-style'
+const VECTOR_RESOURCE_KINDS = new Set(['mvt', 'vector-tilejson', 'vector-style', 'pmtiles-vector'])
+const PMTILES_RESOURCE_KINDS = new Set(['pmtiles-vector', 'pmtiles-raster'])
 const FALLBACK_CATALOG = {
   sources: [
     {
@@ -60,6 +65,47 @@ function createTileLayer (url, options) {
   })
 }
 
+function isVectorSource (source = {}) {
+  return VECTOR_RESOURCE_KINDS.has(source.kind)
+}
+
+function isLeafletRasterSource (source = {}) {
+  if (!source || isVectorSource(source) || PMTILES_RESOURCE_KINDS.has(source.kind)) return false
+  const tileUrl = source.tileUrl || ''
+  return Boolean(tileUrl && !tileUrl.endsWith('.pbf'))
+}
+
+function createRasterLayerFromSource (source, layer, item) {
+  return createTileLayer(source.tileUrl || `/api/v1/tiles/${encodeURIComponent(source.id)}/{z}/{x}/{y}`, {
+    minZoom: source.minZoom ?? layer.minZoom ?? 3,
+    maxZoom: layer.maxZoom ?? source.maxZoom ?? 20,
+    maxNativeZoom: source.maxNativeZoom ?? source.maxZoom ?? layer.maxZoom,
+    tileSize: source.tileSize || 256,
+    opacity: item.opacity ?? 1,
+    attribution: source.attribution || '',
+  })
+}
+
+function createMapLibreLayerFromSource (source, item) {
+  if (source.kind !== VECTOR_STYLE_KIND || !source.styleUrl || !(L.maplibreGL instanceof Function)) {
+    return null
+  }
+  const layer = L.maplibreGL({
+    style: source.styleUrl,
+    interactive: false,
+    attributionControl: source.attribution ? { customAttribution: source.attribution } : false,
+    pane: 'tilePane',
+  })
+  layer.on('add', () => {
+    const container = layer.getContainer?.()
+    if (container) {
+      container.style.opacity = String(item.opacity ?? 1)
+      container.style.pointerEvents = 'none'
+    }
+  })
+  return layer
+}
+
 function getLayerControlName (layer, usedNames) {
   const baseName = layer.name || layer.id
   if (!usedNames.has(baseName)) {
@@ -83,14 +129,17 @@ function createLayerFromCatalog (layer, sourceById) {
     .map((item) => {
       const source = sourceById.get(item.sourceId)
       if (!source) return null
-      return createTileLayer(source.tileUrl || `/api/v1/tiles/${encodeURIComponent(source.id)}/{z}/{x}/{y}`, {
-        minZoom: source.minZoom ?? layer.minZoom ?? 3,
-        maxZoom: layer.maxZoom ?? source.maxZoom ?? 20,
-        maxNativeZoom: source.maxNativeZoom ?? source.maxZoom ?? layer.maxZoom,
-        tileSize: source.tileSize || 256,
-        opacity: item.opacity ?? 1,
-        attribution: source.attribution || '',
-      })
+      if (source.kind === VECTOR_STYLE_KIND) {
+        return createMapLibreLayerFromSource(source, item)
+      }
+      if (isLeafletRasterSource(source)) {
+        return createRasterLayerFromSource(source, layer, item)
+      }
+      const fallbackSourceId = source.rendering?.fallbackRasterSourceId || ''
+      const fallbackSource = fallbackSourceId ? sourceById.get(fallbackSourceId) : null
+      return isLeafletRasterSource(fallbackSource)
+        ? createRasterLayerFromSource(fallbackSource, layer, item)
+        : null
     })
     .filter(Boolean)
 

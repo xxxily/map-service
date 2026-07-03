@@ -26,6 +26,10 @@ const config = {
       allowedContentTypes: [
         'image/',
         'application/octet-stream',
+        'application/json',
+        'application/vnd.mapbox-vector-tile',
+        'application/x-protobuf',
+        'application/gzip',
       ],
     },
 

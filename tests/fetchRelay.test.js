@@ -260,6 +260,97 @@ test('fetch relay clears selected cache entries in batches', async () => {
   }
 })
 
+test('fetch relay forwards custom headers and caches vector tile content type', async () => {
+  const targetUrl = 'https://tiles.example.com/3/1/2.pbf'
+  const calls = []
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-vector-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const relay = new FetchRelay({
+    cacheDir,
+    minCacheBytes: 1,
+    httpClient: async (config) => {
+      calls.push(config)
+      return {
+        status: 200,
+        headers: {
+          'content-type': 'application/vnd.mapbox-vector-tile',
+        },
+        data: streamFrom('vector-tile-data'),
+      }
+    },
+  })
+
+  try {
+    const result = await relay.fetch(targetUrl, {
+      headers: {
+        'x-api-key': 'secret-key',
+      },
+    })
+    assert.equal(result.cacheStatus, 'MISS')
+    assert.equal(await readStream(result.stream), 'vector-tile-data')
+    assert.equal(calls[0].headers['x-api-key'], 'secret-key')
+
+    const cached = await relay.fetch(targetUrl)
+    assert.equal(cached.cacheStatus, 'HIT')
+    assert.equal(await readStream(cached.stream), 'vector-tile-data')
+  } finally {
+    await removeDir(cacheDir)
+  }
+})
+
+test('fetch relay uses range-aware cache keys and masks sensitive cache metadata', async () => {
+  const targetUrl = 'https://tiles.example.com/world.pmtiles?key=secret-key'
+  const calls = []
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-range-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const relay = new FetchRelay({
+    cacheDir,
+    minCacheBytes: 1,
+    httpClient: async (config) => {
+      calls.push(config)
+      return {
+        status: 206,
+        headers: {
+          'content-type': 'application/octet-stream',
+          'content-range': config.headers.Range === 'bytes=0-10' ? 'bytes 0-10/100' : 'bytes 11-20/100',
+          'accept-ranges': 'bytes',
+        },
+        data: streamFrom(config.headers.Range === 'bytes=0-10' ? 'range-a' : 'range-b'),
+      }
+    },
+  })
+
+  try {
+    const first = await relay.fetch(targetUrl, {
+      headers: { Range: 'bytes=0-10' },
+      cacheMeta: { sourceId: 'pmtiles-source', resourceType: 'pmtiles-range' },
+    })
+    assert.equal(first.statusCode, 206)
+    assert.equal(await readStream(first.stream), 'range-a')
+
+    const second = await relay.fetch(targetUrl, {
+      headers: { Range: 'bytes=11-20' },
+      cacheMeta: { sourceId: 'pmtiles-source', resourceType: 'pmtiles-range' },
+    })
+    assert.equal(await readStream(second.stream), 'range-b')
+    assert.equal(calls.length, 2)
+
+    const cachedFirst = await relay.fetch(targetUrl, {
+      headers: { Range: 'bytes=0-10' },
+    })
+    assert.equal(cachedFirst.statusCode, 206)
+    assert.equal(cachedFirst.headers['content-range'], 'bytes 0-10/100')
+    assert.equal(await readStream(cachedFirst.stream), 'range-a')
+    assert.equal(calls.length, 2)
+
+    const stats = await relay.getStats()
+    assert.equal(stats.files, 2)
+    assert.equal(stats.byResourceType['pmtiles-range'].files, 2)
+    assert.equal(stats.entries[0].url.includes('secret-key'), false)
+    assert.ok(stats.entries.some(entry => entry.range === 'bytes=0-10'))
+  } finally {
+    await removeDir(cacheDir)
+  }
+})
+
 test('fetch relay persists cache stats and reuses snapshot without cache changes', async () => {
   const targetUrl = 'https://www.google.com/maps/vt?lyrs=s&x=19&y=20&z=21'
   const { relay, cacheDir, cleanup } = createRelay([{}])

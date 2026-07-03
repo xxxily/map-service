@@ -731,6 +731,283 @@ const simpleApi = {
       },
     },
     {
+      path: '/vector/styles/:sourceId/style.json',
+      method: 'get',
+      describe: '获取矢量图源 Style JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchVectorResource(req.params.sourceId, 'style', {}, {
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sources/:sourceId/:ref/tilejson.json',
+      method: 'get',
+      describe: '获取矢量图源派生 TileJSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchVectorResource(req.params.sourceId, 'tilejson', {
+          ref: req.params.ref,
+        }, {
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sources/:sourceId/tilejson.json',
+      method: 'get',
+      describe: '获取矢量图源 TileJSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchVectorResource(req.params.sourceId, 'tilejson', {}, {
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/tiles/:sourceId/:ref/:z/:x/:y.pbf',
+      method: 'get',
+      describe: '获取矢量派生 MVT 瓦片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchVectorResource(req.params.sourceId, 'mvt', {
+          ref: req.params.ref,
+          z: req.params.z,
+          x: req.params.x,
+          y: req.params.y,
+          scale: req.query.scale,
+        }, {
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/tiles/:sourceId/:z/:x/:y.pbf',
+      method: 'get',
+      describe: '获取矢量 MVT 瓦片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchVectorResource(req.params.sourceId, 'mvt', {
+          z: req.params.z,
+          x: req.params.x,
+          y: req.params.y,
+          scale: req.query.scale,
+        }, {
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/glyphs/:sourceId/:ref/:fontstack/:range.pbf',
+      method: 'get',
+      describe: '获取矢量派生字体 glyph',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchVectorResource(req.params.sourceId, 'glyph', {
+          ref: req.params.ref,
+          fontstack: req.params.fontstack,
+          range: req.params.range,
+        }, {
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/glyphs/:sourceId/:fontstack/:range.pbf',
+      method: 'get',
+      describe: '获取矢量字体 glyph',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchVectorResource(req.params.sourceId, 'glyph', {
+          fontstack: req.params.fontstack,
+          range: req.params.range,
+        }, {
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sprites/:sourceId/:ref/sprite@2x.json',
+      method: 'get',
+      describe: '获取矢量派生高清 sprite JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'sprite-json-2x', {
+          ref: req.params.ref,
+        }, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sprites/:sourceId/:ref/sprite@2x.png',
+      method: 'get',
+      describe: '获取矢量派生高清 sprite 图片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'sprite-png-2x', {
+          ref: req.params.ref,
+        }, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sprites/:sourceId/:ref/sprite.json',
+      method: 'get',
+      describe: '获取矢量派生 sprite JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'sprite-json', {
+          ref: req.params.ref,
+        }, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sprites/:sourceId/:ref/sprite.png',
+      method: 'get',
+      describe: '获取矢量派生 sprite 图片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'sprite-png', {
+          ref: req.params.ref,
+        }, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sprites/:sourceId/sprite.json',
+      method: 'get',
+      describe: '获取矢量 sprite JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'sprite-json', {}, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sprites/:sourceId/sprite.png',
+      method: 'get',
+      describe: '获取矢量 sprite 图片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'sprite-png', {}, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/pmtiles/:sourceId.pmtiles',
+      method: 'get',
+      describe: '获取 PMTiles 资源',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'pmtiles-range', {}, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            Range: req.headers.range,
+            'If-Range': req.headers['if-range'],
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
       path: '/admin/tile-sources',
       method: 'get',
       describe: '获取图源列表',
@@ -738,6 +1015,96 @@ const simpleApi = {
       handler: async (req, res) => {
         requireAdmin(req)
         res.jsonSuc(await service.listTileSources())
+      },
+    },
+    {
+      path: '/admin/source-presets',
+      method: 'get',
+      describe: '获取预置图源模板列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listSourcePresets())
+      },
+    },
+    {
+      path: '/admin/source-presets/:presetId/create-source',
+      method: 'post',
+      describe: '基于预置模板创建图源',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createSourceFromPreset(req.params.presetId, req.body || {}))
+      },
+    },
+    {
+      path: '/admin/key-pools',
+      method: 'get',
+      describe: '获取密钥池列表',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.listKeyPools())
+      },
+    },
+    {
+      path: '/admin/key-pools',
+      method: 'post',
+      describe: '创建密钥池',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.createKeyPool(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/key-pools/:id',
+      method: 'get',
+      describe: '获取密钥池详情',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.getKeyPool(req.params.id))
+      },
+    },
+    {
+      path: '/admin/key-pools/:id',
+      method: 'put',
+      describe: '更新密钥池',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.updateKeyPool(req.params.id, req.body || {}))
+      },
+    },
+    {
+      path: '/admin/key-pools/:id',
+      method: 'delete',
+      describe: '删除密钥池',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.deleteKeyPool(req.params.id))
+      },
+    },
+    {
+      path: '/admin/key-pools/:id/test',
+      method: 'post',
+      describe: '测试密钥池可用性',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.testKeyPool(req.params.id))
+      },
+    },
+    {
+      path: '/admin/key-pools/:id/keys/:keyId/test',
+      method: 'post',
+      describe: '测试密钥池单个 Key 可用性',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        requireAdmin(req)
+        res.jsonSuc(await service.testKeyPoolKey(req.params.id, req.params.keyId))
       },
     },
     {
@@ -1051,6 +1418,281 @@ const simpleApi = {
           token: req.query.token,
           clientIp,
         }))
+      },
+    },
+    {
+      path: '/external/:publishId/style.json',
+      method: 'get',
+      describe: '获取对外发布矢量 Style JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'style', {}, {
+          token: req.query.token,
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/sources/:ref/tilejson.json',
+      method: 'get',
+      describe: '获取对外发布派生 TileJSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'tilejson', {
+          ref: req.params.ref,
+        }, {
+          token: req.query.token,
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/tilejson.json',
+      method: 'get',
+      describe: '获取对外发布矢量 TileJSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'tilejson', {}, {
+          token: req.query.token,
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/tiles/:ref/:z/:x/:y.pbf',
+      method: 'get',
+      describe: '获取对外发布派生 MVT 瓦片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'mvt', {
+          ref: req.params.ref,
+          z: req.params.z,
+          x: req.params.x,
+          y: req.params.y,
+        }, {
+          token: req.query.token,
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/tiles/:z/:x/:y.pbf',
+      method: 'get',
+      describe: '获取对外发布 MVT 瓦片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'mvt', {
+          z: req.params.z,
+          x: req.params.x,
+          y: req.params.y,
+        }, {
+          token: req.query.token,
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/glyphs/:ref/:fontstack/:range.pbf',
+      method: 'get',
+      describe: '获取对外发布派生 glyph',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'glyph', {
+          ref: req.params.ref,
+          fontstack: req.params.fontstack,
+          range: req.params.range,
+        }, {
+          token: req.query.token,
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/glyphs/:fontstack/:range.pbf',
+      method: 'get',
+      describe: '获取对外发布 glyph',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+        const userAgent = req.headers['user-agent'] || ''
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'glyph', {
+          fontstack: req.params.fontstack,
+          range: req.params.range,
+        }, {
+          token: req.query.token,
+          clientIp,
+          userAgent,
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            'User-Agent': userAgent || 'Mozilla/5.0',
+          },
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/sprites/:ref/sprite@2x.json',
+      method: 'get',
+      describe: '获取对外发布派生高清 sprite JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'sprite-json-2x', {
+          ref: req.params.ref,
+        }, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/sprites/:ref/sprite@2x.png',
+      method: 'get',
+      describe: '获取对外发布派生高清 sprite 图片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'sprite-png-2x', {
+          ref: req.params.ref,
+        }, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/sprites/:ref/sprite.json',
+      method: 'get',
+      describe: '获取对外发布派生 sprite JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'sprite-json', {
+          ref: req.params.ref,
+        }, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/sprites/:ref/sprite.png',
+      method: 'get',
+      describe: '获取对外发布派生 sprite 图片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'sprite-png', {
+          ref: req.params.ref,
+        }, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/sprites/sprite.json',
+      method: 'get',
+      describe: '获取对外发布 sprite JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'sprite-json', {}, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/sprites/sprite.png',
+      method: 'get',
+      describe: '获取对外发布 sprite 图片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'sprite-png', {}, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId.pmtiles',
+      method: 'get',
+      describe: '获取对外发布 PMTiles',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'pmtiles-range', {}, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+          headers: {
+            Range: req.headers.range,
+            'If-Range': req.headers['if-range'],
+          },
+        })
+        await sendRelayResponse(res, result)
       },
     },
     {

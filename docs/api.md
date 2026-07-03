@@ -86,6 +86,14 @@ Authorization: Bearer <admin-token>
 
 获取前台可见的图源和图层目录。前端 2D/3D 地图应以此接口作为底图事实来源，不再硬编码图层目录。
 
+前台 2D 地图当前支持：
+
+- 栅格图源：通过 `tileUrl` 使用 Leaflet 瓦片图层渲染。
+- `kind=vector-style`：通过 `styleUrl` 使用 MapLibre 渲染，Style JSON、TileJSON、MVT、glyph 和 sprite 均由服务端受控重写。
+- `kind=mvt`、`kind=vector-tilejson`、`kind=pmtiles-vector`：资源接口已可用，但前台直接渲染需要完整 Style 定义；若图源配置了 `rendering.fallbackRasterSourceId`，3D 或不支持的前端可使用对应栅格降级。
+
+前台 3D 地图只渲染 Cesium 支持的栅格 imagery。矢量图源不会直接进入 3D 图层列表，除非配置了可用的 `rendering.fallbackRasterSourceId`。
+
 返回示例：
 
 ```json
@@ -167,6 +175,107 @@ Authorization: Bearer <admin-token>
 
 历史白名单瓦片代理接口。新前台不要再使用任意 `url=` 直传模式，应使用 `/api/v1/tiles/:sourceId/:z/:x/:y`。该接口当前仅保留给旧预缓存和诊断场景。
 
+## 矢量图源资源接口
+
+矢量资源接口面向前台 2D 地图和受控客户端使用。前端不直接请求第三方 Style JSON、TileJSON、MVT、glyph、sprite 或 PMTiles；所有资源都通过系统图源 ID 解析，服务端负责密钥池选择、代理、缓存、URL 重写和诊断日志。
+
+所有矢量资源接口遵循前台访问控制：如果系统启用了地图访问密码，需要携带 `map_access_token` Cookie。
+
+### `GET /api/v1/vector/styles/:sourceId/style.json`
+
+获取重写后的 MapLibre/Mapbox Style JSON。适用于 `kind=vector-style` 的图源。
+
+服务端会：
+
+- 从图源 `entry.styleJsonUrl` 请求上游 Style JSON。
+- 从密钥池选择 Key 并注入上游请求。
+- 将 `sources.*.tiles[]`、`sources.*.url`、`glyphs`、`sprite` 改写为系统受控 URL。
+- 移除返回内容中的上游 Key、Token、tk、appid 等敏感信息。
+
+返回示例：
+
+```json
+{
+  "version": 8,
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "tiles": [
+        "/api/v1/vector/tiles/maptiler-streets-vector/<ref>/{z}/{x}/{y}.pbf"
+      ]
+    }
+  },
+  "glyphs": "/api/v1/vector/glyphs/maptiler-streets-vector/<ref>/{fontstack}/{range}.pbf",
+  "sprite": "/api/v1/vector/sprites/maptiler-streets-vector/<ref>/sprite",
+  "layers": []
+}
+```
+
+`<ref>` 是服务端短期资源引用，用于把上游派生资源映射回图源配置和本次重写上下文。前端只需按 Style JSON 原样加载，不需要解析或保存 `<ref>`。
+
+### `GET /api/v1/vector/sources/:sourceId/tilejson.json`
+
+获取图源配置的 TileJSON。适用于 `kind=vector-tilejson`，也可用于配置了 `entry.tileJsonUrl` 的矢量图源。
+
+返回 JSON 中的 `tiles[]` 会被改写为系统受控 MVT URL，不包含上游密钥。
+
+### `GET /api/v1/vector/sources/:sourceId/:ref/tilejson.json`
+
+获取由 Style JSON 中 `sources.*.url` 派生出的 TileJSON。该路径通常由 `style.json` 自动生成，前端不需要手工拼接。
+
+### `GET /api/v1/vector/tiles/:sourceId/:z/:x/:y.pbf`
+
+获取图源直接配置的 MVT 瓦片。适用于 `kind=mvt`，或配置了 `entry.template` 的 `vector-style` / `vector-tilejson` 图源。
+
+### `GET /api/v1/vector/tiles/:sourceId/:ref/:z/:x/:y.pbf`
+
+获取 Style JSON 或 TileJSON 派生出来的 MVT 瓦片。该路径通常由重写后的 Style JSON 或 TileJSON 自动生成。
+
+成功响应为 PBF/MVT 数据流，常见 `Content-Type` 为 `application/vnd.mapbox-vector-tile`、`application/x-protobuf` 或上游兼容类型。
+
+### `GET /api/v1/vector/glyphs/:sourceId/:fontstack/:range.pbf`
+
+获取图源直接配置的 glyph 字体切片。
+
+### `GET /api/v1/vector/glyphs/:sourceId/:ref/:fontstack/:range.pbf`
+
+获取 Style JSON 派生出来的 glyph 字体切片。该路径通常由重写后的 Style JSON 自动生成。
+
+### `GET /api/v1/vector/sprites/:sourceId/sprite.json`
+
+获取图源直接配置的 sprite JSON。
+
+### `GET /api/v1/vector/sprites/:sourceId/sprite.png`
+
+获取图源直接配置的 sprite 图片。
+
+### `GET /api/v1/vector/sprites/:sourceId/:ref/sprite.json`
+
+获取 Style JSON 派生出来的 sprite JSON。
+
+### `GET /api/v1/vector/sprites/:sourceId/:ref/sprite.png`
+
+获取 Style JSON 派生出来的 sprite 图片。
+
+### `GET /api/v1/vector/sprites/:sourceId/:ref/sprite@2x.json`
+
+获取 Style JSON 派生出来的高清 sprite JSON。
+
+### `GET /api/v1/vector/sprites/:sourceId/:ref/sprite@2x.png`
+
+获取 Style JSON 派生出来的高清 sprite 图片。
+
+### `GET /api/v1/vector/pmtiles/:sourceId.pmtiles`
+
+代理 PMTiles 文件或 Range 请求。客户端可带：
+
+```text
+Range: bytes=<start>-<end>
+If-Range: <etag-or-date>
+```
+
+服务端会转发 Range 相关请求头，并把 `Range` 纳入缓存键，避免不同字节段复用同一缓存。当前属于基础 Range 代理能力，不实现 PMTiles 专用索引解析或最优分片策略。
+
 ## 管理后台基础接口
 
 ### `POST /api/v1/admin/auth/login`
@@ -236,7 +345,10 @@ Authorization: Bearer <admin-token>
 - `bySource`：按 `sourceId` 聚合。
 - `byLayer`：按 `layerId` 聚合。
 - `byPublish`：按 `publishId` 聚合。
+- `byResourceType`：按矢量资源类型聚合，例如 `raster`、`style`、`tilejson`、`mvt`、`glyph`、`sprite-json`、`sprite-png`、`pmtiles-range`。
 - `entries`：最多 100 条最近缓存项，包含 `key`、`url`、`sourceId`、`layerId`、`publishId`、`state`、`size`、`updatedAt`、`expiresAt`。
+
+缓存元数据中的 `url` 会对常见密钥参数脱敏。PMTiles 或其它 Range 请求会把 `Range` 作为缓存键的一部分，避免不同字节段复用同一个缓存文件。
 
 ### `DELETE /api/v1/admin/cache`
 
@@ -252,7 +364,17 @@ Authorization: Bearer <admin-token>
 
 图源模型关键字段：
 
-- `kind`：`xyz`、`tms`
+- `kind`：`xyz`、`tms`、`xyz-raster`、`tms-raster`、`wmts-raster`、`arcgis-raster`、`quadkey-raster`、`mvt`、`vector-tilejson`、`vector-style`、`pmtiles-vector`、`pmtiles-raster`、`google-map-tiles-api` 等。
+- `adapter`：请求适配器，例如 `template`、`wmts-kvp`、`arcgis-tile`、`maplibre-style`、`pmtiles`、`google-session`。
+- `entry.template`：栅格或 MVT URL 模板。
+- `entry.styleJsonUrl`：矢量 Style JSON 上游入口。
+- `entry.tileJsonUrl`：矢量 TileJSON 上游入口。
+- `entry.pmtilesUrl`：PMTiles 上游入口。
+- `secrets.required`：是否必须绑定密钥池。
+- `secrets.keyPoolId`：绑定的密钥池 ID。公开 catalog 不返回该字段。
+- `rendering.engine`：`leaflet`、`maplibre`、`cesium`。
+- `rendering.clients`：`2d`、`3d`。
+- `license.cacheAllowedByLicense`：授权是否允许写入持久缓存。为 `false` 时，即使 `cache.enabled=true` 也不得写入持久缓存。
 - `retina.mode`：`none`、`query`、`fixed`
 - `tileSize`：当前固定为 `256`，高清瓦片通过 `retina.normalValue` / `retina.retinaValue` 的 `scale` 控制，不允许配置任意像素网格。
 - `retina.normalValue` / `retina.retinaValue`：仅允许 `"1"`、`"2"`、`"3"`。
@@ -263,7 +385,142 @@ Authorization: Bearer <admin-token>
 - `permissions.externalApiAllowed`：是否允许对外发布
 - `visibility.scope`：`system`、`external_only`
 
-URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-local 或保留地址。支持占位符：`{s}`、`{x}`、`{y}`、`{z}`、`{scale}`、`{yTms}`。
+URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-local 或保留地址。支持占位符：`{s}`、`{x}`、`{y}`、`{z}`、`{scale}`、`{yTms}`、`{key}`、`{token}`、`{tk}`、`{appid}`、`{quadkey}`、`{fontstack}`、`{range}` 等。
+
+### `GET /api/v1/admin/source-presets`
+
+获取系统预置图源模板列表。预置模板只描述服务商、协议、默认入口、是否需要 Key 和合规信息，默认不可直接用于前台渲染。所有预置模板默认禁用，管理员需要基于模板创建图源实例。
+
+返回字段包括：
+
+- `presetId`
+- `name`
+- `vendor`
+- `category`
+- `kind`
+- `adapter`
+- `requiresKey`
+- `requiredSecretTypes`
+- `defaultKeyPlacement`
+- `entry`
+- `schema`
+- `defaultDisabled`
+- `status`：`ready`、`requires_adapter`、`research_only`
+- `officialStatus`
+- `licenseType`
+- `cacheAllowedByLicense`
+- `publicUseAllowed`
+- `chinaPublicUseRisk`
+
+### `POST /api/v1/admin/source-presets/:presetId/create-source`
+
+基于预置模板创建图源实例。需要 Key 的模板如果未传入 `keyPoolId` 或 `secrets.keyPoolId`，后端会按预设厂商自动关联对应的系统默认密钥池，例如 `default-maptiler-key-pool`。创建后默认建议保持禁用；需要 Key 的图源只有在关联密钥池已启用且至少存在一个已配置密钥的启用 Key 时才能启用。
+
+请求示例：
+
+```json
+{
+  "id": "maptiler-streets-vector",
+  "enabled": false,
+  "keyPoolId": "maptiler-main",
+  "permissions": {
+    "frontendVisible": false,
+    "externalApiAllowed": false
+  }
+}
+```
+
+常见错误：
+
+- `404`：预置模板不存在。
+- `400`：需要 Key 但没有可关联的密钥池，或关联密钥池没有可用 Key 却尝试启用。
+- `400`：模板状态为 `requires_adapter` 或 `research_only`，却尝试直接启用。
+
+## 密钥池管理
+
+密钥池用于保存服务商 Key、Token、tk、ak、appid 等敏感凭证。密钥明文只允许创建或更新时提交，后端不提供读回能力。所有列表和详情接口只返回脱敏预览。
+
+系统会根据内置预置图源中 `requiresKey=true` 的厂商自动初始化默认空密钥池。默认池不内置任何 Key，只保存厂商、默认 Key 类型、默认注入参数、允许关联的预设 ID 和官方申请/控制台入口。管理员基于预设创建图源时会自动关联对应默认池，后续只需进入该池添加并启用 Key。
+
+当前默认池覆盖的厂商与入口：
+
+| 厂商 | 默认池 ID | 默认参数 | 官方入口 |
+| --- | --- | --- | --- |
+| 天地图 | `default-tianditu-key-pool` | `tk` | `https://cloudcenter.tianditu.gov.cn/center/development/myApp` |
+| 腾讯位置服务 | `default-tencent-key-pool` | `key` | `https://lbs.qq.com/console/setting.html` |
+| 百度地图 | `default-baidu-key-pool` | `ak` | `https://lbsyun.baidu.com/apiconsole/key` |
+| Google Maps Platform | `default-google-key-pool` | `key` | `https://console.cloud.google.com/google/maps-apis/credentials` |
+| MapTiler | `default-maptiler-key-pool` | `key` | `https://cloud.maptiler.com/account/keys/` |
+| Mapbox | `default-mapbox-key-pool` | `access_token` | `https://console.mapbox.com/account/access-tokens/` |
+| Stadia Maps | `default-stadia-key-pool` | `api_key` | `https://client.stadiamaps.com/dashboard/` |
+| HERE | `default-here-key-pool` | `apiKey` | `https://platform.here.com/access/apps` |
+| Azure Maps | `default-microsoft-key-pool` | `subscription-key` | `https://portal.azure.com/` |
+| Thunderforest | `default-thunderforest-key-pool` | `apikey` | `https://manage.thunderforest.com/dashboard` |
+| OpenWeatherMap | `default-openweathermap-key-pool` | `appid` | `https://home.openweathermap.org/api_keys` |
+
+密钥池选择策略：
+
+- `round_robin`：健康 Key 轮询。
+- `priority_failover`：按优先级选择，失败后可切换备用 Key。
+- `random`：健康 Key 中随机选择。
+- `weighted_round_robin`：按权重轮询。
+
+### `GET /api/v1/admin/key-pools`
+
+获取密钥池列表。返回中每个 Key 只包含 `maskedPreview`、`hasSecret`、`alias`、状态和统计字段，不包含 `secretValue` 或 `secretHash`。
+
+### `POST /api/v1/admin/key-pools`
+
+创建密钥池。
+
+```json
+{
+  "id": "maptiler-main",
+  "name": "MapTiler 主密钥池",
+  "vendor": "maptiler",
+  "enabled": true,
+  "strategy": "round_robin",
+  "cooldownMs": 300000,
+  "maxRetriesPerRequest": 2,
+  "defaultSecretType": "api_key",
+  "defaultPlacement": "query",
+  "defaultParamName": "key",
+  "credentialUrl": "https://cloud.maptiler.com/account/keys/",
+  "allowedPresetIds": ["preset:maptiler-streets-vector"],
+  "keys": [
+    {
+      "id": "maptiler-key-a",
+      "alias": "主 Key",
+      "secretType": "api_key",
+      "secret": "明文只在提交时出现",
+      "placement": "query",
+      "paramName": "key",
+      "priority": 10,
+      "weight": 1
+    }
+  ]
+}
+```
+
+### `GET /api/v1/admin/key-pools/:id`
+
+获取密钥池详情。不会返回密钥明文或密钥哈希。
+
+### `PUT /api/v1/admin/key-pools/:id`
+
+更新密钥池。Key 条目未传 `secret` 时保留原密钥；传入 `secret` 时替换密钥并更新脱敏预览。
+
+### `DELETE /api/v1/admin/key-pools/:id`
+
+删除密钥池。若仍被图源引用，返回错误并阻止删除。
+
+### `POST /api/v1/admin/key-pools/:id/test`
+
+测试密钥池是否启用且存在可用 Key。首期只做配置级测试，不请求第三方服务商。
+
+### `POST /api/v1/admin/key-pools/:id/keys/:keyId/test`
+
+测试密钥池中的单个 Key 是否启用且已配置密钥。首期只做配置级测试。
 
 ### `GET /api/v1/admin/tile-sources`
 
@@ -273,6 +530,8 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 
 创建图源。
 
+栅格图源请求示例：
+
 ```json
 {
   "id": "custom-road",
@@ -281,7 +540,10 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
   "vendor": "custom",
   "category": "road",
   "kind": "xyz",
-  "template": "https://tiles.example.com/{z}/{x}/{y}.png",
+  "adapter": "template",
+  "entry": {
+    "template": "https://tiles.example.com/{z}/{x}/{y}.png"
+  },
   "subdomains": [],
   "minZoom": 0,
   "maxZoom": 18,
@@ -324,6 +586,58 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 }
 ```
 
+矢量 Style 图源请求示例：
+
+```json
+{
+  "id": "maptiler-streets-vector",
+  "presetId": "preset:maptiler-streets-vector",
+  "name": "MapTiler Streets Vector",
+  "enabled": false,
+  "vendor": "maptiler",
+  "category": "vector",
+  "kind": "vector-style",
+  "adapter": "maplibre-style",
+  "schema": "openmaptiles",
+  "entry": {
+    "styleJsonUrl": "https://api.maptiler.com/maps/streets-v2/style.json?key={key}"
+  },
+  "secrets": {
+    "required": true,
+    "keyPoolId": "maptiler-main",
+    "placement": "query",
+    "paramName": "key"
+  },
+  "rendering": {
+    "engine": "maplibre",
+    "clients": ["2d"],
+    "fallbackRasterSourceId": ""
+  },
+  "cache": {
+    "enabled": true,
+    "ttlMs": 86400000,
+    "staleTtlMs": 604800000
+  },
+  "proxy": {
+    "mode": "never"
+  },
+  "permissions": {
+    "frontendVisible": false,
+    "precacheAllowed": false,
+    "externalApiAllowed": false,
+    "userReferenceAllowed": false
+  },
+  "license": {
+    "attribution": "MapTiler",
+    "termsUrl": "",
+    "officialStatus": "official",
+    "licenseType": "api-key",
+    "cacheAllowedByLicense": true,
+    "publicUseAllowed": false
+  }
+}
+```
+
 ### `GET /api/v1/admin/tile-sources/:id`
 
 获取图源详情。
@@ -359,6 +673,8 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 - `proxyConfigured`：该次请求是否配置过代理策略；若代理失败后允许直连，可能为 `true` 但 `proxyOutboundId` 为空。
 - `cacheEnabled`
 - `errorMessage`
+- `resourceType`：`raster`、`style`、`tilejson`、`mvt`、`glyph`、`sprite-json`、`sprite-png`、`sprite-json-2x`、`sprite-png-2x`、`pmtiles-range`。
+- `keyPoolId` / `keyId` / `keyAlias`：使用密钥池时记录脱敏标识，不记录明文 Key。
 
 ### `GET /api/v1/admin/source-access-logs`
 
@@ -679,6 +995,93 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 获取组合图层发布项中某个图源的瓦片。外部客户端应按 TileJSON 中的 `layer.items` 或 `sources` 顺序自行叠加多个图源。
 
 查询参数同上。
+
+### `GET /api/v1/external/:publishId/style.json`
+
+获取对外发布项的矢量 Style JSON。发布项必须引用 `kind=vector-style` 的图源，且图源允许对外发布。若发布项启用 Token，必须传 `?token=<token>`。
+
+服务端会将上游 Style JSON 中的 MVT、TileJSON、glyph 和 sprite 资源改写为发布项路径：
+
+```json
+{
+  "version": 8,
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "tiles": [
+        "/api/v1/external/maptiler-public/tiles/<ref>/{z}/{x}/{y}.pbf"
+      ]
+    }
+  },
+  "glyphs": "/api/v1/external/maptiler-public/glyphs/<ref>/{fontstack}/{range}.pbf",
+  "sprite": "/api/v1/external/maptiler-public/sprites/<ref>/sprite"
+}
+```
+
+返回内容不会包含内部 `sourceId`、`keyPoolId` 或上游 Key。出于安全考虑，发布项 Token 不会自动写入 Style JSON；第三方 MapLibre 客户端如使用 `auth.mode=token`，应通过 `transformRequest` 为 `/api/v1/external/:publishId/...` 派生资源追加 `?token=<token>`。
+
+### `GET /api/v1/external/:publishId/tilejson.json`
+
+获取对外发布项的矢量 TileJSON。发布项必须引用 `kind=vector-tilejson`，或引用配置了 TileJSON 入口的矢量图源。
+
+返回中的 `tiles[]` 会被改写为：
+
+```json
+{
+  "tilejson": "3.0.0",
+  "tiles": [
+    "/api/v1/external/maptiler-public/tiles/<ref>/{z}/{x}/{y}.pbf"
+  ]
+}
+```
+
+### `GET /api/v1/external/:publishId/sources/:ref/tilejson.json`
+
+获取由对外 Style JSON 派生出来的 TileJSON。该路径由 Style JSON 自动生成。
+
+### `GET /api/v1/external/:publishId/tiles/:z/:x/:y.pbf`
+
+获取对外发布项直接配置的 MVT 瓦片。适用于引用 `kind=mvt` 或配置了 `entry.template` 的矢量图源。
+
+### `GET /api/v1/external/:publishId/tiles/:ref/:z/:x/:y.pbf`
+
+获取对外 Style JSON 或 TileJSON 派生出来的 MVT 瓦片。
+
+### `GET /api/v1/external/:publishId/glyphs/:fontstack/:range.pbf`
+
+获取对外发布项直接配置的 glyph 字体切片。
+
+### `GET /api/v1/external/:publishId/glyphs/:ref/:fontstack/:range.pbf`
+
+获取对外 Style JSON 派生出来的 glyph 字体切片。
+
+### `GET /api/v1/external/:publishId/sprites/sprite.json`
+
+获取对外发布项直接配置的 sprite JSON。
+
+### `GET /api/v1/external/:publishId/sprites/sprite.png`
+
+获取对外发布项直接配置的 sprite 图片。
+
+### `GET /api/v1/external/:publishId/sprites/:ref/sprite.json`
+
+获取对外 Style JSON 派生出来的 sprite JSON。
+
+### `GET /api/v1/external/:publishId/sprites/:ref/sprite.png`
+
+获取对外 Style JSON 派生出来的 sprite 图片。
+
+### `GET /api/v1/external/:publishId/sprites/:ref/sprite@2x.json`
+
+获取对外 Style JSON 派生出来的高清 sprite JSON。
+
+### `GET /api/v1/external/:publishId/sprites/:ref/sprite@2x.png`
+
+获取对外 Style JSON 派生出来的高清 sprite 图片。
+
+### `GET /api/v1/external/:publishId.pmtiles`
+
+获取对外发布项的 PMTiles 文件或 Range 响应。发布项必须引用 `kind=pmtiles-vector` 或 `kind=pmtiles-raster` 的图源。
 
 ## 预缓存接口
 

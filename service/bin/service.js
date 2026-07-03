@@ -18,6 +18,7 @@ import SharedKmlManager from './admin/sharedKml.js'
 import TileCatalogManager from './admin/tileCatalog.js'
 import fs from 'fs-extra'
 import path from 'path'
+import { Readable } from 'node:stream'
 
 const serviceConfig = baseConfig.staticService || {}
 const fetchRelay = new FetchRelay(serviceConfig.fetchRelay)
@@ -106,7 +107,42 @@ function buildSourceAccessLogEntry (result, options = {}) {
     proxyOutboundId: result.proxy?.outboundId || '',
     proxyConfigured: Boolean(result.proxyPolicy && result.proxyPolicy.mode !== 'never'),
     cacheEnabled: result.cacheStatus !== 'BYPASS',
+    resourceType: options.resourceType || result.resourceType || 'raster',
+    keyPoolId: result.key?.keyPoolId || '',
+    keyId: result.key?.keyId || '',
+    keyAlias: result.key?.alias || '',
     errorMessage: options.errorMessage || null,
+  }
+}
+
+async function streamToBuffer (stream) {
+  const chunks = []
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks)
+}
+
+function jsonRelayResult (payload, options = {}) {
+  const body = Buffer.from(JSON.stringify(payload), 'utf8')
+  return {
+    stream: Readable.from([body]),
+    statusCode: options.statusCode || 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      ...(options.headers || {}),
+    },
+    cacheStatus: options.cacheStatus || 'BYPASS',
+    cachePath: null,
+    meta: null,
+  }
+}
+
+function upstreamBaseUrlFromRequest (request) {
+  try {
+    return new URL(request.url).toString()
+  } catch (err) {
+    return ''
   }
 }
 
@@ -135,13 +171,17 @@ const service = {
       cacheTtlMs: request.cacheTtlMs,
       staleCacheTtlMs: request.staleCacheTtlMs,
       providerId: request.source.id,
-      headers: options.headers,
+      headers: {
+        ...(options.headers || {}),
+        ...(request.headers || {}),
+      },
     })
     const result = {
       ...relayResult,
       source: request.source,
       proxy: request.proxy,
       proxyPolicy: request.proxyPolicy,
+      key: request.key,
     }
     writeSourceAccessLog(buildSourceAccessLogEntry(result, {
       sourceId,
@@ -154,6 +194,103 @@ const service = {
     return result
   },
 
+  async fetchVectorResource (sourceId, resourceType, params = {}, options = {}) {
+    const startTime = Date.now()
+    let request = null
+    try {
+      request = await tileCatalogManager.createVectorResourceRequest(sourceId, resourceType, params, options)
+      const relayResult = await service.fetchRelay(request.url, {
+        proxy: request.proxy,
+        cache: request.cache,
+        cacheMeta: request.cacheMeta,
+        cacheTtlMs: request.cacheTtlMs,
+        staleCacheTtlMs: request.staleCacheTtlMs,
+        providerId: request.source.id,
+        headers: {
+          ...(options.headers || {}),
+          ...(request.headers || {}),
+        },
+      })
+
+      let result = {
+        ...relayResult,
+        source: request.source,
+        proxy: request.proxy,
+        proxyPolicy: request.proxyPolicy,
+        key: request.key,
+        resourceType,
+      }
+
+      if (resourceType === 'style' || resourceType === 'tilejson') {
+        const buffer = await streamToBuffer(relayResult.stream)
+        let parsed
+        try {
+          parsed = JSON.parse(buffer.toString('utf8'))
+        } catch (err) {
+          const parseError = new Error('上游矢量 JSON 解析失败')
+          parseError.statusCode = 502
+          throw parseError
+        }
+        const payload = resourceType === 'style'
+          ? tileCatalogManager.rewriteVectorStyle(request.source, parsed, {
+              ...(options.rewrite || {}),
+              upstreamBaseUrl: upstreamBaseUrlFromRequest(request),
+              selectedKey: request.internalKey || null,
+            })
+          : tileCatalogManager.rewriteTileJson(request.source, parsed, {
+              ...(options.rewrite || {}),
+              upstreamBaseUrl: upstreamBaseUrlFromRequest(request),
+              selectedKey: request.internalKey || null,
+            })
+        result = {
+          ...jsonRelayResult(payload, { cacheStatus: relayResult.cacheStatus }),
+          source: request.source,
+          proxy: request.proxy,
+          proxyPolicy: request.proxyPolicy,
+          key: request.key,
+          resourceType,
+        }
+      }
+
+      writeSourceAccessLog(buildSourceAccessLogEntry(result, {
+        sourceId,
+        publishId: options.publishId,
+        layerId: options.layerId,
+        tile: params,
+        clientIp: options.clientIp,
+        userAgent: options.userAgent,
+        reqUrl: options.reqUrl,
+        duration: Date.now() - startTime,
+        resourceType,
+      }), request.source)
+      return result
+    } catch (err) {
+      if (request?.source) {
+        writeSourceAccessLog(buildSourceAccessLogEntry({
+          source: request.source,
+          proxy: request.proxy,
+          proxyPolicy: request.proxyPolicy,
+          key: request.key,
+          statusCode: err.statusCode || err.response?.status || 502,
+          cacheStatus: 'ERROR',
+          resourceType,
+        }, {
+          sourceId,
+          publishId: options.publishId,
+          layerId: options.layerId,
+          tile: params,
+          clientIp: options.clientIp,
+          userAgent: options.userAgent,
+          reqUrl: options.reqUrl,
+          duration: Date.now() - startTime,
+          resourceType,
+          errorMessage: err.message || '矢量图源资源请求失败',
+        }), request.source)
+      }
+      throw err
+    }
+  },
+
   async fetchExternalPublishTile (publishId, tile, options = {}) {
     const startTime = Date.now()
     const request = await tileCatalogManager.createExternalTileRequest(publishId, tile, options)
@@ -164,7 +301,10 @@ const service = {
       cacheTtlMs: request.cacheTtlMs,
       staleCacheTtlMs: request.staleCacheTtlMs,
       providerId: request.source.id,
-      headers: options.headers,
+      headers: {
+        ...(options.headers || {}),
+        ...(request.headers || {}),
+      },
     })
     const result = {
       ...relayResult,
@@ -172,6 +312,7 @@ const service = {
       publish: request.publish,
       proxy: request.proxy,
       proxyPolicy: request.proxyPolicy,
+      key: request.key,
     }
     writeSourceAccessLog(buildSourceAccessLogEntry(result, {
       sourceId: request.source.id,
@@ -195,7 +336,10 @@ const service = {
       cacheTtlMs: request.cacheTtlMs,
       staleCacheTtlMs: request.staleCacheTtlMs,
       providerId: request.source.id,
-      headers: options.headers,
+      headers: {
+        ...(options.headers || {}),
+        ...(request.headers || {}),
+      },
     })
     const result = {
       ...relayResult,
@@ -205,6 +349,7 @@ const service = {
       layerItem: request.layerItem,
       proxy: request.proxy,
       proxyPolicy: request.proxyPolicy,
+      key: request.key,
     }
     writeSourceAccessLog(buildSourceAccessLogEntry(result, {
       sourceId,
@@ -216,6 +361,25 @@ const service = {
       reqUrl: options.reqUrl,
       duration: Date.now() - startTime,
     }), request.source)
+    return result
+  },
+
+  async fetchExternalVectorResource (publishId, resourceType, params = {}, options = {}) {
+    const request = await tileCatalogManager.createExternalVectorResourceRequest(publishId, resourceType, params, options)
+    const rewrite = resourceType === 'style' || resourceType === 'tilejson'
+      ? {
+          basePath: `/api/v1/external/${request.publish.pathSlug}`,
+          sourcePath: '',
+        }
+      : {}
+    const result = await service.fetchVectorResource(request.source.id, resourceType, params, {
+      ...options,
+      proxyOverride: request.publish.overrides.proxy || null,
+      cacheOverride: request.publish.overrides.cache || null,
+      publishId: request.publish.id,
+      rewrite,
+    })
+    result.publish = request.publish
     return result
   },
 
@@ -337,6 +501,42 @@ const service = {
 
   listTileSources () {
     return tileCatalogManager.listTileSources()
+  },
+
+  listSourcePresets () {
+    return tileCatalogManager.listSourcePresets()
+  },
+
+  createSourceFromPreset (presetId, input = {}) {
+    return tileCatalogManager.createSourceFromPreset(presetId, input)
+  },
+
+  listKeyPools () {
+    return tileCatalogManager.listKeyPools()
+  },
+
+  getKeyPool (id) {
+    return tileCatalogManager.getKeyPool(id)
+  },
+
+  createKeyPool (input) {
+    return tileCatalogManager.createKeyPool(input)
+  },
+
+  updateKeyPool (id, input) {
+    return tileCatalogManager.updateKeyPool(id, input)
+  },
+
+  deleteKeyPool (id) {
+    return tileCatalogManager.deleteKeyPool(id)
+  },
+
+  testKeyPool (id) {
+    return tileCatalogManager.testKeyPool(id)
+  },
+
+  testKeyPoolKey (poolId, keyId) {
+    return tileCatalogManager.testKeyPoolKey(poolId, keyId)
   },
 
   getTileSource (id) {

@@ -10,12 +10,17 @@ const CACHEABLE_STATUS_MAX = 299
 const META_SUFFIX = '.meta.json'
 const STATS_STATE_FILE = '.stats.json'
 const HEADER_ALLOW_LIST = [
+  'accept-ranges',
   'cache-control',
+  'content-encoding',
+  'content-length',
+  'content-range',
   'content-type',
   'etag',
   'expires',
   'last-modified',
 ]
+const SENSITIVE_QUERY_KEYS = ['key', 'token', 'tk', 'appid', 'api_key', 'apikey', 'access_token', 'session']
 
 function now () {
   return Date.now()
@@ -70,6 +75,26 @@ function isLikelyCacheableContent (contentType, allowedContentTypes) {
   return allowedContentTypes.some((item) => contentType.toLowerCase().startsWith(item.toLowerCase()))
 }
 
+function maskSensitiveUrl (url) {
+  try {
+    const parsed = new URL(url)
+    ;[...parsed.searchParams.keys()].forEach((key) => {
+      if (SENSITIVE_QUERY_KEYS.includes(key.toLowerCase())) {
+        parsed.searchParams.set(key, '****')
+      }
+    })
+    return parsed.toString()
+  } catch (err) {
+    return String(url || '')
+  }
+}
+
+function cacheKeyInput (url, options = {}) {
+  if (options.cacheKey) return String(options.cacheKey)
+  const range = options.headers?.Range || options.headers?.range
+  return range ? `${url}|range:${range}` : url
+}
+
 class FetchRelay {
   constructor (conf) {
     const defConf = {
@@ -81,6 +106,10 @@ class FetchRelay {
       allowedContentTypes: [
         'image/',
         'application/octet-stream',
+        'application/json',
+        'application/vnd.mapbox-vector-tile',
+        'application/x-protobuf',
+        'application/gzip',
       ],
     }
     this.config = utils.merge(defConf, conf || {})
@@ -93,10 +122,11 @@ class FetchRelay {
     this.statsRefreshPromise = null
   }
 
-  getCachePaths (url) {
+  getCachePaths (url, options = {}) {
     const urlInfo = new URL(url)
     const hostPath = urlInfo.port ? `${urlInfo.hostname}-${urlInfo.port}` : urlInfo.hostname
-    const urlHash = utils.md5(url)
+    const keyInput = cacheKeyInput(url, options)
+    const urlHash = utils.md5(keyInput)
     const ext = path.extname(urlInfo.pathname).replace(/[^a-zA-Z0-9.]/g, '')
     const fileName = ext ? `${urlHash}${ext}` : urlHash
     const cachePath = path.join(this.config.cacheDir, hostPath, fileName)
@@ -131,8 +161,8 @@ class FetchRelay {
     return Boolean(meta && meta.staleExpiresAt && meta.staleExpiresAt > now())
   }
 
-  async getCachedEntry (url) {
-    const paths = this.getCachePaths(url)
+  async getCachedEntry (url, options = {}) {
+    const paths = this.getCachePaths(url, options)
 
     if (!await fs.pathExists(paths.cachePath)) {
       return {
@@ -179,7 +209,7 @@ class FetchRelay {
 
     return {
       stream,
-      statusCode: 200,
+      statusCode: entry.meta.statusCode || 200,
       headers,
       cacheStatus,
       cachePath: entry.cachePath,
@@ -203,6 +233,14 @@ class FetchRelay {
       if (entry.meta.headers['last-modified']) {
         axiosConf.headers['If-Modified-Since'] = entry.meta.headers['last-modified']
       }
+    }
+
+    if (options.headers && typeof options.headers === 'object') {
+      Object.entries(options.headers).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          axiosConf.headers[key] = value
+        }
+      })
     }
 
     const proxySource = Object.hasOwn(options, 'proxy') ? options.proxy : null
@@ -261,11 +299,13 @@ class FetchRelay {
 
     const updatedAt = now()
     const meta = {
-      key: utils.md5(url),
-      url,
+      key: utils.md5(cacheKeyInput(url, options)),
+      url: maskSensitiveUrl(url),
       sourceId: options.cacheMeta?.sourceId || null,
       layerId: options.cacheMeta?.layerId || null,
       publishId: options.cacheMeta?.publishId || null,
+      resourceType: options.cacheMeta?.resourceType || null,
+      range: options.headers?.Range || options.headers?.range || null,
       statusCode,
       headers,
       size: stat.size,
@@ -290,7 +330,7 @@ class FetchRelay {
   }
 
   async fetchUpstream (url, options = {}, entry) {
-    const paths = this.getCachePaths(url)
+    const paths = this.getCachePaths(url, options)
     const response = await this.httpClient(this.createAxiosConfig(url, options, entry))
 
     if (response.status === 304 && entry && entry.exists) {
@@ -337,7 +377,7 @@ class FetchRelay {
       }
     }
 
-    const entry = await this.getCachedEntry(url)
+    const entry = await this.getCachedEntry(url, normalizedOptions)
 
     if (entry.exists && entry.fresh && !normalizedOptions.refresh) {
       return this.createCachedResponse(entry, 'HIT')
@@ -448,6 +488,7 @@ class FetchRelay {
       bySource: {},
       byLayer: {},
       byPublish: {},
+      byResourceType: {},
       entries: [],
       generatedAt: now(),
       refreshing: false,
@@ -482,6 +523,7 @@ class FetchRelay {
     const bySource = {}
     const byLayer = {}
     const byPublish = {}
+    const byResourceType = {}
     const entries = []
 
     const walk = async (dir) => {
@@ -515,6 +557,7 @@ class FetchRelay {
           this.incrementStatsGroup(bySource, meta?.sourceId, state, stat.size)
           this.incrementStatsGroup(byLayer, meta?.layerId, state, stat.size)
           this.incrementStatsGroup(byPublish, meta?.publishId, state, stat.size)
+          this.incrementStatsGroup(byResourceType, meta?.resourceType, state, stat.size)
 
           entries.push({
             key: meta?.key || path.basename(itemPath),
@@ -522,6 +565,8 @@ class FetchRelay {
             sourceId: meta?.sourceId || null,
             layerId: meta?.layerId || null,
             publishId: meta?.publishId || null,
+            resourceType: meta?.resourceType || null,
+            range: meta?.range || null,
             state,
             size: stat.size,
             updatedAt: meta?.updatedAt || stat.mtimeMs,
@@ -544,6 +589,7 @@ class FetchRelay {
       bySource,
       byLayer,
       byPublish,
+      byResourceType,
       entries: entries
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 100),

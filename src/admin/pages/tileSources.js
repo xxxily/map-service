@@ -10,9 +10,123 @@ const SCALE_REQUEST_PIXELS = {
   2: 512,
   3: 768,
 }
+const SOURCE_KIND_OPTIONS = [
+  ['xyz', 'XYZ 栅格'],
+  ['tms', 'TMS 栅格'],
+  ['xyz-raster', 'XYZ 栅格'],
+  ['tms-raster', 'TMS 栅格'],
+  ['wmts-raster', 'WMTS 栅格'],
+  ['arcgis-raster', 'ArcGIS 栅格'],
+  ['quadkey-raster', 'QuadKey 栅格'],
+  ['time-raster', '时间序列栅格'],
+  ['mvt', 'MVT 矢量瓦片'],
+  ['vector-tilejson', '矢量 TileJSON'],
+  ['vector-style', '矢量 Style JSON'],
+  ['pmtiles-vector', 'PMTiles 矢量'],
+  ['pmtiles-raster', 'PMTiles 栅格'],
+  ['google-map-tiles-api', 'Google Map Tiles API'],
+]
+const CATEGORY_OPTIONS = [
+  ['satellite', '卫星'],
+  ['road', '街道/道路'],
+  ['street', '街道/道路'],
+  ['label', '注记'],
+  ['terrain', '地形'],
+  ['vector', '矢量'],
+  ['overlay', '叠加'],
+  ['weather', '天气'],
+  ['other', '其他'],
+  ['custom', '自定义'],
+]
+const SECRET_PLACEMENT_OPTIONS = [
+  ['query', 'Query 参数'],
+  ['header', '请求头'],
+  ['bearer', 'Bearer Token'],
+  ['session', '会话/适配器'],
+]
+const KEY_POOL_STRATEGY_OPTIONS = [
+  ['round_robin', '健康 Key 轮询'],
+  ['priority_failover', '优先级失败切换'],
+  ['random', '健康 Key 随机'],
+  ['weighted_round_robin', '按权重轮询'],
+]
+const KEY_POOL_SCOPE_OPTIONS = [
+  ['global', '全局'],
+  ['source', '图源'],
+  ['publish', '发布项'],
+]
+const RENDERING_ENGINE_OPTIONS = [
+  ['leaflet', 'Leaflet 栅格'],
+  ['maplibre', 'MapLibre 矢量'],
+  ['cesium', 'Cesium 3D'],
+]
+const VECTOR_SOURCE_KINDS = new Set(['mvt', 'vector-tilejson', 'vector-style', 'pmtiles-vector'])
+const PMTILES_SOURCE_KINDS = new Set(['pmtiles-vector', 'pmtiles-raster'])
 
 function getResultError (result) {
   return result?.errorMessage || result?.error || ''
+}
+
+function renderOptions (options, selectedValue = '') {
+  return options.map(([value, label]) => `<option value="${escapeHtml(value)}" ${selectedValue === value ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')
+}
+
+function renderFreeTextOption (value, options) {
+  if (!value || options.some(([optionValue]) => optionValue === value)) return ''
+  return `<option value="${escapeHtml(value)}" selected>${escapeHtml(value)}</option>`
+}
+
+function getKindLabel (kind = '') {
+  return SOURCE_KIND_OPTIONS.find(([value]) => value === kind)?.[1] || kind || '-'
+}
+
+function isVectorKind (kind = '') {
+  return VECTOR_SOURCE_KINDS.has(kind)
+}
+
+function isPmtilesKind (kind = '') {
+  return PMTILES_SOURCE_KINDS.has(kind)
+}
+
+function getEntryValue (source = {}, key) {
+  return source.entry?.[key] || source[key] || ''
+}
+
+function getSourcePrimaryEntry (source = {}) {
+  if (source.kind === 'vector-style') return getEntryValue(source, 'styleJsonUrl')
+  if (source.kind === 'vector-tilejson') return getEntryValue(source, 'tileJsonUrl')
+  if (isPmtilesKind(source.kind)) return getEntryValue(source, 'pmtilesUrl')
+  return getEntryValue(source, 'template')
+}
+
+function renderBooleanBadge (enabled, trueText = '是', falseText = '否') {
+  return enabled
+    ? `<span class="badge-green">${escapeHtml(trueText)}</span>`
+    : `<span class="badge-gray">${escapeHtml(falseText)}</span>`
+}
+
+function renderPresetStatusBadge (status = 'ready') {
+  if (status === 'ready') return '<span class="badge-green">可创建</span>'
+  if (status === 'requires_adapter') return '<span class="badge-blue">需适配器</span>'
+  if (status === 'research_only') return '<span class="badge-gray">调研参考</span>'
+  return `<span class="badge-gray">${escapeHtml(status)}</span>`
+}
+
+function renderKeyPoolOptions (keyPools = [], selectedId = '') {
+  return keyPools.map(pool => `<option value="${escapeHtml(pool.id)}" ${pool.id === selectedId ? 'selected' : ''}>${escapeHtml(pool.name)} (${escapeHtml(pool.id)})</option>`).join('')
+}
+
+function findDefaultKeyPoolForPreset (preset = {}, keyPools = []) {
+  if (!preset.requiresKey) return null
+  return keyPools.find(pool => (pool.allowedPresetIds || []).includes(preset.presetId)) ||
+    keyPools.find(pool => pool.id === `default-${preset.vendor}-key-pool`) ||
+    keyPools.find(pool => pool.vendor === preset.vendor && pool.scope === 'global') ||
+    null
+}
+
+function renderCredentialLink (pool = {}, text = '申请 Key') {
+  if (!pool.credentialUrl) return ''
+  return `<a href="${escapeHtml(pool.credentialUrl)}" target="_blank" rel="noopener noreferrer" class="btn-link">${escapeHtml(text)}</a>`
 }
 
 function getPublishTargetLabel (targetType) {
@@ -30,6 +144,57 @@ function renderPublishExample (activePublish, state) {
   const pathSlug = activePublish.pathSlug
   const tokenParam = activePublish.auth?.mode === 'token' ? '?token=您的TOKEN' : ''
   const tileJsonUrl = `${origin}/api/v1/external/${pathSlug}/tilejson${tokenParam}`
+  const vectorTileJsonUrl = `${origin}/api/v1/external/${pathSlug}/tilejson.json${tokenParam}`
+  const styleJsonUrl = `${origin}/api/v1/external/${pathSlug}/style.json${tokenParam}`
+
+  const targetSource = activePublish.targetType === 'source' || activePublish.targetType === 'dedicated_source'
+    ? (state.tileSources || []).find(item => item.id === activePublish.targetId)
+    : null
+
+  if (targetSource && isVectorKind(targetSource.kind)) {
+    const directTileUrl = `${origin}/api/v1/external/${pathSlug}/tiles/{z}/{x}/{y}.pbf${tokenParam}`
+    const pmtilesUrl = `${origin}/api/v1/external/${pathSlug}.pmtiles${tokenParam}`
+    const primaryUrl = targetSource.kind === 'vector-style'
+      ? styleJsonUrl
+      : targetSource.kind === 'vector-tilejson'
+        ? vectorTileJsonUrl
+        : isPmtilesKind(targetSource.kind)
+          ? pmtilesUrl
+          : directTileUrl
+    const mapLibreSnippet = targetSource.kind === 'vector-style'
+      ? `const map = new maplibregl.Map({
+  container: 'map',
+  style: '${styleJsonUrl}'
+});`
+      : targetSource.kind === 'vector-tilejson'
+        ? `const style = {
+  version: 8,
+  sources: {
+    tiles: { type: 'vector', url: '${vectorTileJsonUrl}' }
+  },
+  layers: []
+};`
+        : `// MVT/PMTiles 需要结合具体 source-layer 或 style 定义使用
+// 资源入口: ${primaryUrl}`
+
+    return `
+      <div class="form-card" style="margin-top:25px; background:white;">
+        <h4>矢量对外接入 URL 示例 : <strong>${escapeHtml(activePublish.name)}</strong></h4>
+        <div style="margin-top:10px; font-size:12px;">
+          <div><strong>主入口 URL:</strong></div>
+          <code style="background:#f1f5f9; padding:4px 8px; display:block; border-radius:4px; margin:4px 0; word-break:break-all;">${escapeHtml(primaryUrl)}</code>
+          <div style="margin-top:10px;"><strong>Style JSON:</strong></div>
+          <code style="background:#f1f5f9; padding:4px 8px; display:block; border-radius:4px; margin:4px 0; word-break:break-all;">${escapeHtml(styleJsonUrl)}</code>
+          <div style="margin-top:10px;"><strong>TileJSON:</strong></div>
+          <code style="background:#f1f5f9; padding:4px 8px; display:block; border-radius:4px; margin:4px 0; word-break:break-all;">${escapeHtml(vectorTileJsonUrl)}</code>
+        </div>
+        <div style="margin-top:20px;">
+          <strong>MapLibre 加载接入示例:</strong>
+          <div class="api-example">${escapeHtml(mapLibreSnippet)}</div>
+        </div>
+      </div>
+    `
+  }
 
   if (activePublish.targetType === 'layer') {
     const layer = (state.mapLayers || []).find(item => item.id === activePublish.targetId)
@@ -189,6 +354,273 @@ function collectCachePolicy (form, formData, prefix = 'cache') {
   }
 }
 
+function collectStringList (formData, name) {
+  return String(formData.get(name) || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function collectEntryConfig (formData) {
+  return {
+    template: String(formData.get('entry_template') || '').trim(),
+    styleJsonUrl: String(formData.get('entry_styleJsonUrl') || '').trim(),
+    tileJsonUrl: String(formData.get('entry_tileJsonUrl') || '').trim(),
+    pmtilesUrl: String(formData.get('entry_pmtilesUrl') || '').trim(),
+    glyphsUrl: String(formData.get('entry_glyphsUrl') || '').trim(),
+    spritesUrl: String(formData.get('entry_spritesUrl') || '').trim(),
+  }
+}
+
+function collectSecretPolicy (form, formData) {
+  return {
+    required: Boolean(form.elements.secrets_required?.checked),
+    keyPoolId: formData.get('secrets_keyPoolId') || '',
+    placement: formData.get('secrets_placement') || 'query',
+    paramName: formData.get('secrets_paramName') || 'key',
+  }
+}
+
+function collectRenderingConfig (form, formData) {
+  return {
+    engine: formData.get('rendering_engine') || 'leaflet',
+    clients: [
+      form.elements.rendering_client_2d?.checked ? '2d' : '',
+      form.elements.rendering_client_3d?.checked ? '3d' : '',
+    ].filter(Boolean),
+    fallbackRasterSourceId: formData.get('rendering_fallbackRasterSourceId') || '',
+  }
+}
+
+function collectLicensePolicy (form, formData) {
+  return {
+    attribution: formData.get('license_attribution') || '',
+    termsUrl: formData.get('license_termsUrl') || '',
+    officialStatus: formData.get('license_officialStatus') || 'official',
+    licenseType: formData.get('license_licenseType') || 'unknown',
+    cacheAllowedByLicense: Boolean(form.elements.license_cacheAllowedByLicense?.checked),
+    publicUseAllowed: Boolean(form.elements.license_publicUseAllowed?.checked),
+    chinaPublicUseReviewed: Boolean(form.elements.license_chinaPublicUseReviewed?.checked),
+    chinaPublicUseRisk: formData.get('license_chinaPublicUseRisk') || '',
+  }
+}
+
+function collectKeyPoolPayload (form, formData) {
+  const keys = Array.from(form.querySelectorAll('[data-key-row]')).map((row) => {
+    const get = (name) => row.querySelector(`[name="${name}"]`)
+    const payload = {
+      id: get('key_id')?.value || '',
+      alias: get('key_alias')?.value || '',
+      enabled: Boolean(get('key_enabled')?.checked),
+      secretType: get('key_secretType')?.value || 'api_key',
+      placement: get('key_placement')?.value || 'query',
+      paramName: get('key_paramName')?.value || 'key',
+      priority: parseInt(get('key_priority')?.value || '100', 10),
+      weight: parseInt(get('key_weight')?.value || '1', 10),
+      qpsLimit: parseInt(get('key_qpsLimit')?.value || '0', 10),
+      dailyLimit: parseInt(get('key_dailyLimit')?.value || '0', 10),
+      monthlyLimit: parseInt(get('key_monthlyLimit')?.value || '0', 10),
+    }
+    const secret = get('key_secret')?.value || ''
+    if (secret) payload.secret = secret
+    return payload
+  })
+
+  return {
+    id: formData.get('id'),
+    name: formData.get('name'),
+    vendor: formData.get('vendor'),
+    enabled: Boolean(form.elements.enabled?.checked),
+    scope: formData.get('scope') || 'global',
+    strategy: formData.get('strategy') || 'round_robin',
+    cooldownMs: parseInt(formData.get('cooldownMs') || '300000', 10),
+    maxRetriesPerRequest: parseInt(formData.get('maxRetriesPerRequest') || '2', 10),
+    defaultSecretType: formData.get('defaultSecretType') || 'api_key',
+    defaultPlacement: formData.get('defaultPlacement') || 'query',
+    defaultParamName: formData.get('defaultParamName') || 'key',
+    credentialUrl: String(formData.get('credentialUrl') || '').trim(),
+    allowedPresetIds: collectStringList(formData, 'allowedPresetIds'),
+    allowedSourceIds: collectStringList(formData, 'allowedSourceIds'),
+    keys,
+    description: formData.get('description') || '',
+  }
+}
+
+function syncEditingKeyPoolFromForm (state, form) {
+  if (!state.editingKeyPool || !form) return
+  const previousKeys = state.editingKeyPool.keys || []
+  const previousById = new Map(previousKeys.filter(key => key.id).map(key => [key.id, key]))
+  const payload = collectKeyPoolPayload(form, new FormData(form))
+  payload.keys = payload.keys.map((key, index) => ({
+    ...(previousKeys[index] || {}),
+    ...(previousById.get(key.id) || {}),
+    ...key,
+  }))
+  state.editingKeyPool = {
+    ...state.editingKeyPool,
+    ...payload,
+  }
+}
+
+function renderSourceEntryFields (source = {}) {
+  const entry = source.entry || {}
+  return `
+    <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
+      <legend style="padding:0 5px; font-weight:600;">上游入口配置</legend>
+      <div class="form-grid single">
+        <div class="field-group">
+          <label>瓦片 / MVT URL 模板</label>
+          <input name="entry_template" value="${escapeHtml(entry.template || source.template || '')}" placeholder="https://example.com/{z}/{x}/{y}.png">
+          <small style="color:#64748b;">适用于栅格、WMTS、ArcGIS、QuadKey、MVT 等模板类图源；支持 {s}、{x}、{y}、{z}、{scale}、{yTms}、{key}、{quadkey}。</small>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="field-group">
+          <label>Style JSON URL</label>
+          <input name="entry_styleJsonUrl" value="${escapeHtml(entry.styleJsonUrl || source.styleJsonUrl || '')}" placeholder="https://example.com/style.json?key={key}">
+        </div>
+        <div class="field-group">
+          <label>TileJSON URL</label>
+          <input name="entry_tileJsonUrl" value="${escapeHtml(entry.tileJsonUrl || source.tileJsonUrl || '')}" placeholder="https://example.com/tilejson.json?key={key}">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="field-group">
+          <label>PMTiles URL</label>
+          <input name="entry_pmtilesUrl" value="${escapeHtml(entry.pmtilesUrl || source.pmtilesUrl || '')}" placeholder="https://example.com/base.pmtiles">
+        </div>
+        <div class="field-group">
+          <label>Glyphs URL</label>
+          <input name="entry_glyphsUrl" value="${escapeHtml(entry.glyphsUrl || '')}" placeholder="https://example.com/fonts/{fontstack}/{range}.pbf">
+        </div>
+      </div>
+      <div class="form-grid single">
+        <div class="field-group">
+          <label>Sprites URL 前缀</label>
+          <input name="entry_spritesUrl" value="${escapeHtml(entry.spritesUrl || '')}" placeholder="https://example.com/sprites/sprite">
+        </div>
+      </div>
+    </fieldset>
+  `
+}
+
+function renderSecretPolicyFields (source = {}, keyPools = []) {
+  const secrets = source.secrets || {}
+  return `
+    <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
+      <legend style="padding:0 5px; font-weight:600;">密钥策略</legend>
+      <div class="checkbox-group" style="margin-top:0;">
+        <input type="checkbox" id="secrets_required" name="secrets_required" ${secrets.required ? 'checked' : ''}>
+        <label for="secrets_required">该图源需要密钥池</label>
+      </div>
+      <div class="form-grid" style="margin-top:10px;">
+        <div class="field-group">
+          <label>关联密钥池</label>
+          <select name="secrets_keyPoolId">
+            <option value="">不关联密钥池</option>
+            ${renderKeyPoolOptions(keyPools, secrets.keyPoolId || '')}
+          </select>
+        </div>
+        <div class="field-group">
+          <label>注入方式</label>
+          <select name="secrets_placement">
+            ${renderOptions(SECRET_PLACEMENT_OPTIONS, secrets.placement || 'query')}
+          </select>
+        </div>
+      </div>
+      <div class="form-grid single">
+        <div class="field-group">
+          <label>参数名 / Header 名</label>
+          <input name="secrets_paramName" value="${escapeHtml(secrets.paramName || 'key')}" placeholder="key / access_token / tk / x-api-key">
+        </div>
+      </div>
+    </fieldset>
+  `
+}
+
+function renderRenderingFields (source = {}, sources = []) {
+  const rendering = source.rendering || {}
+  const clients = rendering.clients || (isVectorKind(source.kind) ? ['2d'] : ['2d', '3d'])
+  const rasterSources = sources.filter(item => !isVectorKind(item.kind) && !isPmtilesKind(item.kind))
+  return `
+    <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
+      <legend style="padding:0 5px; font-weight:600;">渲染配置</legend>
+      <div class="form-grid">
+        <div class="field-group">
+          <label>渲染引擎</label>
+          <select name="rendering_engine">
+            ${renderOptions(RENDERING_ENGINE_OPTIONS, rendering.engine || (isVectorKind(source.kind) ? 'maplibre' : 'leaflet'))}
+          </select>
+        </div>
+        <div class="field-group">
+          <label>3D 降级栅格图源</label>
+          <select name="rendering_fallbackRasterSourceId">
+            <option value="">不配置</option>
+            ${rasterSources.map(item => `<option value="${escapeHtml(item.id)}" ${rendering.fallbackRasterSourceId === item.id ? 'selected' : ''}>${escapeHtml(item.name)} (${escapeHtml(item.id)})</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="checkbox-group" style="margin-top:0;">
+        <input type="checkbox" id="rendering_client_2d" name="rendering_client_2d" ${clients.includes('2d') ? 'checked' : ''}>
+        <label for="rendering_client_2d">支持 2D 前台</label>
+      </div>
+      <div class="checkbox-group">
+        <input type="checkbox" id="rendering_client_3d" name="rendering_client_3d" ${clients.includes('3d') ? 'checked' : ''}>
+        <label for="rendering_client_3d">支持 3D 前台</label>
+      </div>
+    </fieldset>
+  `
+}
+
+function renderLicenseFields (source = {}) {
+  const license = source.license || {}
+  return `
+    <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
+      <legend style="padding:0 5px; font-weight:600;">授权与合规</legend>
+      <div class="form-grid">
+        <div class="field-group">
+          <label>版权声明</label>
+          <input name="license_attribution" value="${escapeHtml(license.attribution || source.attribution || '')}">
+        </div>
+        <div class="field-group">
+          <label>服务条款 URL</label>
+          <input name="license_termsUrl" value="${escapeHtml(license.termsUrl || '')}">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="field-group">
+          <label>官方状态</label>
+          <select name="license_officialStatus">
+            ${renderOptions([['official', '官方'], ['unofficial', '非官方'], ['community', '社区'], ['internal', '内部']], license.officialStatus || 'official')}
+          </select>
+        </div>
+        <div class="field-group">
+          <label>授权类型</label>
+          <select name="license_licenseType">
+            ${renderOptions([['free', '免费'], ['api-key', 'API Key'], ['commercial', '商业授权'], ['unknown', '未知']], license.licenseType || 'unknown')}
+          </select>
+        </div>
+      </div>
+      <div class="checkbox-group" style="margin-top:0;">
+        <input type="checkbox" id="license_cacheAllowedByLicense" name="license_cacheAllowedByLicense" ${license.cacheAllowedByLicense !== false ? 'checked' : ''}>
+        <label for="license_cacheAllowedByLicense">授权允许服务端缓存</label>
+      </div>
+      <div class="checkbox-group">
+        <input type="checkbox" id="license_publicUseAllowed" name="license_publicUseAllowed" ${license.publicUseAllowed ? 'checked' : ''}>
+        <label for="license_publicUseAllowed">授权允许公开对外服务</label>
+      </div>
+      <div class="checkbox-group">
+        <input type="checkbox" id="license_chinaPublicUseReviewed" name="license_chinaPublicUseReviewed" ${license.chinaPublicUseReviewed ? 'checked' : ''}>
+        <label for="license_chinaPublicUseReviewed">已完成国内公开使用风险复核</label>
+      </div>
+      <div class="field-group" style="margin-top:10px;">
+        <label>国内公开使用风险说明</label>
+        <textarea name="license_chinaPublicUseRisk" rows="2">${escapeHtml(license.chinaPublicUseRisk || '')}</textarea>
+      </div>
+    </fieldset>
+  `
+}
+
 function getScaleFromSource (source = {}) {
   const fixedScale = Number(source.retina?.normalValue)
   if (SCALE_REQUEST_PIXELS[fixedScale]) return String(fixedScale)
@@ -196,14 +628,15 @@ function getScaleFromSource (source = {}) {
 }
 
 function renderStatusToggleButton (enabled, action, id, activeLabel, inactiveLabel) {
-  const nextLabel = enabled ? inactiveLabel : activeLabel
+  const isEnabled = enabled !== false
+  const nextLabel = isEnabled ? inactiveLabel : activeLabel
   return `
     <button
       type="button"
-      class="status-toggle ${enabled ? 'is-enabled' : 'is-disabled'}"
+      class="status-toggle ${isEnabled ? 'is-enabled' : 'is-disabled'}"
       data-tile-sources-toggle-${action}="${escapeHtml(id)}"
       title="点击切换为${escapeHtml(nextLabel)}"
-    >${escapeHtml(enabled ? activeLabel : inactiveLabel)}</button>
+    >${escapeHtml(isEnabled ? activeLabel : inactiveLabel)}</button>
   `
 }
 
@@ -240,6 +673,8 @@ function renderProxyBadge (log) {
 async function reloadCatalogRelatedState (state, api, options = {}) {
   const {
     tileSources = false,
+    sourcePresets = false,
+    keyPools = false,
     mapLayers = false,
     externalPublishes = false,
     precacheCatalog = true,
@@ -250,6 +685,14 @@ async function reloadCatalogRelatedState (state, api, options = {}) {
   if (tileSources) {
     requests.push(api.listTileSources())
     setters.push(result => { state.tileSources = result })
+  }
+  if (sourcePresets) {
+    requests.push(api.listSourcePresets())
+    setters.push(result => { state.sourcePresets = result })
+  }
+  if (keyPools) {
+    requests.push(api.listKeyPools())
+    setters.push(result => { state.keyPools = result })
   }
   if (mapLayers) {
     requests.push(api.listMapLayers())
@@ -274,6 +717,8 @@ export function renderTileSourcesPage (state) {
 
   const subTabs = [
     { id: 'sources', label: '图源' },
+    { id: 'presets', label: '图源预设' },
+    { id: 'key-pools', label: '密钥池' },
     { id: 'layers', label: '图层组合' },
     { id: 'publishes', label: '发布/API' },
     { id: 'diagnostics', label: '诊断日志' }
@@ -283,6 +728,12 @@ export function renderTileSourcesPage (state) {
   switch (state.tileSourcesSubTab) {
     case 'sources':
       content = renderSourcesView(state)
+      break
+    case 'presets':
+      content = renderPresetsView(state)
+      break
+    case 'key-pools':
+      content = renderKeyPoolsView(state)
       break
     case 'layers':
       content = renderLayersView(state)
@@ -329,7 +780,10 @@ function renderSourcesView (state) {
     const isNew = !sources.some(s => s.id === editing.id)
     const outbounds = state.proxyOutbounds || []
     const pools = state.proxyPools || []
+    const keyPools = state.keyPools || []
     const tileScale = getScaleFromSource(editing)
+    const selectedCategory = editing.category || 'custom'
+    const selectedKind = editing.kind || 'xyz-raster'
     return `
       <div class="form-card">
         <h3>${isNew ? '新增图源' : `编辑图源: ${escapeHtml(editing.id)}`}</h3>
@@ -353,19 +807,37 @@ function renderSourcesView (state) {
             <div class="field-group">
               <label>图源分类</label>
               <select name="category">
-                <option value="satellite" ${editing.category === 'satellite' ? 'selected' : ''}>卫星</option>
-                <option value="road" ${editing.category === 'road' ? 'selected' : ''}>街道/道路</option>
-                <option value="other" ${editing.category === 'other' ? 'selected' : ''}>其他</option>
+                ${renderFreeTextOption(selectedCategory, CATEGORY_OPTIONS)}
+                ${renderOptions(CATEGORY_OPTIONS, selectedCategory)}
               </select>
             </div>
           </div>
-          <div class="form-grid single">
+          <div class="form-grid">
             <div class="field-group">
-              <label>上游 URL 模板</label>
-              <input name="template" value="${escapeHtml(editing.template || '')}" required placeholder="https://example.com/{z}/{x}/{y}.png">
-              <small style="color: #64748b;">支持占位符: {s}, {x}, {y}, {z}, {scale}, {yTms}</small>
+              <label>图源类型</label>
+              <select name="kind">
+                ${renderOptions(SOURCE_KIND_OPTIONS, selectedKind)}
+              </select>
+            </div>
+            <div class="field-group">
+              <label>适配器</label>
+              <input name="adapter" value="${escapeHtml(editing.adapter || (isVectorKind(selectedKind) ? 'maplibre-style' : 'template'))}" placeholder="template / wmts-kvp / maplibre-style / pmtiles">
             </div>
           </div>
+          <div class="form-grid">
+            <div class="field-group">
+              <label>来源预设 ID</label>
+              <input name="presetId" value="${escapeHtml(editing.presetId || '')}" placeholder="例如: preset:maptiler-streets-vector">
+            </div>
+            <div class="field-group">
+              <label>矢量 Schema / 坐标系</label>
+              <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                <input name="schema" value="${escapeHtml(editing.schema || '')}" placeholder="openmaptiles">
+                <input name="coordinateSystem" value="${escapeHtml(editing.coordinateSystem || 'EPSG:3857')}" placeholder="EPSG:3857">
+              </div>
+            </div>
+          </div>
+          ${renderSourceEntryFields(editing)}
           <div class="form-grid">
             <div class="field-group">
               <label>缩放范围 (最小 - 最大)</label>
@@ -393,19 +865,24 @@ function renderSourcesView (state) {
                 <option value="2" ${tileScale === '2' ? 'selected' : ''}>2x（请求 512px，网格 256px）</option>
                 <option value="3" ${tileScale === '3' ? 'selected' : ''}>3x（请求 768px，网格 256px）</option>
               </select>
+              <small style="color:#64748b;">瓦片网格固定 256px；高清请求通过 scale 控制。</small>
             </div>
           </div>
 
           <div class="form-grid">
             <div class="field-group">
-              <label>版权声明</label>
-              <input name="attribution" value="${escapeHtml(editing.attribution || '')}">
+              <label>标签 (半角逗号分隔)</label>
+              <input name="tags" value="${escapeHtml((editing.tags || []).join(','))}" placeholder="例如: china, satellite">
             </div>
             <div class="field-group">
               <label>描述</label>
               <textarea name="description" rows="2">${escapeHtml(editing.description || '')}</textarea>
             </div>
           </div>
+
+          ${renderSecretPolicyFields(editing, keyPools)}
+          ${renderRenderingFields(editing, sources)}
+          ${renderLicenseFields(editing)}
 
           <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
             <legend style="padding:0 5px; font-weight:600;">缓存策略</legend>
@@ -442,6 +919,10 @@ function renderSourcesView (state) {
             <div class="checkbox-group">
               <input type="checkbox" id="perm_external" name="perm_externalApiAllowed" ${editing.permissions?.externalApiAllowed !== false ? 'checked' : ''}>
               <label for="perm_external">允许作为外部 API 发布公开项</label>
+            </div>
+            <div class="checkbox-group">
+              <input type="checkbox" id="perm_user_ref" name="perm_userReferenceAllowed" ${editing.permissions?.userReferenceAllowed ? 'checked' : ''}>
+              <label for="perm_user_ref">允许用户自定义图层引用</label>
             </div>
           </fieldset>
 
@@ -481,7 +962,9 @@ function renderSourcesView (state) {
         <tr>
           <th>ID / 图源名称</th>
           <th>厂商 / 类型</th>
+          <th>主入口</th>
           <th>缩放级</th>
+          <th>密钥池</th>
           <th>缓存状态</th>
           <th>代理策略</th>
           <th>前台可见</th>
@@ -493,6 +976,7 @@ function renderSourcesView (state) {
       <tbody>
         ${sources.map(source => {
           const testState = state[`test_source_${source.id}`] || ''
+          const primaryEntry = getSourcePrimaryEntry(source)
           return `
             <tr>
               <td>
@@ -502,9 +986,17 @@ function renderSourcesView (state) {
               <td>
                 <span class="badge-gray">${escapeHtml(source.vendor)}</span>
                 <span class="badge-gray" style="margin-left:4px;">${escapeHtml(source.category)}</span>
+                <span class="badge-blue" style="margin-left:4px;">${escapeHtml(getKindLabel(source.kind))}</span>
                 <span class="badge-gray" style="margin-left:4px;">${escapeHtml(getSourceVisibilityLabel(source))}</span>
               </td>
+              <td>
+                <code style="display:block; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(primaryEntry)}">${escapeHtml(primaryEntry || '-')}</code>
+              </td>
               <td>${source.minZoom}-${source.maxZoom}</td>
+              <td>
+                ${source.secrets?.required ? '<span class="badge-blue">需要 Key</span>' : '<span class="badge-gray">无需 Key</span>'}
+                ${source.secrets?.keyPoolId ? `<div style="margin-top:4px;"><span class="badge-gray">${escapeHtml(source.secrets.keyPoolId)}</span></div>` : ''}
+              </td>
               <td>
                 ${source.cache?.enabled !== false 
                   ? '<span class="badge-green">启用</span>' 
@@ -539,7 +1031,352 @@ function renderSourcesView (state) {
               </td>
             </tr>
           `
-        }).join('') || '<tr><td colspan="9" style="text-align:center;">暂无图源配置</td></tr>'}
+        }).join('') || '<tr><td colspan="11" style="text-align:center;">暂无图源配置</td></tr>'}
+      </tbody>
+    </table>
+  `
+}
+
+function renderPresetsView (state) {
+  const presets = state.sourcePresets || []
+  const keyPools = state.keyPools || []
+  const creating = state.creatingSourceFromPreset
+
+  if (creating) {
+    const preset = presets.find(item => item.presetId === creating.presetId) || creating
+    const defaultKeyPool = findDefaultKeyPoolForPreset(preset, keyPools)
+    const selectedKeyPoolId = creating.keyPoolId || defaultKeyPool?.id || ''
+    const canEnableDirectly = preset.status === 'ready'
+    return `
+      <div class="form-card">
+        <h3>基于预设创建图源: ${escapeHtml(preset.name || preset.presetId)}</h3>
+        <form data-tile-sources-form="preset-source">
+          <input type="hidden" name="presetId" value="${escapeHtml(preset.presetId)}">
+          <div class="form-grid">
+            <div class="field-group">
+              <label>新图源 ID</label>
+              <input name="id" required value="${escapeHtml(creating.id || String(preset.presetId || '').replace(/^preset:/, ''))}">
+            </div>
+            <div class="field-group">
+              <label>图源名称</label>
+              <input name="name" required value="${escapeHtml(creating.name || preset.name || '')}">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field-group">
+              <label>预设类型</label>
+              <input value="${escapeHtml(`${preset.vendor || 'custom'} / ${getKindLabel(preset.kind)}`)}" readonly>
+            </div>
+            <div class="field-group">
+              <label>关联密钥池</label>
+              <select name="keyPoolId">
+                <option value="">${preset.requiresKey ? '稍后配置密钥池' : '无需密钥池'}</option>
+                ${renderKeyPoolOptions(keyPools, selectedKeyPoolId)}
+              </select>
+              ${defaultKeyPool ? `<p style="color:#64748b; font-size:12px; margin:6px 0 0;">已自动匹配：${escapeHtml(defaultKeyPool.name)} ${renderCredentialLink(defaultKeyPool)}</p>` : ''}
+            </div>
+          </div>
+          <div class="checkbox-group" style="margin-top:15px;">
+            <input type="checkbox" id="preset_source_enabled" name="enabled" ${creating.enabled && canEnableDirectly ? 'checked' : ''} ${canEnableDirectly ? '' : 'disabled'}>
+            <label for="preset_source_enabled" style="font-weight:600;">创建后立即启用</label>
+          </div>
+          ${canEnableDirectly ? '' : '<p style="color:#64748b; font-size:12px; margin-top:8px;">该预设仍需适配器或仅供调研参考，只能先创建为禁用图源。</p>'}
+          <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
+            <legend style="padding:0 5px; font-weight:600;">默认权限</legend>
+            <div class="checkbox-group" style="margin-top:0;">
+              <input type="checkbox" id="preset_perm_front" name="perm_frontendVisible" ${creating.permissions?.frontendVisible ? 'checked' : ''}>
+              <label for="preset_perm_front">允许前台底图选择器显示</label>
+            </div>
+            <div class="checkbox-group">
+              <input type="checkbox" id="preset_perm_external" name="perm_externalApiAllowed" ${creating.permissions?.externalApiAllowed ? 'checked' : ''}>
+              <label for="preset_perm_external">允许对外 API 发布</label>
+            </div>
+            <div class="checkbox-group">
+              <input type="checkbox" id="preset_perm_user" name="perm_userReferenceAllowed" ${creating.permissions?.userReferenceAllowed ? 'checked' : ''}>
+              <label for="preset_perm_user">允许用户自定义图层引用</label>
+            </div>
+          </fieldset>
+          <div style="margin-top:25px; display:flex; gap:15px;">
+            <button type="submit" class="admin-form-submit">创建图源</button>
+            <button type="button" class="admin-form-cancel" data-tile-sources-cancel="preset-source">取消</button>
+          </div>
+        </form>
+      </div>
+    `
+  }
+
+  return `
+    <div class="admin-panel-head">
+      <h3>图源预设库</h3>
+      <span style="color:#64748b; font-size:13px;">共 ${presets.length} 个预设，创建后默认进入禁用态</span>
+    </div>
+    <table class="item-table">
+      <thead>
+        <tr>
+          <th>预设名称 / ID</th>
+          <th>厂商 / 类型</th>
+          <th>Key</th>
+          <th>状态</th>
+          <th>授权提示</th>
+          <th>入口摘要</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${presets.map((preset) => {
+          const entry = getSourcePrimaryEntry(preset)
+          const defaultKeyPool = findDefaultKeyPoolForPreset(preset, keyPools)
+          return `
+            <tr>
+              <td>
+                <strong>${escapeHtml(preset.name)}</strong>
+                <div style="color:#64748b; font-size:11px; margin-top:2px;">${escapeHtml(preset.presetId)}</div>
+              </td>
+              <td>
+                <span class="badge-gray">${escapeHtml(preset.vendor)}</span>
+                <span class="badge-blue" style="margin-left:4px;">${escapeHtml(getKindLabel(preset.kind))}</span>
+                <span class="badge-gray" style="margin-left:4px;">${escapeHtml(preset.category)}</span>
+              </td>
+              <td>
+                ${preset.requiresKey ? '<span class="badge-blue">需要 Key</span>' : '<span class="badge-gray">无需 Key</span>'}
+                ${(preset.requiredSecretTypes || []).map(type => `<span class="badge-gray" style="margin-left:4px;">${escapeHtml(type)}</span>`).join('')}
+                ${defaultKeyPool ? `<div style="margin-top:4px;"><span class="badge-gray">${escapeHtml(defaultKeyPool.name)}</span> ${renderCredentialLink(defaultKeyPool)}</div>` : ''}
+              </td>
+              <td>${renderPresetStatusBadge(preset.status)}</td>
+              <td>
+                ${renderBooleanBadge(preset.cacheAllowedByLicense !== false, '可缓存', '禁缓存')}
+                ${renderBooleanBadge(Boolean(preset.publicUseAllowed), '可公开', '慎公开')}
+              </td>
+              <td>
+                <code style="display:block; max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(entry)}">${escapeHtml(entry || '-')}</code>
+              </td>
+              <td>
+                <button type="button" class="btn-link" data-tile-sources-create-from-preset="${escapeHtml(preset.presetId)}">创建图源</button>
+              </td>
+            </tr>
+          `
+        }).join('') || '<tr><td colspan="7" style="text-align:center; color:#64748b; padding:20px;">暂无预设图源</td></tr>'}
+      </tbody>
+    </table>
+  `
+}
+
+function renderKeyPoolKeyRows (pool, canTest = false, state = {}) {
+  const keys = pool.keys || []
+  return keys.map((key, index) => {
+    const testState = state[`test_key_${pool.id}_${key.id}`] || ''
+    const secretRequired = !key.hasSecret && !key.maskedPreview
+    const secretType = key.secretType || pool.defaultSecretType || 'api_key'
+    const placement = key.placement || pool.defaultPlacement || 'query'
+    const paramName = key.paramName || pool.defaultParamName || 'key'
+    return `
+      <div class="key-row" data-key-row="${index}">
+        <div class="key-row-main">
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:500;">
+            <input type="checkbox" name="key_enabled" ${key.enabled !== false ? 'checked' : ''}>
+            启用
+          </label>
+          <input name="key_id" required value="${escapeHtml(key.id || '')}" placeholder="key-a">
+          <input name="key_alias" value="${escapeHtml(key.alias || '')}" placeholder="主 Key">
+          <select name="key_secretType">
+            ${renderFreeTextOption(secretType, [['api_key', 'api_key'], ['token', 'token'], ['tk', 'tk'], ['ak', 'ak'], ['appid', 'appid']])}
+            ${renderOptions([['api_key', 'api_key'], ['token', 'token'], ['tk', 'tk'], ['ak', 'ak'], ['appid', 'appid']], secretType)}
+          </select>
+        </div>
+        <div class="key-row-main">
+          <input name="key_secret" type="password" autocomplete="new-password" ${secretRequired ? 'required' : ''} placeholder="${key.hasSecret ? `留空保留 ${key.maskedPreview || '****'}` : '输入明文 Key'}">
+          <select name="key_placement">
+            ${renderOptions(SECRET_PLACEMENT_OPTIONS, placement)}
+          </select>
+          <input name="key_paramName" value="${escapeHtml(paramName)}" placeholder="key">
+        </div>
+        <div class="key-row-main">
+          <input name="key_priority" type="number" min="0" max="10000" value="${key.priority ?? 100}" aria-label="优先级">
+          <input name="key_weight" type="number" min="1" max="1000" value="${key.weight ?? 1}" aria-label="权重">
+          <input name="key_qpsLimit" type="number" min="0" value="${key.qpsLimit ?? 0}" aria-label="QPS 限制">
+          <input name="key_dailyLimit" type="number" min="0" value="${key.dailyLimit ?? 0}" aria-label="每日限制">
+          <input name="key_monthlyLimit" type="number" min="0" value="${key.monthlyLimit ?? 0}" aria-label="每月限制">
+        </div>
+        <div class="flex-actions">
+          ${canTest && key.id ? `<button type="button" class="btn-link" data-tile-sources-test-key="${escapeHtml(pool.id)}:${escapeHtml(key.id)}">测试 Key</button>` : ''}
+          <button type="button" class="btn-link btn-danger-link" data-tile-sources-remove-key="${index}">移除</button>
+          ${testState === 'loading' ? '<span class="test-status test-loading">测试中...</span>' : ''}
+          ${testState && testState !== 'loading' && testState.success ? '<span class="test-status test-success">可用</span>' : ''}
+          ${testState && testState !== 'loading' && !testState.success ? `<span class="test-status test-fail" title="${escapeHtml(getResultError(testState))}">不可用</span>` : ''}
+        </div>
+      </div>
+    `
+  }).join('') || '<p style="color:#64748b;">暂无 Key，请添加至少一个 Key。</p>'
+}
+
+function renderKeyPoolsView (state) {
+  const pools = state.keyPools || []
+  const presets = state.sourcePresets || []
+  const sources = state.tileSources || []
+  const editing = state.editingKeyPool
+
+  if (editing) {
+    const isNew = !pools.some(pool => pool.id === editing.id)
+    return `
+      <div class="form-card">
+        <h3>${isNew ? '创建密钥池' : `编辑密钥池: ${escapeHtml(editing.id)}`}</h3>
+        <form data-tile-sources-form="key-pool">
+          <input type="hidden" name="isNew" value="${isNew}">
+          <div class="form-grid">
+            <div class="field-group">
+              <label>密钥池 ID</label>
+              <input name="id" required value="${escapeHtml(editing.id || '')}" ${!isNew ? 'readonly' : ''} placeholder="maptiler-main">
+            </div>
+            <div class="field-group">
+              <label>密钥池名称</label>
+              <input name="name" required value="${escapeHtml(editing.name || '')}" placeholder="MapTiler 主密钥池">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field-group">
+              <label>厂商</label>
+              <input name="vendor" value="${escapeHtml(editing.vendor || 'custom')}">
+            </div>
+            <div class="field-group">
+              <label>作用域</label>
+              <select name="scope">
+                ${renderOptions(KEY_POOL_SCOPE_OPTIONS, editing.scope || 'global')}
+              </select>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field-group">
+              <label>选择策略</label>
+              <select name="strategy">
+                ${renderOptions(KEY_POOL_STRATEGY_OPTIONS, editing.strategy || 'round_robin')}
+              </select>
+            </div>
+            <div class="field-group">
+              <label>失败冷却 / 单请求重试</label>
+              <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                <input name="cooldownMs" type="number" min="0" max="3600000" value="${editing.cooldownMs ?? 300000}" aria-label="失败冷却毫秒">
+                <input name="maxRetriesPerRequest" type="number" min="1" max="10" value="${editing.maxRetriesPerRequest ?? 2}" aria-label="单请求最大换 Key 次数">
+              </div>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field-group">
+              <label>默认 Key 类型</label>
+              <select name="defaultSecretType">
+                ${renderFreeTextOption(editing.defaultSecretType || 'api_key', [['api_key', 'api_key'], ['token', 'token'], ['tk', 'tk'], ['ak', 'ak'], ['appid', 'appid']])}
+                ${renderOptions([['api_key', 'api_key'], ['token', 'token'], ['tk', 'tk'], ['ak', 'ak'], ['appid', 'appid']], editing.defaultSecretType || 'api_key')}
+              </select>
+            </div>
+            <div class="field-group">
+              <label>默认注入方式 / 参数名</label>
+              <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                <select name="defaultPlacement">
+                  ${renderOptions(SECRET_PLACEMENT_OPTIONS, editing.defaultPlacement || 'query')}
+                </select>
+                <input name="defaultParamName" value="${escapeHtml(editing.defaultParamName || 'key')}" placeholder="key / tk / ak / access_token">
+              </div>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field-group">
+              <label>允许的预设 ID (半角逗号分隔)</label>
+              <input name="allowedPresetIds" value="${escapeHtml((editing.allowedPresetIds || []).join(','))}" list="source-preset-id-list">
+              <datalist id="source-preset-id-list">
+                ${presets.map(item => `<option value="${escapeHtml(item.presetId)}"></option>`).join('')}
+              </datalist>
+            </div>
+            <div class="field-group">
+              <label>允许的图源 ID (半角逗号分隔)</label>
+              <input name="allowedSourceIds" value="${escapeHtml((editing.allowedSourceIds || []).join(','))}" list="source-id-list">
+              <datalist id="source-id-list">
+                ${sources.map(item => `<option value="${escapeHtml(item.id)}"></option>`).join('')}
+              </datalist>
+            </div>
+          </div>
+          <div class="field-group">
+            <label>官方申请 / 控制台入口</label>
+            <input name="credentialUrl" type="url" value="${escapeHtml(editing.credentialUrl || '')}" placeholder="https://provider.example.com/console">
+          </div>
+          <div class="field-group">
+            <label>描述</label>
+            <textarea name="description" rows="2">${escapeHtml(editing.description || '')}</textarea>
+          </div>
+          <div class="checkbox-group">
+            <input type="checkbox" id="key_pool_enabled" name="enabled" ${editing.enabled !== false ? 'checked' : ''}>
+            <label for="key_pool_enabled" style="font-weight:600;">启用该密钥池</label>
+          </div>
+
+          <fieldset class="form-card" style="margin-top:15px; padding:15px; background:white;">
+            <legend style="padding:0 5px; font-weight:600;">密钥列表</legend>
+            <div class="key-rows">
+              ${renderKeyPoolKeyRows(editing, !isNew, state)}
+            </div>
+            <button type="button" class="btn-link" data-tile-sources-add-key style="margin-top:10px;">+ 添加 Key</button>
+          </fieldset>
+
+          <div style="margin-top:25px; display:flex; gap:15px;">
+            <button type="submit" class="admin-form-submit">保存密钥池</button>
+            <button type="button" class="admin-form-cancel" data-tile-sources-cancel="key-pool">取消</button>
+          </div>
+        </form>
+      </div>
+    `
+  }
+
+  return `
+    <div class="admin-panel-head">
+      <h3>密钥池管理</h3>
+      <button type="button" data-tile-sources-add="key-pool">+ 新建密钥池</button>
+    </div>
+    <table class="item-table">
+      <thead>
+        <tr>
+          <th>ID / 名称</th>
+          <th>厂商 / 策略</th>
+          <th>Key 数量</th>
+          <th>引用限制</th>
+          <th>连通测试</th>
+          <th>状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${pools.map((pool) => {
+          const testState = state[`test_key_pool_${pool.id}`] || ''
+          const enabledKeys = (pool.keys || []).filter(key => key.enabled !== false).length
+          return `
+            <tr>
+              <td>
+                <strong>${escapeHtml(pool.name)}</strong>
+                <div style="color:#64748b; font-size:11px; margin-top:2px;">${escapeHtml(pool.id)}</div>
+                ${pool.credentialUrl ? `<div style="margin-top:4px;">${renderCredentialLink(pool, '申请 / 管理 Key')}</div>` : ''}
+              </td>
+              <td>
+                <span class="badge-gray">${escapeHtml(pool.vendor)}</span>
+                <span class="badge-blue" style="margin-left:4px;">${escapeHtml(KEY_POOL_STRATEGY_OPTIONS.find(([value]) => value === pool.strategy)?.[1] || pool.strategy)}</span>
+                <div style="color:#64748b; font-size:11px; margin-top:4px;">${escapeHtml(pool.defaultSecretType || 'api_key')} / ${escapeHtml(pool.defaultParamName || 'key')}</div>
+              </td>
+              <td>${enabledKeys}/${(pool.keys || []).length} 可用</td>
+              <td>
+                <span class="badge-gray">预设 ${(pool.allowedPresetIds || []).length}</span>
+                <span class="badge-gray" style="margin-left:4px;">图源 ${(pool.allowedSourceIds || []).length}</span>
+              </td>
+              <td>
+                <button type="button" class="btn-link" data-tile-sources-test-key-pool="${pool.id}">测试</button>
+                ${testState === 'loading' ? '<span class="test-status test-loading">测试中...</span>' : ''}
+                ${testState && testState !== 'loading' && testState.success ? `<span class="test-status test-success">可用 ${testState.enabledKeyCount}/${testState.totalKeyCount}</span>` : ''}
+                ${testState && testState !== 'loading' && !testState.success ? `<span class="test-status test-fail" title="${escapeHtml(getResultError(testState))}">失败</span>` : ''}
+              </td>
+              <td>${renderStatusToggleButton(pool.enabled, 'key-pool', pool.id, '启用中', '已禁用')}</td>
+              <td>
+                <div class="flex-actions">
+                  <button type="button" class="btn-link" data-tile-sources-edit-key-pool="${pool.id}">编辑</button>
+                  <button type="button" class="btn-link btn-danger-link" data-tile-sources-delete-key-pool="${pool.id}">删除</button>
+                </div>
+              </td>
+            </tr>
+          `
+        }).join('') || '<tr><td colspan="7" style="text-align:center; color:#64748b; padding:20px;">暂无密钥池</td></tr>'}
       </tbody>
     </table>
   `
@@ -625,7 +1462,7 @@ function renderLayersView (state) {
                   <span style="font-weight:bold; color:#64748b; font-size:11px; width:20px;">#${index + 1}</span>
                   <select name="item_sourceId" required>
                     <option value="">请选择系统图源</option>
-                    ${sources.map(s => `<option value="${s.id}" ${item.sourceId === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${s.id})</option>`).join('')}
+                    ${sources.map(s => `<option value="${s.id}" ${item.sourceId === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${s.id} / ${getKindLabel(s.kind)})</option>`).join('')}
                   </select>
                   <div style="display:flex; align-items:center; gap:4px;">
                     <span style="font-size:12px; color:#475569;">不透明度:</span>
@@ -741,8 +1578,8 @@ function renderPublishesView (state) {
     const targetOptions = targetType === 'layer'
       ? layers.map(l => `<option value="${l.id}" ${editing.targetId === l.id ? 'selected' : ''}>${escapeHtml(l.name)} (${l.id})</option>`).join('')
       : targetType === 'dedicated_source'
-        ? dedicatedSources.map(s => `<option value="${s.id}" ${editing.targetId === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${s.id})</option>`).join('')
-        : systemSources.map(s => `<option value="${s.id}" ${editing.targetId === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${s.id})</option>`).join('')
+        ? dedicatedSources.map(s => `<option value="${s.id}" ${editing.targetId === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${s.id} / ${getKindLabel(s.kind)})</option>`).join('')
+        : systemSources.map(s => `<option value="${s.id}" ${editing.targetId === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${s.id} / ${getKindLabel(s.kind)})</option>`).join('')
     const proxyOverride = editing.overrides?.proxy || null
     const cacheOverride = editing.overrides?.cache || null
     return `
@@ -1067,6 +1904,8 @@ export async function handleTileSourcesClick (context) {
     state.editingProxyOutbound = null
     state.editingProxyPool = null
     state.editingExternalPublish = null
+    state.editingKeyPool = null
+    state.creatingSourceFromPreset = null
     
     if (state.tileSourcesSubTab === 'diagnostics') {
       await refreshActiveDiagnosticLogs(state, api)
@@ -1111,18 +1950,32 @@ export async function handleTileSourcesClick (context) {
       id: '',
       name: '',
       vendor: '',
-      category: 'satellite',
-      template: '',
+      category: 'custom',
+      kind: 'xyz-raster',
+      adapter: 'template',
+      presetId: '',
+      entry: {
+        template: '',
+        styleJsonUrl: '',
+        tileJsonUrl: '',
+        pmtilesUrl: '',
+        glyphsUrl: '',
+        spritesUrl: ''
+      },
       minZoom: 3,
       maxZoom: 18,
       maxNativeZoom: 18,
       tileSize: 256,
       retina: { mode: 'fixed', param: 'scale', normalValue: '1', retinaValue: '1' },
       subdomains: [],
+      secrets: { required: false, keyPoolId: '', placement: 'query', paramName: 'key' },
+      rendering: { engine: 'leaflet', clients: ['2d', '3d'], fallbackRasterSourceId: '' },
       cache: { enabled: true, ttlMs: 21600000, staleTtlMs: 2592000000 },
       proxy: { mode: 'never', fallbackToDirect: false },
-      permissions: { frontendVisible: true, precacheAllowed: true, externalApiAllowed: true },
-      visibility: { scope: 'system' }
+      accessLog: { enabled: true, maxLogCount: 500 },
+      permissions: { frontendVisible: true, precacheAllowed: true, externalApiAllowed: true, userReferenceAllowed: false },
+      visibility: { scope: 'system' },
+      license: { cacheAllowedByLicense: true, publicUseAllowed: false, officialStatus: 'internal', licenseType: 'unknown' }
     }
     renderDashboard()
     return true
@@ -1137,7 +1990,7 @@ export async function handleTileSourcesClick (context) {
     const id = toggleSourceBtn.getAttribute('data-tile-sources-toggle-source')
     const source = (state.tileSources || []).find(item => item.id === id)
     if (!source) return true
-    const nextEnabled = !source.enabled
+    const nextEnabled = !(source.enabled !== false)
     state.loading = true
     renderDashboard()
     try {
@@ -1203,6 +2056,196 @@ export async function handleTileSourcesClick (context) {
     return true
   }
 
+  // ================= 图源预设与密钥池操作 =================
+  const createFromPresetBtn = event.target.closest('[data-tile-sources-create-from-preset]')
+  if (createFromPresetBtn) {
+    const presetId = createFromPresetBtn.getAttribute('data-tile-sources-create-from-preset')
+    const preset = (state.sourcePresets || []).find(item => item.presetId === presetId)
+    if (!preset) return true
+    const defaultKeyPool = findDefaultKeyPoolForPreset(preset, state.keyPools || [])
+    state.creatingSourceFromPreset = {
+      presetId,
+      id: presetId.replace(/^preset:/, ''),
+      name: preset.name,
+      enabled: false,
+      keyPoolId: defaultKeyPool?.id || '',
+      permissions: {
+        frontendVisible: false,
+        externalApiAllowed: false,
+        userReferenceAllowed: false,
+      },
+    }
+    renderDashboard()
+    return true
+  }
+
+  if (event.target.closest('[data-tile-sources-cancel="preset-source"]')) {
+    state.creatingSourceFromPreset = null
+    renderDashboard()
+    return true
+  }
+
+  if (event.target.closest('[data-tile-sources-add="key-pool"]')) {
+    state.editingKeyPool = {
+      id: '',
+      name: '',
+      vendor: 'custom',
+      enabled: true,
+      scope: 'global',
+      strategy: 'round_robin',
+      cooldownMs: 300000,
+      maxRetriesPerRequest: 2,
+      defaultSecretType: 'api_key',
+      defaultPlacement: 'query',
+      defaultParamName: 'key',
+      credentialUrl: '',
+      allowedPresetIds: [],
+      allowedSourceIds: [],
+      keys: [{
+        id: '',
+        alias: '',
+        enabled: true,
+        secretType: 'api_key',
+        placement: 'query',
+        paramName: 'key',
+        priority: 100,
+        weight: 1,
+        qpsLimit: 0,
+        dailyLimit: 0,
+        monthlyLimit: 0,
+      }],
+      description: '',
+    }
+    renderDashboard()
+    return true
+  }
+
+  if (event.target.closest('[data-tile-sources-cancel="key-pool"]')) {
+    state.editingKeyPool = null
+    renderDashboard()
+    return true
+  }
+
+  const toggleKeyPoolBtn = event.target.closest('[data-tile-sources-toggle-key-pool]')
+  if (toggleKeyPoolBtn) {
+    const id = toggleKeyPoolBtn.getAttribute('data-tile-sources-toggle-key-pool')
+    const pool = (state.keyPools || []).find(item => item.id === id)
+    if (!pool) return true
+    const nextEnabled = !(pool.enabled !== false)
+    state.loading = true
+    renderDashboard()
+    try {
+      await api.updateKeyPool(id, { enabled: nextEnabled })
+      await reloadCatalogRelatedState(state, api, { keyPools: true, precacheCatalog: false })
+      setNotice(`密钥池已${nextEnabled ? '启用' : '禁用'}`)
+    } catch (err) {
+      setNotice('', err.message)
+    } finally {
+      state.loading = false
+      renderDashboard()
+    }
+    return true
+  }
+
+  const editKeyPoolBtn = event.target.closest('[data-tile-sources-edit-key-pool]')
+  if (editKeyPoolBtn) {
+    const id = editKeyPoolBtn.getAttribute('data-tile-sources-edit-key-pool')
+    state.loading = true
+    renderDashboard()
+    try {
+      state.editingKeyPool = await api.getKeyPool(id)
+    } catch (err) {
+      setNotice('', err.message)
+    } finally {
+      state.loading = false
+      renderDashboard()
+    }
+    return true
+  }
+
+  const deleteKeyPoolBtn = event.target.closest('[data-tile-sources-delete-key-pool]')
+  if (deleteKeyPoolBtn) {
+    const id = deleteKeyPoolBtn.getAttribute('data-tile-sources-delete-key-pool')
+    const confirm = await showConfirm(`确认删除密钥池 "${id}"？如果仍被图源引用将被后端阻止。`, '删除密钥池')
+    if (confirm) {
+      state.loading = true
+      renderDashboard()
+      try {
+        await api.deleteKeyPool(id)
+        await reloadCatalogRelatedState(state, api, { keyPools: true, precacheCatalog: false })
+        setNotice('删除密钥池成功')
+      } catch (err) {
+        setNotice('', err.message)
+      } finally {
+        state.loading = false
+        renderDashboard()
+      }
+    }
+    return true
+  }
+
+  const testKeyPoolBtn = event.target.closest('[data-tile-sources-test-key-pool]')
+  if (testKeyPoolBtn) {
+    const id = testKeyPoolBtn.getAttribute('data-tile-sources-test-key-pool')
+    state[`test_key_pool_${id}`] = 'loading'
+    renderDashboard()
+    try {
+      state[`test_key_pool_${id}`] = await api.testKeyPool(id)
+    } catch (err) {
+      state[`test_key_pool_${id}`] = { success: false, error: err.message }
+    } finally {
+      renderDashboard()
+    }
+    return true
+  }
+
+  const testKeyBtn = event.target.closest('[data-tile-sources-test-key]')
+  if (testKeyBtn) {
+    syncEditingKeyPoolFromForm(state, testKeyBtn.closest('form'))
+    const [poolId, keyId] = testKeyBtn.getAttribute('data-tile-sources-test-key').split(':')
+    state[`test_key_${poolId}_${keyId}`] = 'loading'
+    renderDashboard()
+    try {
+      state[`test_key_${poolId}_${keyId}`] = await api.testKeyPoolKey(poolId, keyId)
+    } catch (err) {
+      state[`test_key_${poolId}_${keyId}`] = { success: false, error: err.message }
+    } finally {
+      renderDashboard()
+    }
+    return true
+  }
+
+  if (event.target.closest('[data-tile-sources-add-key]')) {
+    if (!state.editingKeyPool) return true
+    syncEditingKeyPoolFromForm(state, event.target.closest('form'))
+    state.editingKeyPool.keys = state.editingKeyPool.keys || []
+    state.editingKeyPool.keys.push({
+      id: '',
+      alias: '',
+      enabled: true,
+      secretType: state.editingKeyPool.defaultSecretType || 'api_key',
+      placement: state.editingKeyPool.defaultPlacement || 'query',
+      paramName: state.editingKeyPool.defaultParamName || 'key',
+      priority: 100,
+      weight: 1,
+      qpsLimit: 0,
+      dailyLimit: 0,
+      monthlyLimit: 0,
+    })
+    renderDashboard()
+    return true
+  }
+
+  const removeKeyBtn = event.target.closest('[data-tile-sources-remove-key]')
+  if (removeKeyBtn) {
+    if (!state.editingKeyPool) return true
+    syncEditingKeyPoolFromForm(state, removeKeyBtn.closest('form'))
+    const idx = parseInt(removeKeyBtn.getAttribute('data-tile-sources-remove-key'), 10)
+    state.editingKeyPool.keys.splice(idx, 1)
+    renderDashboard()
+    return true
+  }
+
   // ================= 图层操作 =================
   if (event.target.closest('[data-tile-sources-add="layer"]')) {
     state.editingMapLayer = {
@@ -1228,7 +2271,7 @@ export async function handleTileSourcesClick (context) {
     const id = toggleLayerBtn.getAttribute('data-tile-sources-toggle-layer')
     const layer = (state.mapLayers || []).find(item => item.id === id)
     if (!layer) return true
-    const nextEnabled = !layer.enabled
+    const nextEnabled = !(layer.enabled !== false)
     if (layer.default && !nextEnabled) {
       setNotice('', '默认图层不能直接禁用，请先设置新的默认图层')
       return true
@@ -1361,7 +2404,7 @@ export async function handleTileSourcesClick (context) {
     const id = togglePublishBtn.getAttribute('data-tile-sources-toggle-publish')
     const publish = (state.externalPublishes || []).find(item => item.id === id)
     if (!publish) return true
-    const nextEnabled = !publish.enabled
+    const nextEnabled = !(publish.enabled !== false)
     state.loading = true
     renderDashboard()
     try {
@@ -1460,15 +2503,28 @@ export async function handleTileSourcesSubmit (context) {
     if (formType === 'source') {
       const sourceId = formData.get('id')
       const tileScale = formData.get('tileScale') || '1'
+      const kind = formData.get('kind') || 'xyz-raster'
+      const entry = collectEntryConfig(formData)
+      const rendering = collectRenderingConfig(form, formData)
+      if (isVectorKind(kind) && rendering.engine === 'leaflet') {
+        rendering.engine = 'maplibre'
+      }
       const payload = {
         id: sourceId,
         name: formData.get('name'),
-        enabled: form.elements.enabled.checked,
+        enabled: Boolean(form.elements.enabled?.checked),
         vendor: formData.get('vendor'),
         category: formData.get('category'),
-        kind: 'xyz',
-        template: formData.get('template'),
-        subdomains: formData.get('subdomains').split(',').map(s => s.trim()).filter(Boolean),
+        kind,
+        adapter: formData.get('adapter'),
+        presetId: formData.get('presetId') || '',
+        schema: formData.get('schema') || '',
+        entry,
+        template: entry.template,
+        styleJsonUrl: entry.styleJsonUrl,
+        tileJsonUrl: entry.tileJsonUrl,
+        pmtilesUrl: entry.pmtilesUrl,
+        subdomains: collectStringList(formData, 'subdomains'),
         minZoom: parseInt(formData.get('minZoom')),
         maxZoom: parseInt(formData.get('maxZoom')),
         maxNativeZoom: parseInt(formData.get('maxNativeZoom')),
@@ -1479,8 +2535,13 @@ export async function handleTileSourcesSubmit (context) {
           normalValue: tileScale,
           retinaValue: tileScale
         },
-        attribution: formData.get('attribution'),
+        secrets: collectSecretPolicy(form, formData),
+        rendering,
+        attribution: formData.get('license_attribution') || '',
+        coordinateSystem: formData.get('coordinateSystem') || 'EPSG:3857',
+        tags: collectStringList(formData, 'tags'),
         description: formData.get('description'),
+        license: collectLicensePolicy(form, formData),
         cache: collectCachePolicy(form, formData, 'cache'),
         proxy: collectProxyPolicy(form, formData, 'proxy'),
         accessLog: {
@@ -1490,7 +2551,8 @@ export async function handleTileSourcesSubmit (context) {
         permissions: {
           frontendVisible: form.elements.perm_frontendVisible.checked,
           precacheAllowed: form.elements.perm_precacheAllowed.checked,
-          externalApiAllowed: form.elements.perm_externalApiAllowed.checked
+          externalApiAllowed: form.elements.perm_externalApiAllowed.checked,
+          userReferenceAllowed: Boolean(form.elements.perm_userReferenceAllowed?.checked)
         },
         visibility: {
           scope: formData.get('visibility_scope') || 'system'
@@ -1505,6 +2567,42 @@ export async function handleTileSourcesSubmit (context) {
       state.editingTileSource = null
       await reloadCatalogRelatedState(state, api, { tileSources: true })
       setNotice('保存图源配置成功')
+    }
+
+    else if (formType === 'preset-source') {
+      const presetId = formData.get('presetId')
+      const enabledInput = form.elements.enabled
+      const payload = {
+        id: formData.get('id'),
+        name: formData.get('name'),
+        enabled: Boolean(enabledInput && !enabledInput.disabled && enabledInput.checked),
+        keyPoolId: formData.get('keyPoolId') || '',
+        permissions: {
+          frontendVisible: Boolean(form.elements.perm_frontendVisible?.checked),
+          precacheAllowed: false,
+          externalApiAllowed: Boolean(form.elements.perm_externalApiAllowed?.checked),
+          userReferenceAllowed: Boolean(form.elements.perm_userReferenceAllowed?.checked),
+        },
+        visibility: { scope: 'system' },
+      }
+      await api.createSourceFromPreset(presetId, payload)
+      state.creatingSourceFromPreset = null
+      state.tileSourcesSubTab = 'sources'
+      await reloadCatalogRelatedState(state, api, { tileSources: true })
+      setNotice('已基于预设创建图源')
+    }
+
+    else if (formType === 'key-pool') {
+      const poolId = formData.get('id')
+      const payload = collectKeyPoolPayload(form, formData)
+      if (isNew) {
+        await api.createKeyPool(payload)
+      } else {
+        await api.updateKeyPool(poolId, payload)
+      }
+      state.editingKeyPool = null
+      await reloadCatalogRelatedState(state, api, { keyPools: true, precacheCatalog: false })
+      setNotice('保存密钥池成功')
     }
 
     else if (formType === 'layer') {
@@ -1620,6 +2718,22 @@ export async function handleTileSourcesChange (context) {
     
     if (outboundField) outboundField.style.display = val === 'fixed' ? 'flex' : 'none'
     if (poolField) poolField.style.display = val === 'pool' ? 'flex' : 'none'
+    return true
+  }
+
+  const sourceKindSelect = event.target.closest('select[name="kind"]')
+  if (sourceKindSelect && state.editingTileSource) {
+    const form = sourceKindSelect.closest('form')
+    const adapterInput = form.elements.adapter
+    const engineSelect = form.elements.rendering_engine
+    const client3d = form.elements.rendering_client_3d
+    if (isVectorKind(sourceKindSelect.value)) {
+      if (adapterInput && (!adapterInput.value || adapterInput.value === 'template')) adapterInput.value = 'maplibre-style'
+      if (engineSelect && engineSelect.value === 'leaflet') engineSelect.value = 'maplibre'
+      if (client3d) client3d.checked = false
+    } else {
+      if (adapterInput && !adapterInput.value) adapterInput.value = 'template'
+    }
     return true
   }
 

@@ -9,23 +9,38 @@
 ### 后端
 
 - 新增图源目录服务，默认初始化高德卫星、高德街道、Google 卫星、Google 卫星 HD、Google 街道及现有组合图层。
+- 新增预置图源库模型和接口，内置国内外栅格、WMTS、ArcGIS、Google、MapTiler、Mapbox、Stadia、HERE、PMTiles、天气和专题图源模板，模板默认禁用。
+- 新增密钥池模型和接口，支持多 Key 脱敏保存、轮询、优先级故障切换、随机和权重轮询策略，图源按需绑定密钥池后由服务端注入上游请求。
+- 基于需要 Key 的预置图源厂商自动初始化默认空密钥池，内置官方申请/控制台入口，基于预设创建图源时自动关联对应默认池；需要 Key 的图源启用前必须至少存在一个可用 Key。
+- 扩展图源模型，支持 `xyz-raster`、`wmts-raster`、`arcgis-raster`、`quadkey-raster`、`mvt`、`vector-style`、`vector-tilejson`、`pmtiles-vector`、`pmtiles-raster` 等类型。
+- 新增矢量资源代理接口，支持 Style JSON、TileJSON、MVT、glyph、sprite、sprite@2x 和 PMTiles Range 请求。
+- 矢量 Style JSON 和 TileJSON 会被服务端重写为受控 URL，密钥和上游地址不会暴露给前端；派生 MVT/glyph/sprite 通过短期服务端引用回源。
+- 对外发布项新增矢量发布路径，支持发布 Style JSON、TileJSON、MVT、glyph、sprite 和 PMTiles，并复用图源密钥池、代理、缓存和诊断日志。
 - 新增图源、图层、代理出口、代理池、对外发布项的后端 CRUD 接口。
 - 新增前台 catalog 接口 `/api/v1/map/catalog` 和受控图源瓦片接口 `/api/v1/tiles/:sourceId/:z/:x/:y`。
 - 新增代理池模型，支持图源按固定出口或代理池选择代理，并对代理密码做脱敏返回。
 - 新增多发布项对外 API，支持发布单图源、组合图层内图源和专用图源，Token 只保存哈希并只在创建或重置时返回明文。
 - 移除旧版单一 upstream 对外接口 `/api/v1/external/tile` 及 `/api/v1/admin/tile-api/logs`，对外服务统一收敛到发布项模型。
 - 瓦片缓存元数据新增 `sourceId`、`layerId`、`publishId`，缓存统计新增按图源、图层和发布项聚合。
+- 缓存元数据新增 `resourceType` 和 Range 字段，支持按矢量资源类型聚合；带 Key 的上游 URL 在缓存统计中脱敏，PMTiles Range 纳入缓存键避免错段复用。
 - 图源缓存 TTL 和 stale TTL 已接入 FetchRelay 写入与 304 续期路径。
 - 新增独立图源访问诊断日志，记录代理图源访问耗时、代理命中、缓存状态和错误信息，保留行数与对外发布日志分开控制。
 
 ### 文档与测试
 
 - 新增并完善图源管理与图层配置重构需求文档。
+- 新增矢量图源渲染、预置图源库和密钥池需求文档，并补齐后端 API 契约。
 - 重写 `docs/api.md`，明确前台、后台、代理池、对外发布和已移除接口契约。
-- 新增图源目录、代理池、对外发布、组合图层发布、缓存元数据聚合等 `node:test` 覆盖。
+- 新增图源目录、预置图源、密钥池、矢量 URL 重写、对外矢量发布路径、代理池、对外发布、组合图层发布、缓存元数据聚合和 PMTiles Range 缓存键等 `node:test` 覆盖。
 
 ### 前端逻辑修复
 
+- 图源管理后台新增图源预设库子页，可基于后端预设创建默认禁用的系统图源，并自动匹配厂商默认密钥池。
+- 图源管理后台新增密钥池管理子页，支持多 Key 配置、启停、轮询策略、引用范围、官方申请入口、密钥池测试和单 Key 配置测试。
+- 图源编辑页扩展为新图源模型，支持 `entry`、`secrets`、`rendering`、`license`、矢量类型、PMTiles、密钥池和 3D 降级图源配置。
+- 对外发布项示例新增矢量图源 URL 和 MapLibre 接入示例，避免仍按 XYZ 栅格示例展示矢量发布项。
+- 前台 2D 地图接入 MapLibre-Leaflet 桥接层，支持通过 catalog 中的 `styleUrl` 渲染 `kind=vector-style` 图源。
+- 前台 3D 地图过滤不能直接作为 Cesium imagery 的矢量图源，并在配置了 `rendering.fallbackRasterSourceId` 时使用栅格降级。
 - 修复图源管理页对外发布表单，补齐专用图源、代理覆盖和缓存覆盖配置。
 - 修复组合图层对外发布示例，按后端 source tile 接口输出多图源叠加 URL。
 - 修复诊断日志“查看所有日志”路径，新增全部发布日志接口并展示加载错误。
