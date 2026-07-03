@@ -180,7 +180,7 @@ function externalPublishLogLimit (publish) {
   if (publish?.log && Object.hasOwn(publish.log, 'maxLogCount')) {
     return Number(publish.log.maxLogCount || 0)
   }
-  return 1000
+  return 500
 }
 
 function writeExternalPublishLog (entry, publish) {
@@ -196,7 +196,7 @@ function sourceAccessLogLimit (source) {
   if (source?.accessLog && Object.hasOwn(source.accessLog, 'maxLogCount')) {
     return Number(source.accessLog.maxLogCount || 0)
   }
-  return 1000
+  return 500
 }
 
 function writeSourceAccessErrorLog (entry, source) {
@@ -1111,7 +1111,7 @@ const simpleApi = {
           logEntry.statusCode = status
           logEntry.duration = Date.now() - startTime
           logEntry.errorMessage = err.message
-          service.logExternalPublishRequest(logEntry, 1000).catch(e => console.error('[external publish log error]', e))
+          service.logExternalPublishRequest(logEntry, 500).catch(e => console.error('[external publish log error]', e))
           jsonError(res, err.message || '对外发布图源瓦片请求失败', status)
         }
       },
@@ -1172,7 +1172,7 @@ const simpleApi = {
           logEntry.statusCode = status
           logEntry.duration = Date.now() - startTime
           logEntry.errorMessage = err.message
-          service.logExternalPublishRequest(logEntry, 1000).catch(e => console.error('[external publish log error]', e))
+          service.logExternalPublishRequest(logEntry, 500).catch(e => console.error('[external publish log error]', e))
           jsonError(res, err.message || '对外发布瓦片请求失败', status)
         }
       },

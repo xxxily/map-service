@@ -300,7 +300,7 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
   },
   "accessLog": {
     "enabled": true,
-    "maxLogCount": 1000
+    "maxLogCount": 500
   },
   "proxy": {
     "mode": "never",
@@ -539,7 +539,7 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
   },
   "log": {
     "enabled": true,
-    "maxLogCount": 1000
+    "maxLogCount": 500
   },
   "overrides": {
     "proxy": null,

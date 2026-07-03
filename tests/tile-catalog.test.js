@@ -315,7 +315,7 @@ test('GET /api/v1/external/:publishId/:z/:x/:y relays published source and logs 
         stream: Readable.from([Buffer.from('tile')]),
         cacheStatus: 'HIT',
         source: { id: 'google-satellite' },
-        publish: { id: publishId, log: { maxLogCount: 1000 } },
+        publish: { id: publishId, log: { maxLogCount: 500 } },
         proxy: {
           poolId: 'default-proxy-pool',
           outboundId: 'default-proxy-outbound',

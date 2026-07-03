@@ -425,8 +425,7 @@ function renderSourcesView (state) {
             </div>
             <div class="field-group" style="margin-top:10px;">
               <label>最大历史日志保留行数</label>
-              <input name="accessLog_maxLogCount" type="number" min="0" max="10000" value="${editing.accessLog?.maxLogCount ?? 1000}">
-              <small style="color:#64748b;">仅影响该图源访问日志，不影响对外 API 发布日志。</small>
+              <input name="accessLog_maxLogCount" type="number" min="0" max="10000" value="${editing.accessLog?.maxLogCount ?? 500}">
             </div>
           </fieldset>
 
@@ -809,7 +808,7 @@ function renderPublishesView (state) {
             </div>
             <div class="field-group" style="margin-top:10px;">
               <label>最大历史日志保留行数</label>
-              <input name="log_maxLogCount" type="number" value="${editing.log?.maxLogCount ?? 1000}">
+              <input name="log_maxLogCount" type="number" value="${editing.log?.maxLogCount ?? 500}">
             </div>
           </fieldset>
 
@@ -1345,7 +1344,7 @@ export async function handleTileSourcesClick (context) {
       pathSlug: '',
       auth: { mode: 'token' },
       rateLimit: { enabled: true, maxRequestsPerMinute: 600 },
-      log: { enabled: true, maxLogCount: 1000 },
+      log: { enabled: true, maxLogCount: 500 },
       overrides: { proxy: null, cache: null },
       enabled: true
     }

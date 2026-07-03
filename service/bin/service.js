@@ -78,7 +78,7 @@ function sourceAccessLogLimit (source) {
   if (source?.accessLog && Object.hasOwn(source.accessLog, 'maxLogCount')) {
     return Number(source.accessLog.maxLogCount || 0)
   }
-  return 1000
+  return 500
 }
 
 function shouldLogSourceAccess (entry, source) {
@@ -447,7 +447,7 @@ const service = {
     return tileCatalogManager.listSourceAccessLogs(sourceId)
   },
 
-  logSourceAccessRequest (entry, source = null, maxLogCount = 1000) {
+  logSourceAccessRequest (entry, source = null, maxLogCount = 500) {
     if (source) {
       writeSourceAccessLog(entry, source)
       return Promise.resolve()

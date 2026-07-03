@@ -462,7 +462,7 @@ Google 图源默认关联 `default-proxy-pool`。如果代理池没有可用出�
   },
   "log": {
     "enabled": true,
-    "maxLogCount": 1000
+    "maxLogCount": 500
   },
   "overrides": {
     "proxy": null,

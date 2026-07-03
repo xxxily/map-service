@@ -101,7 +101,7 @@ test('GET /api/v1/external/:publishId/sources/:sourceId/:z/:x/:y relays layer so
         cacheStatus: 'MISS',
         source: { id: sourceId },
         layer: { id: 'amap-hybrid' },
-        publish: { id: 'hybrid-public', pathSlug: publishId, log: { maxLogCount: 1000 } },
+        publish: { id: 'hybrid-public', pathSlug: publishId, log: { maxLogCount: 500 } },
         proxy: {
           poolId: '',
           outboundId: '',
@@ -200,7 +200,7 @@ test('external publish tile route respects disabled publish logging', async () =
       stream: Readable.from([Buffer.from('tile')]),
       cacheStatus: 'HIT',
       source: { id: 'amap-road' },
-      publish: { id: publishId, log: { enabled: false, maxLogCount: 1000 } },
+      publish: { id: publishId, log: { enabled: false, maxLogCount: 500 } },
       proxy: { poolId: '', outboundId: '' },
     }),
     logExternalPublishRequest: async (entry) => {
