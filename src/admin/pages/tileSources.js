@@ -100,14 +100,14 @@ function renderProxyPolicyFields (policy = {}, outbounds = [], pools = [], prefi
           <option value="pool" ${mode === 'pool' ? 'selected' : ''}>代理出口池</option>
         </select>
       </div>
-      <div class="field-group" data-proxy-outbound-field style="display: ${mode === 'fixed' ? 'block' : 'none'};">
+      <div class="field-group" data-proxy-outbound-field style="display: ${mode === 'fixed' ? 'flex' : 'none'};">
         <label>关联代理出口</label>
         <select name="${prefix}_outboundId">
           <option value="">请选择出口</option>
           ${outbounds.map(o => `<option value="${o.id}" ${policy.outboundId === o.id ? 'selected' : ''}>${escapeHtml(o.name)}</option>`).join('')}
         </select>
       </div>
-      <div class="field-group" data-proxy-pool-field style="display: ${mode === 'pool' ? 'block' : 'none'};">
+      <div class="field-group" data-proxy-pool-field style="display: ${mode === 'pool' ? 'flex' : 'none'};">
         <label>关联代理池</label>
         <select name="${prefix}_poolId">
           <option value="">请选择代理池</option>
@@ -431,10 +431,12 @@ function renderSourcesView (state) {
                   : '<span class="badge-red">已禁用</span>'}
               </td>
               <td>
-                <button type="button" class="btn-link" data-tile-sources-test-source="${source.id}">测试</button>
-                ${testState === 'loading' ? '<span class="test-status test-loading">测试中...</span>' : ''}
-                ${testState && testState !== 'loading' && testState.success ? `<span class="test-status test-success">通过 (${testState.duration}ms)</span>` : ''}
-                ${testState && testState !== 'loading' && !testState.success ? `<span class="test-status test-fail" title="${escapeHtml(getResultError(testState))}">失败</span>` : ''}
+                <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px;">
+                  <button type="button" class="btn-link" data-tile-sources-test-source="${source.id}">测试</button>
+                  ${testState === 'loading' ? '<span class="test-status test-loading" style="margin-left: 0;">测试中...</span>' : ''}
+                  ${testState && testState !== 'loading' && testState.success ? `<span class="test-status test-success" style="margin-left: 0;">通过 (${testState.duration}ms)</span>` : ''}
+                  ${testState && testState !== 'loading' && !testState.success ? `<span class="test-status test-fail" style="margin-left: 0;" title="${escapeHtml(getResultError(testState))}">失败</span>` : ''}
+                </div>
               </td>
               <td>
                 <div class="flex-actions">
@@ -809,11 +811,13 @@ function renderPublishesView (state) {
                   ? `<span class="badge-green">${p.rateLimit.maxRequestsPerMinute} 请求/分</span>` 
                   : '<span class="badge-gray">无限制</span>'}
               </td>
-              <td style="white-space: nowrap;">
-                <button type="button" class="btn-link" data-tile-sources-test-publish="${p.id}">测试</button>
-                ${testState === 'loading' ? '<span class="test-status test-loading">测试中...</span>' : ''}
-                ${testState && testState !== 'loading' && testState.success ? `<span class="test-status test-success">成功 (${testState.duration}ms)</span>` : ''}
-                ${testState && testState !== 'loading' && !testState.success ? `<span class="test-status test-fail" title="${escapeHtml(getResultError(testState))}">失败</span>` : ''}
+              <td>
+                <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px;">
+                  <button type="button" class="btn-link" data-tile-sources-test-publish="${p.id}">测试</button>
+                  ${testState === 'loading' ? '<span class="test-status test-loading" style="margin-left: 0;">测试中...</span>' : ''}
+                  ${testState && testState !== 'loading' && testState.success ? `<span class="test-status test-success" style="margin-left: 0;">成功 (${testState.duration}ms)</span>` : ''}
+                  ${testState && testState !== 'loading' && !testState.success ? `<span class="test-status test-fail" style="margin-left: 0;" title="${escapeHtml(getResultError(testState))}">失败</span>` : ''}
+                </div>
               </td>
               <td style="white-space: nowrap;">
                 ${p.enabled 
@@ -1412,8 +1416,8 @@ export async function handleTileSourcesChange (context) {
     const outboundField = form.querySelector('[data-proxy-outbound-field]')
     const poolField = form.querySelector('[data-proxy-pool-field]')
     
-    if (outboundField) outboundField.style.display = val === 'fixed' ? 'block' : 'none'
-    if (poolField) poolField.style.display = val === 'pool' ? 'block' : 'none'
+    if (outboundField) outboundField.style.display = val === 'fixed' ? 'flex' : 'none'
+    if (poolField) poolField.style.display = val === 'pool' ? 'flex' : 'none'
     return true
   }
 
