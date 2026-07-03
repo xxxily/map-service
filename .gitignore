@@ -1,6 +1,7 @@
 .DS_Store
 **/node_modules/
 **/log/
+**/logs/
 **/node_lib/
 **/.cache/
 .cache/
@@ -27,4 +28,3 @@ pm2.prod.config.cjs
 
 # Cesium 运行时静态缓存
 public/cesium/
-
