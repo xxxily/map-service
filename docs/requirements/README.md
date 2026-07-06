@@ -23,4 +23,6 @@
 - [功能完备地图应用建设需求](./full-featured-map-application.md)
 - [管理后台 MVP](./admin-console-mvp.md)
 - [KML 导入导出](./kml-import-export.md)
+- [KML 点位富媒体内容展示](./kml-feature-rich-content.md)
+- [KML 点位富媒体第二阶段：外部内容库与资产库集成规划](./kml-rich-content-phase2-content-library.md)
 - [访问控制加固](./access-control-hardening.md)

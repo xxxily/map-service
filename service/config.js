@@ -33,6 +33,13 @@ const config = {
       ],
     },
 
+    kmlContent: {
+      iframeAllowlist: String(process.env.MAP_SERVICE_KML_IFRAME_ALLOWLIST || '')
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean),
+    },
+
     admin: {
       dataDir: path.resolve(rootPath, './.db/admin'),
       auth: {

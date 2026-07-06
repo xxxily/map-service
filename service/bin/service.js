@@ -51,7 +51,10 @@ const precacheManager = new PrecacheManager({
   },
   clearTileCache: async (urls) => fetchRelay.clearMany(urls),
 })
-const sharedKmlManager = new SharedKmlManager({ store: adminStore })
+const sharedKmlManager = new SharedKmlManager({
+  store: adminStore,
+  contentOptions: baseConfig.staticService.kmlContent || {},
+})
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
 
@@ -465,6 +468,10 @@ const service = {
 
   getSharedKml (id, isAdmin = false) {
     return sharedKmlManager.get(id, isAdmin)
+  },
+
+  getSharedKmlFeatureContent (id, featureId, isAdmin = false) {
+    return sharedKmlManager.getFeatureContent(id, featureId, isAdmin)
   },
 
   createSharedKml (input) {

@@ -2,6 +2,7 @@ import L from 'leaflet'
 import { showConfirm, showEditDialog, showAlert } from '../ui/dialog.js'
 import { gcj02ToWgs84, wgs84ToGcj02Deep } from './coord-transform.js'
 import { generateKmlText, parseKML } from './kml-format.js'
+import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from './kml-content-panel.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_LAST_TARGET_KEY = 'map_kml_last_target_id'
@@ -360,6 +361,12 @@ function getEnabledKmlFiles () {
   return kmlList.filter(isKmlEnabled)
 }
 
+function getFeatureById (kmlId, featureId) {
+  const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
+  const feature = kmlFile?.features?.find(f => f.id === featureId) || null
+  return { kmlFile, feature }
+}
+
 function resolveTargetKmlId (preferredKmlId = '') {
   if (isEditingPublicKml && editingPublicKmlId) {
     return editingPublicKmlId
@@ -406,18 +413,25 @@ function getFeatureLabel (feature) {
 }
 
 function renderFeaturePopup (kmlId, feature, isEditable) {
+  const contentSummary = getFeatureContentSummaryText(feature)
   const actionsHtml = isEditable
     ? `
       <div class="kml-popup-actions">
+        <button type="button" class="kml-popup-btn kml-detail-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">详情</button>
         <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">编辑</button>
         <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">删除</button>
       </div>
     `
-    : ''
+    : `
+      <div class="kml-popup-actions">
+        <button type="button" class="kml-popup-btn primary kml-detail-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">详情</button>
+      </div>
+    `
   return `
     <div class="kml-popup-content">
       <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
       <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
+      ${contentSummary ? `<div class="kml-popup-content-summary">${escapeHtml(contentSummary)}</div>` : ''}
       ${actionsHtml}
     </div>
   `
@@ -1363,6 +1377,21 @@ export function initKmlSupport (map) {
     
     const editBtn = container.querySelector('.kml-edit-btn')
     const deleteBtn = container.querySelector('.kml-delete-btn')
+    const detailBtn = container.querySelector('.kml-detail-btn')
+
+    if (detailBtn) {
+      const kId = detailBtn.getAttribute('data-kml-id')
+      const fId = detailBtn.getAttribute('data-feature-id')
+
+      detailBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        ev.preventDefault()
+        const { kmlFile, feature } = getFeatureById(kId, fId)
+        if (kmlFile && feature) {
+          openKmlFeatureContentPanel(kmlFile, feature)
+        }
+      })
+    }
     
     if (editBtn) {
       const kId = editBtn.getAttribute('data-kml-id')

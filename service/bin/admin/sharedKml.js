@@ -1,4 +1,5 @@
 import { AdminStore } from './store.js'
+import { buildFeatureContentView } from './kmlContent.js'
 
 function parseKml (kmlText) {
   // Regex parsing of KML features (Placemark)
@@ -99,6 +100,7 @@ export class SharedKmlManager {
   constructor (options = {}) {
     this.store = options.store
     this.storeName = 'shared-kml'
+    this.contentOptions = options.contentOptions || {}
   }
 
   async list (isAdmin = false) {
@@ -131,6 +133,21 @@ export class SharedKmlManager {
       throw err
     }
     return kml
+  }
+
+  async getFeatureContent (id, featureId, isAdmin = false) {
+    const kml = await this.get(id, isAdmin)
+    const feature = (kml.features || []).find(item => item.id === featureId)
+    if (!feature) {
+      const err = new Error('KML 点位不存在或未发布')
+      err.statusCode = 404
+      throw err
+    }
+    return {
+      sharedKmlId: kml.id,
+      version: `${kml.id}:${kml.updatedAt || ''}`,
+      ...buildFeatureContentView(feature, this.contentOptions),
+    }
   }
 
   async create (input) {

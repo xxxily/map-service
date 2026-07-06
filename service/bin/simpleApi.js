@@ -591,6 +591,16 @@ const simpleApi = {
       },
     },
     {
+      path: '/kml/shared/:id/features/:featureId/content',
+      method: 'get',
+      describe: '获取公共 KML 点位富媒体内容',
+      tags: ['kml'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        res.jsonSuc(await service.getSharedKmlFeatureContent(req.params.id, req.params.featureId, false))
+      },
+    },
+    {
       path: '/admin/kml',
       method: 'get',
       describe: '管理员获取所有公共 KML 列表',

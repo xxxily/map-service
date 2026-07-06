@@ -13,6 +13,7 @@ import {
 import { escapeHtml } from '../admin/utils.js'
 import { gcj02ToWgs84, wgs84ToGcj02Deep } from '../map/coord-transform.js'
 import { generateKmlText, parseKML } from '../map/kml-format.js'
+import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from '../map/kml-content-panel.js'
 import { showAlert, showConfirm, showEditDialog } from '../ui/dialog.js'
 import { flyToLngLat } from './location.js'
 
@@ -431,18 +432,25 @@ function renderAllKmls () {
 }
 
 function renderFeaturePopup (kmlId, feature, editable) {
+  const contentSummary = getFeatureContentSummaryText(feature)
   const actionsHtml = editable
     ? `
       <div class="kml-popup-actions">
+        <button type="button" class="kml-popup-btn kml-detail-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">详情</button>
         <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">编辑</button>
         <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">删除</button>
       </div>
     `
-    : ''
+    : `
+      <div class="kml-popup-actions">
+        <button type="button" class="kml-popup-btn primary kml-detail-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">详情</button>
+      </div>
+    `
   return `
     <div class="kml-popup-content">
       <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
       <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
+      ${contentSummary ? `<div class="kml-popup-content-summary">${escapeHtml(contentSummary)}</div>` : ''}
       ${actionsHtml}
     </div>
   `
@@ -475,6 +483,9 @@ function showFeaturePopup (kmlId, featureId, windowPosition) {
   })
 
   popup.querySelector('.map3d-popup-close')?.addEventListener('click', closeFeaturePopup)
+  popup.querySelector('.kml-detail-btn')?.addEventListener('click', () => {
+    openKmlFeatureContentPanel(kmlFile, feature)
+  })
   popup.querySelector('.kml-edit-btn')?.addEventListener('click', async () => {
     await handleEditFeature(kmlId, featureId)
   })

@@ -151,3 +151,36 @@ test('SharedKmlManager KML parser supports Point, LineString, Polygon and CDATA'
   assert.equal(poly.coordinates.length, 5)
   assert.deepEqual(poly.coordinates[0], [113.321, 23.111])
 })
+
+test('SharedKmlManager returns published feature content view', async () => {
+  const store = new MockStore()
+  const manager = new SharedKmlManager({
+    store,
+    contentOptions: {
+      iframeAllowlist: ['portal.example.com'],
+    },
+  })
+
+  const created = await manager.create({
+    name: '内容图层',
+    status: 'published',
+    features: [{
+      id: 'feat-rich',
+      type: 'Point',
+      name: '富媒体点位',
+      description: 'https://cdn.example.com/a.webp\nhttps://portal.example.com/detail/1',
+      coordinates: [113.26, 23.12],
+    }],
+  })
+
+  const view = await manager.getFeatureContent(created.id, 'feat-rich', false)
+  assert.equal(view.sharedKmlId, created.id)
+  assert.equal(view.featureId, 'feat-rich')
+  assert.equal(view.contentSummary.imageCount, 1)
+  assert.equal(view.contentSummary.iframeCount, 1)
+
+  await assert.rejects(
+    () => manager.getFeatureContent(created.id, 'missing', false),
+    /KML 点位不存在或未发布/
+  )
+})
