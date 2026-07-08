@@ -1596,19 +1596,6 @@ function bindUiEvents () {
         intervalLocationState3d.onlyLine = onlyLine
         intervalLocationState3d.autoRotate = autoRotate
 
-        // 中途关闭自动旋转，立即将视图航向归正
-        if (!autoRotate) {
-          intervalLocationState3d.currentHeading = 0
-          const currentHeight = 20000000.0 / Math.pow(2, intervalLocationState3d.zoomLevel)
-          const pos = targetEntity ? targetEntity.position.getValue(viewer.clock.currentTime) : null
-          if (pos) {
-            const carto = viewer.scene.globe.ellipsoid.cartesianToCartographic(pos)
-            const lng = CesiumMath.toDegrees(carto.longitude)
-            const lat = CesiumMath.toDegrees(carto.latitude)
-            flyToLngLat(viewer, lng, lat, { height: currentHeight, heading: 0 })
-          }
-        }
-
         localStorage.setItem('location_interval', String(interval))
         localStorage.setItem('location_zoom', String(zoom))
         localStorage.setItem('location_max_points', String(maxHistoryPoints))

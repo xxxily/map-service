@@ -557,10 +557,6 @@ export function stopIntervalLocation3d (viewer) {
   intervalLocationState3d.recordKmlId = null
   localStorage.removeItem('location_record_kml_id')
   intervalLocationState3d.lastPosition = null
-  
-  // 视口归正
-  const headingToReset = 0
-  intervalLocationState3d.currentHeading = headingToReset
 
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
   intervalLocationState3d.historyEntities = []

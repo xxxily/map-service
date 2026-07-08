@@ -466,11 +466,6 @@ export function stopIntervalLocation2d (map) {
     updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition, intervalLocationState.onlyLine)
   }
 
-  // 如果开启了自动旋转，停止定位时将地图归正
-  if (intervalLocationState.autoRotate && map.setBearing) {
-    map.setBearing(0)
-  }
-
   // 停止音频后台保活并释放 Wake Lock
   stopKeepAlive()
   releaseWakeLock()

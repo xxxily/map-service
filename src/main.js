@@ -415,11 +415,6 @@ async function initLeafletMap () {
         intervalLocationState.onlyLine = onlyLine
         intervalLocationState.autoRotate = autoRotate
 
-        // 如果用户在中途关闭了自动旋转，立即把地图归正为北朝上
-        if (!autoRotate && map.setBearing) {
-          map.setBearing(0)
-        }
-
         localStorage.setItem('location_interval', String(interval))
         localStorage.setItem('location_zoom', String(zoom))
         localStorage.setItem('location_max_points', String(maxHistoryPoints))
