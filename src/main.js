@@ -346,6 +346,15 @@ async function initLeafletMap () {
               { label: '保留路线和所有点', value: 'false' },
               { label: '仅保留最终路线 (省内存/省空间)', value: 'true' }
             ]
+          },
+          {
+            name: 'autoRotate',
+            label: '自动旋转地图',
+            type: 'select',
+            options: [
+              { label: '是', value: 'true' },
+              { label: '否', value: 'false' }
+            ]
           }
         ],
         values: {
@@ -353,7 +362,8 @@ async function initLeafletMap () {
           zoom: String(intervalLocationState.zoomLevel || currentZoom || 18),
           maxPoints: String(intervalLocationState.maxHistoryPoints || 0),
           recordTrack: String(intervalLocationState.recordTrack !== false),
-          onlyLine: String(intervalLocationState.onlyLine === true)
+          onlyLine: String(intervalLocationState.onlyLine === true),
+          autoRotate: String(intervalLocationState.autoRotate === true)
         }
       })
 
@@ -364,6 +374,7 @@ async function initLeafletMap () {
       const maxHistoryPoints = parseInt(res.maxPoints, 10)
       const recordTrack = res.recordTrack === 'true'
       const onlyLine = res.onlyLine === 'true'
+      const autoRotate = res.autoRotate === 'true'
 
       if (isNaN(interval) || interval < 1) {
         await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
@@ -402,12 +413,19 @@ async function initLeafletMap () {
 
         intervalLocationState.recordTrack = recordTrack
         intervalLocationState.onlyLine = onlyLine
+        intervalLocationState.autoRotate = autoRotate
+
+        // 如果用户在中途关闭了自动旋转，立即把地图归正为北朝上
+        if (!autoRotate && map.setBearing) {
+          map.setBearing(0)
+        }
 
         localStorage.setItem('location_interval', String(interval))
         localStorage.setItem('location_zoom', String(zoom))
         localStorage.setItem('location_max_points', String(maxHistoryPoints))
         localStorage.setItem('location_record_track', String(recordTrack))
         localStorage.setItem('location_only_line', String(onlyLine))
+        localStorage.setItem('location_auto_rotate', String(autoRotate))
 
         if (intervalLocationState.timerId) {
           clearInterval(intervalLocationState.timerId)
@@ -423,7 +441,7 @@ async function initLeafletMap () {
 
         await showAlert('定位管理参数已更新！')
       } else {
-        startIntervalLocation2d(map, amapGeolocation, interval, zoom, maxHistoryPoints, recordTrack, onlyLine)
+        startIntervalLocation2d(map, amapGeolocation, interval, zoom, maxHistoryPoints, recordTrack, onlyLine, autoRotate)
       }
     }
 

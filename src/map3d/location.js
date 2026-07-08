@@ -13,6 +13,18 @@ import { createTrackKml3d, updateTrackKml3d } from './kml.js'
 
 let targetEntity = null
 
+function calculateBearing (lat1, lng1, lat2, lng2) {
+  const dLng = (lng2 - lng1) * Math.PI / 180
+  const lat1Rad = lat1 * Math.PI / 180
+  const lat2Rad = lat2 * Math.PI / 180
+
+  const y = Math.sin(dLng) * Math.cos(lat2Rad)
+  const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+            Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLng)
+  let brng = Math.atan2(y, x) * 180 / Math.PI
+  return (brng + 360) % 360
+}
+
 // Audio keep alive and Screen Wake Lock for mobile background processes
 let keepAliveAudio = null
 let wakeLock = null
@@ -104,6 +116,8 @@ export const intervalLocationState3d = {
   maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
   recordTrack: localStorage.getItem('location_record_track') === 'true', // 是否开启轨迹记录
   onlyLine: localStorage.getItem('location_only_line') === 'true', // 是否仅保留路线
+  autoRotate: localStorage.getItem('location_auto_rotate') === 'true', // 是否自动旋转地图
+  currentHeading: 0, // 当前运行时的车头朝向航向角 (0-360)
   recordKmlId: localStorage.getItem('location_record_kml_id') || null, // 绑定的 KML ID
   lastPosition: null, // 存储最新的定位点数据 { lng, lat, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次轨迹数据
@@ -344,8 +358,9 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 
   const { result, mapPosition } = filtered
   
-  // 飞往位置
-  flyToLngLat(viewer, mapPosition.lng, mapPosition.lat, { height: customHeight })
+  // 飞往位置（开启自动旋转时代入最新计算出的航向角）
+  const headingVal = intervalLocationState3d.autoRotate ? (intervalLocationState3d.currentHeading || 0) : 0
+  flyToLngLat(viewer, mapPosition.lng, mapPosition.lat, { height: customHeight, heading: headingVal })
 
   if (isIntervalUpdate) {
     let isStationary = false
@@ -385,7 +400,6 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
           updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
         }
       }
-    } else {
       // 移动幅度大，生产新点
       if (intervalLocationState3d.lastPosition) {
         if (!intervalLocationState3d.lastPosition.firstTimestamp) {
@@ -393,6 +407,23 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
         }
         if (!intervalLocationState3d.lastPosition.staySeconds) {
           intervalLocationState3d.lastPosition.staySeconds = 0
+        }
+
+        // 自动计算旋转偏角
+        if (intervalLocationState3d.autoRotate) {
+          const p1 = intervalLocationState3d.lastPosition
+          const p2 = mapPosition
+          if (p1 && typeof p1.lng === 'number' && typeof p1.lat === 'number') {
+            const ptCartesian = Cartesian3.fromDegrees(p1.lng, p1.lat, 0)
+            const nextCartesian = Cartesian3.fromDegrees(p2.lng, p2.lat, 0)
+            const dist = Cartesian3.distance(ptCartesian, nextCartesian)
+            // 大于 2 米位移才触发视角转向，防止静止抖动带来的方向瞬变
+            if (dist > 2) {
+              const brng = calculateBearing(p1.lat, p1.lng, p2.lat, p2.lng)
+              intervalLocationState3d.currentHeading = brng
+              console.log(`[3D Rotate] Heading updated to ${brng} deg`)
+            }
+          }
         }
 
         intervalLocationState3d.historyPoints.push(intervalLocationState3d.lastPosition)
@@ -442,7 +473,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 }
 
 // 启动 3D 持续定位
-export function startIntervalLocation3d (viewer, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false, onlyLine = false) {
+export function startIntervalLocation3d (viewer, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false, onlyLine = false, autoRotate = false) {
   if (intervalLocationState3d.timerId) {
     clearInterval(intervalLocationState3d.timerId)
   }
@@ -454,6 +485,7 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom, ma
     localStorage.setItem('location_max_points', String(maxHistoryPoints))
     localStorage.setItem('location_record_track', String(recordTrack))
     localStorage.setItem('location_only_line', String(onlyLine))
+    localStorage.setItem('location_auto_rotate', String(autoRotate))
   } catch (err) {
     console.error('Failed to save location settings:', err)
   }
@@ -466,6 +498,8 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom, ma
   intervalLocationState3d.maxHistoryPoints = maxHistoryPoints
   intervalLocationState3d.recordTrack = recordTrack
   intervalLocationState3d.onlyLine = onlyLine
+  intervalLocationState3d.autoRotate = autoRotate
+  intervalLocationState3d.currentHeading = 0
 
   // 仅在首次启动时重新创建 KML 文件；如果中途编辑/重连则继续使用现有的 recordKmlId
   if (recordTrack && !intervalLocationState3d.recordKmlId) {
@@ -523,6 +557,10 @@ export function stopIntervalLocation3d (viewer) {
   intervalLocationState3d.recordKmlId = null
   localStorage.removeItem('location_record_kml_id')
   intervalLocationState3d.lastPosition = null
+  
+  // 视口归正
+  const headingToReset = 0
+  intervalLocationState3d.currentHeading = headingToReset
 
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
   intervalLocationState3d.historyEntities = []

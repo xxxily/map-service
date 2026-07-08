@@ -8,6 +8,18 @@ let keepAliveAudio = null
 let wakeLock = null
 let fallbackVideo = null
 
+function calculateBearing (lat1, lng1, lat2, lng2) {
+  const dLng = (lng2 - lng1) * Math.PI / 180
+  const lat1Rad = lat1 * Math.PI / 180
+  const lat2Rad = lat2 * Math.PI / 180
+
+  const y = Math.sin(dLng) * Math.cos(lat2Rad)
+  const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+            Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLng)
+  let brng = Math.atan2(y, x) * 180 / Math.PI
+  return (brng + 360) % 360
+}
+
 async function requestWakeLock () {
   // 优先使用标准 Screen Wake Lock API
   if ('wakeLock' in navigator) {
@@ -94,6 +106,8 @@ export const intervalLocationState = {
   zoomLevel: parseInt(localStorage.getItem('location_zoom') || '18', 10),
   maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
   recordTrack: localStorage.getItem('location_record_track') === 'true', // 是否开启轨迹记录
+  onlyLine: localStorage.getItem('location_only_line') === 'true', // 是否仅保留路线
+  autoRotate: localStorage.getItem('location_auto_rotate') === 'true', // 是否自动旋转地图
   recordKmlId: localStorage.getItem('location_record_kml_id') || null, // 绑定的 KML ID
   lastPosition: null, // 存入最新的定位点数据 { latlng, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次的定位点数据数组
@@ -299,7 +313,6 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
           updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
         }
       }
-    } else {
       // 移动幅度大，生产新点
       if (intervalLocationState.lastPosition) {
         if (!intervalLocationState.lastPosition.firstTimestamp) {
@@ -307,6 +320,31 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
         }
         if (!intervalLocationState.lastPosition.staySeconds) {
           intervalLocationState.lastPosition.staySeconds = 0
+        }
+
+        // 自动计算旋转角使得历史轨迹呈现车辆朝上效果
+        if (intervalLocationState.autoRotate) {
+          const p1 = intervalLocationState.lastPosition.latlng
+          const p2 = mapPosition
+          let lat1 = null, lng1 = null, lat2 = null, lng2 = null
+          if (Array.isArray(p1)) { lat1 = p1[0]; lng1 = p1[1] }
+          else if (p1) { lat1 = p1.lat; lng1 = p1.lng }
+          
+          if (Array.isArray(p2)) { lat2 = p2[0]; lng2 = p2[1] }
+          else if (p2) { lat2 = p2.lat; lng2 = p2.lng }
+
+          if (typeof lat1 === 'number' && typeof lat2 === 'number' && typeof lng1 === 'number' && typeof lng2 === 'number') {
+            const dist = L.latLng([lat1, lng1]).distanceTo(L.latLng([lat2, lng2]))
+            // 距离大于 2 米时才触发旋转，防止静止抖动带来的眩晕
+            if (dist > 2) {
+              const brng = calculateBearing(lat1, lng1, lat2, lng2)
+              const mapBearing = (360 - brng) % 360
+              if (map.setBearing) {
+                map.setBearing(mapBearing)
+                console.log(`[2D Rotate] Bearing updated to ${mapBearing} deg (heading: ${brng} deg)`)
+              }
+            }
+          }
         }
 
         intervalLocationState.historyPoints.push(intervalLocationState.lastPosition)
@@ -354,7 +392,7 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 }
 
 // 启动 2D 持续定位
-export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false) {
+export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false, onlyLine = false, autoRotate = false) {
   if (intervalLocationState.timerId) {
     clearInterval(intervalLocationState.timerId)
   }
@@ -365,6 +403,8 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHi
     localStorage.setItem('location_zoom', String(zoom))
     localStorage.setItem('location_max_points', String(maxHistoryPoints))
     localStorage.setItem('location_record_track', String(recordTrack))
+    localStorage.setItem('location_only_line', String(onlyLine))
+    localStorage.setItem('location_auto_rotate', String(autoRotate))
   } catch (err) {
     console.error('Failed to save location settings:', err)
   }
@@ -374,6 +414,8 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHi
   intervalLocationState.zoomLevel = zoom
   intervalLocationState.maxHistoryPoints = maxHistoryPoints
   intervalLocationState.recordTrack = recordTrack
+  intervalLocationState.onlyLine = onlyLine
+  intervalLocationState.autoRotate = autoRotate
   
   // 仅在首次启动时重新创建 KML 文件；如果中途编辑/重连则继续使用现有的 recordKmlId
   if (recordTrack && !intervalLocationState.recordKmlId) {
@@ -421,7 +463,12 @@ export function stopIntervalLocation2d (map) {
 
   // 停止定位时做最后的 KML 写入（保存最后一个点位到 KML）
   if (intervalLocationState.recordTrack && intervalLocationState.recordKmlId) {
-    updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
+    updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition, intervalLocationState.onlyLine)
+  }
+
+  // 如果开启了自动旋转，停止定位时将地图归正
+  if (intervalLocationState.autoRotate && map.setBearing) {
+    map.setBearing(0)
   }
 
   // 停止音频后台保活并释放 Wake Lock

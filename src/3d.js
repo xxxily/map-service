@@ -1527,6 +1527,15 @@ function bindUiEvents () {
               { label: '保留路线和所有点', value: 'false' },
               { label: '仅保留最终路线 (省内存/省空间)', value: 'true' }
             ]
+          },
+          {
+            name: 'autoRotate',
+            label: '自动旋转地图',
+            type: 'select',
+            options: [
+              { label: '是', value: 'true' },
+              { label: '否', value: 'false' }
+            ]
           }
         ],
         values: {
@@ -1534,7 +1543,8 @@ function bindUiEvents () {
           zoom: String(intervalLocationState3d.zoomLevel || currentZoom || 18),
           maxPoints: String(intervalLocationState3d.maxHistoryPoints || 0),
           recordTrack: String(intervalLocationState3d.recordTrack !== false),
-          onlyLine: String(intervalLocationState3d.onlyLine === true)
+          onlyLine: String(intervalLocationState3d.onlyLine === true),
+          autoRotate: String(intervalLocationState3d.autoRotate === true)
         }
       })
 
@@ -1545,6 +1555,7 @@ function bindUiEvents () {
       const maxHistoryPoints = parseInt(res.maxPoints, 10)
       const recordTrack = res.recordTrack === 'true'
       const onlyLine = res.onlyLine === 'true'
+      const autoRotate = res.autoRotate === 'true'
 
       if (isNaN(interval) || interval < 1) {
         await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
@@ -1583,12 +1594,27 @@ function bindUiEvents () {
 
         intervalLocationState3d.recordTrack = recordTrack
         intervalLocationState3d.onlyLine = onlyLine
+        intervalLocationState3d.autoRotate = autoRotate
+
+        // 中途关闭自动旋转，立即将视图航向归正
+        if (!autoRotate) {
+          intervalLocationState3d.currentHeading = 0
+          const currentHeight = 20000000.0 / Math.pow(2, intervalLocationState3d.zoomLevel)
+          const pos = targetEntity ? targetEntity.position.getValue(viewer.clock.currentTime) : null
+          if (pos) {
+            const carto = viewer.scene.globe.ellipsoid.cartesianToCartographic(pos)
+            const lng = CesiumMath.toDegrees(carto.longitude)
+            const lat = CesiumMath.toDegrees(carto.latitude)
+            flyToLngLat(viewer, lng, lat, { height: currentHeight, heading: 0 })
+          }
+        }
 
         localStorage.setItem('location_interval', String(interval))
         localStorage.setItem('location_zoom', String(zoom))
         localStorage.setItem('location_max_points', String(maxHistoryPoints))
         localStorage.setItem('location_record_track', String(recordTrack))
         localStorage.setItem('location_only_line', String(onlyLine))
+        localStorage.setItem('location_auto_rotate', String(autoRotate))
 
         if (intervalLocationState3d.timerId) {
           clearInterval(intervalLocationState3d.timerId)
@@ -1605,7 +1631,7 @@ function bindUiEvents () {
 
         await showAlert('定位管理参数已更新！')
       } else {
-        startIntervalLocation3d(viewer, amapGeolocation, interval, zoom, maxHistoryPoints, recordTrack, onlyLine)
+        startIntervalLocation3d(viewer, amapGeolocation, interval, zoom, maxHistoryPoints, recordTrack, onlyLine, autoRotate)
       }
     }
 
