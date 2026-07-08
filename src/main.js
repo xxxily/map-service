@@ -312,7 +312,7 @@ async function initLeafletMap () {
     const showLocationConfigDialog = async () => {
       const currentZoom = map.getZoom()
       const res = await showEditDialog({
-        title: '持续定位配置',
+        title: '定位配置',
         fields: [
           {
             name: 'interval',
@@ -331,7 +331,7 @@ async function initLeafletMap () {
           },
           {
             name: 'recordTrack',
-            label: '是否记录轨迹到 KML 文件',
+            label: '记录轨迹',
             type: 'select',
             options: [
               { label: '是', value: 'true' },
@@ -340,7 +340,7 @@ async function initLeafletMap () {
           },
           {
             name: 'onlyLine',
-            label: '轨迹记录精简方式',
+            label: '记录方式',
             type: 'select',
             options: [
               { label: '保留路线和所有点', value: 'false' },
@@ -429,7 +429,7 @@ async function initLeafletMap () {
 
     const showLocationManageDialog = async () => {
       const choice = await showChoiceDialog({
-        title: '持续定位管理',
+        title: '定位管理',
         message: `当前持续定位运行中：\n时间间隔：${intervalLocationState.intervalSeconds} 秒\n图层级别：${intervalLocationState.zoomLevel}\n轨迹记录：${intervalLocationState.recordTrack ? (intervalLocationState.onlyLine ? '开启 (仅路线)' : '开启 (路线和点)') : '关闭'}`,
         choices: [
           { text: '编辑', value: 'edit', class: 'app-dialog-primary' },

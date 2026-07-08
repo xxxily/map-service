@@ -1559,11 +1559,47 @@ export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyL
     const features = []
 
     if (lineCoordinates.length > 1) {
+      let startTimeStr = '未知'
+      let endTimeStr = '未知'
+      let durationStr = '未知'
+      if (allPts.length > 0) {
+        const firstPt = allPts[0]
+        const lastPt = allPts[allPts.length - 1]
+        
+        const formatDateTime = (ts) => {
+          const d = new Date(ts)
+          const year = d.getFullYear()
+          const month = String(d.getMonth() + 1).padStart(2, '0')
+          const date = String(d.getDate()).padStart(2, '0')
+          const hours = String(d.getHours()).padStart(2, '0')
+          const minutes = String(d.getMinutes()).padStart(2, '0')
+          const seconds = String(d.getSeconds()).padStart(2, '0')
+          return `${year}-${month}-${date} ${hours}:${minutes}:${seconds}`
+        }
+        
+        startTimeStr = formatDateTime(firstPt.timestamp)
+        endTimeStr = formatDateTime(lastPt.timestamp)
+        
+        const totalMs = lastPt.timestamp - firstPt.timestamp
+        if (totalMs >= 0) {
+          const totalSecs = Math.floor(totalMs / 1000)
+          const hrs = Math.floor(totalSecs / 3600)
+          const mins = Math.floor((totalSecs % 3600) / 60)
+          const secs = totalSecs % 60
+          
+          let dur = ''
+          if (hrs > 0) dur += `${hrs}小时`
+          if (mins > 0 || hrs > 0) dur += `${mins}分`
+          dur += `${secs}秒`
+          durationStr = dur
+        }
+      }
+
       features.push({
         id: `feat-line-${Date.now()}`,
         type: 'LineString',
         name: '移动轨迹',
-        description: `总点数: ${allPts.length} 个`,
+        description: `开始时间：${startTimeStr}\n结束时间：${endTimeStr}\n持续时长：${durationStr}\n总记录点数：${allPts.length} 个`,
         coordinates: lineCoordinates
       })
     }
