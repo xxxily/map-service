@@ -1,5 +1,6 @@
 import L from 'leaflet'
 import { getBestPosition } from './geolocation.js'
+import { showAlert } from '../ui/dialog.js'
 
 let currentSearchMarker = null
 
@@ -270,7 +271,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       } catch (err) {
         console.error('路线定位获取当前位置失败:', err)
         startInput.value = ''
-        alert('无法获取当前位置，请手动输入起点。')
+        await showAlert('无法获取当前位置，请手动输入起点。')
       } finally {
         startInput.disabled = false
       }
@@ -280,25 +281,25 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   // 5. “开始规划”按钮交互
   const searchRouteBtn = document.getElementById('route-search-btn')
   if (searchRouteBtn) {
-    searchRouteBtn.addEventListener('click', () => {
+    searchRouteBtn.addEventListener('click', async () => {
       const startText = startInput ? startInput.value.trim() : ''
       const endText = endInput ? endInput.value.trim() : ''
 
       if (!startText) {
-        alert('请输入起点位置')
+        await showAlert('请输入起点位置')
         return
       }
       if (!endText) {
-        alert('请输入终点位置')
+        await showAlert('请输入终点位置')
         return
       }
 
       if (!startPoi) {
-        alert('请选择起点（可以通过联想列表选择，或点击我的位置/地图选点获取）')
+        await showAlert('请选择起点（可以通过联想列表选择，或点击我的位置/地图选点获取）')
         return
       }
       if (!endPoi) {
-        alert('请选择终点（可以通过联想列表选择，或点击地图选点获取）')
+        await showAlert('请选择终点（可以通过联想列表选择，或点击地图选点获取）')
         return
       }
 
@@ -312,9 +313,9 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
         const startLngLat = new AMap.LngLat(startPoi.location.lng, startPoi.location.lat)
         const endLngLat = new AMap.LngLat(endPoi.location.lng, endPoi.location.lat)
 
-        driving.search(startLngLat, endLngLat, (status, result) => {
+        driving.search(startLngLat, endLngLat, async (status, result) => {
           if (status !== 'complete' || !result.routes || result.routes.length === 0) {
-            alert('路线规划失败: ' + (result?.info || '未知错误'))
+            await showAlert('路线规划失败: ' + (result?.info || '未知错误'))
             return
           }
 
