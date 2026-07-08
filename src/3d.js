@@ -28,7 +28,7 @@ import { initAfterAccessCheck } from './map/access-control.js'
 import { initAmapGeolocation } from './map/geolocation.js'
 import { registerServiceWorker } from './pwa.js'
 import { initGuidelines3d, toggleGuidelineMode3d } from './map3d/guidelines.js'
-import { initKmlSupport3d, saveTrackToKml3d } from './map3d/kml.js'
+import { initKmlSupport3d } from './map3d/kml.js'
 import {
   updatePosition3d,
   intervalLocationState3d,
@@ -1493,7 +1493,7 @@ function bindUiEvents () {
       const currentZoom = heightToZoom(currentHeight)
 
       const res = await showEditDialog({
-        title: '开启持续自动定位',
+        title: '持续定位配置',
         fields: [
           {
             name: 'interval',
@@ -1509,12 +1509,32 @@ function bindUiEvents () {
             name: 'maxPoints',
             label: '记住最近点位数 (默认 0 记住所有)',
             type: 'text'
+          },
+          {
+            name: 'recordTrack',
+            label: '是否记录轨迹到 KML 文件',
+            type: 'select',
+            options: [
+              { label: '是', value: 'true' },
+              { label: '否', value: 'false' }
+            ]
+          },
+          {
+            name: 'onlyLine',
+            label: '轨迹记录精简方式',
+            type: 'select',
+            options: [
+              { label: '保留路线和所有点', value: 'false' },
+              { label: '仅保留最终路线 (省内存/省空间)', value: 'true' }
+            ]
           }
         ],
         values: {
           interval: String(intervalLocationState3d.intervalSeconds || 10),
           zoom: String(intervalLocationState3d.zoomLevel || currentZoom || 18),
-          maxPoints: String(intervalLocationState3d.maxHistoryPoints || 0)
+          maxPoints: String(intervalLocationState3d.maxHistoryPoints || 0),
+          recordTrack: String(intervalLocationState3d.recordTrack !== false),
+          onlyLine: String(intervalLocationState3d.onlyLine === true)
         }
       })
 
@@ -1523,6 +1543,8 @@ function bindUiEvents () {
       const interval = parseInt(res.interval, 10)
       const zoom = parseInt(res.zoom, 10)
       const maxHistoryPoints = parseInt(res.maxPoints, 10)
+      const recordTrack = res.recordTrack === 'true'
+      const onlyLine = res.onlyLine === 'true'
 
       if (isNaN(interval) || interval < 1) {
         await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
@@ -1542,27 +1564,63 @@ function bindUiEvents () {
         return
       }
 
-      startIntervalLocation3d(viewer, amapGeolocation, interval, zoom, maxHistoryPoints)
+      // 如果当前定位在运行中，支持热编辑同步
+      if (intervalLocationState3d.active) {
+        intervalLocationState3d.intervalSeconds = interval
+        intervalLocationState3d.zoomLevel = zoom
+        intervalLocationState3d.maxHistoryPoints = maxHistoryPoints
+
+        // 轨迹状态 关 -> 开
+        if (recordTrack && !intervalLocationState3d.recordTrack && !intervalLocationState3d.recordKmlId) {
+          const now = new Date()
+          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+          const kmlId = createTrackKml3d(name)
+          if (kmlId) {
+            intervalLocationState3d.recordKmlId = kmlId
+            localStorage.setItem('location_record_kml_id', kmlId)
+          }
+        }
+
+        intervalLocationState3d.recordTrack = recordTrack
+        intervalLocationState3d.onlyLine = onlyLine
+
+        localStorage.setItem('location_interval', String(interval))
+        localStorage.setItem('location_zoom', String(zoom))
+        localStorage.setItem('location_max_points', String(maxHistoryPoints))
+        localStorage.setItem('location_record_track', String(recordTrack))
+        localStorage.setItem('location_only_line', String(onlyLine))
+
+        if (intervalLocationState3d.timerId) {
+          clearInterval(intervalLocationState3d.timerId)
+        }
+        intervalLocationState3d.timerId = setInterval(() => {
+          const currentHeight = 20000000.0 / Math.pow(2, intervalLocationState3d.zoomLevel)
+          updatePosition3d(viewer, amapGeolocation, currentHeight, true)
+        }, interval * 1000)
+
+        // 立即向 KML 同步当前改动
+        if (intervalLocationState3d.recordTrack && intervalLocationState3d.recordKmlId) {
+          updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
+        }
+
+        await showAlert('定位管理参数已更新！')
+      } else {
+        startIntervalLocation3d(viewer, amapGeolocation, interval, zoom, maxHistoryPoints, recordTrack, onlyLine)
+      }
     }
 
     const showLocationManageDialog = async () => {
       const choice = await showChoiceDialog({
         title: '持续定位管理',
-        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState3d.intervalSeconds} 秒\n图层级别：${intervalLocationState3d.zoomLevel}\n最近点限制：${intervalLocationState3d.maxHistoryPoints === 0 ? '所有点' : intervalLocationState3d.maxHistoryPoints + ' 个点'}`,
+        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState3d.intervalSeconds} 秒\n图层级别：${intervalLocationState3d.zoomLevel}\n轨迹记录：${intervalLocationState3d.recordTrack ? (intervalLocationState3d.onlyLine ? '开启 (仅路线)' : '开启 (路线和点)') : '关闭'}`,
         choices: [
           { text: '编辑', value: 'edit', class: 'app-dialog-primary' },
-          { text: '保存', value: 'save', class: 'app-dialog-primary' },
-          { text: '取消定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
+          { text: '停止定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
         ]
       })
 
       if (choice === 'edit') {
         await showLocationConfigDialog()
-      } else if (choice === 'save') {
-        const ok = saveTrackToKml3d(intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition)
-        if (ok) {
-          await showAlert('定位轨迹已保存为本地 KML 标注文件，您可以在 KML 数据管理面板查看')
-        }
       } else if (choice === 'stop') {
         stopIntervalLocation3d(viewer)
         await showAlert('持续定位已关闭')
@@ -1579,7 +1637,7 @@ function bindUiEvents () {
         isLongPressTriggered = true
         skipNextClick = true
         handleLongPress()
-      }, 2000)
+      }, 1000)
     }
 
     const clearTimer = () => {

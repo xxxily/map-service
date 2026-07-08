@@ -1,6 +1,7 @@
 import L from 'leaflet'
 import { showAlert } from '../ui/dialog.js'
 import { getBestPosition, isValidPosition, positionToLeafletLatLng } from './geolocation.js'
+import { createTrackKml2d, updateTrackKml2d } from './kml.js'
 
 // Audio keep alive and Screen Wake Lock for mobile background processes
 let keepAliveAudio = null
@@ -92,6 +93,8 @@ export const intervalLocationState = {
   intervalSeconds: parseInt(localStorage.getItem('location_interval') || '10', 10),
   zoomLevel: parseInt(localStorage.getItem('location_zoom') || '18', 10),
   maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
+  recordTrack: localStorage.getItem('location_record_track') === 'true', // 是否开启轨迹记录
+  recordKmlId: localStorage.getItem('location_record_kml_id') || null, // 绑定的 KML ID
   lastPosition: null, // 存入最新的定位点数据 { latlng, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次的定位点数据数组
   historyLayers: [],  // 渲染在地图上的 L.circleMarker 图层实例数组
@@ -280,6 +283,22 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 
       // 主 Marker 重新在该坐标触发扩散波纹
       addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
+
+      // 实时同步停留时间到 KML 中
+      if (intervalLocationState.recordTrack) {
+        if (!intervalLocationState.recordKmlId) {
+          const now = new Date()
+          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+          const kmlId = createTrackKml2d(name)
+          if (kmlId) {
+            intervalLocationState.recordKmlId = kmlId
+            localStorage.setItem('location_record_kml_id', kmlId)
+          }
+        }
+        if (intervalLocationState.recordKmlId) {
+          updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
+        }
+      }
     } else {
       // 移动幅度大，生产新点
       if (intervalLocationState.lastPosition) {
@@ -311,6 +330,22 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 
       // 主 Marker 呼吸灯 + 伴随扩散波纹
       addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
+
+      // 实时同步新点位到 KML 中
+      if (intervalLocationState.recordTrack) {
+        if (!intervalLocationState.recordKmlId) {
+          const now = new Date()
+          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+          const kmlId = createTrackKml2d(name)
+          if (kmlId) {
+            intervalLocationState.recordKmlId = kmlId
+            localStorage.setItem('location_record_kml_id', kmlId)
+          }
+        }
+        if (intervalLocationState.recordKmlId) {
+          updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
+        }
+      }
     }
   } else {
     // 常规模式使用默认图标，不带轨迹
@@ -319,7 +354,7 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 }
 
 // 启动 2D 持续定位
-export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHistoryPoints = 0) {
+export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false) {
   if (intervalLocationState.timerId) {
     clearInterval(intervalLocationState.timerId)
   }
@@ -329,6 +364,7 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHi
     localStorage.setItem('location_interval', String(interval))
     localStorage.setItem('location_zoom', String(zoom))
     localStorage.setItem('location_max_points', String(maxHistoryPoints))
+    localStorage.setItem('location_record_track', String(recordTrack))
   } catch (err) {
     console.error('Failed to save location settings:', err)
   }
@@ -337,6 +373,25 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHi
   intervalLocationState.intervalSeconds = interval
   intervalLocationState.zoomLevel = zoom
   intervalLocationState.maxHistoryPoints = maxHistoryPoints
+  intervalLocationState.recordTrack = recordTrack
+  
+  // 仅在首次启动时重新创建 KML 文件；如果中途编辑/重连则继续使用现有的 recordKmlId
+  if (recordTrack && !intervalLocationState.recordKmlId) {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const date = String(now.getDate()).padStart(2, '0')
+    const hours = String(now.getHours()).padStart(2, '0')
+    const minutes = String(now.getMinutes()).padStart(2, '0')
+    const defaultName = `轨迹_${year}${month}${date}_${hours}${minutes}`
+    
+    const kmlId = createTrackKml2d(defaultName)
+    if (kmlId) {
+      intervalLocationState.recordKmlId = kmlId
+      localStorage.setItem('location_record_kml_id', kmlId)
+    }
+  }
+
   intervalLocationState.lastPosition = null
   intervalLocationState.historyPoints = []
   
@@ -364,11 +419,18 @@ export function stopIntervalLocation2d (map) {
     intervalLocationState.timerId = null
   }
 
+  // 停止定位时做最后的 KML 写入（保存最后一个点位到 KML）
+  if (intervalLocationState.recordTrack && intervalLocationState.recordKmlId) {
+    updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
+  }
+
   // 停止音频后台保活并释放 Wake Lock
   stopKeepAlive()
   releaseWakeLock()
 
   intervalLocationState.active = false
+  intervalLocationState.recordKmlId = null
+  localStorage.removeItem('location_record_kml_id')
   intervalLocationState.lastPosition = null
   
   // 清理历史点图层

@@ -1454,25 +1454,34 @@ export function initKmlSupport3d (viewer) {
   initLongPressPointCreation()
 }
 
-export function saveTrackToKml3d (historyPoints, lastPosition) {
+export function createTrackKml3d (name) {
   try {
+    const kmlFile = {
+      id: `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      name: name || '未命名轨迹',
+      enabled: true,
+      isDefault: false,
+      coordCorrection: KML_COORD_CORRECTION,
+      features: []
+    }
+    kmlList.push(kmlFile)
+    saveToStorage()
+    return kmlFile.id
+  } catch (err) {
+    console.error('createTrackKml3d failed:', err)
+    return null
+  }
+}
+
+export function updateTrackKml3d (kmlId, historyPoints, lastPosition, onlyLine = false) {
+  try {
+    const kmlFile = kmlList.find(k => k.id === kmlId)
+    if (!kmlFile) return false
+
     const allPts = [...historyPoints]
     if (lastPosition) {
       allPts.push(lastPosition)
     }
-
-    if (allPts.length === 0) {
-      showAlert('当前没有可保存的定位轨迹点！')
-      return false
-    }
-
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = String(now.getMonth() + 1).padStart(2, '0')
-    const date = String(now.getDate()).padStart(2, '0')
-    const hours = String(now.getHours()).padStart(2, '0')
-    const minutes = String(now.getMinutes()).padStart(2, '0')
-    const defaultName = `轨迹_${year}${month}${date}_${hours}${minutes}`
 
     const lineCoordinates = []
     allPts.forEach(pt => {
@@ -1510,68 +1519,60 @@ export function saveTrackToKml3d (historyPoints, lastPosition) {
       })
     }
 
-    allPts.forEach((pt, index) => {
-      let lat = null
-      let lng = null
-      if (pt) {
-        if (typeof pt.lng === 'number' && typeof pt.lat === 'number') {
-          lng = pt.lng
-          lat = pt.lat
-        } else if (pt.latlng) {
-          if (Array.isArray(pt.latlng)) {
-            lat = pt.latlng[0]
-            lng = pt.latlng[1]
-          } else if (typeof pt.latlng.lat === 'number' && typeof pt.latlng.lng === 'number') {
-            lat = pt.latlng.lat
-            lng = pt.latlng.lng
+    if (!onlyLine) {
+      allPts.forEach((pt, index) => {
+        let lat = null
+        let lng = null
+        if (pt) {
+          if (typeof pt.lng === 'number' && typeof pt.lat === 'number') {
+            lng = pt.lng
+            lat = pt.lat
+          } else if (pt.latlng) {
+            if (Array.isArray(pt.latlng)) {
+              lat = pt.latlng[0]
+              lng = pt.latlng[1]
+            } else if (typeof pt.latlng.lat === 'number' && typeof pt.latlng.lng === 'number') {
+              lat = pt.latlng.lat
+              lng = pt.latlng.lng
+            }
           }
         }
-      }
-      if (typeof lat !== 'number' || typeof lng !== 'number') {
-        return
-      }
-      const gcj02 = [lng, lat]
-      const wgs84 = gcj02ToWgs84(gcj02)
-      const timeStr = new Date(pt.timestamp).toLocaleTimeString()
-      
-      let stayInfo = ''
-      if (pt.staySeconds && pt.staySeconds > 0) {
-        const mins = Math.floor(pt.staySeconds / 60)
-        const secs = Math.floor(pt.staySeconds % 60)
-        stayInfo = mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`
-      } else {
-        stayInfo = '0秒'
-      }
+        if (typeof lat !== 'number' || typeof lng !== 'number') {
+          return
+        }
+        const gcj02 = [lng, lat]
+        const wgs84 = gcj02ToWgs84(gcj02)
+        const timeStr = new Date(pt.timestamp).toLocaleTimeString()
+        
+        let stayInfo = ''
+        if (pt.staySeconds && pt.staySeconds > 0) {
+          const mins = Math.floor(pt.staySeconds / 60)
+          const secs = Math.floor(pt.staySeconds % 60)
+          stayInfo = mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`
+        } else {
+          stayInfo = '0秒'
+        }
 
-      const description = `定位时间：${timeStr}\n定位精度：${pt.accuracy ? Math.round(pt.accuracy) + ' 米' : '未知'}\n停留时长：${stayInfo}`
+        const description = `定位时间：${timeStr}\n定位精度：${pt.accuracy ? Math.round(pt.accuracy) + ' 米' : '未知'}\n停留时长：${stayInfo}`
 
-      features.push({
-        id: `feat-pt-${Date.now()}-${index}`,
-        type: 'Point',
-        name: `点 #${index + 1} (${new Date(pt.timestamp).toLocaleTimeString()})`,
-        description,
-        coordinates: wgs84
+        features.push({
+          id: `feat-pt-${Date.now()}-${index}`,
+          type: 'Point',
+          name: `点 #${index + 1} (${new Date(pt.timestamp).toLocaleTimeString()})`,
+          description,
+          coordinates: wgs84
+        })
       })
-    })
-
-    const kmlFile = {
-      id: `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      name: defaultName,
-      enabled: true,
-      isDefault: false,
-      coordCorrection: KML_COORD_CORRECTION,
-      features
     }
 
-    kmlList.push(kmlFile)
+    kmlFile.features = features
     saveToStorage()
 
     renderKmlLayers(kmlFile)
     updateKmlPanelUI()
     return true
   } catch (err) {
-    console.error('saveTrackToKml3d failed:', err)
-    showAlert(`保存轨迹到 KML 失败: ${err.message}`)
+    console.error('updateTrackKml3d failed:', err)
     return false
   }
 }

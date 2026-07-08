@@ -8,8 +8,8 @@ import {
   Math as CesiumMath,
   CallbackProperty,
 } from 'cesium'
-import { showAlert } from '../ui/dialog.js'
 import { getBestPosition, isValidPosition, positionToGcj02 } from '../map/geolocation.js'
+import { createTrackKml3d, updateTrackKml3d } from './kml.js'
 
 let targetEntity = null
 
@@ -102,6 +102,9 @@ export const intervalLocationState3d = {
   intervalSeconds: parseInt(localStorage.getItem('location_interval') || '10', 10),
   zoomLevel: parseInt(localStorage.getItem('location_zoom') || '18', 10),
   maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
+  recordTrack: localStorage.getItem('location_record_track') === 'true', // 是否开启轨迹记录
+  onlyLine: localStorage.getItem('location_only_line') === 'true', // 是否仅保留路线
+  recordKmlId: localStorage.getItem('location_record_kml_id') || null, // 绑定的 KML ID
   lastPosition: null, // 存储最新的定位点数据 { lng, lat, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次轨迹数据
   historyEntities: [] // 渲染在 3D 地图上的实体集合
@@ -366,6 +369,22 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       // 主定位点重新在该坐标触发扩散波纹
       addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
       triggerRipple3d(viewer, mapPosition)
+
+      // 实时同步停留时间到 KML 中
+      if (intervalLocationState3d.recordTrack) {
+        if (!intervalLocationState3d.recordKmlId) {
+          const now = new Date()
+          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+          const kmlId = createTrackKml3d(name)
+          if (kmlId) {
+            intervalLocationState3d.recordKmlId = kmlId
+            localStorage.setItem('location_record_kml_id', kmlId)
+          }
+        }
+        if (intervalLocationState3d.recordKmlId) {
+          updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
+        }
+      }
     } else {
       // 移动幅度大，生产新点
       if (intervalLocationState3d.lastPosition) {
@@ -399,6 +418,22 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       // 创建带呼吸的定位点及生成瞬间波纹 Entity
       addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
       triggerRipple3d(viewer, mapPosition)
+
+      // 实时同步新点位到 KML 中
+      if (intervalLocationState3d.recordTrack) {
+        if (!intervalLocationState3d.recordKmlId) {
+          const now = new Date()
+          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+          const kmlId = createTrackKml3d(name)
+          if (kmlId) {
+            intervalLocationState3d.recordKmlId = kmlId
+            localStorage.setItem('location_record_kml_id', kmlId)
+          }
+        }
+        if (intervalLocationState3d.recordKmlId) {
+          updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
+        }
+      }
     }
   } else {
     // 普通点定位
@@ -407,7 +442,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 }
 
 // 启动 3D 持续定位
-export function startIntervalLocation3d (viewer, geolocation, interval, zoom, maxHistoryPoints = 0) {
+export function startIntervalLocation3d (viewer, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false, onlyLine = false) {
   if (intervalLocationState3d.timerId) {
     clearInterval(intervalLocationState3d.timerId)
   }
@@ -417,6 +452,8 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom, ma
     localStorage.setItem('location_interval', String(interval))
     localStorage.setItem('location_zoom', String(zoom))
     localStorage.setItem('location_max_points', String(maxHistoryPoints))
+    localStorage.setItem('location_record_track', String(recordTrack))
+    localStorage.setItem('location_only_line', String(onlyLine))
   } catch (err) {
     console.error('Failed to save location settings:', err)
   }
@@ -427,6 +464,26 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom, ma
   intervalLocationState3d.intervalSeconds = interval
   intervalLocationState3d.zoomLevel = zoom
   intervalLocationState3d.maxHistoryPoints = maxHistoryPoints
+  intervalLocationState3d.recordTrack = recordTrack
+  intervalLocationState3d.onlyLine = onlyLine
+
+  // 仅在首次启动时重新创建 KML 文件；如果中途编辑/重连则继续使用现有的 recordKmlId
+  if (recordTrack && !intervalLocationState3d.recordKmlId) {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const date = String(now.getDate()).padStart(2, '0')
+    const hours = String(now.getHours()).padStart(2, '0')
+    const minutes = String(now.getMinutes()).padStart(2, '0')
+    const defaultName = `轨迹_${year}${month}${date}_${hours}${minutes}`
+    
+    const kmlId = createTrackKml3d(defaultName)
+    if (kmlId) {
+      intervalLocationState3d.recordKmlId = kmlId
+      localStorage.setItem('location_record_kml_id', kmlId)
+    }
+  }
+
   intervalLocationState3d.lastPosition = null
   intervalLocationState3d.historyPoints = []
 
@@ -453,11 +510,18 @@ export function stopIntervalLocation3d (viewer) {
     intervalLocationState3d.timerId = null
   }
 
+  // 停止定位时做最后的 KML 写入（保存最后一个点位到 KML）
+  if (intervalLocationState3d.recordTrack && intervalLocationState3d.recordKmlId) {
+    updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
+  }
+
   // 停止音频后台保活并释放 Wake Lock
   stopKeepAlive()
   releaseWakeLock()
 
   intervalLocationState3d.active = false
+  intervalLocationState3d.recordKmlId = null
+  localStorage.removeItem('location_record_kml_id')
   intervalLocationState3d.lastPosition = null
 
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
