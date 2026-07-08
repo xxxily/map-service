@@ -25,44 +25,58 @@
       <div id="route-mode-panel" style="display: none;">
         <div class="route-header">
           <span>路线规划</span>
-          <button type="button" id="toggle-search-panel-btn" class="route-close-btn" title="返回搜索">
-            <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
-          </button>
+          <div class="route-header-actions">
+            <button type="button" id="route-panel-collapse-btn" class="route-collapse-btn" title="折叠/展开">
+              <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="18 15 12 9 6 15"/></svg>
+            </button>
+            <button type="button" id="toggle-search-panel-btn" class="route-close-btn" title="返回搜索">
+              <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+            </button>
+          </div>
         </div>
-        <div class="route-fields">
-          <div class="route-field">
-            <div class="route-input-container">
-              <input id="route-start-input" placeholder="输入起点位置" autocomplete="off">
-              <div class="route-input-actions">
-                <button type="button" id="route-my-location-btn" class="route-loc-btn" title="当前位置">
-                  <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-                </button>
-                <button type="button" id="route-start-map-btn" class="route-map-pick-btn" title="在地图上选点">
-                  <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>
-                </button>
+        
+        <!-- 规划成功后显示的极简概览栏 -->
+        <div id="route-minimized-summary" class="route-minimized-summary" style="display: none;">
+          <div id="route-summary-text" class="route-summary-text">起点 ➔ 终点</div>
+          <button type="button" id="route-edit-btn" class="route-edit-btn">修改</button>
+        </div>
+
+        <!-- 可折叠的内容体 -->
+        <div id="route-panel-body">
+          <div class="route-fields">
+            <div class="route-field">
+              <div class="route-input-container">
+                <input id="route-start-input" placeholder="输入起点位置" autocomplete="off">
+                <div class="route-input-actions">
+                  <button type="button" id="route-my-location-btn" class="route-loc-btn" title="当前位置">
+                    <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+                  </button>
+                  <button type="button" id="route-start-map-btn" class="route-map-pick-btn" title="在地图上选点">
+                    <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="route-field">
+              <div class="route-input-container">
+                <input id="route-end-input" placeholder="输入终点位置" autocomplete="off">
+                <div class="route-input-actions">
+                  <button type="button" id="route-end-map-btn" class="route-map-pick-btn" title="在地图上选点">
+                    <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-          <div class="route-field">
-            <div class="route-input-container">
-              <input id="route-end-input" placeholder="输入终点位置" autocomplete="off">
-              <div class="route-input-actions">
-                <button type="button" id="route-end-map-btn" class="route-map-pick-btn" title="在地图上选点">
-                  <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>
-                </button>
-              </div>
-            </div>
+          <div class="route-actions">
+            <button type="button" id="route-search-btn" class="route-primary-btn">开始规划</button>
           </div>
-        </div>
-        <div class="route-actions">
-          <button type="button" id="route-search-btn" class="route-primary-btn">开始规划</button>
-        </div>
-        <!-- 规划路线结果列表 -->
-        <div id="route-results-list" class="route-results-list" style="display: none;">
-          <!-- 动态渲染备选路径 -->
-        </div>
-        <!-- 导航操作 -->
-        <div id="route-navigate-box" class="route-navigate-box" style="display: none;">
+          <!-- 规划路线结果列表 -->
+          <div id="route-results-list" class="route-results-list" style="display: none;">
+            <!-- 动态渲染备选路径 -->
+          </div>
+          <!-- 导航操作 -->
+          <div id="route-navigate-box" class="route-navigate-box" style="display: none;">
           <button type="button" id="route-nav-btn" class="route-nav-btn">开始导航</button>
         </div>
       </div>

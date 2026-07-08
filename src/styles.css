@@ -353,28 +353,112 @@ body.admin-view #app-version {
   border-color: #0d9488;
 }
 
+/* 路线头部按钮组容器 */
+.route-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.route-collapse-btn {
+  background: none;
+  border: none;
+  color: #657b7f;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  transition: transform 0.2s ease;
+}
+
+.route-collapse-btn:hover {
+  color: #0f766e;
+}
+
+/* 折叠时将 chevron 图标旋转 180 度 */
+.route-collapse-btn.collapsed {
+  transform: rotate(180deg);
+}
+
+/* 极简路线概览条 */
+.route-minimized-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #f0fdfa;
+  border: 1px solid rgba(15, 118, 110, 0.15);
+  border-radius: 6px;
+  padding: 6px 12px;
+  margin-bottom: 8px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.02);
+}
+
+.route-summary-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f766e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 80%;
+}
+
+.route-edit-btn {
+  background: #ffffff;
+  border: 1px solid #0f766e;
+  color: #0f766e;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.route-edit-btn:hover {
+  background: #0f766e;
+  color: #ffffff;
+}
+
+/* 横向排版方案结果列表 */
 .route-results-list {
-  max-height: 180px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: row !important; /* 强制横排 */
+  gap: 8px;
+  overflow-x: auto;
   margin-bottom: 10px;
   border: 1px solid #edf2f7;
-  border-radius: 6px;
+  border-radius: 8px;
   background-color: #f8fafc;
-  padding: 4px;
+  padding: 8px;
+  box-sizing: border-box;
+  scroll-behavior: smooth;
+}
+
+/* 隐藏横向滚动条，但保留滚动功能 */
+.route-results-list::-webkit-scrollbar {
+  height: 4px;
+}
+.route-results-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.route-results-list::-webkit-scrollbar-thumb {
+  background: rgba(15, 118, 110, 0.15);
+  border-radius: 2px;
 }
 
 .route-card {
-  padding: 8px 10px;
+  flex: 1 0 110px; /* 固定最小宽度，高度自适应 */
+  max-width: 130px;
+  padding: 6px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
   background-color: #fff;
   cursor: pointer;
-  margin-bottom: 4px;
-  transition: all 0.15s;
-}
-
-.route-card:last-child {
-  margin-bottom: 0;
+  margin-bottom: 0 !important; /* 消除纵向外边距 */
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  transition: all 0.15s ease;
+  box-sizing: border-box;
 }
 
 .route-card:hover {
@@ -385,18 +469,24 @@ body.admin-view #app-version {
 .route-card.active {
   border-color: #0f766e;
   background-color: #f0fdfa;
+  box-shadow: 0 2px 6px rgba(15, 118, 110, 0.15);
 }
 
 .route-card-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
-  color: #0f766e;
+  color: #475569;
   margin-bottom: 2px;
+}
+
+.route-card.active .route-card-title {
+  color: #0f766e;
 }
 
 .route-card-meta {
   font-size: 11px;
-  color: #475569;
+  color: #64748b;
+  white-space: nowrap;
 }
 
 .route-navigate-box {
@@ -405,21 +495,21 @@ body.admin-view #app-version {
 
 .route-nav-btn {
   width: 100%;
-  height: 38px;
+  height: 34px;
   border: 1px solid #0f766e;
   border-radius: 6px;
   background-color: #0f766e;
   color: #fff;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.2);
-  transition: background-color 0.15s, box-shadow 0.15s;
+  box-shadow: 0 3px 8px rgba(15, 118, 110, 0.15);
+  transition: all 0.15s ease;
 }
 
 .route-nav-btn:hover {
   background-color: #0d9488;
-  box-shadow: 0 4px 14px rgba(13, 148, 136, 0.3);
+  box-shadow: 0 3px 10px rgba(13, 148, 136, 0.25);
 }
 
 #map-menu {

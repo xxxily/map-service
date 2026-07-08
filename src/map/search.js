@@ -156,8 +156,8 @@ function selectRoute (index) {
     } else {
       polyline.setStyle({
         color: '#94a3b8',
-        weight: 4,
-        opacity: 0.6,
+        weight: 5,
+        opacity: 0.28,
       })
     }
   })
@@ -167,6 +167,7 @@ function selectRoute (index) {
   cards.forEach((card, idx) => {
     if (idx === index) {
       card.classList.add('active')
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
     } else {
       card.classList.remove('active')
     }
@@ -333,6 +334,20 @@ function triggerRoutePlanning (map, AMap) {
         navigateBox.style.display = 'block'
       }
 
+      // 规划成功后，自动将输入框隐退收起，展示极简概览条
+      const summaryBar = document.getElementById('route-minimized-summary')
+      const summaryText = document.getElementById('route-summary-text')
+      const panelBody = document.getElementById('route-panel-body')
+      if (summaryBar && summaryText && panelBody) {
+        summaryText.innerHTML = `${startPoi.name} ➔ ${endPoi.name}`
+        summaryBar.style.display = 'flex'
+
+        const fields = panelBody.querySelector('.route-fields')
+        const actions = panelBody.querySelector('.route-actions')
+        if (fields) fields.style.display = 'none'
+        if (actions) actions.style.display = 'none'
+      }
+
       // 自适应缩放
       if (routePolylines.length > 0) {
         map.fitBounds(routeFeatureGroup.getBounds(), { padding: [50, 50] })
@@ -497,6 +512,45 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   const searchPanel = document.getElementById('search-mode-panel')
   const routePanel = document.getElementById('route-mode-panel')
 
+  // 折叠状态逻辑
+  const collapseBtn = document.getElementById('route-panel-collapse-btn')
+  const panelBody = document.getElementById('route-panel-body')
+
+  function resetCollapseState () {
+    if (collapseBtn && panelBody) {
+      collapseBtn.classList.remove('collapsed')
+      panelBody.style.display = 'block'
+    }
+  }
+
+  if (collapseBtn && panelBody) {
+    collapseBtn.addEventListener('click', () => {
+      const isCollapsed = collapseBtn.classList.toggle('collapsed')
+      panelBody.style.display = isCollapsed ? 'none' : 'block'
+    })
+  }
+
+  // 恢复可编辑状态逻辑
+  function resetRouteMinimization () {
+    const summaryBar = document.getElementById('route-minimized-summary')
+    if (summaryBar && panelBody) {
+      summaryBar.style.display = 'none'
+      const fields = panelBody.querySelector('.route-fields')
+      const actions = panelBody.querySelector('.route-actions')
+      if (fields) fields.style.display = 'block'
+      if (actions) actions.style.display = 'block'
+    }
+  }
+
+  const editBtn = document.getElementById('route-edit-btn')
+  if (editBtn) {
+    editBtn.addEventListener('click', () => {
+      resetRouteMinimization()
+      resetCollapseState()
+      clearRouteLayers(map)
+    })
+  }
+
   if (toggleRouteBtn && searchPanel && routePanel) {
     toggleRouteBtn.addEventListener('click', () => {
       searchPanel.style.display = 'none'
@@ -519,6 +573,8 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       endPoi = null
       clearRouteLayers(map)
       clearAllRoutePickers(map)
+      resetRouteMinimization()
+      resetCollapseState()
     })
   }
 
@@ -666,7 +722,6 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     navBtn.addEventListener('click', () => {
       if (!startPoi || !endPoi) return
 
-      // 构建高德 URI API 导航链接（支持免 App 网页版自动唤起）
       const url = `https://uri.amap.com/navigation?from=${startPoi.location.lng},${startPoi.location.lat},${encodeURIComponent(startPoi.name)}&to=${endPoi.location.lng},${endPoi.location.lat},${encodeURIComponent(endPoi.name)}&mode=car&src=MapService&coordinate=gaode&callnative=1`
       window.open(url, '_blank')
     })
