@@ -5,26 +5,58 @@ import { getBestPosition, isValidPosition, positionToLeafletLatLng } from './geo
 // Audio keep alive and Screen Wake Lock for mobile background processes
 let keepAliveAudio = null
 let wakeLock = null
+let fallbackVideo = null
 
 async function requestWakeLock () {
+  // 优先使用标准 Screen Wake Lock API
   if ('wakeLock' in navigator) {
     try {
       wakeLock = await navigator.wakeLock.request('screen')
-      console.log('[WakeLock] Screen Wake Lock is active')
+      console.log('[WakeLock] Screen Wake Lock API is active')
+      return
     } catch (err) {
-      console.warn(`[WakeLock] Failed to request Screen Wake Lock: ${err.message}`)
+      console.warn(`[WakeLock] Screen Wake Lock API failed: ${err.message}, falling back to video.`)
     }
   }
+
+  // 降级方案：动态在后台播放 1x1 像素的极简无声音频/视频源
+  if (!fallbackVideo) {
+    fallbackVideo = document.createElement('video')
+    // 1x1 像素、静音、无内容极简 MP4 Base64
+    const silentMp4 = 'data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29tc252cwAAAChmcmVlAAAAAG1kYXQAAAAIZ29vZwAAArxtb292AABhY212aGQAAAAA0t2u1tLdrtYAAAPoAAAAKAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACNnRyYWsAAABcdGtoZAAAAAPQ3a7W0N2u1gAAAAEAAAAAAAD6AAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEgbWRpYQAAACxtZGhkAAAAANLdrtbS3a7WAAAAAAAAB1QAAAAAc254aAAAAAAALWhkcmxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAACdmlkZW9saW5rAAAAAIJtaW5mAAAAEHZtstraightAAAAAAAJZGluawAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAAB8c3RibAAAAGRzdHNkAAAAAAAAAAEAAABUYXZjMQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAQABAAUAAAAFAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaP//AAAAJHdyaXRlAAAAAAAAAAEAAAAQYXZjQ0ABAQAA/wADAAAAAEJ0ZHN0cwAAAAAAAAABAAAAAQAAA+gAAAAUc3RzYwAAAAAAAAABAAAAAQAAAAEAAAABAAAAFHN0c3oAAAAAAAAADwAAA+gAAAAQc3RjbwAAAAAAAAABAAAAMAAA'
+    fallbackVideo.src = silentMp4
+    fallbackVideo.setAttribute('playsinline', '')
+    fallbackVideo.setAttribute('muted', '')
+    fallbackVideo.loop = true
+    fallbackVideo.muted = true
+    fallbackVideo.style.position = 'absolute'
+    fallbackVideo.style.width = '1px'
+    fallbackVideo.style.height = '1px'
+    fallbackVideo.style.opacity = '0.01'
+    fallbackVideo.style.pointerEvents = 'none'
+    document.body.appendChild(fallbackVideo)
+  }
+
+  fallbackVideo.play().then(() => {
+    console.log('[WakeLock] Screen Wake Lock fallback video is playing')
+  }).catch(err => {
+    console.warn('[WakeLock] Fallback video play blocked', err)
+  })
 }
 
 function releaseWakeLock () {
   if (wakeLock) {
     wakeLock.release().then(() => {
       wakeLock = null
-      console.log('[WakeLock] Screen Wake Lock was released')
+      console.log('[WakeLock] Screen Wake Lock API was released')
     }).catch(err => {
-      console.warn(`[WakeLock] Failed to release Screen Wake Lock: ${err.message}`)
+      console.warn(`[WakeLock] Failed to release Screen Wake Lock API: ${err.message}`)
     })
+  }
+
+  if (fallbackVideo) {
+    fallbackVideo.pause()
+    console.log('[WakeLock] Screen Wake Lock fallback video was paused')
   }
 }
 
