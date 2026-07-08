@@ -420,43 +420,30 @@ body.admin-view #app-version {
   color: #ffffff;
 }
 
-/* 横向排版方案结果列表 */
+/* 方案结果列表 (默认 PC 端：纵向排列) */
 .route-results-list {
   display: flex;
-  flex-direction: row !important; /* 强制横排 */
-  gap: 8px;
-  overflow-x: auto;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 185px;
   margin-bottom: 10px;
   border: 1px solid #edf2f7;
   border-radius: 8px;
   background-color: #f8fafc;
   padding: 8px;
   box-sizing: border-box;
-  scroll-behavior: smooth;
-}
-
-/* 隐藏横向滚动条，但保留滚动功能 */
-.route-results-list::-webkit-scrollbar {
-  height: 4px;
-}
-.route-results-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-.route-results-list::-webkit-scrollbar-thumb {
-  background: rgba(15, 118, 110, 0.15);
-  border-radius: 2px;
 }
 
 .route-card {
-  flex: 1 0 110px; /* 固定最小宽度，高度自适应 */
-  max-width: 130px;
-  padding: 6px 8px;
+  width: 100%;
+  padding: 8px 10px;
   border: 1px solid transparent;
   border-radius: 6px;
   background-color: #fff;
   cursor: pointer;
-  margin-bottom: 0 !important; /* 消除纵向外边距 */
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  margin-bottom: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   transition: all 0.15s ease;
   box-sizing: border-box;
 }
@@ -473,7 +460,7 @@ body.admin-view #app-version {
 }
 
 .route-card-title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: #475569;
   margin-bottom: 2px;
@@ -486,7 +473,6 @@ body.admin-view #app-version {
 .route-card-meta {
   font-size: 11px;
   color: #64748b;
-  white-space: nowrap;
 }
 
 .route-navigate-box {
@@ -510,6 +496,44 @@ body.admin-view #app-version {
 .route-nav-btn:hover {
   background-color: #0d9488;
   box-shadow: 0 3px 10px rgba(13, 148, 136, 0.25);
+}
+
+/* 移动端/小屏幕适配：强制方案卡片横向滚动显示 */
+@media (max-width: 640px) {
+  .route-results-list {
+    flex-direction: row !important; /* 强制横排 */
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    max-height: none !important;
+    scroll-behavior: smooth;
+  }
+
+  /* 隐藏横向滚动条 */
+  .route-results-list::-webkit-scrollbar {
+    height: 4px;
+  }
+  .route-results-list::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .route-results-list::-webkit-scrollbar-thumb {
+    background: rgba(15, 118, 110, 0.15);
+    border-radius: 2px;
+  }
+
+  .route-card {
+    flex: 1 0 110px !important;
+    max-width: 130px !important;
+    padding: 6px 8px !important;
+    text-align: center;
+  }
+
+  .route-card-title {
+    font-size: 11px !important;
+  }
+
+  .route-card-meta {
+    white-space: nowrap !important;
+  }
 }
 
 #map-menu {

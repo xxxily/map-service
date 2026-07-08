@@ -307,7 +307,7 @@ function triggerRoutePlanning (map, AMap) {
       // 面板卡片展示
       const resultsList = document.getElementById('route-results-list')
       if (resultsList) {
-        resultsList.style.display = 'block'
+        resultsList.style.display = ''
         resultsList.innerHTML = routeData.map((route, idx) => {
           const minutes = Math.round(route.time / 60)
           const km = parseFloat((route.distance / 1000).toFixed(1))
