@@ -233,20 +233,51 @@ export function addTargetMarker3d (viewer, location, options = {}) {
   return targetEntity
 }
 
-export async function updatePosition3d (viewer, geolocation = null, customHeight = 1200, isIntervalUpdate = false) {
+async function getFilteredPosition3d (viewer, geolocation, customHeight, isIntervalUpdate, retryCount = 0) {
   const result = await getBestPosition(geolocation).catch((err) => {
     console.error('获取地理位置失败', err)
     return null
   })
 
   if (!isValidPosition(result)) {
+    return null
+  }
+
+  const mapPosition = positionToGcj02(result)
+
+  // 仅在持续定位且有上一轨迹点时，过滤突变大（>200米）的漂移脏点
+  if (isIntervalUpdate && intervalLocationState3d.lastPosition) {
+    const ptCartesian = Cartesian3.fromDegrees(intervalLocationState3d.lastPosition.lng, intervalLocationState3d.lastPosition.lat, 0)
+    const nextCartesian = Cartesian3.fromDegrees(mapPosition.lng, mapPosition.lat, 0)
+    const dist = Cartesian3.distance(ptCartesian, nextCartesian)
+
+    if (dist > 200) {
+      console.warn(`[3D 定位] 检测到可能的漂移脏点，距离上一点 ${Math.round(dist)} 米`)
+      if (retryCount === 0) {
+        console.log('[3D 定位] 立即进行重试定位一次...')
+        await new Promise(resolve => setTimeout(resolve, 500))
+        return await getFilteredPosition3d(viewer, geolocation, customHeight, isIntervalUpdate, 1)
+      } else {
+        console.warn('[3D 定位] 重试后依然偏差过大，丢弃该定位点')
+        return null
+      }
+    }
+  }
+
+  return { result, mapPosition }
+}
+
+export async function updatePosition3d (viewer, geolocation = null, customHeight = 1200, isIntervalUpdate = false) {
+  const filtered = await getFilteredPosition3d(viewer, geolocation, customHeight, isIntervalUpdate)
+
+  if (!filtered) {
     if (!isIntervalUpdate) {
       await showAlert('获取地理位置失败，请手动选择')
     }
     return
   }
 
-  const mapPosition = positionToGcj02(result)
+  const { result, mapPosition } = filtered
   
   // 飞往位置
   flyToLngLat(viewer, mapPosition.lng, mapPosition.lat, { height: customHeight })

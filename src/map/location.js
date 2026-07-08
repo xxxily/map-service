@@ -151,20 +151,48 @@ export function addTargetMarker (map, location, options = {}) {
   return marker
 }
 
-export async function updatePosition (map, geolocation = null, customZoom = 18, isIntervalUpdate = false) {
+async function getFilteredPosition2d (map, geolocation, customZoom, isIntervalUpdate, retryCount = 0) {
   const result = await getBestPosition(geolocation).catch((err) => {
     console.error('获取地理位置失败', err)
     return null
   })
 
   if (!isValidPosition(result)) {
+    return null
+  }
+
+  const mapPosition = positionToLeafletLatLng(result)
+
+  // 仅在持续定位且有上一点位置记录时，过滤突变大（>200米）的漂移脏点
+  if (isIntervalUpdate && intervalLocationState.lastPosition) {
+    const dist = L.latLng(mapPosition).distanceTo(L.latLng(intervalLocationState.lastPosition.latlng))
+    if (dist > 200) {
+      console.warn(`[2D 定位] 检测到可能的漂移脏点，距离上一点 ${Math.round(dist)} 米`)
+      if (retryCount === 0) {
+        console.log('[2D 定位] 立即进行重试定位一次...')
+        await new Promise(resolve => setTimeout(resolve, 500))
+        return await getFilteredPosition2d(map, geolocation, customZoom, isIntervalUpdate, 1)
+      } else {
+        console.warn('[2D 定位] 重试后依然偏差过大，丢弃该定位点')
+        return null
+      }
+    }
+  }
+
+  return { result, mapPosition }
+}
+
+export async function updatePosition (map, geolocation = null, customZoom = 18, isIntervalUpdate = false) {
+  const filtered = await getFilteredPosition2d(map, geolocation, customZoom, isIntervalUpdate)
+
+  if (!filtered) {
     if (!isIntervalUpdate) {
       await showAlert('获取地理位置失败，请手动选择')
     }
     return
   }
 
-  const mapPosition = positionToLeafletLatLng(result)
+  const { result, mapPosition } = filtered
   
   // 更新地图视口与主定位图标
   map.setView(mapPosition, customZoom)
