@@ -299,6 +299,38 @@ body.admin-view #app-version {
   cursor: crosshair !important;
 }
 
+.custom-route-pin {
+  background: none;
+  border: none;
+}
+
+.route-marker-pin {
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  color: white;
+  font-size: 13px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #ffffff;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease;
+}
+
+.route-marker-pin:hover {
+  transform: scale(1.15);
+}
+
+.start-pin {
+  background: #0f766e;
+}
+
+.end-pin {
+  background: #ea580c;
+}
+
 .route-actions {
   margin-bottom: 10px;
 }

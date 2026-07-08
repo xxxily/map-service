@@ -11,6 +11,102 @@ let routeData = null
 let activeRouteIndex = 0
 let startPoi = null
 let endPoi = null
+let startPickMarker = null
+let endPickMarker = null
+
+// 获取 localStorage 中的历史记录
+function getHistory (key) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) || []
+  } catch (e) {
+    return []
+  }
+}
+
+// 写入一条历史记录（上限10条，名字去重置顶）
+function saveHistory (key, poi) {
+  if (!poi || !poi.name) return
+  let history = getHistory(key)
+  history = history.filter(item => item.name !== poi.name)
+  history.unshift({ name: poi.name, location: poi.location })
+  if (history.length > 10) {
+    history = history.slice(0, 10)
+  }
+  localStorage.setItem(key, JSON.stringify(history))
+}
+
+// 清除历史记录
+function clearHistory (key) {
+  localStorage.removeItem(key)
+}
+
+// 绑定并渲染历史记录下拉菜单
+function renderHistoryDropdown (container, input, key, onSelect) {
+  if (!container || !input) return
+
+  let dropdown = container.querySelector('.history-dropdown')
+  if (!dropdown) {
+    dropdown = document.createElement('div')
+    dropdown.className = 'history-dropdown amap-sug-result'
+    dropdown.style.cssText = 'display: none; position: absolute; top: 100%; left: 0; width: 100%; z-index: 20000; box-sizing: border-box;'
+    container.appendChild(dropdown)
+  }
+
+  const showDropdown = () => {
+    if (input.value.trim()) {
+      dropdown.style.display = 'none'
+      return
+    }
+    const history = getHistory(key)
+    if (history.length === 0) {
+      dropdown.style.display = 'none'
+      return
+    }
+
+    dropdown.innerHTML = ''
+    history.forEach(item => {
+      const div = document.createElement('div')
+      div.className = 'auto-item'
+      div.innerHTML = `<span class="sug-key">${item.name}</span>`
+      div.addEventListener('mousedown', (e) => {
+        e.preventDefault()
+        input.value = item.name
+        onSelect(item)
+        dropdown.style.display = 'none'
+      })
+      dropdown.appendChild(div)
+    })
+
+    // 清除历史记录按钮
+    const clearDiv = document.createElement('div')
+    clearDiv.className = 'auto-item'
+    clearDiv.style.cssText = 'text-align: right; font-size: 11px !important; color: #94a3b8 !important; border-top: 1px dashed #edf2f7; padding: 6px 12px !important; cursor: pointer;'
+    clearDiv.innerHTML = '<span>清除历史</span>'
+    clearDiv.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      clearHistory(key)
+      dropdown.style.display = 'none'
+    })
+    dropdown.appendChild(clearDiv)
+
+    dropdown.style.display = 'block'
+  }
+
+  input.addEventListener('focus', showDropdown)
+  input.addEventListener('click', showDropdown)
+  input.addEventListener('input', () => {
+    if (input.value.trim()) {
+      dropdown.style.display = 'none'
+    } else {
+      showDropdown()
+    }
+  })
+  input.addEventListener('blur', () => {
+    setTimeout(() => {
+      dropdown.style.display = 'none'
+    }, 200)
+  })
+}
 
 // 清理路线相关的地图图层和状态
 function clearRouteLayers (map) {
@@ -24,8 +120,23 @@ function clearRouteLayers (map) {
 
   const resultsList = document.getElementById('route-results-list')
   const navigateBox = document.getElementById('route-navigate-box')
-  if (resultsList) resultsList.style.display = 'none'
+  if (resultsList) {
+    resultsList.innerHTML = ''
+    resultsList.style.display = 'none'
+  }
   if (navigateBox) navigateBox.style.display = 'none'
+}
+
+// 清理所有地图上的选点大头针
+function clearAllRoutePickers (map) {
+  if (startPickMarker) {
+    map.removeLayer(startPickMarker)
+    startPickMarker = null
+  }
+  if (endPickMarker) {
+    map.removeLayer(endPickMarker)
+    endPickMarker = null
+  }
 }
 
 // 切换当前激活的折线和卡片
@@ -62,6 +173,176 @@ function selectRoute (index) {
   })
 }
 
+// 更新或绘制大头针标记
+function updatePickMarker (map, latlng, isStart) {
+  const iconHtml = isStart
+    ? `<div class="route-marker-pin start-pin">起</div>`
+    : `<div class="route-marker-pin end-pin">终</div>`
+
+  const icon = L.divIcon({
+    html: iconHtml,
+    className: 'custom-route-pin',
+    iconSize: [28, 28],
+    iconAnchor: [14, 28],
+  })
+
+  if (isStart) {
+    if (startPickMarker) {
+      startPickMarker.setLatLng(latlng)
+    } else {
+      startPickMarker = L.marker(latlng, { draggable: true, icon: icon }).addTo(map)
+      bindMarkerDragEvents(map, startPickMarker, true)
+    }
+  } else {
+    if (endPickMarker) {
+      endPickMarker.setLatLng(latlng)
+    } else {
+      endPickMarker = L.marker(latlng, { draggable: true, icon: icon }).addTo(map)
+      bindMarkerDragEvents(map, endPickMarker, false)
+    }
+  }
+}
+
+// 绑定大头针拖拽重新规划事件
+function bindMarkerDragEvents (map, marker, isStart) {
+  const startInput = document.getElementById('route-start-input')
+  const endInput = document.getElementById('route-end-input')
+
+  marker.on('dragend', async (event) => {
+    const latlng = event.target.getLatLng()
+    const lat = latlng.lat
+    const lng = latlng.lng
+
+    const input = isStart ? startInput : endInput
+    if (!input) return
+
+    const displayName = `地图选定位置 (${lat.toFixed(4)}, ${lng.toFixed(4)})`
+    input.value = '正在解析位置...'
+
+    const poi = {
+      name: displayName,
+      location: { lng, lat },
+    }
+
+    if (isStart) {
+      startPoi = poi
+    } else {
+      endPoi = poi
+    }
+
+    AMap.plugin('AMap.Geocoder', () => {
+      const geocoder = new AMap.Geocoder()
+      geocoder.getAddress([lng, lat], (status, result) => {
+        if (status === 'complete' && result.regeocode) {
+          const address = result.regeocode.formattedAddress || displayName
+          poi.name = address
+          input.value = address
+        } else {
+          input.value = displayName
+        }
+        saveHistory('map_route_history', poi)
+        if (startPoi && endPoi) {
+          triggerRoutePlanning(map, AMap)
+        } else {
+          clearRouteLayers(map)
+        }
+      })
+    })
+  })
+}
+
+// 提取路线计算逻辑为自适应重新规划纯函数
+function triggerRoutePlanning (map, AMap) {
+  if (!startPoi || !endPoi) return
+
+  AMap.plugin('AMap.Driving', () => {
+    const driving = new AMap.Driving({
+      policy: 10,
+      extensions: 'all',
+    })
+
+    const startLngLat = new AMap.LngLat(startPoi.location.lng, startPoi.location.lat)
+    const endLngLat = new AMap.LngLat(endPoi.location.lng, endPoi.location.lat)
+
+    driving.search(startLngLat, endLngLat, async (status, result) => {
+      if (status !== 'complete' || !result.routes || result.routes.length === 0) {
+        await showAlert('路线规划失败: ' + (result?.info || '未知错误'))
+        return
+      }
+
+      saveHistory('map_route_history', startPoi)
+      saveHistory('map_route_history', endPoi)
+
+      clearRouteLayers(map)
+      routeFeatureGroup = L.featureGroup().addTo(map)
+      routeData = result.routes
+
+      // 确保地图选点大头针被画出并且更新到最新位置
+      updatePickMarker(map, [startPoi.location.lat, startPoi.location.lng], true)
+      updatePickMarker(map, [endPoi.location.lat, endPoi.location.lng], false)
+
+      routeData.forEach((route, idx) => {
+        const pathPoints = []
+        route.steps.forEach((step) => {
+          step.path.forEach((pt) => {
+            pathPoints.push([pt.lat, pt.lng])
+          })
+        })
+
+        const polyline = L.polyline(pathPoints, {
+          color: '#94a3b8',
+          weight: 4,
+          opacity: 0.6,
+        }).addTo(routeFeatureGroup)
+
+        polyline.on('click', (e) => {
+          L.DomEvent.stopPropagation(e)
+          selectRoute(idx)
+        })
+
+        routePolylines.push(polyline)
+      })
+
+      // 面板卡片展示
+      const resultsList = document.getElementById('route-results-list')
+      if (resultsList) {
+        resultsList.style.display = 'block'
+        resultsList.innerHTML = routeData.map((route, idx) => {
+          const minutes = Math.round(route.time / 60)
+          const km = parseFloat((route.distance / 1000).toFixed(1))
+          const activeClass = idx === 0 ? 'active' : ''
+          return `
+            <div class="route-card ${activeClass}" data-route-idx="${idx}">
+              <div class="route-card-title">方案 ${idx + 1}</div>
+              <div class="route-card-meta">约 ${minutes} 分钟 | ${km} 公里</div>
+            </div>
+          `
+        }).join('')
+
+        resultsList.querySelectorAll('.route-card').forEach((card) => {
+          card.addEventListener('click', () => {
+            const idx = parseInt(card.getAttribute('data-route-idx'), 10)
+            selectRoute(idx)
+          })
+        })
+      }
+
+      // 开启导航栏展示
+      const navigateBox = document.getElementById('route-navigate-box')
+      if (navigateBox) {
+        navigateBox.style.display = 'block'
+      }
+
+      // 自适应缩放
+      if (routePolylines.length > 0) {
+        map.fitBounds(routeFeatureGroup.getBounds(), { padding: [50, 50] })
+      }
+
+      selectRoute(0)
+    })
+  })
+}
+
 export function initAmapSearch (map, AMap, amapGeolocation) {
   if (!AMap?.AutoComplete || !AMap?.PlaceSearch) {
     console.warn('高德搜索插件加载失败，搜索功能不可用')
@@ -78,10 +359,11 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       return
     }
 
+    saveHistory('map_search_history', event.poi)
+
     const location = [event.poi.location.lat, event.poi.location.lng]
     map.setView(location, 18)
 
-    // 清理先前的搜索标记，防止标记无限累积
     if (currentSearchMarker) {
       map.removeLayer(currentSearchMarker)
     }
@@ -92,6 +374,26 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       title: event.poi.name,
     }).addTo(map)
   })
+
+  // 绑定普通位置搜索框历史记录下拉
+  const searchContainer = document.getElementById('map-search-mod')
+  const searchInput = document.getElementById('tipinput')
+  if (searchContainer && searchInput) {
+    renderHistoryDropdown(searchContainer, searchInput, 'map_search_history', (item) => {
+      if (item.location) {
+        const location = [item.location.lat, item.location.lng]
+        map.setView(location, 18)
+        if (currentSearchMarker) {
+          map.removeLayer(currentSearchMarker)
+        }
+        currentSearchMarker = L.marker(location, {
+          opacity: 1,
+          draggable: true,
+          title: item.name,
+        }).addTo(map)
+      }
+    })
+  }
 
   // 2. 初始化路线规划面板中的起终点联想
   const startAutoComplete = new AMap.AutoComplete({
@@ -111,6 +413,11 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           lat: event.poi.location.lat,
         },
       }
+      saveHistory('map_route_history', startPoi)
+      updatePickMarker(map, [startPoi.location.lat, startPoi.location.lng], true)
+      if (startPoi && endPoi) {
+        triggerRoutePlanning(map, AMap)
+      }
     }
   })
 
@@ -123,10 +430,15 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           lat: event.poi.location.lat,
         },
       }
+      saveHistory('map_route_history', endPoi)
+      updatePickMarker(map, [endPoi.location.lat, endPoi.location.lng], false)
+      if (startPoi && endPoi) {
+        triggerRoutePlanning(map, AMap)
+      }
     }
   })
 
-  // 监听输入框变化，清空已失效的 POI 对象缓存并擦除路线
+  // 监听输入框变化，清空已失效的 POI 对象缓存并擦除路线及地图 Marker
   const startInput = document.getElementById('route-start-input')
   const endInput = document.getElementById('route-end-input')
 
@@ -134,6 +446,10 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     startInput.addEventListener('input', () => {
       startPoi = null
       clearRouteLayers(map)
+      if (!startInput.value.trim() && startPickMarker) {
+        map.removeLayer(startPickMarker)
+        startPickMarker = null
+      }
     })
   }
 
@@ -141,6 +457,37 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     endInput.addEventListener('input', () => {
       endPoi = null
       clearRouteLayers(map)
+      if (!endInput.value.trim() && endPickMarker) {
+        map.removeLayer(endPickMarker)
+        endPickMarker = null
+      }
+    })
+  }
+
+  // 绑定起终点规划框历史记录下拉
+  if (startInput) {
+    const container = startInput.closest('.route-input-container')
+    renderHistoryDropdown(container, startInput, 'map_route_history', (item) => {
+      startPoi = item
+      if (item.location) {
+        updatePickMarker(map, [item.location.lat, item.location.lng], true)
+        if (startPoi && endPoi) {
+          triggerRoutePlanning(map, AMap)
+        }
+      }
+    })
+  }
+
+  if (endInput) {
+    const container = endInput.closest('.route-input-container')
+    renderHistoryDropdown(container, endInput, 'map_route_history', (item) => {
+      endPoi = item
+      if (item.location) {
+        updatePickMarker(map, [item.location.lat, item.location.lng], false)
+        if (startPoi && endPoi) {
+          triggerRoutePlanning(map, AMap)
+        }
+      }
     })
   }
 
@@ -154,7 +501,6 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     toggleRouteBtn.addEventListener('click', () => {
       searchPanel.style.display = 'none'
       routePanel.style.display = 'block'
-      // 切换模式时清理普通搜索的 marker
       if (currentSearchMarker) {
         map.removeLayer(currentSearchMarker)
         currentSearchMarker = null
@@ -167,12 +513,12 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       routePanel.style.display = 'none'
       searchPanel.style.display = 'block'
 
-      // 清空路线规划状态和图层
       if (startInput) startInput.value = ''
       if (endInput) endInput.value = ''
       startPoi = null
       endPoi = null
       clearRouteLayers(map)
+      clearAllRoutePickers(map)
     })
   }
 
@@ -186,7 +532,6 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     btn.addEventListener('click', () => {
       const isPicking = btn.classList.contains('active')
 
-      // 重置所有选点状态
       if (startMapBtn) startMapBtn.classList.remove('active')
       if (endMapBtn) endMapBtn.classList.remove('active')
       L.DomUtil.removeClass(map.getContainer(), 'map-crosshair-pick')
@@ -197,18 +542,15 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
         return
       }
 
-      // 激活选点状态
       btn.classList.add('active')
       L.DomUtil.addClass(map.getContainer(), 'map-crosshair-pick')
       input.value = ''
       input.placeholder = '请在地图上点击选择位置...'
 
-      // 处理点击事件
       async function handleMapClick (e) {
         const lat = e.latlng.lat
         const lng = e.latlng.lng
 
-        // 还原状态
         btn.classList.remove('active')
         L.DomUtil.removeClass(map.getContainer(), 'map-crosshair-pick')
         input.placeholder = isStart ? '输入起点位置' : '输入终点位置'
@@ -227,7 +569,8 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           endPoi = poi
         }
 
-        // 高德逆地理编码
+        updatePickMarker(map, [lat, lng], isStart)
+
         AMap.plugin('AMap.Geocoder', () => {
           const geocoder = new AMap.Geocoder()
           geocoder.getAddress([lng, lat], (status, result) => {
@@ -238,7 +581,12 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
             } else {
               input.value = displayName
             }
-            clearRouteLayers(map)
+            saveHistory('map_route_history', poi)
+            if (startPoi && endPoi) {
+              triggerRoutePlanning(map, AMap)
+            } else {
+              clearRouteLayers(map)
+            }
           })
         })
       }
@@ -268,6 +616,11 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           },
         }
         startInput.value = '我的位置'
+        saveHistory('map_route_history', startPoi)
+        updatePickMarker(map, [position.lat, position.lng], true)
+        if (startPoi && endPoi) {
+          triggerRoutePlanning(map, AMap)
+        }
       } catch (err) {
         console.error('路线定位获取当前位置失败:', err)
         startInput.value = ''
@@ -303,111 +656,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
         return
       }
 
-      // 开始进行高德路线规划
-      AMap.plugin('AMap.Driving', () => {
-        const driving = new AMap.Driving({
-          policy: 10, // 多路径复合推荐方案
-          extensions: 'all', // 获取多路线
-        })
-
-        const startLngLat = new AMap.LngLat(startPoi.location.lng, startPoi.location.lat)
-        const endLngLat = new AMap.LngLat(endPoi.location.lng, endPoi.location.lat)
-
-        driving.search(startLngLat, endLngLat, async (status, result) => {
-          if (status !== 'complete' || !result.routes || result.routes.length === 0) {
-            await showAlert('路线规划失败: ' + (result?.info || '未知错误'))
-            return
-          }
-
-          // 成功规划，开始绘制
-          clearRouteLayers(map)
-          routeFeatureGroup = L.featureGroup().addTo(map)
-          routeData = result.routes
-
-          // 循环每一条路线，在 Leaflet 上绘制折线
-          routeData.forEach((route, idx) => {
-            const pathPoints = []
-            route.steps.forEach((step) => {
-              step.path.forEach((pt) => {
-                pathPoints.push([pt.lat, pt.lng]) // 翻转经纬度适配 Leaflet
-              })
-            })
-
-            // 备用样式
-            const polyline = L.polyline(pathPoints, {
-              color: '#94a3b8',
-              weight: 4,
-              opacity: 0.6,
-            }).addTo(routeFeatureGroup)
-
-            // 监听折线点击事件
-            polyline.on('click', (e) => {
-              L.DomEvent.stopPropagation(e)
-              selectRoute(idx)
-            })
-
-            routePolylines.push(polyline)
-          })
-
-          // 绘制起点和终点标记
-          L.marker([startPoi.location.lat, startPoi.location.lng], {
-            title: '起点',
-            icon: L.divIcon({
-              className: 'route-marker start',
-              html: `<div style="background-color: #10b981; color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3)">起</div>`,
-              iconSize: [24, 24],
-              iconAnchor: [12, 12],
-            })
-          }).addTo(routeFeatureGroup)
-
-          L.marker([endPoi.location.lat, endPoi.location.lng], {
-            title: '终点',
-            icon: L.divIcon({
-              className: 'route-marker end',
-              html: `<div style="background-color: #ef4444; color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3)">终</div>`,
-              iconSize: [24, 24],
-              iconAnchor: [12, 12],
-            })
-          }).addTo(routeFeatureGroup)
-
-          // 面板卡片展示
-          const resultsList = document.getElementById('route-results-list')
-          if (resultsList) {
-            resultsList.style.display = 'block'
-            resultsList.innerHTML = routeData.map((route, idx) => {
-              const minutes = Math.round(route.time / 60)
-              const km = parseFloat((route.distance / 1000).toFixed(1))
-              const activeClass = idx === 0 ? 'active' : ''
-              return `
-                <div class="route-card ${activeClass}" data-route-idx="${idx}">
-                  <div class="route-card-title">方案 ${idx + 1}</div>
-                  <div class="route-card-meta">约 ${minutes} 分钟 | ${km} 公里</div>
-                </div>
-              `
-            }).join('')
-
-            // 绑定面板卡片点击
-            resultsList.querySelectorAll('.route-card').forEach((card) => {
-              card.addEventListener('click', () => {
-                const idx = parseInt(card.getAttribute('data-route-idx'), 10)
-                selectRoute(idx)
-              })
-            })
-          }
-
-          // 开启导航栏展示
-          const navigateBox = document.getElementById('route-navigate-box')
-          if (navigateBox) {
-            navigateBox.style.display = 'block'
-          }
-
-          // 自适应缩放
-          map.fitBounds(routeFeatureGroup.getBounds(), { padding: [50, 50] })
-
-          // 默认选中第一条路线
-          selectRoute(0)
-        })
-      })
+      triggerRoutePlanning(map, AMap)
     })
   }
 
