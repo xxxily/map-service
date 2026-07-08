@@ -33,13 +33,23 @@
           <div class="route-field">
             <div class="route-input-container">
               <input id="route-start-input" placeholder="输入起点位置" autocomplete="off">
-              <button type="button" id="route-my-location-btn" class="route-loc-btn" title="获取当前位置">
-                <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-              </button>
+              <div class="route-input-actions">
+                <button type="button" id="route-my-location-btn" class="route-loc-btn" title="当前位置">
+                  <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+                <button type="button" id="route-start-map-btn" class="route-map-pick-btn" title="在地图上选点">
+                  <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>
+                </button>
+              </div>
             </div>
           </div>
           <div class="route-field">
-            <input id="route-end-input" placeholder="输入终点位置" autocomplete="off">
+            <div class="route-input-container">
+              <input id="route-end-input" placeholder="输入终点位置" autocomplete="off">
+              <button type="button" id="route-end-map-btn" class="route-map-pick-btn" title="在地图上选点">
+                <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>
+              </button>
+            </div>
           </div>
         </div>
         <div class="route-actions">

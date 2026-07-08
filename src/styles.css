@@ -255,13 +255,24 @@ body.admin-view #app-version {
   position: relative;
 }
 
-.route-input-container input {
+#route-start-input {
+  padding-right: 58px !important;
+}
+
+#route-end-input {
   padding-right: 32px !important;
 }
 
-.route-loc-btn {
+.route-input-actions {
   position: absolute;
   right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.route-loc-btn,
+.route-map-pick-btn {
   background: none;
   border: none;
   color: #657b7f;
@@ -270,10 +281,22 @@ body.admin-view #app-version {
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: color 0.15s;
 }
 
-.route-loc-btn:hover {
+.route-loc-btn:hover,
+.route-map-pick-btn:hover {
   color: #0f766e;
+}
+
+.route-map-pick-btn.active {
+  color: #ef4444;
+}
+
+.map-crosshair-pick,
+.map-crosshair-pick .leaflet-grab,
+.map-crosshair-pick .leaflet-interactive {
+  cursor: crosshair !important;
 }
 
 .route-actions {

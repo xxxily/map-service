@@ -125,23 +125,21 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     }
   })
 
-  // 监听输入框变化，清空已失效的 POI 对象缓存
+  // 监听输入框变化，清空已失效的 POI 对象缓存并擦除路线
   const startInput = document.getElementById('route-start-input')
   const endInput = document.getElementById('route-end-input')
 
   if (startInput) {
     startInput.addEventListener('input', () => {
-      if (!startInput.value.trim()) {
-        startPoi = null
-      }
+      startPoi = null
+      clearRouteLayers(map)
     })
   }
 
   if (endInput) {
     endInput.addEventListener('input', () => {
-      if (!endInput.value.trim()) {
-        endPoi = null
-      }
+      endPoi = null
+      clearRouteLayers(map)
     })
   }
 
@@ -176,6 +174,80 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       clearRouteLayers(map)
     })
   }
+
+  // 3.5. 在地图上选点交互
+  const startMapBtn = document.getElementById('route-start-map-btn')
+  const endMapBtn = document.getElementById('route-end-map-btn')
+
+  function initMapPicker (btn, input, isStart) {
+    if (!btn || !input) return
+
+    btn.addEventListener('click', () => {
+      const isPicking = btn.classList.contains('active')
+
+      // 重置所有选点状态
+      if (startMapBtn) startMapBtn.classList.remove('active')
+      if (endMapBtn) endMapBtn.classList.remove('active')
+      L.DomUtil.removeClass(map.getContainer(), 'map-crosshair-pick')
+      map.off('click', handleMapClick)
+
+      if (isPicking) {
+        input.placeholder = isStart ? '输入起点位置' : '输入终点位置'
+        return
+      }
+
+      // 激活选点状态
+      btn.classList.add('active')
+      L.DomUtil.addClass(map.getContainer(), 'map-crosshair-pick')
+      input.value = ''
+      input.placeholder = '请在地图上点击选择位置...'
+
+      // 处理点击事件
+      async function handleMapClick (e) {
+        const lat = e.latlng.lat
+        const lng = e.latlng.lng
+
+        // 还原状态
+        btn.classList.remove('active')
+        L.DomUtil.removeClass(map.getContainer(), 'map-crosshair-pick')
+        input.placeholder = isStart ? '输入起点位置' : '输入终点位置'
+
+        const displayName = `地图选定位置 (${lat.toFixed(4)}, ${lng.toFixed(4)})`
+        input.value = '正在解析位置...'
+
+        const poi = {
+          name: displayName,
+          location: { lng, lat }
+        }
+
+        if (isStart) {
+          startPoi = poi
+        } else {
+          endPoi = poi
+        }
+
+        // 高德逆地理编码
+        AMap.plugin('AMap.Geocoder', () => {
+          const geocoder = new AMap.Geocoder()
+          geocoder.getAddress([lng, lat], (status, result) => {
+            if (status === 'complete' && result.regeocode) {
+              const address = result.regeocode.formattedAddress || displayName
+              poi.name = address
+              input.value = address
+            } else {
+              input.value = displayName
+            }
+            clearRouteLayers(map)
+          })
+        })
+      }
+
+      map.once('click', handleMapClick)
+    })
+  }
+
+  initMapPicker(startMapBtn, startInput, true)
+  initMapPicker(endMapBtn, endInput, false)
 
   // 4. “我的位置”定位按钮交互
   const myLocationBtn = document.getElementById('route-my-location-btn')
@@ -222,18 +294,18 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       }
 
       if (!startPoi) {
-        alert('请从下拉列表中选择起点（我的位置除外）')
+        alert('请选择起点（可以通过联想列表选择，或点击我的位置/地图选点获取）')
         return
       }
       if (!endPoi) {
-        alert('请从下拉列表中选择终点')
+        alert('请选择终点（可以通过联想列表选择，或点击地图选点获取）')
         return
       }
 
       // 开始进行高德路线规划
       AMap.plugin('AMap.Driving', () => {
         const driving = new AMap.Driving({
-          policy: AMap.DrivingPolicy.LEAST_TIME,
+          policy: 10, // 多路径复合推荐方案
           extensions: 'all', // 获取多路线
         })
 

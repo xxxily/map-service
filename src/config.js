@@ -6,6 +6,7 @@ export const amapConfig = {
     'AMap.PlaceSearch',
     'AMap.Geolocation',
     'AMap.Driving',
+    'AMap.Geocoder',
   ],
 }
 
