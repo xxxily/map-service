@@ -6,8 +6,8 @@ import { getBestPosition, isValidPosition, positionToLeafletLatLng } from './geo
 export const intervalLocationState = {
   active: false,
   timerId: null,
-  intervalSeconds: 10,
-  zoomLevel: 18,
+  intervalSeconds: parseInt(localStorage.getItem('location_interval') || '10', 10),
+  zoomLevel: parseInt(localStorage.getItem('location_zoom') || '18', 10),
   lastPosition: null, // 存入最新的定位点数据 { latlng, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次的定位点数据数组
   historyLayers: [],  // 渲染在地图上的 L.circleMarker 图层实例数组
@@ -178,6 +178,14 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 export function startIntervalLocation2d (map, geolocation, interval, zoom) {
   if (intervalLocationState.timerId) {
     clearInterval(intervalLocationState.timerId)
+  }
+
+  // 记录到 localStorage 以便持久化记忆
+  try {
+    localStorage.setItem('location_interval', String(interval))
+    localStorage.setItem('location_zoom', String(zoom))
+  } catch (err) {
+    console.error('Failed to save location settings:', err)
   }
 
   intervalLocationState.active = true

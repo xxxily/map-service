@@ -379,7 +379,7 @@ async function initLeafletMap () {
         isLongPressTriggered = true
         skipNextClick = true
         handleLongPress()
-      }, 3000)
+      }, 2000)
     }
 
     const clearTimer = () => {

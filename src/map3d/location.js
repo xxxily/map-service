@@ -17,8 +17,8 @@ let targetEntity = null
 export const intervalLocationState3d = {
   active: false,
   timerId: null,
-  intervalSeconds: 10,
-  zoomLevel: 18,
+  intervalSeconds: parseInt(localStorage.getItem('location_interval') || '10', 10),
+  zoomLevel: parseInt(localStorage.getItem('location_zoom') || '18', 10),
   lastPosition: null, // 存储最新的定位点数据 { lng, lat, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次轨迹数据
   historyEntities: [] // 渲染在 3D 地图上的实体集合
@@ -261,6 +261,14 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 export function startIntervalLocation3d (viewer, geolocation, interval, zoom) {
   if (intervalLocationState3d.timerId) {
     clearInterval(intervalLocationState3d.timerId)
+  }
+
+  // 记录到 localStorage 以便持久化记忆
+  try {
+    localStorage.setItem('location_interval', String(interval))
+    localStorage.setItem('location_zoom', String(zoom))
+  } catch (err) {
+    console.error('Failed to save location settings:', err)
   }
 
   const height = 20000000.0 / Math.pow(2, zoom)
