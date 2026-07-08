@@ -11,8 +11,49 @@
   </head>
   <body>
     <div id="map-search-mod">
-      <label for="tipinput">请输入关键字：</label>
-      <input id="tipinput" autocomplete="off">
+      <!-- 搜索模式 -->
+      <div id="search-mode-panel">
+        <label for="tipinput">请输入关键字：</label>
+        <div class="search-input-wrapper">
+          <input id="tipinput" autocomplete="off">
+          <button type="button" id="toggle-route-panel-btn" class="search-arrow-btn" title="切换路线规划">
+            <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+        </div>
+      </div>
+      <!-- 路线规划模式 -->
+      <div id="route-mode-panel" style="display: none;">
+        <div class="route-header">
+          <span>路线规划</span>
+          <button type="button" id="toggle-search-panel-btn" class="route-close-btn" title="返回搜索">
+            <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="route-fields">
+          <div class="route-field">
+            <div class="route-input-container">
+              <input id="route-start-input" placeholder="输入起点位置" autocomplete="off">
+              <button type="button" id="route-my-location-btn" class="route-loc-btn" title="获取当前位置">
+                <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="route-field">
+            <input id="route-end-input" placeholder="输入终点位置" autocomplete="off">
+          </div>
+        </div>
+        <div class="route-actions">
+          <button type="button" id="route-search-btn" class="route-primary-btn">开始规划</button>
+        </div>
+        <!-- 规划路线结果列表 -->
+        <div id="route-results-list" class="route-results-list" style="display: none;">
+          <!-- 动态渲染备选路径 -->
+        </div>
+        <!-- 导航操作 -->
+        <div id="route-navigate-box" class="route-navigate-box" style="display: none;">
+          <button type="button" id="route-nav-btn" class="route-nav-btn">开始导航</button>
+        </div>
+      </div>
     </div>
 
     <div id="guideline-toolbar" class="guideline-toolbar" hidden>

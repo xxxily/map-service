@@ -220,8 +220,8 @@ async function initLeafletMap () {
 
   let amapGeolocation = null
   if (AMap) {
-    initAmapSearch(map, AMap)
     amapGeolocation = initAmapGeolocation(AMap)
+    initAmapSearch(map, AMap, amapGeolocation)
   }
 
   addTargetMarker(map, defaultView.center)

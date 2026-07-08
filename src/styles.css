@@ -147,7 +147,7 @@ body.admin-view #app-version {
   left: calc(var(--safe-area-left) + 14px);
   width: min(280px, calc(100vw - 28px));
   box-sizing: border-box;
-  padding: 10px 12px 12px;
+  padding: 12px;
   border: 1px solid rgba(18, 57, 63, 0.14);
   border-radius: 8px;
   background-color: #fff;
@@ -173,11 +173,198 @@ body.admin-view #app-version {
   outline: none;
   color: #122428;
   font-size: 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 #map-search-mod input:focus {
   border-color: #167a7f;
   box-shadow: 0 0 0 3px rgba(22, 122, 127, 0.14);
+}
+
+/* 路线规划专用 CSS 样式 */
+.search-input-wrapper {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.search-input-wrapper input {
+  padding-right: 32px !important;
+}
+
+.search-arrow-btn {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  color: #657b7f;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.search-arrow-btn:hover {
+  color: #0f766e;
+}
+
+.route-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #edf2f7;
+  padding-bottom: 8px;
+}
+
+.route-header span {
+  font-size: 14px;
+  font-weight: 700;
+  color: #102528;
+}
+
+.route-close-btn {
+  background: none;
+  border: none;
+  color: #657b7f;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.route-close-btn:hover {
+  color: #ef4444;
+}
+
+.route-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.route-field {
+  position: relative;
+}
+
+.route-input-container {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.route-input-container input {
+  padding-right: 32px !important;
+}
+
+.route-loc-btn {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  color: #657b7f;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.route-loc-btn:hover {
+  color: #0f766e;
+}
+
+.route-actions {
+  margin-bottom: 10px;
+}
+
+.route-primary-btn {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #0f766e;
+  border-radius: 6px;
+  background-color: #0f766e;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.route-primary-btn:hover {
+  background-color: #0d9488;
+  border-color: #0d9488;
+}
+
+.route-results-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  border: 1px solid #edf2f7;
+  border-radius: 6px;
+  background-color: #f8fafc;
+  padding: 4px;
+}
+
+.route-card {
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background-color: #fff;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: all 0.15s;
+}
+
+.route-card:last-child {
+  margin-bottom: 0;
+}
+
+.route-card:hover {
+  border-color: rgba(15, 118, 110, 0.2);
+  background-color: #f0fdfa;
+}
+
+.route-card.active {
+  border-color: #0f766e;
+  background-color: #f0fdfa;
+}
+
+.route-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f766e;
+  margin-bottom: 2px;
+}
+
+.route-card-meta {
+  font-size: 11px;
+  color: #475569;
+}
+
+.route-navigate-box {
+  margin-top: 4px;
+}
+
+.route-nav-btn {
+  width: 100%;
+  height: 38px;
+  border: 1px solid #0f766e;
+  border-radius: 6px;
+  background-color: #0f766e;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.2);
+  transition: background-color 0.15s, box-shadow 0.15s;
+}
+
+.route-nav-btn:hover {
+  background-color: #0d9488;
+  box-shadow: 0 4px 14px rgba(13, 148, 136, 0.3);
 }
 
 #map-menu {

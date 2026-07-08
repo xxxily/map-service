@@ -5,6 +5,7 @@ export const amapConfig = {
     'AMap.AutoComplete',
     'AMap.PlaceSearch',
     'AMap.Geolocation',
+    'AMap.Driving',
   ],
 }
 
