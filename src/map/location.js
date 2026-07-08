@@ -2,8 +2,38 @@ import L from 'leaflet'
 import { showAlert } from '../ui/dialog.js'
 import { getBestPosition, isValidPosition, positionToLeafletLatLng } from './geolocation.js'
 
-// Audio keep alive for background processes on mobile
+// Audio keep alive and Screen Wake Lock for mobile background processes
 let keepAliveAudio = null
+let wakeLock = null
+
+async function requestWakeLock () {
+  if ('wakeLock' in navigator) {
+    try {
+      wakeLock = await navigator.wakeLock.request('screen')
+      console.log('[WakeLock] Screen Wake Lock is active')
+    } catch (err) {
+      console.warn(`[WakeLock] Failed to request Screen Wake Lock: ${err.message}`)
+    }
+  }
+}
+
+function releaseWakeLock () {
+  if (wakeLock) {
+    wakeLock.release().then(() => {
+      wakeLock = null
+      console.log('[WakeLock] Screen Wake Lock was released')
+    }).catch(err => {
+      console.warn(`[WakeLock] Failed to release Screen Wake Lock: ${err.message}`)
+    })
+  }
+}
+
+// 自动在亮屏/切回前台时重新请求被浏览器自动释放的 Wake Lock
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && intervalLocationState.active) {
+    await requestWakeLock()
+  }
+})
 
 function startKeepAlive () {
   const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
@@ -21,6 +51,7 @@ function stopKeepAlive () {
     keepAliveAudio.pause()
   }
 }
+
 
 // 2D 持续定位全局状态
 export const intervalLocationState = {
@@ -281,8 +312,9 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHi
   intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
   intervalLocationState.historyLayers = []
 
-  // 启动音频后台保活
+  // 启动音频后台保活与防止休眠暗屏的 Wake Lock
   startKeepAlive()
+  requestWakeLock()
 
   // 立即触发第一次定位
   updatePosition(map, geolocation, zoom, true)
@@ -300,8 +332,9 @@ export function stopIntervalLocation2d (map) {
     intervalLocationState.timerId = null
   }
 
-  // 停止音频后台保活
+  // 停止音频后台保活并释放 Wake Lock
   stopKeepAlive()
+  releaseWakeLock()
 
   intervalLocationState.active = false
   intervalLocationState.lastPosition = null

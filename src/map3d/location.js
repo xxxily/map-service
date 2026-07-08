@@ -13,8 +13,38 @@ import { getBestPosition, isValidPosition, positionToGcj02 } from '../map/geoloc
 
 let targetEntity = null
 
-// Audio keep alive for background processes on mobile
+// Audio keep alive and Screen Wake Lock for mobile background processes
 let keepAliveAudio = null
+let wakeLock = null
+
+async function requestWakeLock () {
+  if ('wakeLock' in navigator) {
+    try {
+      wakeLock = await navigator.wakeLock.request('screen')
+      console.log('[WakeLock 3D] Screen Wake Lock is active')
+    } catch (err) {
+      console.warn(`[WakeLock 3D] Failed to request Screen Wake Lock: ${err.message}`)
+    }
+  }
+}
+
+function releaseWakeLock () {
+  if (wakeLock) {
+    wakeLock.release().then(() => {
+      wakeLock = null
+      console.log('[WakeLock 3D] Screen Wake Lock was released')
+    }).catch(err => {
+      console.warn(`[WakeLock 3D] Failed to release Screen Wake Lock: ${err.message}`)
+    })
+  }
+}
+
+// 自动在亮屏/切回前台时重新请求被浏览器自动释放的 Wake Lock
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && intervalLocationState3d.active) {
+    await requestWakeLock()
+  }
+})
 
 function startKeepAlive () {
   const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
@@ -371,6 +401,10 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom, ma
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
   intervalLocationState3d.historyEntities = []
 
+  // 启动音频后台保活与防止暗屏休眠的 Wake Lock
+  startKeepAlive()
+  requestWakeLock()
+
   // 立即进行首次定位
   updatePosition3d(viewer, geolocation, height, true)
 
@@ -387,8 +421,9 @@ export function stopIntervalLocation3d (viewer) {
     intervalLocationState3d.timerId = null
   }
 
-  // 停止音频后台保活
+  // 停止音频后台保活并释放 Wake Lock
   stopKeepAlive()
+  releaseWakeLock()
 
   intervalLocationState3d.active = false
   intervalLocationState3d.lastPosition = null
