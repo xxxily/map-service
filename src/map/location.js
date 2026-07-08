@@ -2,12 +2,33 @@ import L from 'leaflet'
 import { showAlert } from '../ui/dialog.js'
 import { getBestPosition, isValidPosition, positionToLeafletLatLng } from './geolocation.js'
 
+// Audio keep alive for background processes on mobile
+let keepAliveAudio = null
+
+function startKeepAlive () {
+  const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
+  if (!keepAliveAudio) {
+    keepAliveAudio = new Audio(silentWav)
+    keepAliveAudio.loop = true
+  }
+  keepAliveAudio.play().catch(err => {
+    console.warn('Audio keep alive play blocked', err)
+  })
+}
+
+function stopKeepAlive () {
+  if (keepAliveAudio) {
+    keepAliveAudio.pause()
+  }
+}
+
 // 2D 持续定位全局状态
 export const intervalLocationState = {
   active: false,
   timerId: null,
   intervalSeconds: parseInt(localStorage.getItem('location_interval') || '10', 10),
   zoomLevel: parseInt(localStorage.getItem('location_zoom') || '18', 10),
+  maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
   lastPosition: null, // 存入最新的定位点数据 { latlng, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次的定位点数据数组
   historyLayers: [],  // 渲染在地图上的 L.circleMarker 图层实例数组
@@ -150,24 +171,56 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
   
   // 若是持续定位模式，记录历史轨迹点
   if (isIntervalUpdate) {
+    let isStationary = false
     if (intervalLocationState.lastPosition) {
-      intervalLocationState.historyPoints.push(intervalLocationState.lastPosition)
-      if (intervalLocationState.historyPoints.length > 5) {
-        intervalLocationState.historyPoints.shift()
+      const dist = L.latLng(mapPosition).distanceTo(L.latLng(intervalLocationState.lastPosition.latlng))
+      if (dist < 10) {
+        isStationary = true
       }
     }
-    
-    intervalLocationState.lastPosition = {
-      latlng: mapPosition,
-      timestamp: Date.now(),
-      accuracy: result.accuracy
-    }
 
-    // 绘制轨迹点
-    renderHistoryPoints(map, intervalLocationState.historyPoints)
-    
-    // 主 Marker 使用呼吸灯 + 伴随扩散波纹
-    addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
+    if (isStationary) {
+      // 移动幅度小，不生产新轨迹点，但累计在当前位置的停留时间
+      const now = Date.now()
+      if (!intervalLocationState.lastPosition.firstTimestamp) {
+        intervalLocationState.lastPosition.firstTimestamp = intervalLocationState.lastPosition.timestamp
+      }
+      intervalLocationState.lastPosition.staySeconds = (now - intervalLocationState.lastPosition.firstTimestamp) / 1000
+
+      // 主 Marker 重新在该坐标触发扩散波纹
+      addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
+    } else {
+      // 移动幅度大，生产新点
+      if (intervalLocationState.lastPosition) {
+        if (!intervalLocationState.lastPosition.firstTimestamp) {
+          intervalLocationState.lastPosition.firstTimestamp = intervalLocationState.lastPosition.timestamp
+        }
+        if (!intervalLocationState.lastPosition.staySeconds) {
+          intervalLocationState.lastPosition.staySeconds = 0
+        }
+
+        intervalLocationState.historyPoints.push(intervalLocationState.lastPosition)
+
+        const maxPts = intervalLocationState.maxHistoryPoints || 0
+        if (maxPts > 0 && intervalLocationState.historyPoints.length > maxPts) {
+          intervalLocationState.historyPoints.shift()
+        }
+      }
+
+      intervalLocationState.lastPosition = {
+        latlng: mapPosition,
+        timestamp: Date.now(),
+        firstTimestamp: Date.now(),
+        staySeconds: 0,
+        accuracy: result.accuracy
+      }
+
+      // 绘制轨迹点
+      renderHistoryPoints(map, intervalLocationState.historyPoints)
+
+      // 主 Marker 呼吸灯 + 伴随扩散波纹
+      addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
+    }
   } else {
     // 常规模式使用默认图标，不带轨迹
     addTargetMarker(map, mapPosition, { isInterval: false, playRipple: false })
@@ -175,7 +228,7 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 }
 
 // 启动 2D 持续定位
-export function startIntervalLocation2d (map, geolocation, interval, zoom) {
+export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHistoryPoints = 0) {
   if (intervalLocationState.timerId) {
     clearInterval(intervalLocationState.timerId)
   }
@@ -184,6 +237,7 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom) {
   try {
     localStorage.setItem('location_interval', String(interval))
     localStorage.setItem('location_zoom', String(zoom))
+    localStorage.setItem('location_max_points', String(maxHistoryPoints))
   } catch (err) {
     console.error('Failed to save location settings:', err)
   }
@@ -191,12 +245,16 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom) {
   intervalLocationState.active = true
   intervalLocationState.intervalSeconds = interval
   intervalLocationState.zoomLevel = zoom
+  intervalLocationState.maxHistoryPoints = maxHistoryPoints
   intervalLocationState.lastPosition = null
   intervalLocationState.historyPoints = []
   
   // 清空之前的轨迹图层
   intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
   intervalLocationState.historyLayers = []
+
+  // 启动音频后台保活
+  startKeepAlive()
 
   // 立即触发第一次定位
   updatePosition(map, geolocation, zoom, true)
@@ -213,6 +271,9 @@ export function stopIntervalLocation2d (map) {
     clearInterval(intervalLocationState.timerId)
     intervalLocationState.timerId = null
   }
+
+  // 停止音频后台保活
+  stopKeepAlive()
 
   intervalLocationState.active = false
   intervalLocationState.lastPosition = null

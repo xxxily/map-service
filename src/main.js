@@ -22,7 +22,7 @@ import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
 import { isAdminLocation } from './admin/routes.js'
 import { registerServiceWorker } from './pwa.js'
-import { initKmlSupport } from './map/kml.js'
+import { initKmlSupport, saveTrackToKml2d } from './map/kml.js'
 import { initGuidelines, toggleGuidelineMode } from './map/guidelines.js'
 import { initAfterAccessCheck } from './map/access-control.js'
 
@@ -323,11 +323,17 @@ async function initLeafletMap () {
             name: 'zoom',
             label: '定位成功后显示的图层级别 (3-18)',
             type: 'text'
+          },
+          {
+            name: 'maxPoints',
+            label: '记住最近点位数 (默认 0 记住所有)',
+            type: 'text'
           }
         ],
         values: {
           interval: String(intervalLocationState.intervalSeconds || 10),
-          zoom: String(intervalLocationState.zoomLevel || currentZoom || 18)
+          zoom: String(intervalLocationState.zoomLevel || currentZoom || 18),
+          maxPoints: String(intervalLocationState.maxHistoryPoints || 0)
         }
       })
 
@@ -335,6 +341,7 @@ async function initLeafletMap () {
 
       const interval = parseInt(res.interval, 10)
       const zoom = parseInt(res.zoom, 10)
+      const maxHistoryPoints = parseInt(res.maxPoints, 10)
 
       if (isNaN(interval) || interval < 1) {
         await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
@@ -348,21 +355,33 @@ async function initLeafletMap () {
         return
       }
 
-      startIntervalLocation2d(map, amapGeolocation, interval, zoom)
+      if (isNaN(maxHistoryPoints) || maxHistoryPoints < 0) {
+        await showAlert('记住最近点位数必须是大于或等于 0 的整数！')
+        await showLocationConfigDialog()
+        return
+      }
+
+      startIntervalLocation2d(map, amapGeolocation, interval, zoom, maxHistoryPoints)
     }
 
     const showLocationManageDialog = async () => {
       const choice = await showChoiceDialog({
         title: '持续定位管理',
-        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState.intervalSeconds} 秒\n图层级别：${intervalLocationState.zoomLevel}`,
+        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState.intervalSeconds} 秒\n图层级别：${intervalLocationState.zoomLevel}\n最近点限制：${intervalLocationState.maxHistoryPoints === 0 ? '所有点' : intervalLocationState.maxHistoryPoints + ' 个点'}`,
         choices: [
-          { text: '编辑配置', value: 'edit', class: 'app-dialog-primary' },
-          { text: '取消持续定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
+          { text: '编辑', value: 'edit', class: 'app-dialog-primary' },
+          { text: '保存', value: 'save', class: 'app-dialog-primary' },
+          { text: '取消定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
         ]
       })
 
       if (choice === 'edit') {
         await showLocationConfigDialog()
+      } else if (choice === 'save') {
+        const ok = saveTrackToKml2d(map, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
+        if (ok) {
+          await showAlert('定位轨迹已保存为本地 KML 标注文件，您可以在 KML 数据管理面板查看')
+        }
       } else if (choice === 'stop') {
         stopIntervalLocation2d(map)
         await showAlert('持续定位已关闭')
@@ -429,6 +448,13 @@ async function initLeafletMap () {
       if (window.triggerMapScreenshot) {
         window.triggerMapScreenshot(map)
       }
+    }
+  })
+
+  // 配合 Visibility API 对黑屏/切到后台重新唤醒时的位置补偿
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && intervalLocationState.active) {
+      updatePosition(map, amapGeolocation, intervalLocationState.zoomLevel, true)
     }
   })
 }

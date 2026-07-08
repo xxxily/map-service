@@ -1439,3 +1439,82 @@ export function initKmlSupport3d (viewer) {
   bindKeyboardEvents()
   initLongPressPointCreation()
 }
+
+export function saveTrackToKml3d (historyPoints, lastPosition) {
+  const allPts = [...historyPoints]
+  if (lastPosition) {
+    allPts.push(lastPosition)
+  }
+
+  if (allPts.length === 0) {
+    showAlert('当前没有可保存的定位轨迹点！')
+    return false
+  }
+
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const date = String(now.getDate()).padStart(2, '0')
+  const hours = String(now.getHours()).padStart(2, '0')
+  const minutes = String(now.getMinutes()).padStart(2, '0')
+  const defaultName = `轨迹_${year}${month}${date}_${hours}${minutes}`
+
+  const lineCoordinates = allPts.map(pt => {
+    const gcj02 = [pt.lng, pt.lat]
+    return gcj02ToWgs84(gcj02)
+  })
+
+  const features = []
+
+  if (lineCoordinates.length > 1) {
+    features.push({
+      id: `feat-line-${Date.now()}`,
+      type: 'LineString',
+      name: '移动轨迹',
+      description: `总点数: ${allPts.length} 个`,
+      coordinates: lineCoordinates
+    })
+  }
+
+  allPts.forEach((pt, index) => {
+    const gcj02 = [pt.lng, pt.lat]
+    const wgs84 = gcj02ToWgs84(gcj02)
+    const timeStr = new Date(pt.timestamp).toLocaleTimeString()
+    
+    let stayInfo = ''
+    if (pt.staySeconds && pt.staySeconds > 0) {
+      const mins = Math.floor(pt.staySeconds / 60)
+      const secs = Math.floor(pt.staySeconds % 60)
+      stayInfo = mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`
+    } else {
+      stayInfo = '0秒'
+    }
+
+    const description = `定位时间：${timeStr}\n定位精度：${pt.accuracy ? Math.round(pt.accuracy) + ' 米' : '未知'}\n停留时长：${stayInfo}`
+
+    features.push({
+      id: `feat-pt-${Date.now()}-${index}`,
+      type: 'Point',
+      name: `点 #${index + 1} (${new Date(pt.timestamp).toLocaleTimeString()})`,
+      description,
+      coordinates: wgs84
+    })
+  })
+
+  const kmlFile = {
+    id: `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    name: defaultName,
+    enabled: true,
+    isDefault: false,
+    coordCorrection: KML_COORD_CORRECTION,
+    features
+  }
+
+  kmlList.push(kmlFile)
+  saveToStorage()
+
+  renderKmlLayers(kmlFile)
+  updateKmlPanelUI()
+  return true
+}
+

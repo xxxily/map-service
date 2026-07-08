@@ -13,12 +13,33 @@ import { getBestPosition, isValidPosition, positionToGcj02 } from '../map/geoloc
 
 let targetEntity = null
 
+// Audio keep alive for background processes on mobile
+let keepAliveAudio = null
+
+function startKeepAlive () {
+  const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
+  if (!keepAliveAudio) {
+    keepAliveAudio = new Audio(silentWav)
+    keepAliveAudio.loop = true
+  }
+  keepAliveAudio.play().catch(err => {
+    console.warn('Audio keep alive play blocked', err)
+  })
+}
+
+function stopKeepAlive () {
+  if (keepAliveAudio) {
+    keepAliveAudio.pause()
+  }
+}
+
 // 3D 持续定位全局状态
 export const intervalLocationState3d = {
   active: false,
   timerId: null,
   intervalSeconds: parseInt(localStorage.getItem('location_interval') || '10', 10),
   zoomLevel: parseInt(localStorage.getItem('location_zoom') || '18', 10),
+  maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
   lastPosition: null, // 存储最新的定位点数据 { lng, lat, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次轨迹数据
   historyEntities: [] // 渲染在 3D 地图上的实体集合
@@ -231,26 +252,61 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
   flyToLngLat(viewer, mapPosition.lng, mapPosition.lat, { height: customHeight })
 
   if (isIntervalUpdate) {
+    let isStationary = false
     if (intervalLocationState3d.lastPosition) {
-      intervalLocationState3d.historyPoints.push(intervalLocationState3d.lastPosition)
-      if (intervalLocationState3d.historyPoints.length > 5) {
-        intervalLocationState3d.historyPoints.shift()
+      const ptCartesian = Cartesian3.fromDegrees(intervalLocationState3d.lastPosition.lng, intervalLocationState3d.lastPosition.lat, 0)
+      const nextCartesian = Cartesian3.fromDegrees(mapPosition.lng, mapPosition.lat, 0)
+      const dist = Cartesian3.distance(ptCartesian, nextCartesian)
+      if (dist < 10) {
+        isStationary = true
       }
     }
 
-    intervalLocationState3d.lastPosition = {
-      lng: mapPosition.lng,
-      lat: mapPosition.lat,
-      timestamp: Date.now(),
-      accuracy: result.accuracy
+    if (isStationary) {
+      // 移动幅度小，不生产新轨迹点，但累计在当前位置的停留时间
+      const now = Date.now()
+      if (!intervalLocationState3d.lastPosition.firstTimestamp) {
+        intervalLocationState3d.lastPosition.firstTimestamp = intervalLocationState3d.lastPosition.timestamp
+      }
+      intervalLocationState3d.lastPosition.staySeconds = (now - intervalLocationState3d.lastPosition.firstTimestamp) / 1000
+
+      // 主定位点重新在该坐标触发扩散波纹
+      addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
+      triggerRipple3d(viewer, mapPosition)
+    } else {
+      // 移动幅度大，生产新点
+      if (intervalLocationState3d.lastPosition) {
+        if (!intervalLocationState3d.lastPosition.firstTimestamp) {
+          intervalLocationState3d.lastPosition.firstTimestamp = intervalLocationState3d.lastPosition.timestamp
+        }
+        if (!intervalLocationState3d.lastPosition.staySeconds) {
+          intervalLocationState3d.lastPosition.staySeconds = 0
+        }
+
+        intervalLocationState3d.historyPoints.push(intervalLocationState3d.lastPosition)
+
+        const maxPts = intervalLocationState3d.maxHistoryPoints || 0
+        if (maxPts > 0 && intervalLocationState3d.historyPoints.length > maxPts) {
+          intervalLocationState3d.historyPoints.shift()
+        }
+      }
+
+      intervalLocationState3d.lastPosition = {
+        lng: mapPosition.lng,
+        lat: mapPosition.lat,
+        timestamp: Date.now(),
+        firstTimestamp: Date.now(),
+        staySeconds: 0,
+        accuracy: result.accuracy
+      }
+
+      // 绘制 3D 轨迹点
+      renderHistoryPoints3d(viewer, intervalLocationState3d.historyPoints)
+
+      // 创建带呼吸的定位点及生成瞬间波纹 Entity
+      addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
+      triggerRipple3d(viewer, mapPosition)
     }
-
-    // 绘制 3D 轨迹点
-    renderHistoryPoints3d(viewer, intervalLocationState3d.historyPoints)
-
-    // 创建带呼吸的定位点及生成瞬间波纹 Entity
-    addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
-    triggerRipple3d(viewer, mapPosition)
   } else {
     // 普通点定位
     addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: false })
@@ -258,7 +314,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 }
 
 // 启动 3D 持续定位
-export function startIntervalLocation3d (viewer, geolocation, interval, zoom) {
+export function startIntervalLocation3d (viewer, geolocation, interval, zoom, maxHistoryPoints = 0) {
   if (intervalLocationState3d.timerId) {
     clearInterval(intervalLocationState3d.timerId)
   }
@@ -267,6 +323,7 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom) {
   try {
     localStorage.setItem('location_interval', String(interval))
     localStorage.setItem('location_zoom', String(zoom))
+    localStorage.setItem('location_max_points', String(maxHistoryPoints))
   } catch (err) {
     console.error('Failed to save location settings:', err)
   }
@@ -276,6 +333,7 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom) {
   intervalLocationState3d.active = true
   intervalLocationState3d.intervalSeconds = interval
   intervalLocationState3d.zoomLevel = zoom
+  intervalLocationState3d.maxHistoryPoints = maxHistoryPoints
   intervalLocationState3d.lastPosition = null
   intervalLocationState3d.historyPoints = []
 
@@ -297,6 +355,9 @@ export function stopIntervalLocation3d (viewer) {
     clearInterval(intervalLocationState3d.timerId)
     intervalLocationState3d.timerId = null
   }
+
+  // 停止音频后台保活
+  stopKeepAlive()
 
   intervalLocationState3d.active = false
   intervalLocationState3d.lastPosition = null

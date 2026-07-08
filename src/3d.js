@@ -28,7 +28,7 @@ import { initAfterAccessCheck } from './map/access-control.js'
 import { initAmapGeolocation } from './map/geolocation.js'
 import { registerServiceWorker } from './pwa.js'
 import { initGuidelines3d, toggleGuidelineMode3d } from './map3d/guidelines.js'
-import { initKmlSupport3d } from './map3d/kml.js'
+import { initKmlSupport3d, saveTrackToKml3d } from './map3d/kml.js'
 import {
   updatePosition3d,
   intervalLocationState3d,
@@ -1504,11 +1504,17 @@ function bindUiEvents () {
             name: 'zoom',
             label: '定位成功后显示的图层级别 (3-18)',
             type: 'text'
+          },
+          {
+            name: 'maxPoints',
+            label: '记住最近点位数 (默认 0 记住所有)',
+            type: 'text'
           }
         ],
         values: {
           interval: String(intervalLocationState3d.intervalSeconds || 10),
-          zoom: String(intervalLocationState3d.zoomLevel || currentZoom || 18)
+          zoom: String(intervalLocationState3d.zoomLevel || currentZoom || 18),
+          maxPoints: String(intervalLocationState3d.maxHistoryPoints || 0)
         }
       })
 
@@ -1516,6 +1522,7 @@ function bindUiEvents () {
 
       const interval = parseInt(res.interval, 10)
       const zoom = parseInt(res.zoom, 10)
+      const maxHistoryPoints = parseInt(res.maxPoints, 10)
 
       if (isNaN(interval) || interval < 1) {
         await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
@@ -1529,21 +1536,33 @@ function bindUiEvents () {
         return
       }
 
-      startIntervalLocation3d(viewer, amapGeolocation, interval, zoom)
+      if (isNaN(maxHistoryPoints) || maxHistoryPoints < 0) {
+        await showAlert('记住最近点位数必须是大于或等于 0 的整数！')
+        await showLocationConfigDialog()
+        return
+      }
+
+      startIntervalLocation3d(viewer, amapGeolocation, interval, zoom, maxHistoryPoints)
     }
 
     const showLocationManageDialog = async () => {
       const choice = await showChoiceDialog({
         title: '持续定位管理',
-        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState3d.intervalSeconds} 秒\n图层级别：${intervalLocationState3d.zoomLevel}`,
+        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState3d.intervalSeconds} 秒\n图层级别：${intervalLocationState3d.zoomLevel}\n最近点限制：${intervalLocationState3d.maxHistoryPoints === 0 ? '所有点' : intervalLocationState3d.maxHistoryPoints + ' 个点'}`,
         choices: [
-          { text: '编辑配置', value: 'edit', class: 'app-dialog-primary' },
-          { text: '取消持续定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
+          { text: '编辑', value: 'edit', class: 'app-dialog-primary' },
+          { text: '保存', value: 'save', class: 'app-dialog-primary' },
+          { text: '取消定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
         ]
       })
 
       if (choice === 'edit') {
         await showLocationConfigDialog()
+      } else if (choice === 'save') {
+        const ok = saveTrackToKml3d(intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition)
+        if (ok) {
+          await showAlert('定位轨迹已保存为本地 KML 标注文件，您可以在 KML 数据管理面板查看')
+        }
       } else if (choice === 'stop') {
         stopIntervalLocation3d(viewer)
         await showAlert('持续定位已关闭')
@@ -1603,6 +1622,14 @@ function bindUiEvents () {
         ? zoomToHeight(intervalLocationState3d.zoomLevel) 
         : 1200
       updatePosition3d(viewer, amapGeolocation, targetHeight, intervalLocationState3d.active)
+    })
+
+    // 配合 Visibility API 对黑屏/切到后台重新唤醒时的位置补偿
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && intervalLocationState3d.active) {
+        const targetHeight = zoomToHeight(intervalLocationState3d.zoomLevel)
+        updatePosition3d(viewer, amapGeolocation, targetHeight, true)
+      }
     })
   }
 
