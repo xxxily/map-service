@@ -226,3 +226,61 @@ export function showEditDialog (options = {}) {
     document.addEventListener('keydown', onKeydown)
   })
 }
+
+export function showChoiceDialog (options = {}) {
+  const root = ensureDialogRoot()
+  const title = options.title || '提示'
+  const message = options.message || ''
+  const choices = options.choices || [] // [{ text: '编辑', value: 'edit', class: 'primary' }]
+  const cancelText = options.cancelText || '取消'
+
+  root.hidden = false
+  root.innerHTML = `
+    <div class="app-dialog-backdrop" data-dialog-action="cancel">
+      <section class="app-dialog" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
+        <h2 id="app-dialog-title">${escapeHtml(title)}</h2>
+        <p>${escapeHtml(message)}</p>
+        <div class="app-dialog-actions" style="flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px;">
+          ${choices.map(choice => `
+            <button type="button" class="${choice.class || 'app-dialog-secondary'}" data-choice-action="${escapeHtml(choice.value)}">${escapeHtml(choice.text)}</button>
+          `).join('')}
+          <button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${escapeHtml(cancelText)}</button>
+        </div>
+      </section>
+    </div>
+  `
+
+  const dialog = root.querySelector('.app-dialog')
+
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      root.removeEventListener('click', onClick)
+      document.removeEventListener('keydown', onKeydown)
+    }
+
+    const onClick = (event) => {
+      const choiceBtn = event.target.closest('[data-choice-action]')
+      if (choiceBtn) {
+        closeDialog(root, cleanup, resolve, choiceBtn.dataset.choiceAction)
+        return
+      }
+
+      const actionTarget = event.target.closest('[data-dialog-action]')
+      if (actionTarget && actionTarget.dataset.dialogAction === 'cancel') {
+        if (dialog?.contains(event.target) && actionTarget.classList.contains('app-dialog-backdrop')) return
+        closeDialog(root, cleanup, resolve, 'cancel')
+      }
+    }
+
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeDialog(root, cleanup, resolve, 'cancel')
+      }
+    }
+
+    root.addEventListener('click', onClick)
+    document.addEventListener('keydown', onKeydown)
+  })
+}
+

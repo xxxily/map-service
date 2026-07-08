@@ -29,7 +29,13 @@ import { initAmapGeolocation } from './map/geolocation.js'
 import { registerServiceWorker } from './pwa.js'
 import { initGuidelines3d, toggleGuidelineMode3d } from './map3d/guidelines.js'
 import { initKmlSupport3d } from './map3d/kml.js'
-import { updatePosition3d } from './map3d/location.js'
+import {
+  updatePosition3d,
+  intervalLocationState3d,
+  startIntervalLocation3d,
+  stopIntervalLocation3d
+} from './map3d/location.js'
+import { showChoiceDialog, showEditDialog, showAlert } from './ui/dialog.js'
 import { initAmapSearch3d, toggleSearchMode3d } from './map3d/search.js'
 
 // 配置 Cesium 资源基础路径
@@ -1467,9 +1473,136 @@ function bindUiEvents () {
   }
 
   const positionBtn = menu.querySelector('[data-action="updatePosition"]')
+  let skipNextClick = false
   if (positionBtn) {
+    let longPressTimer = null
+    let isLongPressTriggered = false
+    let startX = 0
+    let startY = 0
+
+    const handleLongPress = async () => {
+      if (!intervalLocationState3d.active) {
+        await showLocationConfigDialog()
+      } else {
+        await showLocationManageDialog()
+      }
+    }
+
+    const showLocationConfigDialog = async () => {
+      const currentHeight = getCameraHeight()
+      const currentZoom = heightToZoom(currentHeight)
+
+      const res = await showEditDialog({
+        title: '开启持续自动定位',
+        fields: [
+          {
+            name: 'interval',
+            label: '定位时间间隔 (秒，最小 1s)',
+            type: 'text'
+          },
+          {
+            name: 'zoom',
+            label: '定位成功后显示的图层级别 (3-18)',
+            type: 'text'
+          }
+        ],
+        values: {
+          interval: String(intervalLocationState3d.intervalSeconds || 10),
+          zoom: String(intervalLocationState3d.zoomLevel || currentZoom || 18)
+        }
+      })
+
+      if (!res) return
+
+      const interval = parseInt(res.interval, 10)
+      const zoom = parseInt(res.zoom, 10)
+
+      if (isNaN(interval) || interval < 1) {
+        await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
+        await showLocationConfigDialog()
+        return
+      }
+
+      if (isNaN(zoom) || zoom < 3 || zoom > 18) {
+        await showAlert('图层级别必须在 3 到 18 之间！')
+        await showLocationConfigDialog()
+        return
+      }
+
+      startIntervalLocation3d(viewer, amapGeolocation, interval, zoom)
+    }
+
+    const showLocationManageDialog = async () => {
+      const choice = await showChoiceDialog({
+        title: '持续定位管理',
+        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState3d.intervalSeconds} 秒\n图层级别：${intervalLocationState3d.zoomLevel}`,
+        choices: [
+          { text: '编辑配置', value: 'edit', class: 'app-dialog-primary' },
+          { text: '取消持续定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
+        ]
+      })
+
+      if (choice === 'edit') {
+        await showLocationConfigDialog()
+      } else if (choice === 'stop') {
+        stopIntervalLocation3d(viewer)
+        await showAlert('持续定位已关闭')
+      }
+    }
+
+    const startTimer = (e) => {
+      if (e.type === 'mousedown' && e.button !== 0) return
+      const touch = e.touches ? e.touches[0] : e
+      startX = touch.clientX
+      startY = touch.clientY
+      isLongPressTriggered = false
+      longPressTimer = setTimeout(() => {
+        isLongPressTriggered = true
+        skipNextClick = true
+        handleLongPress()
+      }, 3000)
+    }
+
+    const clearTimer = () => {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer)
+        longPressTimer = null
+      }
+    }
+
+    const endTimer = (e) => {
+      clearTimer()
+      if (isLongPressTriggered) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+
+    const moveTouch = (e) => {
+      const touch = e.touches ? e.touches[0] : e
+      if (Math.hypot(touch.clientX - startX, touch.clientY - startY) > 10) {
+        clearTimer()
+      }
+    }
+
+    positionBtn.addEventListener('mousedown', startTimer)
+    positionBtn.addEventListener('touchstart', startTimer, { passive: true })
+    positionBtn.addEventListener('mouseup', endTimer)
+    positionBtn.addEventListener('touchend', endTimer)
+    positionBtn.addEventListener('mousemove', moveTouch)
+    positionBtn.addEventListener('touchmove', moveTouch, { passive: true })
+    positionBtn.addEventListener('mouseleave', clearTimer)
+    positionBtn.addEventListener('touchcancel', clearTimer)
+
     positionBtn.addEventListener('click', () => {
-      updatePosition3d(viewer, amapGeolocation)
+      if (skipNextClick) {
+        skipNextClick = false
+        return
+      }
+      const targetHeight = intervalLocationState3d.active 
+        ? zoomToHeight(intervalLocationState3d.zoomLevel) 
+        : 1200
+      updatePosition3d(viewer, amapGeolocation, targetHeight, intervalLocationState3d.active)
     })
   }
 

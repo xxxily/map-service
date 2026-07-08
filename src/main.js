@@ -9,7 +9,14 @@ import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 import { amapConfig } from './config.js'
 import { initLayerControl, setLayerControlVisible } from './map/layers.js'
 import { initAmapGeolocation } from './map/geolocation.js'
-import { addTargetMarker, updatePosition } from './map/location.js'
+import {
+  addTargetMarker,
+  updatePosition,
+  intervalLocationState,
+  startIntervalLocation2d,
+  stopIntervalLocation2d
+} from './map/location.js'
+import { showChoiceDialog, showEditDialog, showAlert } from './ui/dialog.js'
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
@@ -265,7 +272,13 @@ async function initLeafletMap () {
     },
     toggleGuidelineMode,
     toggleSearchMode,
-    updatePosition: () => updatePosition(map, amapGeolocation),
+    updatePosition: () => {
+      if (skipNextClick) {
+        skipNextClick = false
+        return
+      }
+      updatePosition(map, amapGeolocation, intervalLocationState.active ? intervalLocationState.zoomLevel : 18, intervalLocationState.active)
+    },
     resetBearing: () => {
       if (map.setBearing) {
         map.setBearing(0)
@@ -277,6 +290,128 @@ async function initLeafletMap () {
     open3d: () => {
       window.location.href = '/3d' + window.location.search
     },
+  }
+
+  // 绑定定位按钮 3s 长按事件
+  const positionBtn = mapMenu.querySelector('[data-action="updatePosition"]')
+  let skipNextClick = false
+  if (positionBtn) {
+    let longPressTimer = null
+    let isLongPressTriggered = false
+    let startX = 0
+    let startY = 0
+
+    const handleLongPress = async () => {
+      if (!intervalLocationState.active) {
+        await showLocationConfigDialog()
+      } else {
+        await showLocationManageDialog()
+      }
+    }
+
+    const showLocationConfigDialog = async () => {
+      const currentZoom = map.getZoom()
+      const res = await showEditDialog({
+        title: '开启持续自动定位',
+        fields: [
+          {
+            name: 'interval',
+            label: '定位时间间隔 (秒，最小 1s)',
+            type: 'text'
+          },
+          {
+            name: 'zoom',
+            label: '定位成功后显示的图层级别 (3-18)',
+            type: 'text'
+          }
+        ],
+        values: {
+          interval: String(intervalLocationState.intervalSeconds || 10),
+          zoom: String(intervalLocationState.zoomLevel || currentZoom || 18)
+        }
+      })
+
+      if (!res) return
+
+      const interval = parseInt(res.interval, 10)
+      const zoom = parseInt(res.zoom, 10)
+
+      if (isNaN(interval) || interval < 1) {
+        await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
+        await showLocationConfigDialog()
+        return
+      }
+
+      if (isNaN(zoom) || zoom < 3 || zoom > 18) {
+        await showAlert('图层级别必须在 3 到 18 之间！')
+        await showLocationConfigDialog()
+        return
+      }
+
+      startIntervalLocation2d(map, amapGeolocation, interval, zoom)
+    }
+
+    const showLocationManageDialog = async () => {
+      const choice = await showChoiceDialog({
+        title: '持续定位管理',
+        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState.intervalSeconds} 秒\n图层级别：${intervalLocationState.zoomLevel}`,
+        choices: [
+          { text: '编辑配置', value: 'edit', class: 'app-dialog-primary' },
+          { text: '取消持续定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
+        ]
+      })
+
+      if (choice === 'edit') {
+        await showLocationConfigDialog()
+      } else if (choice === 'stop') {
+        stopIntervalLocation2d(map)
+        await showAlert('持续定位已关闭')
+      }
+    }
+
+    const startTimer = (e) => {
+      if (e.type === 'mousedown' && e.button !== 0) return
+      const touch = e.touches ? e.touches[0] : e
+      startX = touch.clientX
+      startY = touch.clientY
+      isLongPressTriggered = false
+      longPressTimer = setTimeout(() => {
+        isLongPressTriggered = true
+        skipNextClick = true
+        handleLongPress()
+      }, 3000)
+    }
+
+    const clearTimer = () => {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer)
+        longPressTimer = null
+      }
+    }
+
+    const endTimer = (e) => {
+      clearTimer()
+      if (isLongPressTriggered) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+
+    const moveTouch = (e) => {
+      const touch = e.touches ? e.touches[0] : e
+      if (Math.hypot(touch.clientX - startX, touch.clientY - startY) > 10) {
+        clearTimer()
+      }
+    }
+
+    positionBtn.addEventListener('mousedown', startTimer)
+    positionBtn.addEventListener('touchstart', startTimer, { passive: true })
+    positionBtn.addEventListener('mouseup', endTimer)
+    positionBtn.addEventListener('touchend', endTimer)
+    positionBtn.addEventListener('mousemove', moveTouch)
+    positionBtn.addEventListener('touchmove', moveTouch, { passive: true })
+    positionBtn.addEventListener('mouseleave', clearTimer)
+    positionBtn.addEventListener('touchcancel', clearTimer)
   }
 
   mapMenu.addEventListener('click', (event) => {
