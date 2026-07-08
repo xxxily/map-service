@@ -1530,8 +1530,19 @@ export function saveTrackToKml2d (map, historyPoints, lastPosition) {
 
     const lineCoordinates = []
     allPts.forEach(pt => {
-      if (pt && pt.latlng && typeof pt.latlng.lng === 'number' && typeof pt.latlng.lat === 'number') {
-        const gcj02 = [pt.latlng.lng, pt.latlng.lat]
+      let lat = null
+      let lng = null
+      if (pt && pt.latlng) {
+        if (Array.isArray(pt.latlng)) {
+          lat = pt.latlng[0]
+          lng = pt.latlng[1]
+        } else if (typeof pt.latlng.lat === 'number' && typeof pt.latlng.lng === 'number') {
+          lat = pt.latlng.lat
+          lng = pt.latlng.lng
+        }
+      }
+      if (typeof lat === 'number' && typeof lng === 'number') {
+        const gcj02 = [lng, lat]
         lineCoordinates.push(gcj02ToWgs84(gcj02))
       }
     })
@@ -1549,10 +1560,21 @@ export function saveTrackToKml2d (map, historyPoints, lastPosition) {
     }
 
     allPts.forEach((pt, index) => {
-      if (!pt || !pt.latlng || typeof pt.latlng.lng !== 'number' || typeof pt.latlng.lat !== 'number') {
+      let lat = null
+      let lng = null
+      if (pt && pt.latlng) {
+        if (Array.isArray(pt.latlng)) {
+          lat = pt.latlng[0]
+          lng = pt.latlng[1]
+        } else if (typeof pt.latlng.lat === 'number' && typeof pt.latlng.lng === 'number') {
+          lat = pt.latlng.lat
+          lng = pt.latlng.lng
+        }
+      }
+      if (typeof lat !== 'number' || typeof lng !== 'number') {
         return
       }
-      const gcj02 = [pt.latlng.lng, pt.latlng.lat]
+      const gcj02 = [lng, lat]
       const wgs84 = gcj02ToWgs84(gcj02)
       const timeStr = new Date(pt.timestamp).toLocaleTimeString()
       
