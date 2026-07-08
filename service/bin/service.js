@@ -416,7 +416,7 @@ const service = {
       env: process.env.NODE_ENV || 'development',
       serverTime: Date.now(),
       basePath: '/api/v1',
-      admin: adminAuth.getPublicInfo(),
+      admin: await adminAuth.getPublicInfo(),
     }
   },
 

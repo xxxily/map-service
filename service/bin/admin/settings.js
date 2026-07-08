@@ -105,6 +105,20 @@ function sanitizeAccess (access) {
   }
 }
 
+function normalizeAuth (input = {}, current = {}) {
+  const defaultTtl = 1000 * 60 * 60 * 24 * 15 // 15 days
+  const tokenTtl = Number(input.tokenTtl ?? current.tokenTtl ?? defaultTtl)
+  return {
+    tokenTtl: Number.isInteger(tokenTtl) && tokenTtl > 0 ? tokenTtl : defaultTtl,
+  }
+}
+
+function sanitizeAuth (auth) {
+  return {
+    tokenTtl: auth.tokenTtl,
+  }
+}
+
 export class AdminSettings {
   constructor (store, defaults = {}) {
     this.store = store
@@ -116,6 +130,9 @@ export class AdminSettings {
         passwordHash: null,
         version: 0,
         updatedAt: 0,
+      }),
+      auth: normalizeAuth(defaults.auth || {
+        tokenTtl: 1000 * 60 * 60 * 24 * 15,
       }),
     }
     this.cache = null
@@ -142,6 +159,7 @@ export class AdminSettings {
 
     this.cache = {
       access: normalizeAccess(saved?.access || {}, this.defaults.access),
+      auth: normalizeAuth(saved?.auth || {}, this.defaults.auth),
     }
     return clone(this.cache)
   }
@@ -150,6 +168,7 @@ export class AdminSettings {
     const settings = await this.readRaw()
     return {
       access: sanitizeAccess(settings.access),
+      auth: sanitizeAuth(settings.auth),
     }
   }
 
@@ -184,12 +203,18 @@ export class AdminSettings {
       }
     }
 
+    let auth = current.auth
+    if (Object.hasOwn(input, 'auth')) {
+      auth = normalizeAuth(input.auth, current.auth)
+    }
+
     if (access.enabled && !hasAccessPassword(access)) {
       throw createHttpError('启用访问密码时，必须设置访问密码')
     }
 
     const next = {
       access,
+      auth,
     }
 
     await this.store.write('settings', next)

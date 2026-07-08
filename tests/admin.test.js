@@ -97,6 +97,62 @@ test('admin settings only manage access control and ignore legacy proxy input', 
   }
 })
 
+test('admin settings manages auth tokenTtl and fallback to defaults', async () => {
+  const dataDir = tempDir('admin-settings-auth')
+  const store = new AdminStore({ dataDir })
+  const settings = new AdminSettings(store)
+
+  try {
+    // 校验默认值是 15天 = 1296000000 毫秒
+    const initial = await settings.getSanitized()
+    assert.equal(initial.auth?.tokenTtl, 1000 * 60 * 60 * 24 * 15)
+
+    // 更新 tokenTtl
+    const updated = await settings.update({
+      auth: {
+        tokenTtl: 1000 * 60 * 60 * 24 * 7 // 7 天
+      }
+    })
+    assert.equal(updated.auth?.tokenTtl, 1000 * 60 * 60 * 24 * 7)
+
+    const raw = await settings.readRaw()
+    assert.equal(raw.auth?.tokenTtl, 1000 * 60 * 60 * 24 * 7)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('admin auth dynamically resolves tokenTtl from settings store', async () => {
+  const dataDir = tempDir('admin-auth-dynamic')
+  const store = new AdminStore({ dataDir })
+  const settings = new AdminSettings(store)
+  const auth = createAdminAuth({
+    username: 'operator',
+    password: 'secret',
+    tokenSecret: 'test-secret',
+  }, store)
+
+  try {
+    // 写入设置：TTL 为 1 秒
+    await settings.update({
+      auth: {
+        tokenTtl: 1000
+      }
+    })
+
+    const login = await auth.login({ username: 'operator', password: 'secret' })
+    const session = auth.verifyToken(login.token)
+    assert.ok(session.expiresAt > Date.now())
+
+    // 过 1.1 秒后校验应该过期
+    await new Promise(resolve => setTimeout(resolve, 1100))
+    assert.equal(auth.verifyToken(login.token), null)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+
 
 test('tile provider catalog exposes layer config and detects providers by url', () => {
   const providers = listTileProviders()

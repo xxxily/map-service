@@ -4,6 +4,8 @@ const ACCESS_PASSWORD_MIN_LENGTH = 4
 
 export function renderSettingsPage (state) {
   const access = state.settings?.access || {}
+  const auth = state.settings?.auth || {}
+  const tokenTtlDays = auth.tokenTtl ? Math.round(auth.tokenTtl / (1000 * 60 * 60 * 24)) : 15
 
   return `
     <div class="admin-grid">
@@ -28,6 +30,19 @@ export function renderSettingsPage (state) {
             </label>
           ` : ''}
           <button type="submit">保存访问控制</button>
+        </form>
+      </section>
+
+      <section class="admin-panel">
+        <div class="admin-panel-head">
+          <h2>登录态设置</h2>
+        </div>
+        <form class="admin-form" data-auth-settings-form autocomplete="off">
+          <label>
+            <span>登录态有效时长 (天)</span>
+            <input name="tokenTtlDays" type="number" min="1" max="365" required value="${tokenTtlDays}" placeholder="请输入天数，默认 15">
+          </label>
+          <button type="submit">保存登录设置</button>
         </form>
       </section>
 
@@ -58,6 +73,7 @@ export function renderSettingsPage (state) {
 export async function handleSettingsSubmit ({ api, event, renderDashboard, setNotice, state }) {
   const accessForm = event.target.closest('[data-access-form]')
   const adminPasswordForm = event.target.closest('[data-admin-password-form]')
+  const authSettingsForm = event.target.closest('[data-auth-settings-form]')
 
   if (accessForm) {
     event.preventDefault()
@@ -95,6 +111,33 @@ export async function handleSettingsSubmit ({ api, event, renderDashboard, setNo
 
       state.settings = await api.updateSettings(payload)
       setNotice('访问控制已保存')
+      renderDashboard()
+    } catch (err) {
+      setNotice('', err.message)
+      renderDashboard()
+    }
+    return true
+  }
+
+  if (authSettingsForm) {
+    event.preventDefault()
+    try {
+      const tokenTtlDays = Number(authSettingsForm.elements.tokenTtlDays.value)
+      if (isNaN(tokenTtlDays) || tokenTtlDays <= 0) {
+        setNotice('', '有效时长必须是大于 0 的数字')
+        renderDashboard()
+        return true
+      }
+
+      const tokenTtl = Math.round(tokenTtlDays * 24 * 60 * 60 * 1000)
+      const payload = {
+        auth: {
+          tokenTtl,
+        },
+      }
+
+      state.settings = await api.updateSettings(payload)
+      setNotice('登录态设置已保存')
       renderDashboard()
     } catch (err) {
       setNotice('', err.message)

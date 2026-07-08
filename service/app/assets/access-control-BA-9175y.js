@@ -341,7 +341,7 @@ var e=Object.create,t=Object.defineProperty,n=Object.getOwnPropertyDescriptor,r=
           <strong>${M(e.name)}</strong>
           <span>${M(e.address||e.district||``)}</span>
         </button>
-      `}).join(``)})}var tn=4;function nn(e){let t=e.settings?.access||{};return`
+      `}).join(``)})}var tn=4;function nn(e){let t=e.settings?.access||{},n=e.settings?.auth||{},r=n.tokenTtl?Math.round(n.tokenTtl/(1e3*60*60*24)):15;return`
     <div class="admin-grid">
       <section class="admin-panel">
         <div class="admin-panel-head">
@@ -369,6 +369,19 @@ var e=Object.create,t=Object.defineProperty,n=Object.getOwnPropertyDescriptor,r=
 
       <section class="admin-panel">
         <div class="admin-panel-head">
+          <h2>登录态设置</h2>
+        </div>
+        <form class="admin-form" data-auth-settings-form autocomplete="off">
+          <label>
+            <span>登录态有效时长 (天)</span>
+            <input name="tokenTtlDays" type="number" min="1" max="365" required value="${r}" placeholder="请输入天数，默认 15">
+          </label>
+          <button type="submit">保存登录设置</button>
+        </form>
+      </section>
+
+      <section class="admin-panel">
+        <div class="admin-panel-head">
           <h2>修改管理密码</h2>
         </div>
         <form class="admin-form" data-admin-password-form autocomplete="off">
@@ -388,7 +401,7 @@ var e=Object.create,t=Object.defineProperty,n=Object.getOwnPropertyDescriptor,r=
         </form>
       </section>
     </div>
-  `}async function rn({api:e,event:t,renderDashboard:n,setNotice:r,state:i}){let a=t.target.closest(`[data-access-form]`),o=t.target.closest(`[data-admin-password-form]`);if(a){t.preventDefault();try{let t=a.elements.accessEnabled.checked,o=a.elements.accessPassword.value.trim(),s=a.elements.clearAccessPassword?.checked||!1,c={access:{enabled:t}};if(o){if(o.length<tn)return r(``,`访问密码长度至少为 ${tn} 位`),n(),!0;c.access.password=o}else if(s)c.access.clearPassword=!0;else if(t&&!i.settings?.access?.hasPassword)return r(``,`启用访问密码时，必须设置访问密码`),n(),!0;if(t&&s&&!o)return r(``,`启用访问密码时不能同时清除密码`),n(),!0;i.settings=await e.updateSettings(c),r(`访问控制已保存`),n()}catch(e){r(``,e.message),n()}return!0}if(o){t.preventDefault();let i=o.elements.currentPassword.value,a=o.elements.newPassword.value,s=o.elements.confirmPassword.value;if(a.length<4)return r(``,`新密码长度至少为 4 位`),n(),!0;if(a!==s)return r(``,`两次输入的新密码不一致`),n(),!0;try{await e.updatePassword({currentPassword:i,newPassword:a}),r(`管理密码修改成功！`),o.reset(),n()}catch(e){r(``,e.message),n()}return!0}return!1}function U(e){let t=e.kmls||[];return`
+  `}async function rn({api:e,event:t,renderDashboard:n,setNotice:r,state:i}){let a=t.target.closest(`[data-access-form]`),o=t.target.closest(`[data-admin-password-form]`),s=t.target.closest(`[data-auth-settings-form]`);if(a){t.preventDefault();try{let t=a.elements.accessEnabled.checked,o=a.elements.accessPassword.value.trim(),s=a.elements.clearAccessPassword?.checked||!1,c={access:{enabled:t}};if(o){if(o.length<tn)return r(``,`访问密码长度至少为 ${tn} 位`),n(),!0;c.access.password=o}else if(s)c.access.clearPassword=!0;else if(t&&!i.settings?.access?.hasPassword)return r(``,`启用访问密码时，必须设置访问密码`),n(),!0;if(t&&s&&!o)return r(``,`启用访问密码时不能同时清除密码`),n(),!0;i.settings=await e.updateSettings(c),r(`访问控制已保存`),n()}catch(e){r(``,e.message),n()}return!0}if(s){t.preventDefault();try{let t=Number(s.elements.tokenTtlDays.value);if(isNaN(t)||t<=0)return r(``,`有效时长必须是大于 0 的数字`),n(),!0;let a={auth:{tokenTtl:Math.round(t*24*60*60*1e3)}};i.settings=await e.updateSettings(a),r(`登录态设置已保存`),n()}catch(e){r(``,e.message),n()}return!0}if(o){t.preventDefault();let i=o.elements.currentPassword.value,a=o.elements.newPassword.value,s=o.elements.confirmPassword.value;if(a.length<4)return r(``,`新密码长度至少为 4 位`),n(),!0;if(a!==s)return r(``,`两次输入的新密码不一致`),n(),!0;try{await e.updatePassword({currentPassword:i,newPassword:a}),r(`管理密码修改成功！`),o.reset(),n()}catch(e){r(``,e.message),n()}return!0}return!1}function U(e){let t=e.kmls||[];return`
     <section class="admin-panel">
       <div class="admin-panel-head">
         <h2>公共 KML 图层管理</h2>

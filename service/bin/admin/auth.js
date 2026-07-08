@@ -38,7 +38,7 @@ export function createAdminAuth (conf = {}, store = null) {
   const username = String(conf.username || 'admin')
   const password = String(conf.password || 'admin')
   const tokenSecret = String(conf.tokenSecret || 'map-service-dev-admin-secret')
-  const tokenTtl = Number(conf.tokenTtl || 1000 * 60 * 60 * 8)
+  const tokenTtl = Number(conf.tokenTtl || 1000 * 60 * 60 * 24 * 15) // 默认 15 天
 
   async function getCredentials () {
     if (store) {
@@ -56,13 +56,14 @@ export function createAdminAuth (conf = {}, store = null) {
     }
   }
 
-  function createToken (subject = username) {
+  function createToken (subject = username, customTtl) {
     const now = Date.now()
+    const ttl = typeof customTtl === 'number' && customTtl > 0 ? customTtl : tokenTtl
     const payload = {
       sub: subject,
       scope: 'admin',
       iat: now,
-      exp: now + tokenTtl,
+      exp: now + ttl,
     }
     const payloadPart = base64urlEncode(JSON.stringify(payload))
     const signature = sign(tokenSecret, payloadPart)
@@ -112,7 +113,15 @@ export function createAdminAuth (conf = {}, store = null) {
       throw createHttpError('用户名或密码不正确', 401)
     }
 
-    const token = createToken(credentials.username)
+    let currentTtl = tokenTtl
+    if (store) {
+      const savedSettings = await store.read('settings', {})
+      if (savedSettings?.auth?.tokenTtl) {
+        currentTtl = Number(savedSettings.auth.tokenTtl)
+      }
+    }
+
+    const token = createToken(credentials.username, currentTtl)
     const session = verifyToken(token)
     return {
       token,
@@ -148,10 +157,17 @@ export function createAdminAuth (conf = {}, store = null) {
     updatePassword,
     createToken,
     verifyToken,
-    getPublicInfo () {
+    async getPublicInfo () {
+      let currentTtl = tokenTtl
+      if (store) {
+        const savedSettings = await store.read('settings', {})
+        if (savedSettings?.auth?.tokenTtl) {
+          currentTtl = Number(savedSettings.auth.tokenTtl)
+        }
+      }
       return {
         username,
-        tokenTtl,
+        tokenTtl: currentTtl,
       }
     },
   }
