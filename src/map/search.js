@@ -150,14 +150,14 @@ function selectRoute (index) {
       polyline.setStyle({
         color: '#0f766e',
         weight: 7,
-        opacity: 1.0,
+        opacity: 0.95,
       })
       polyline.bringToFront()
     } else {
       polyline.setStyle({
         color: '#94a3b8',
         weight: 5,
-        opacity: 0.6,
+        opacity: 0.75,
       })
     }
   })
@@ -293,7 +293,7 @@ function triggerRoutePlanning (map, AMap) {
         const polyline = L.polyline(pathPoints, {
           color: '#94a3b8',
           weight: 5,
-          opacity: 0.6,
+          opacity: 0.75,
         }).addTo(routeFeatureGroup)
 
         polyline.on('click', (e) => {
