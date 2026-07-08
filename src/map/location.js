@@ -178,11 +178,21 @@ function renderHistoryPoints (map, points) {
   })
 }
 
+let currentLocationMarker = null
+
 export function addTargetMarker (map, location, options = {}) {
   // 清除地图上已有的定位 Marker
+  if (currentLocationMarker) {
+    map.removeLayer(currentLocationMarker)
+    currentLocationMarker = null
+  }
+
   map.eachLayer((layer) => {
     if (layer instanceof L.Marker) {
-      map.removeLayer(layer)
+      const iconOptions = layer.options?.icon?.options
+      if (iconOptions?.className === 'custom-location-marker') {
+        map.removeLayer(layer)
+      }
     }
   })
 
@@ -202,11 +212,12 @@ export function addTargetMarker (map, location, options = {}) {
   }
 
   const marker = L.marker(location, markerOptions).addTo(map)
-    .on('dragend', (event) => {
-      const latlng = event.target.getLatLng()
-      const coords = `${latlng.lat},${latlng.lng},${map.getZoom()}`
-      window.history.replaceState(null, '', `?coords=${coords}`)
-    })
+  currentLocationMarker = marker
+  marker.on('dragend', (event) => {
+    const latlng = event.target.getLatLng()
+    const coords = `${latlng.lat},${latlng.lng},${map.getZoom()}`
+    window.history.replaceState(null, '', `?coords=${coords}`)
+  })
 
   // 播放瞬间定位更新的扩散波纹
   if (options.playRipple) {
@@ -313,6 +324,7 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
           updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
         }
       }
+    } else {
       // 移动幅度大，生产新点
       if (intervalLocationState.lastPosition) {
         if (!intervalLocationState.lastPosition.firstTimestamp) {
@@ -483,15 +495,18 @@ export function stopIntervalLocation2d (map) {
   // 重新在最后定位处绘制默认常规 Marker
   map.eachLayer((layer) => {
     if (layer instanceof L.Marker) {
-      const latlng = layer.getLatLng()
-      // 清除呼吸灯 Marker
-      map.removeLayer(layer)
-      // 重新绘制普通靶心 Marker
-      L.marker(latlng, { opacity: 1, draggable: true }).addTo(map)
-        .on('dragend', (event) => {
+      const iconOptions = layer.options?.icon?.options
+      if (iconOptions?.className === 'custom-location-marker' || layer === currentLocationMarker) {
+        const latlng = layer.getLatLng()
+        // 清除呼吸灯 Marker
+        map.removeLayer(layer)
+        // 重新绘制普通靶心 Marker
+        currentLocationMarker = L.marker(latlng, { opacity: 1, draggable: true }).addTo(map)
+        currentLocationMarker.on('dragend', (event) => {
           const coords = `${event.target.getLatLng().lat},${event.target.getLatLng().lng},${map.getZoom()}`
           window.history.replaceState(null, '', `?coords=${coords}`)
         })
+      }
     }
   })
 }

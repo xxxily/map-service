@@ -400,6 +400,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
           updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
         }
       }
+    } else {
       // 移动幅度大，生产新点
       if (intervalLocationState3d.lastPosition) {
         if (!intervalLocationState3d.lastPosition.firstTimestamp) {
