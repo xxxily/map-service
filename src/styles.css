@@ -506,6 +506,9 @@ body.admin-view #app-version {
     overflow-y: hidden !important;
     max-height: none !important;
     scroll-behavior: smooth;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
   }
 
   /* 隐藏横向滚动条 */
