@@ -3402,7 +3402,8 @@ body.admin-view #app-version {
   z-index: 1000;
 }
 
-.custom-select.is-open .custom-select-options {
+.custom-select.is-open .custom-select-options,
+.custom-select-options.is-open {
   opacity: 1;
   visibility: visible;
   transform: translateY(0);
@@ -3483,7 +3484,8 @@ body.admin-view #app-version {
   box-sizing: border-box;
 }
 
-.custom-color-picker.is-open .custom-color-dropdown {
+.custom-color-picker.is-open .custom-color-dropdown,
+.custom-color-dropdown.is-open {
   opacity: 1;
   visibility: visible;
   transform: translateY(0);
