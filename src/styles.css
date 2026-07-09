@@ -3481,8 +3481,9 @@ body.admin-view #app-version {
   transform: translateY(-8px);
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 1000;
-  width: 116px;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
 }
 
 .custom-color-picker.is-open .custom-color-dropdown,
@@ -3493,10 +3494,12 @@ body.admin-view #app-version {
 }
 
 .custom-color-palette {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 4px;
-  margin-bottom: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  width: 100px;
+  gap: 5px;
+  margin-bottom: 2px;
+  box-sizing: border-box;
 }
 
 .custom-color-swatch {
@@ -3506,6 +3509,8 @@ body.admin-view #app-version {
   border: 1px solid rgba(0, 0, 0, 0.08);
   cursor: pointer;
   transition: transform 0.1s ease;
+  box-sizing: border-box;
+  flex-shrink: 0;
 }
 
 .custom-color-swatch:hover {
@@ -3520,6 +3525,8 @@ body.admin-view #app-version {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid #f1f5f9;
+  width: 100px;
+  box-sizing: border-box;
 }
 
 .custom-color-hex-hash {
@@ -3541,6 +3548,7 @@ body.admin-view #app-version {
   background: #ffffff;
   transition: border-color 0.15s ease;
   box-sizing: border-box;
+  flex-shrink: 1;
 }
 
 .custom-color-hex-input:focus {
@@ -3577,6 +3585,8 @@ body.admin-view #app-version {
   cursor: pointer;
   transition: all 0.15s ease;
   font-weight: 500;
+  width: 100px;
+  box-sizing: border-box;
 }
 
 .custom-color-custom-btn:hover {
