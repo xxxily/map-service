@@ -31,6 +31,7 @@ export function renderCustomSelect (options = {}) {
 export function renderCustomColorPicker (options = {}) {
   const value = options.value || '#0f766e'
   const attrs = options.attrs || ''
+  const hexVal = value.startsWith('#') ? value.slice(1) : value
   const presetColors = [
     '#0f766e', // 默认青色
     '#10b981', // 翠绿
@@ -55,7 +56,12 @@ export function renderCustomColorPicker (options = {}) {
         <div class="custom-color-palette">
           ${paletteHtml}
         </div>
-        <div class="custom-color-custom-btn">自定义颜色...</div>
+        <div class="custom-color-hex-row">
+          <span class="custom-color-hex-hash">#</span>
+          <input type="text" class="custom-color-hex-input" placeholder="0f766e" maxlength="6" value="${hexVal}">
+          <button type="button" class="custom-color-hex-btn">应用</button>
+        </div>
+        <div class="custom-color-custom-btn">更多色彩...</div>
         <input type="color" class="custom-color-hidden-input" value="${value}" style="display: none;">
       </div>
     </div>
@@ -143,6 +149,10 @@ export function initCustomControlsListeners () {
         const hiddenInput = this.querySelector('.custom-color-hidden-input') || document.body.querySelector(`.custom-color-dropdown[data-kml-id="${this.getAttribute('data-kml-id')}"] .custom-color-hidden-input`)
         if (hiddenInput) {
           hiddenInput.value = val
+        }
+        const hexInput = this.querySelector('.custom-color-hex-input') || document.body.querySelector(`.custom-color-dropdown[data-kml-id="${this.getAttribute('data-kml-id')}"] .custom-color-hex-input`)
+        if (hexInput) {
+          hexInput.value = val.startsWith('#') ? val.slice(1) : val
         }
       },
       configurable: true
@@ -271,7 +281,34 @@ export function initCustomControlsListeners () {
       return
     }
 
-    // 5. 点击自定义颜色按钮
+    // 5. 点击 Hex 应用按钮
+    const hexBtn = target.closest('.custom-color-hex-btn')
+    if (hexBtn) {
+      event.stopPropagation()
+      event.preventDefault()
+      const dropdown = hexBtn.closest('.custom-color-dropdown')
+      const picker = dropdown?.__parentControl || hexBtn.closest('.custom-color-picker')
+      if (picker) {
+        const hexInput = dropdown.querySelector('.custom-color-hex-input')
+        if (hexInput) {
+          let hex = hexInput.value.trim()
+          if (!hex.startsWith('#')) {
+            hex = '#' + hex
+          }
+          if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+            ensureColorValueProperty(picker)
+            picker.value = hex
+            picker.dispatchEvent(new Event('change', { bubbles: true }))
+            closeAllDropdowns()
+          } else {
+            hexInput.value = picker.value.replace('#', '')
+          }
+        }
+      }
+      return
+    }
+
+    // 6. 点击自定义颜色按钮调起系统取色盘
     const customColorBtn = target.closest('.custom-color-custom-btn')
     if (customColorBtn) {
       event.stopPropagation()
@@ -285,6 +322,23 @@ export function initCustomControlsListeners () {
         }
       }
       return
+    }
+  }, true)
+
+  // 利用事件委托监听自定义 Hex 输入框中的回车键 Enter（采用捕获阶段，防止被冒泡拦截）
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      const target = event.target
+      const hexInput = target.closest('.custom-color-hex-input')
+      if (hexInput) {
+        event.stopPropagation()
+        event.preventDefault()
+        const dropdown = hexInput.closest('.custom-color-dropdown')
+        if (dropdown) {
+          const hexBtn = dropdown.querySelector('.custom-color-hex-btn')
+          hexBtn?.click()
+        }
+      }
     }
   }, true)
 
