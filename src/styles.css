@@ -3317,3 +3317,24 @@ body.admin-view #app-version {
   background: #b91c1c;
 }
 
+/* KML 简约样式 */
+.kml-simple-point-icon {
+  background: none;
+  border: none;
+}
+
+.kml-simple-dot {
+  width: 10px;
+  height: 10px;
+  background-color: #10b981;
+  border: 1.5px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  box-sizing: border-box;
+  transition: transform 0.1s ease;
+}
+
+.kml-simple-dot:hover {
+  transform: scale(1.3);
+}
+

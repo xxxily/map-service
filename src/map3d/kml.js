@@ -59,6 +59,20 @@ function savePublicPrefs () {
   localStorage.setItem(PUBLIC_PREFS_KEY, JSON.stringify(publicKmlPrefs))
 }
 
+function getKmlTheme (kmlFile) {
+  if (kmlFile.isPublic) {
+    return publicKmlPrefs[kmlFile.id + '_theme'] || kmlFile.theme || 'default'
+  }
+  return kmlFile.theme || 'default'
+}
+
+function getKmlColor (kmlFile) {
+  if (kmlFile.isPublic) {
+    return publicKmlPrefs[kmlFile.id + '_color'] || kmlFile.color || '#0f766e'
+  }
+  return kmlFile.color || '#0f766e'
+}
+
 function isAdminLoggedIn () {
   return Boolean(localStorage.getItem('mapServiceAdminToken'))
 }
@@ -110,6 +124,8 @@ function normalizeKmlFile (kmlFile) {
     id: isDefault ? DEFAULT_KML_ID : String(kmlFile.id || `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
     name: String(kmlFile.name || (isDefault ? DEFAULT_KML_NAME : '未命名 KML')),
     isDefault,
+    theme: kmlFile.theme || 'default',
+    color: kmlFile.color || '#0f766e',
     coordCorrection: kmlFile.coordCorrection || KML_COORD_CORRECTION,
     enabled: kmlFile.enabled !== false,
     features: Array.isArray(kmlFile.features) ? kmlFile.features : [],
@@ -122,6 +138,8 @@ function createKmlFile (options = {}) {
     id: isDefault ? DEFAULT_KML_ID : `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     name: options.name || (isDefault ? DEFAULT_KML_NAME : '新建 KML 文件'),
     isDefault,
+    theme: options.theme || 'default',
+    color: options.color || '#0f766e',
     coordCorrection: options.coordCorrection || KML_COORD_CORRECTION,
     enabled: true,
     features: options.features || [],
@@ -321,32 +339,39 @@ function renderFeature (kmlFile, feature) {
   if (!viewerRef) return null
   const kmlId = kmlFile.id
   const entities = []
-  const color = Color.fromCssColorString('#0f766e')
+  const theme = getKmlTheme(kmlFile)
+  const colorHex = getKmlColor(kmlFile)
+  const color = Color.fromCssColorString(colorHex)
 
   if (feature.type === 'Point') {
     const point = getPointLatLng(kmlFile, feature)
+    
+    const pointGraphics = {
+      pixelSize: theme === 'simple' ? 8 : 11,
+      color: theme === 'simple' ? Color.fromCssColorString(colorHex) : color,
+      outlineColor: Color.WHITE,
+      outlineWidth: 2,
+      heightReference: HeightReference.CLAMP_TO_GROUND,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    }
+
+    const labelGraphics = theme === 'simple' ? undefined : {
+      text: getFeatureLabel(feature),
+      font: '12px sans-serif',
+      fillColor: Color.WHITE,
+      outlineColor: Color.BLACK,
+      outlineWidth: 3,
+      style: LabelStyle.FILL_AND_OUTLINE,
+      verticalOrigin: VerticalOrigin.BOTTOM,
+      pixelOffset: new Cartesian2(0, -18),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    }
+
     const entity = markEntity(viewerRef.entities.add({
       name: feature.name || 'KML 标注',
       position: Cartesian3.fromDegrees(point.lng, point.lat, 8),
-      point: {
-        pixelSize: 11,
-        color,
-        outlineColor: Color.WHITE,
-        outlineWidth: 2,
-        heightReference: HeightReference.CLAMP_TO_GROUND,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      },
-      label: {
-        text: getFeatureLabel(feature),
-        font: '12px sans-serif',
-        fillColor: Color.WHITE,
-        outlineColor: Color.BLACK,
-        outlineWidth: 3,
-        style: LabelStyle.FILL_AND_OUTLINE,
-        verticalOrigin: VerticalOrigin.BOTTOM,
-        pixelOffset: new Cartesian2(0, -18),
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      },
+      point: pointGraphics,
+      label: labelGraphics
     }), kmlId, feature.id)
     entities.push(entity)
   } else if (feature.type === 'LineString') {
@@ -1036,10 +1061,21 @@ function renderKmlCard (kmlFile) {
       </div>
       <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
         <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
-          <label class="kml-correction-switch" title="${kmlFile.isPublic ? '公共图层不可在此修改纠偏配置' : '开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度'}">
-            <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${kmlFile.isPublic ? 'disabled' : ''} ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
-            <span>坐标纠偏</span>
-          </label>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <label class="kml-correction-switch" title="${kmlFile.isPublic ? '公共图层不可在此修改纠偏配置' : '开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度'}">
+              <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${kmlFile.isPublic ? 'disabled' : ''} ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
+              <span>坐标纠偏</span>
+            </label>
+            <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+              <span style="font-size: 11px; color: #475569;">样式：</span>
+              <select class="kml-theme-select" data-kml-id="${kmlFile.id}" style="font-size: 11px; padding: 1px 4px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; color: #334155; outline: none; cursor: pointer; margin-right: 4px;">
+                <option value="default" ${getKmlTheme(kmlFile) === 'default' ? 'selected' : ''}>常规</option>
+                <option value="simple" ${getKmlTheme(kmlFile) === 'simple' ? 'selected' : ''}>简约</option>
+              </select>
+              <span style="font-size: 11px; color: #475569;">颜色：</span>
+              <input type="color" class="kml-color-input" data-kml-id="${kmlFile.id}" value="${getKmlColor(kmlFile)}" style="width: 22px; height: 18px; border: 1px solid #cbd5e1; border-radius: 4px; padding: 0; background: none; cursor: pointer;">
+            </div>
+          </div>
           <div class="kml-file-tool-actions">
             ${editable ? `<button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="在此文件下新增标注点" aria-label="新增标注点"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>` : ''}
             <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
@@ -1369,19 +1405,64 @@ function bindPanelEvents () {
 
   panel.addEventListener('change', (event) => {
     const target = event.target
-    if (!target.matches('[data-kml-correction]')) return
+    if (target.matches('[data-kml-correction]')) {
+      const kmlId = target.getAttribute('data-kml-id')
+      const kmlFile = kmlList.find(k => k.id === kmlId)
+      if (!kmlFile) return
 
-    const kmlId = target.getAttribute('data-kml-id')
-    const kmlFile = kmlList.find(k => k.id === kmlId)
-    if (!kmlFile) return
-
-    pushKmlHistory()
-    kmlFile.coordCorrection = target.checked ? KML_COORD_CORRECTION : 'none'
-    saveToStorage()
-    if (isKmlEnabled(kmlFile)) {
-      renderKmlLayers(kmlFile)
+      pushKmlHistory()
+      kmlFile.coordCorrection = target.checked ? KML_COORD_CORRECTION : 'none'
+      saveToStorage()
+      if (isKmlEnabled(kmlFile)) {
+        renderKmlLayers(kmlFile)
+      }
+      updateKmlPanelUI()
+      return
     }
-    updateKmlPanelUI()
+
+    if (target.matches('.kml-theme-select')) {
+      const kmlId = target.getAttribute('data-kml-id')
+      let kmlFile = kmlList.find(k => k.id === kmlId)
+      if (kmlFile) {
+        pushKmlHistory()
+        kmlFile.theme = target.value
+        saveToStorage()
+      } else {
+        kmlFile = publicKmlList.find(k => k.id === kmlId)
+        if (kmlFile) {
+          kmlFile.theme = target.value
+          publicKmlPrefs[kmlFile.id + '_theme'] = target.value
+          savePublicPrefs()
+        }
+      }
+      if (kmlFile && isKmlEnabled(kmlFile)) {
+        renderKmlLayers(kmlFile)
+      }
+      updateKmlPanelUI()
+      return
+    }
+
+    if (target.matches('.kml-color-input')) {
+      const kmlId = target.getAttribute('data-kml-id')
+      let kmlFile = kmlList.find(k => k.id === kmlId)
+      if (kmlFile) {
+        pushKmlHistory()
+        kmlFile.color = target.value
+        saveToStorage()
+      } else {
+        kmlFile = publicKmlList.find(k => k.id === kmlId)
+        if (kmlFile) {
+          kmlFile.color = target.value
+          publicKmlPrefs[kmlFile.id + '_color'] = target.value
+          savePublicPrefs()
+        }
+      }
+      if (kmlFile && isKmlEnabled(kmlFile)) {
+        renderKmlLayers(kmlFile)
+      }
+      updateKmlPanelUI()
+      return
+    }
   })
 }
 
@@ -1461,6 +1542,7 @@ export function createTrackKml3d (name) {
       name: name || '未命名轨迹',
       enabled: true,
       isDefault: false,
+      theme: 'simple',
       coordCorrection: KML_COORD_CORRECTION,
       features: []
     }

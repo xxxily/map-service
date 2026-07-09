@@ -35,6 +35,20 @@ function savePublicPrefs () {
   localStorage.setItem(PUBLIC_PREFS_KEY, JSON.stringify(publicKmlPrefs))
 }
 
+function getKmlTheme (kmlFile) {
+  if (kmlFile.isPublic) {
+    return publicKmlPrefs[kmlFile.id + '_theme'] || kmlFile.theme || 'default'
+  }
+  return kmlFile.theme || 'default'
+}
+
+function getKmlColor (kmlFile) {
+  if (kmlFile.isPublic) {
+    return publicKmlPrefs[kmlFile.id + '_color'] || kmlFile.color || '#0f766e'
+  }
+  return kmlFile.color || '#0f766e'
+}
+
 function isAdminLoggedIn () {
   return Boolean(localStorage.getItem('mapServiceAdminToken'))
 }
@@ -251,6 +265,8 @@ function normalizeKmlFile (kmlFile) {
     id: isDefault ? DEFAULT_KML_ID : String(kmlFile.id || `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
     name: String(kmlFile.name || (isDefault ? DEFAULT_KML_NAME : '未命名 KML')),
     isDefault,
+    theme: kmlFile.theme || 'default',
+    color: kmlFile.color || '#0f766e',
     coordCorrection: kmlFile.coordCorrection || KML_COORD_CORRECTION,
     enabled: kmlFile.enabled !== false,
     features: Array.isArray(kmlFile.features) ? kmlFile.features : [],
@@ -263,6 +279,8 @@ function createKmlFile (options = {}) {
     id: isDefault ? DEFAULT_KML_ID : `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     name: options.name || (isDefault ? DEFAULT_KML_NAME : '新建 KML 文件'),
     isDefault,
+    theme: options.theme || 'default',
+    color: options.color || '#0f766e',
     coordCorrection: options.coordCorrection || KML_COORD_CORRECTION,
     enabled: true,
     features: options.features || [],
@@ -441,12 +459,28 @@ function renderFeature (map, kmlFile, feature) {
   const kmlId = kmlFile.id
   let layer
   const editable = isKmlEditable(kmlFile)
+  const theme = getKmlTheme(kmlFile)
   
   if (feature.type === 'Point') {
     const latlng = getMapPoint(kmlFile, feature)
-    layer = L.marker(latlng, {
-      draggable: editable
-    })
+    
+    if (theme === 'simple') {
+      const colorVal = getKmlColor(kmlFile)
+      const simpleIcon = L.divIcon({
+        className: 'kml-simple-point-icon',
+        html: `<div class="kml-simple-dot" style="background-color: ${colorVal}"></div>`,
+        iconSize: [12, 12],
+        iconAnchor: [6, 6]
+      })
+      layer = L.marker(latlng, {
+        draggable: editable,
+        icon: simpleIcon
+      })
+    } else {
+      layer = L.marker(latlng, {
+        draggable: editable
+      })
+    }
 
     if (editable) {
       // 监听拖动开始：保存撤销快照，并在拖动时关闭 popup 气泡
@@ -462,24 +496,28 @@ function renderFeature (map, kmlFile, feature) {
         updateKmlPanelUI(map)
       })
     }
-    layer.bindTooltip(escapeHtml(getFeatureLabel(feature)), {
-      permanent: true,
-      direction: 'top',
-      offset: [-16, -18],
-      opacity: 1,
-      className: 'kml-point-label',
-    })
+
+    if (theme !== 'simple') {
+      layer.bindTooltip(escapeHtml(getFeatureLabel(feature)), {
+        permanent: true,
+        direction: 'top',
+        offset: [-16, -18],
+        opacity: 1,
+        className: 'kml-point-label',
+      })
+    }
   } else if (feature.type === 'LineString') {
     const latlngs = getMapLatLngs(kmlFile, feature)
     layer = L.polyline(latlngs, {
-      color: '#0f766e',
+      color: getKmlColor(kmlFile),
       weight: 4
     })
   } else if (feature.type === 'Polygon') {
     const latlngs = getMapLatLngs(kmlFile, feature)
+    const colorVal = getKmlColor(kmlFile)
     layer = L.polygon(latlngs, {
-      color: '#0f766e',
-      fillColor: '#0f766e',
+      color: colorVal,
+      fillColor: colorVal,
       fillOpacity: 0.15
     })
   }
@@ -594,10 +632,21 @@ function updateKmlPanelUI (map) {
             </div>
             <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
               <div class="kml-file-toolbox">
-                <label class="kml-correction-switch" title="公共图层不可在此修改纠偏配置">
-                  <input type="checkbox" disabled checked ${kmlFile.coordCorrection !== 'none' ? 'checked' : ''}>
-                  <span>坐标纠偏</span>
-                </label>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label class="kml-correction-switch" title="公共图层不可在此修改纠偏配置">
+                    <input type="checkbox" disabled checked ${kmlFile.coordCorrection !== 'none' ? 'checked' : ''}>
+                    <span>坐标纠偏</span>
+                  </label>
+                  <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                    <span style="font-size: 11px; color: #475569;">样式：</span>
+                    <select class="kml-theme-select" data-kml-id="${kmlFile.id}" style="font-size: 11px; padding: 1px 4px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; color: #334155; outline: none; cursor: pointer; margin-right: 4px;">
+                      <option value="default" ${getKmlTheme(kmlFile) === 'default' ? 'selected' : ''}>常规</option>
+                      <option value="simple" ${getKmlTheme(kmlFile) === 'simple' ? 'selected' : ''}>简约</option>
+                    </select>
+                    <span style="font-size: 11px; color: #475569;">颜色：</span>
+                    <input type="color" class="kml-color-input" data-kml-id="${kmlFile.id}" value="${getKmlColor(kmlFile)}" style="width: 22px; height: 18px; border: 1px solid #cbd5e1; border-radius: 4px; padding: 0; background: none; cursor: pointer;">
+                  </div>
+                </div>
                 <div class="kml-file-tool-actions">
                   ${isEditingThis ? `<button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="新增标注点" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>` : ''}
                   <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
@@ -676,10 +725,21 @@ function updateKmlPanelUI (map) {
             </div>
             <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
               <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
-                <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
-                  <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
-                  <span>坐标纠偏</span>
-                </label>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
+                    <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
+                    <span>坐标纠偏</span>
+                  </label>
+                  <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                    <span style="font-size: 11px; color: #475569;">样式：</span>
+                    <select class="kml-theme-select" data-kml-id="${kmlFile.id}" style="font-size: 11px; padding: 1px 4px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; color: #334155; outline: none; cursor: pointer; margin-right: 4px;">
+                      <option value="default" ${getKmlTheme(kmlFile) === 'default' ? 'selected' : ''}>常规</option>
+                      <option value="simple" ${getKmlTheme(kmlFile) === 'simple' ? 'selected' : ''}>简约</option>
+                    </select>
+                    <span style="font-size: 11px; color: #475569;">颜色：</span>
+                    <input type="color" class="kml-color-input" data-kml-id="${kmlFile.id}" value="${getKmlColor(kmlFile)}" style="width: 22px; height: 18px; border: 1px solid #cbd5e1; border-radius: 4px; padding: 0; background: none; cursor: pointer;">
+                  </div>
+                </div>
                 <div class="kml-file-tool-actions">
                   <button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="在此文件下新增标注点" aria-label="新增标注点"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>
                   <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
@@ -1361,18 +1421,61 @@ export function initKmlSupport (map) {
 
   panel.addEventListener('change', (event) => {
     const target = event.target
-    if (!target.matches('[data-kml-correction]')) return
+    if (target.matches('[data-kml-correction]')) {
+      const kmlId = target.getAttribute('data-kml-id')
+      const kmlFile = kmlList.find(k => k.id === kmlId)
+      if (!kmlFile) return
 
-    const kmlId = target.getAttribute('data-kml-id')
-    const kmlFile = kmlList.find(k => k.id === kmlId)
-    if (!kmlFile) return
-
-    kmlFile.coordCorrection = target.checked ? KML_COORD_CORRECTION : 'none'
-    saveToStorage()
-    if (isKmlEnabled(kmlFile)) {
-      renderKmlLayers(map, kmlFile)
+      kmlFile.coordCorrection = target.checked ? KML_COORD_CORRECTION : 'none'
+      saveToStorage()
+      if (isKmlEnabled(kmlFile)) {
+        renderKmlLayers(map, kmlFile)
+      }
+      updateKmlPanelUI(map)
+      return
     }
-    updateKmlPanelUI(map)
+
+    if (target.matches('.kml-theme-select')) {
+      const kmlId = target.getAttribute('data-kml-id')
+      let kmlFile = kmlList.find(k => k.id === kmlId)
+      if (kmlFile) {
+        kmlFile.theme = target.value
+        saveToStorage()
+      } else {
+        kmlFile = publicKmlList.find(k => k.id === kmlId)
+        if (kmlFile) {
+          kmlFile.theme = target.value
+          publicKmlPrefs[kmlFile.id + '_theme'] = target.value
+          savePublicPrefs()
+        }
+      }
+      if (kmlFile && isKmlEnabled(kmlFile)) {
+        renderKmlLayers(map, kmlFile)
+      }
+      updateKmlPanelUI(map)
+      return
+    }
+
+    if (target.matches('.kml-color-input')) {
+      const kmlId = target.getAttribute('data-kml-id')
+      let kmlFile = kmlList.find(k => k.id === kmlId)
+      if (kmlFile) {
+        kmlFile.color = target.value
+        saveToStorage()
+      } else {
+        kmlFile = publicKmlList.find(k => k.id === kmlId)
+        if (kmlFile) {
+          kmlFile.color = target.value
+          publicKmlPrefs[kmlFile.id + '_color'] = target.value
+          savePublicPrefs()
+        }
+      }
+      if (kmlFile && isKmlEnabled(kmlFile)) {
+        renderKmlLayers(map, kmlFile)
+      }
+      updateKmlPanelUI(map)
+      return
+    }
   })
   
   map.on('popupopen', (e) => {
@@ -1515,6 +1618,7 @@ export function createTrackKml2d (name) {
       name: name || '未命名轨迹',
       enabled: true,
       isDefault: false,
+      theme: 'simple',
       coordCorrection: KML_COORD_CORRECTION,
       features: []
     }
