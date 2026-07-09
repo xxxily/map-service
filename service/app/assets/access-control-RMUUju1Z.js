@@ -39,13 +39,18 @@ var e=Object.create,t=Object.defineProperty,n=Object.getOwnPropertyDescriptor,r=
               </label>
             `}).join(``)}
         </div>
-        <div class="app-dialog-actions">
-          <button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${E(o)}</button>
-          <button type="submit" class="app-dialog-primary">${E(a)}</button>
+        <div class="app-dialog-actions" style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px;">
+          <div>
+            ${e.showReset?`<button type="button" class="app-dialog-secondary" data-dialog-action="reset" style="border-color: rgba(220, 38, 38, 0.25); color: #dc2626;">重置</button>`:``}
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${E(o)}</button>
+            <button type="submit" class="app-dialog-primary">${E(a)}</button>
+          </div>
         </div>
       </form>
     </div>
-  `;let s=t.querySelector(`[data-dialog-form]`);return r.forEach(e=>{if(e.type===`textarea`){let t=s.querySelector(`textarea[name="${e.name}"]`);t&&(t.value=i[e.name]||``)}}),t.querySelector(`.app-dialog-primary`)?.focus(),new Promise(e=>{let n=()=>{t.removeEventListener(`click`,i),s?.removeEventListener(`submit`,r),document.removeEventListener(`keydown`,a)},r=r=>{r.preventDefault();let i=new FormData(s),a={};for(let[e,t]of i.entries())a[e]=t;D(t,n,e,a)},i=r=>{let i=r.target.closest(`[data-dialog-action]`);i&&(s?.contains(r.target)&&i.classList.contains(`app-dialog-backdrop`)||i.dataset.dialogAction===`cancel`&&D(t,n,e,null))},a=r=>{r.key===`Escape`&&(r.preventDefault(),D(t,n,e,null))};t.addEventListener(`click`,i),s?.addEventListener(`submit`,r),document.addEventListener(`keydown`,a)})}function ge(e={}){let t=T(),n=e.title||`提示`,r=e.message||``,i=e.choices||[],a=e.cancelText||`取消`;t.hidden=!1,t.innerHTML=`
+  `;let s=t.querySelector(`[data-dialog-form]`);return r.forEach(e=>{if(e.type===`textarea`){let t=s.querySelector(`textarea[name="${e.name}"]`);t&&(t.value=i[e.name]||``)}}),t.querySelector(`.app-dialog-primary`)?.focus(),new Promise(n=>{let i=()=>{t.removeEventListener(`click`,o),s?.removeEventListener(`submit`,a),document.removeEventListener(`keydown`,c)},a=e=>{e.preventDefault();let r=new FormData(s),a={};for(let[e,t]of r.entries())a[e]=t;D(t,i,n,a)},o=a=>{let o=a.target.closest(`[data-dialog-action]`);if(!o||s?.contains(a.target)&&o.classList.contains(`app-dialog-backdrop`))return;let c=o.dataset.dialogAction;c===`cancel`?D(t,i,n,null):c===`reset`&&(a.preventDefault(),a.stopPropagation(),e.resetValues&&r.forEach(t=>{let n=s.querySelector(`[name="${t.name}"]`);n&&(n.value=String(e.resetValues[t.name]??``))}))},c=e=>{e.key===`Escape`&&(e.preventDefault(),D(t,i,n,null))};t.addEventListener(`click`,o),s?.addEventListener(`submit`,a),document.addEventListener(`keydown`,c)})}function ge(e={}){let t=T(),n=e.title||`提示`,r=e.message||``,i=e.choices||[],a=e.cancelText||`取消`;t.hidden=!1,t.innerHTML=`
     <div class="app-dialog-backdrop" data-dialog-action="cancel">
       <section class="app-dialog" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
         <h2 id="app-dialog-title">${E(n)}</h2>
