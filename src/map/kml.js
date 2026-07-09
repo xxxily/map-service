@@ -646,7 +646,7 @@ function updateKmlPanelUI (map) {
                     <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
                     <span>坐标纠偏</span>
                   </label>
-                  <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px;">
                     <span style="font-size: 11px; color: #475569;">样式：</span>
                     ${renderCustomSelect({
                       className: 'kml-theme-select',
@@ -740,7 +740,7 @@ function updateKmlPanelUI (map) {
                     <input type="checkbox" disabled checked ${kmlFile.coordCorrection !== 'none' ? 'checked' : ''}>
                     <span>坐标纠偏</span>
                   </label>
-                  <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px;">
                     <span style="font-size: 11px; color: #475569;">样式：</span>
                     ${renderCustomSelect({
                       className: 'kml-theme-select',
