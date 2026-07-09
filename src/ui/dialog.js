@@ -166,9 +166,14 @@ export function showEditDialog (options = {}) {
             `
           }).join('')}
         </div>
-        <div class="app-dialog-actions">
-          <button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${escapeHtml(cancelText)}</button>
-          <button type="submit" class="app-dialog-primary">${escapeHtml(confirmText)}</button>
+        <div class="app-dialog-actions" style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px;">
+          <div>
+            ${options.showReset ? `<button type="button" class="app-dialog-secondary" data-dialog-action="reset" style="border-color: rgba(220, 38, 38, 0.25); color: #dc2626;">重置</button>` : ''}
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${escapeHtml(cancelText)}</button>
+            <button type="submit" class="app-dialog-primary">${escapeHtml(confirmText)}</button>
+          </div>
         </div>
       </form>
     </div>
@@ -209,8 +214,21 @@ export function showEditDialog (options = {}) {
       const actionTarget = event.target.closest('[data-dialog-action]')
       if (!actionTarget) return
       if (form?.contains(event.target) && actionTarget.classList.contains('app-dialog-backdrop')) return
-      if (actionTarget.dataset.dialogAction === 'cancel') {
+      
+      const action = actionTarget.dataset.dialogAction
+      if (action === 'cancel') {
         closeDialog(root, cleanup, resolve, null)
+      } else if (action === 'reset') {
+        event.preventDefault()
+        event.stopPropagation()
+        if (options.resetValues) {
+          fields.forEach(field => {
+            const el = form.querySelector(`[name="${field.name}"]`)
+            if (el) {
+              el.value = String(options.resetValues[field.name] ?? '')
+            }
+          })
+        }
       }
     }
 

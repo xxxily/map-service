@@ -1539,12 +1539,21 @@ function bindUiEvents () {
           }
         ],
         values: {
-          interval: String(intervalLocationState3d.intervalSeconds || 10),
-          zoom: String(intervalLocationState3d.zoomLevel || currentZoom || 18),
+          interval: String(intervalLocationState3d.intervalSeconds || 15),
+          zoom: String(intervalLocationState3d.zoomLevel || currentZoom || 16),
           maxPoints: String(intervalLocationState3d.maxHistoryPoints || 0),
           recordTrack: String(intervalLocationState3d.recordTrack !== false),
-          onlyLine: String(intervalLocationState3d.onlyLine === true),
-          autoRotate: String(intervalLocationState3d.autoRotate === true)
+          onlyLine: String(intervalLocationState3d.onlyLine !== false),
+          autoRotate: String(intervalLocationState3d.autoRotate !== false)
+        },
+        showReset: true,
+        resetValues: {
+          interval: '15',
+          zoom: '16',
+          maxPoints: '0',
+          recordTrack: 'true',
+          onlyLine: 'true',
+          autoRotate: 'true'
         }
       })
 

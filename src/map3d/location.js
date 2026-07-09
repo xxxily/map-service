@@ -111,12 +111,12 @@ function stopKeepAlive () {
 export const intervalLocationState3d = {
   active: false,
   timerId: null,
-  intervalSeconds: parseInt(localStorage.getItem('location_interval') || '10', 10),
-  zoomLevel: parseInt(localStorage.getItem('location_zoom') || '18', 10),
+  intervalSeconds: parseInt(localStorage.getItem('location_interval') || '15', 10),
+  zoomLevel: parseInt(localStorage.getItem('location_zoom') || '16', 10),
   maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
-  recordTrack: localStorage.getItem('location_record_track') === 'true', // 是否开启轨迹记录
-  onlyLine: localStorage.getItem('location_only_line') === 'true', // 是否仅保留路线
-  autoRotate: localStorage.getItem('location_auto_rotate') === 'true', // 是否自动旋转地图
+  recordTrack: localStorage.getItem('location_record_track') !== 'false', // 是否开启轨迹记录
+  onlyLine: localStorage.getItem('location_only_line') !== 'false', // 是否仅保留路线
+  autoRotate: localStorage.getItem('location_auto_rotate') !== 'false', // 是否自动旋转地图
   currentHeading: 0, // 当前运行时的车头朝向航向角 (0-360)
   recordKmlId: localStorage.getItem('location_record_kml_id') || null, // 绑定的 KML ID
   lastPosition: null, // 存储最新的定位点数据 { lng, lat, timestamp, accuracy }

@@ -358,12 +358,21 @@ async function initLeafletMap () {
           }
         ],
         values: {
-          interval: String(intervalLocationState.intervalSeconds || 10),
-          zoom: String(intervalLocationState.zoomLevel || currentZoom || 18),
+          interval: String(intervalLocationState.intervalSeconds || 15),
+          zoom: String(intervalLocationState.zoomLevel || currentZoom || 16),
           maxPoints: String(intervalLocationState.maxHistoryPoints || 0),
           recordTrack: String(intervalLocationState.recordTrack !== false),
-          onlyLine: String(intervalLocationState.onlyLine === true),
-          autoRotate: String(intervalLocationState.autoRotate === true)
+          onlyLine: String(intervalLocationState.onlyLine !== false),
+          autoRotate: String(intervalLocationState.autoRotate !== false)
+        },
+        showReset: true,
+        resetValues: {
+          interval: '15',
+          zoom: '16',
+          maxPoints: '0',
+          recordTrack: 'true',
+          onlyLine: 'true',
+          autoRotate: 'true'
         }
       })
 
