@@ -249,7 +249,7 @@ export function initCustomControlsListeners () {
             dropdown.style.margin = '0'
             dropdown.style.top = `${rect.bottom + 4}px`
             
-            const leftVal = rect.right - 110
+            const leftVal = rect.right - 120
             dropdown.style.left = `${leftVal < 0 ? rect.left : leftVal}px`
 
             document.body.appendChild(dropdown)
