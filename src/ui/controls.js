@@ -69,13 +69,41 @@ export function initCustomControlsListeners () {
   window.__customControlsInitialized = true
 
   // 辅助关闭所有自定义下拉浮层
-  const closeAllDropdowns = (exceptEl) => {
-    document.querySelectorAll('.custom-select.is-open').forEach(el => {
-      if (el !== exceptEl) el.classList.remove('is-open')
+  const closeAllDropdowns = () => {
+    // 1. 处理所有挂在 body 下的 custom-select-options 并移回原处
+    document.body.querySelectorAll('.custom-select-options.is-open').forEach(options => {
+      options.classList.remove('is-open')
+      const parent = options.__parentControl
+      if (parent) {
+        parent.classList.remove('is-open')
+        parent.appendChild(options)
+      }
+      options.style.position = ''
+      options.style.zIndex = ''
+      options.style.width = ''
+      options.style.top = ''
+      options.style.left = ''
+      options.style.margin = ''
     })
-    document.querySelectorAll('.custom-color-picker.is-open').forEach(el => {
-      if (el !== exceptEl) el.classList.remove('is-open')
+
+    // 2. 处理所有挂在 body 下的 custom-color-dropdown 并移回原处
+    document.body.querySelectorAll('.custom-color-dropdown.is-open').forEach(dropdown => {
+      dropdown.classList.remove('is-open')
+      const parent = dropdown.__parentControl
+      if (parent) {
+        parent.classList.remove('is-open')
+        parent.appendChild(dropdown)
+      }
+      dropdown.style.position = ''
+      dropdown.style.zIndex = ''
+      dropdown.style.top = ''
+      dropdown.style.left = ''
+      dropdown.style.margin = ''
     })
+
+    // 3. 防御性清除任何残留的 is-open 类
+    document.querySelectorAll('.custom-select.is-open').forEach(el => el.classList.remove('is-open'))
+    document.querySelectorAll('.custom-color-picker.is-open').forEach(el => el.classList.remove('is-open'))
   }
 
   // 绑定 value 属性存取器到自定义 select 元素
@@ -86,14 +114,16 @@ export function initCustomControlsListeners () {
       set (val) {
         this.setAttribute('data-value', val)
         const triggerSpan = this.querySelector('.custom-select-trigger span')
-        const options = this.querySelectorAll('.custom-select-option')
-        options.forEach(opt => {
-          const isSelected = opt.getAttribute('data-value') === val
-          opt.classList.toggle('selected', isSelected)
-          if (isSelected && triggerSpan) {
-            triggerSpan.textContent = opt.textContent
-          }
-        })
+        const options = this.querySelector('.custom-select-options') || document.body.querySelector(`.custom-select-options[data-kml-id="${this.getAttribute('data-kml-id')}"]`)
+        if (options) {
+          options.querySelectorAll('.custom-select-option').forEach(opt => {
+            const isSelected = opt.getAttribute('data-value') === val
+            opt.classList.toggle('selected', isSelected)
+            if (isSelected && triggerSpan) {
+              triggerSpan.textContent = opt.textContent
+            }
+          })
+        }
       },
       configurable: true
     })
@@ -110,7 +140,7 @@ export function initCustomControlsListeners () {
         if (trigger) {
           trigger.style.backgroundColor = val
         }
-        const hiddenInput = this.querySelector('.custom-color-hidden-input')
+        const hiddenInput = this.querySelector('.custom-color-hidden-input') || document.body.querySelector(`.custom-color-dropdown[data-kml-id="${this.getAttribute('data-kml-id')}"] .custom-color-hidden-input`)
         if (hiddenInput) {
           hiddenInput.value = val
         }
@@ -127,6 +157,9 @@ export function initCustomControlsListeners () {
     }
   })
 
+  // 页面滚动、地图拖动时自动收起所有下拉面板，保证视觉一致性
+  document.addEventListener('scroll', () => closeAllDropdowns(), { capture: true, passive: true })
+
   // 利用事件委托监听点击
   document.addEventListener('click', (event) => {
     const target = event.target
@@ -138,8 +171,28 @@ export function initCustomControlsListeners () {
       event.preventDefault()
       const select = selectTrigger.closest('.custom-select')
       if (select) {
-        closeAllDropdowns(select)
-        select.classList.toggle('is-open')
+        const isOpen = select.classList.contains('is-open')
+        closeAllDropdowns()
+
+        if (!isOpen) {
+          select.classList.add('is-open')
+          const options = select.querySelector('.custom-select-options')
+          if (options) {
+            options.__parentControl = select
+            
+            const rect = selectTrigger.getBoundingClientRect()
+            options.style.position = 'fixed'
+            options.style.zIndex = '99999'
+            options.style.margin = '0'
+            options.style.width = `${rect.width}px`
+            options.style.top = `${rect.bottom + 4}px`
+            options.style.left = `${rect.left}px`
+            
+            document.body.appendChild(options)
+            options.getBoundingClientRect() // reflow
+            options.classList.add('is-open')
+          }
+        }
       }
       return
     }
@@ -149,7 +202,8 @@ export function initCustomControlsListeners () {
     if (selectOption) {
       event.stopPropagation()
       event.preventDefault()
-      const select = selectOption.closest('.custom-select')
+      const optionsContainer = selectOption.closest('.custom-select-options')
+      const select = optionsContainer?.__parentControl || selectOption.closest('.custom-select')
       if (select) {
         ensureSelectValueProperty(select)
         const val = selectOption.getAttribute('data-value')
@@ -158,7 +212,7 @@ export function initCustomControlsListeners () {
           select.value = val
           select.dispatchEvent(new Event('change', { bubbles: true }))
         }
-        select.classList.remove('is-open')
+        closeAllDropdowns()
       }
       return
     }
@@ -170,8 +224,29 @@ export function initCustomControlsListeners () {
       event.preventDefault()
       const picker = colorTrigger.closest('.custom-color-picker')
       if (picker) {
-        closeAllDropdowns(picker)
-        picker.classList.toggle('is-open')
+        const isOpen = picker.classList.contains('is-open')
+        closeAllDropdowns()
+
+        if (!isOpen) {
+          picker.classList.add('is-open')
+          const dropdown = picker.querySelector('.custom-color-dropdown')
+          if (dropdown) {
+            dropdown.__parentControl = picker
+
+            const rect = colorTrigger.getBoundingClientRect()
+            dropdown.style.position = 'fixed'
+            dropdown.style.zIndex = '99999'
+            dropdown.style.margin = '0'
+            dropdown.style.top = `${rect.bottom + 4}px`
+            
+            const leftVal = rect.right - 108
+            dropdown.style.left = `${leftVal < 0 ? rect.left : leftVal}px`
+
+            document.body.appendChild(dropdown)
+            dropdown.getBoundingClientRect()
+            dropdown.classList.add('is-open')
+          }
+        }
       }
       return
     }
@@ -181,7 +256,8 @@ export function initCustomControlsListeners () {
     if (swatch) {
       event.stopPropagation()
       event.preventDefault()
-      const picker = swatch.closest('.custom-color-picker')
+      const dropdown = swatch.closest('.custom-color-dropdown')
+      const picker = dropdown?.__parentControl || swatch.closest('.custom-color-picker')
       if (picker) {
         ensureColorValueProperty(picker)
         const color = swatch.getAttribute('data-color')
@@ -190,7 +266,7 @@ export function initCustomControlsListeners () {
           picker.value = color
           picker.dispatchEvent(new Event('change', { bubbles: true }))
         }
-        picker.classList.remove('is-open')
+        closeAllDropdowns()
       }
       return
     }
@@ -200,9 +276,10 @@ export function initCustomControlsListeners () {
     if (customColorBtn) {
       event.stopPropagation()
       event.preventDefault()
-      const picker = customColorBtn.closest('.custom-color-picker')
+      const dropdown = customColorBtn.closest('.custom-color-dropdown')
+      const picker = dropdown?.__parentControl || customColorBtn.closest('.custom-color-picker')
       if (picker) {
-        const hiddenInput = picker.querySelector('.custom-color-hidden-input')
+        const hiddenInput = dropdown.querySelector('.custom-color-hidden-input')
         if (hiddenInput) {
           hiddenInput.click()
         }
@@ -215,7 +292,8 @@ export function initCustomControlsListeners () {
   document.addEventListener('input', (event) => {
     const target = event.target
     if (target.matches('.custom-color-hidden-input')) {
-      const picker = target.closest('.custom-color-picker')
+      const dropdown = target.closest('.custom-color-dropdown')
+      const picker = dropdown?.__parentControl || target.closest('.custom-color-picker')
       if (picker) {
         ensureColorValueProperty(picker)
         picker.value = target.value
