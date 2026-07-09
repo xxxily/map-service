@@ -3338,3 +3338,190 @@ body.admin-view #app-version {
   transform: scale(1.3);
 }
 
+/* 自定义 Select 下拉选择框 */
+.custom-select {
+  position: relative;
+  display: inline-block;
+  font-size: 11px;
+  width: 58px;
+  color: #334155;
+  user-select: none;
+  cursor: pointer;
+}
+
+.custom-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #ffffff;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.custom-select:hover .custom-select-trigger {
+  border-color: #0f766e;
+  box-shadow: 0 1px 4px rgba(15, 118, 110, 0.15);
+}
+
+.custom-select.is-open .custom-select-trigger {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.2);
+}
+
+.custom-select-arrow {
+  width: 10px;
+  height: 10px;
+  margin-left: 2px;
+  transition: transform 0.2s ease;
+  color: #64748b;
+}
+
+.custom-select.is-open .custom-select-arrow {
+  transform: rotate(180deg);
+  color: #0f766e;
+}
+
+.custom-select-options {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1000;
+}
+
+.custom-select.is-open .custom-select-options {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.custom-select-option {
+  padding: 4px 6px;
+  transition: all 0.15s ease;
+  color: #475569;
+}
+
+.custom-select-option:hover {
+  background-color: rgba(15, 118, 110, 0.08);
+  color: #0f766e;
+}
+
+.custom-select-option.selected {
+  background-color: #0f766e;
+  color: #ffffff;
+  font-weight: bold;
+}
+
+.custom-select-option:first-child {
+  border-top-left-radius: 5px;
+  border-top-right-radius: 5px;
+}
+
+.custom-select-option:last-child {
+  border-bottom-left-radius: 5px;
+  border-bottom-right-radius: 5px;
+}
+
+/* 自定义 Color Picker 颜色选择器 */
+.custom-color-picker {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+  user-select: none;
+}
+
+.custom-color-trigger {
+  width: 22px;
+  height: 18px;
+  border: 1.5px solid #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 0 0 1px #cbd5e1;
+  box-sizing: border-box;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.custom-color-picker:hover .custom-color-trigger {
+  transform: scale(1.05);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25), 0 0 0 1px #0f766e;
+}
+
+.custom-color-picker.is-open .custom-color-trigger {
+  transform: scale(0.95);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.3);
+}
+
+.custom-color-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1000;
+  width: 108px;
+  box-sizing: border-box;
+}
+
+.custom-color-picker.is-open .custom-color-dropdown {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.custom-color-palette {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.custom-color-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.custom-color-swatch:hover {
+  transform: scale(1.2);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.custom-color-custom-btn {
+  font-size: 10px;
+  color: #0f766e;
+  text-align: center;
+  padding: 3px 0 0 0;
+  border-top: 1px solid #f1f5f9;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.custom-color-custom-btn:hover {
+  color: #0d9488;
+  text-decoration: underline;
+}
+

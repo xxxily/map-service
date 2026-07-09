@@ -1,5 +1,6 @@
 import L from 'leaflet'
 import { showConfirm, showEditDialog, showAlert } from '../ui/dialog.js'
+import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListeners } from '../ui/controls.js'
 import { gcj02ToWgs84, wgs84ToGcj02Deep } from './coord-transform.js'
 import { generateKmlText, parseKML } from './kml-format.js'
 import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from './kml-content-panel.js'
@@ -639,12 +640,21 @@ function updateKmlPanelUI (map) {
                   </label>
                   <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
                     <span style="font-size: 11px; color: #475569;">样式：</span>
-                    <select class="kml-theme-select" data-kml-id="${kmlFile.id}" style="font-size: 11px; padding: 1px 4px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; color: #334155; outline: none; cursor: pointer; margin-right: 4px;">
-                      <option value="default" ${getKmlTheme(kmlFile) === 'default' ? 'selected' : ''}>常规</option>
-                      <option value="simple" ${getKmlTheme(kmlFile) === 'simple' ? 'selected' : ''}>简约</option>
-                    </select>
-                    <span style="font-size: 11px; color: #475569;">颜色：</span>
-                    <input type="color" class="kml-color-input" data-kml-id="${kmlFile.id}" value="${getKmlColor(kmlFile)}" style="width: 22px; height: 18px; border: 1px solid #cbd5e1; border-radius: 4px; padding: 0; background: none; cursor: pointer;">
+                    ${renderCustomSelect({
+                      className: 'kml-theme-select',
+                      value: getKmlTheme(kmlFile),
+                      options: [
+                        { value: 'default', label: '常规' },
+                        { value: 'simple', label: '简约' }
+                      ],
+                      attrs: `data-kml-id="${kmlFile.id}"`
+                    })}
+                    <span style="font-size: 11px; color: #475569; margin-left: 4px;">颜色：</span>
+                    ${renderCustomColorPicker({
+                      className: 'kml-color-input',
+                      value: getKmlColor(kmlFile),
+                      attrs: `data-kml-id="${kmlFile.id}"`
+                    })}
                   </div>
                 </div>
                 <div class="kml-file-tool-actions">
@@ -732,12 +742,21 @@ function updateKmlPanelUI (map) {
                   </label>
                   <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
                     <span style="font-size: 11px; color: #475569;">样式：</span>
-                    <select class="kml-theme-select" data-kml-id="${kmlFile.id}" style="font-size: 11px; padding: 1px 4px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; color: #334155; outline: none; cursor: pointer; margin-right: 4px;">
-                      <option value="default" ${getKmlTheme(kmlFile) === 'default' ? 'selected' : ''}>常规</option>
-                      <option value="simple" ${getKmlTheme(kmlFile) === 'simple' ? 'selected' : ''}>简约</option>
-                    </select>
-                    <span style="font-size: 11px; color: #475569;">颜色：</span>
-                    <input type="color" class="kml-color-input" data-kml-id="${kmlFile.id}" value="${getKmlColor(kmlFile)}" style="width: 22px; height: 18px; border: 1px solid #cbd5e1; border-radius: 4px; padding: 0; background: none; cursor: pointer;">
+                    ${renderCustomSelect({
+                      className: 'kml-theme-select',
+                      value: getKmlTheme(kmlFile),
+                      options: [
+                        { value: 'default', label: '常规' },
+                        { value: 'simple', label: '简约' }
+                      ],
+                      attrs: `data-kml-id="${kmlFile.id}"`
+                    })}
+                    <span style="font-size: 11px; color: #475569; margin-left: 4px;">颜色：</span>
+                    ${renderCustomColorPicker({
+                      className: 'kml-color-input',
+                      value: getKmlColor(kmlFile),
+                      attrs: `data-kml-id="${kmlFile.id}"`
+                    })}
                   </div>
                 </div>
                 <div class="kml-file-tool-actions">
@@ -1107,6 +1126,7 @@ function initLongPressPointCreation (map) {
 export function initKmlSupport (map) {
   window.getActiveKmlMarkers = getActiveKmlMarkers
   loadFromStorage()
+  initCustomControlsListeners()
   
   loadPublicKmls(map).then(() => {
     renderAllKmls(map)
