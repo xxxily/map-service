@@ -149,18 +149,18 @@ export function initCustomControlsListeners () {
     })
   }
 
-  // 点击空白处关闭所有展开的下拉菜单
+  // 点击空白处关闭所有展开的下拉菜单（采用捕获阶段，防止被冒泡拦截）
   document.addEventListener('click', (event) => {
     const isTrigger = event.target.closest('.custom-select-trigger, .custom-color-trigger, .custom-color-dropdown')
     if (!isTrigger) {
       closeAllDropdowns()
     }
-  })
+  }, true)
 
   // 页面滚动、地图拖动时自动收起所有下拉面板，保证视觉一致性
   document.addEventListener('scroll', () => closeAllDropdowns(), { capture: true, passive: true })
 
-  // 利用事件委托监听点击
+  // 利用事件委托监听点击（采用捕获阶段，突破一切冒泡拦截）
   document.addEventListener('click', (event) => {
     const target = event.target
 
@@ -286,7 +286,7 @@ export function initCustomControlsListeners () {
       }
       return
     }
-  })
+  }, true)
 
   // 利用事件委托监听隐藏 input 的修改
   document.addEventListener('input', (event) => {

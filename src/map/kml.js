@@ -595,108 +595,14 @@ function updateKmlPanelUI (map) {
 
   let html = ''
 
-  // 1. 公共图层分区
-  const publicCount = publicKmlList.length
-  const publicExpanded = !expandedKmlIds.has('public-section')
-  
+  // 1. 个人图层分区
+  const personalExpanded = !expandedKmlIds.has('personal-section')
   html += `
-    <div class="kml-section-header" style="margin-top: 8px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(22, 61, 61, 0.12); display: flex; justify-content: space-between; align-items: center; cursor: pointer;" data-kml-action="toggle-section" data-section-id="public-section">
-      <span style="font-weight: bold; color: #0f766e; font-size: 13px;">公共图层 (${publicCount})</span>
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <button type="button" class="kml-file-btn" data-kml-action="refresh-public" title="刷新公共图层" style="padding: 2px; width: auto; height: auto;" onclick="event.stopPropagation()">
-          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-        </button>
-        <span style="font-size: 11px; color: #6b7280;">${publicExpanded ? '▲' : '▼'}</span>
-      </div>
+    <div class="kml-section-header" style="margin-top: 8px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(22, 61, 61, 0.12); display: flex; justify-content: space-between; align-items: center; cursor: pointer;" data-kml-action="toggle-section" data-section-id="personal-section">
+      <span style="font-weight: bold; color: #0f766e; font-size: 13px;">个人图层 (${kmlList.length})</span>
+      <span style="font-size: 11px; color: #6b7280;">${personalExpanded ? '▲' : '▼'}</span>
     </div>
-    <div id="kml-public-list" style="display: ${publicExpanded ? 'flex' : 'none'}; flex-direction: column; gap: 8px; margin-bottom: 16px;">
-      ${publicKmlList.map(kmlFile => {
-        const enabled = isKmlEnabled(kmlFile)
-        const expanded = expandedKmlIds.has(kmlFile.id)
-        const visibilityTitle = enabled ? '隐藏此公共图层' : '显示此公共图层'
-        const isEditingThis = isEditingPublicKml && editingPublicKmlId === kmlFile.id
-        return `
-          <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${kmlFile.id}">
-            <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${kmlFile.id}">
-              <div class="kml-file-title">
-                <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
-                <span class="kml-file-count">${kmlFile.features ? kmlFile.features.length : (kmlFile.featureCount || 0)}</span>
-                <span class="kml-file-state is-default" style="background: #e0f2fe; color: #0369a1; padding: 1px 4px; font-size: 10px; font-weight: bold; border-radius: 4px;">公共</span>
-                ${isEditingThis ? '<span class="kml-file-state is-default" style="background: #fef3c7; color: #d97706; padding: 1px 4px; font-size: 10px; font-weight: bold; border-radius: 4px;">编辑中</span>' : ''}
-                ${enabled ? '' : '<span class="kml-file-state">已隐藏</span>'}
-              </div>
-              <div class="kml-file-actions">
-                <button type="button" class="kml-file-btn kml-visibility-btn ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-visible" data-kml-id="${kmlFile.id}" aria-label="${visibilityTitle}" aria-pressed="${enabled}" title="${visibilityTitle}">
-                  <span class="kml-eye-icon" aria-hidden="true"></span>
-                </button>
-              </div>
-            </div>
-            <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
-              <div class="kml-file-toolbox">
-                <div style="display: flex; flex-direction: column; gap: 4px;">
-                  <label class="kml-correction-switch" title="公共图层不可在此修改纠偏配置">
-                    <input type="checkbox" disabled checked ${kmlFile.coordCorrection !== 'none' ? 'checked' : ''}>
-                    <span>坐标纠偏</span>
-                  </label>
-                  <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                    <span style="font-size: 11px; color: #475569;">样式：</span>
-                    ${renderCustomSelect({
-                      className: 'kml-theme-select',
-                      value: getKmlTheme(kmlFile),
-                      options: [
-                        { value: 'default', label: '常规' },
-                        { value: 'simple', label: '简约' }
-                      ],
-                      attrs: `data-kml-id="${kmlFile.id}"`
-                    })}
-                    <span style="font-size: 11px; color: #475569; margin-left: 4px;">颜色：</span>
-                    ${renderCustomColorPicker({
-                      className: 'kml-color-input',
-                      value: getKmlColor(kmlFile),
-                      attrs: `data-kml-id="${kmlFile.id}"`
-                    })}
-                  </div>
-                </div>
-                <div class="kml-file-tool-actions">
-                  ${isEditingThis ? `<button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="新增标注点" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>` : ''}
-                  <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
-                </div>
-              </div>
-              <div class="kml-features-list">
-                ${(kmlFile.features || []).map(feat => {
-                  let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
-                  if (feat.type === 'LineString') {
-                    iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>'
-                  }
-                  if (feat.type === 'Polygon') {
-                    iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
-                  }
-                  return `
-                    <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
-                      <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
-                        <span class="kml-feature-icon">${iconSvg}</span>
-                        <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
-                      </div>
-                      ${isEditingThis ? `
-                        <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
-                      ` : ''}
-                    </div>
-                  `
-                }).join('')}
-              </div>
-            </div>
-          </div>
-        `
-      }).join('') || '<div style="font-size: 12px; color: #9ca3af; text-align: center; padding: 8px 0;">无已发布公共图层</div>'}
-    </div>
-  `
-
-  // 2. 个人图层分区
-  html += `
-    <div style="font-weight: bold; color: #0f766e; font-size: 13px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(22, 61, 61, 0.12);">
-      个人图层 (${kmlList.length})
-    </div>
-    <div style="display: flex; flex-direction: column; gap: 8px;">
+    <div id="kml-personal-list" style="display: ${personalExpanded ? 'flex' : 'none'}; flex-direction: column; gap: 8px; margin-bottom: 16px;">
       ${kmlList.map(kmlFile => {
         const enabled = isKmlEnabled(kmlFile)
         const expanded = expandedKmlIds.has(kmlFile.id)
@@ -788,10 +694,104 @@ function updateKmlPanelUI (map) {
             </div>
           </div>
         `
-      }).join('')}
+      }).join('') || '<div style="font-size: 12px; color: #9ca3af; text-align: center; padding: 8px 0;">无个人图层</div>'}
     </div>
   `
 
+  // 2. 公共图层分区
+  const publicCount = publicKmlList.length
+  const publicExpanded = !expandedKmlIds.has('public-section')
+  html += `
+    <div class="kml-section-header" style="margin-top: 8px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(22, 61, 61, 0.12); display: flex; justify-content: space-between; align-items: center; cursor: pointer;" data-kml-action="toggle-section" data-section-id="public-section">
+      <span style="font-weight: bold; color: #0f766e; font-size: 13px;">公共图层 (${publicCount})</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <button type="button" class="kml-file-btn" data-kml-action="refresh-public" title="刷新公共图层" style="padding: 2px; width: auto; height: auto;" onclick="event.stopPropagation()">
+          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        </button>
+        <span style="font-size: 11px; color: #6b7280;">${publicExpanded ? '▲' : '▼'}</span>
+      </div>
+    </div>
+    <div id="kml-public-list" style="display: ${publicExpanded ? 'flex' : 'none'}; flex-direction: column; gap: 8px; margin-bottom: 16px;">
+      ${publicKmlList.map(kmlFile => {
+        const enabled = isKmlEnabled(kmlFile)
+        const expanded = expandedKmlIds.has(kmlFile.id)
+        const visibilityTitle = enabled ? '隐藏此公共图层' : '显示此公共图层'
+        const isEditingThis = isEditingPublicKml && editingPublicKmlId === kmlFile.id
+        return `
+          <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${kmlFile.id}">
+            <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${kmlFile.id}">
+              <div class="kml-file-title">
+                <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
+                <span class="kml-file-count">${kmlFile.features ? kmlFile.features.length : (kmlFile.featureCount || 0)}</span>
+                <span class="kml-file-state is-default" style="background: #e0f2fe; color: #0369a1; padding: 1px 4px; font-size: 10px; font-weight: bold; border-radius: 4px;">公共</span>
+                ${isEditingThis ? '<span class="kml-file-state is-default" style="background: #fef3c7; color: #d97706; padding: 1px 4px; font-size: 10px; font-weight: bold; border-radius: 4px;">编辑中</span>' : ''}
+                ${enabled ? '' : '<span class="kml-file-state">已隐藏</span>'}
+              </div>
+              <div class="kml-file-actions">
+                <button type="button" class="kml-file-btn kml-visibility-btn ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-visible" data-kml-id="${kmlFile.id}" aria-label="${visibilityTitle}" aria-pressed="${enabled}" title="${visibilityTitle}">
+                  <span class="kml-eye-icon" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+            <div class="kml-file-detail" id="features-${kmlFile.id}" style="display: ${expanded ? 'flex' : 'none'};">
+              <div class="kml-file-toolbox">
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label class="kml-correction-switch" title="公共图层不可在此修改纠偏配置">
+                    <input type="checkbox" disabled checked ${kmlFile.coordCorrection !== 'none' ? 'checked' : ''}>
+                    <span>坐标纠偏</span>
+                  </label>
+                  <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                    <span style="font-size: 11px; color: #475569;">样式：</span>
+                    ${renderCustomSelect({
+                      className: 'kml-theme-select',
+                      value: getKmlTheme(kmlFile),
+                      options: [
+                        { value: 'default', label: '常规' },
+                        { value: 'simple', label: '简约' }
+                      ],
+                      attrs: `data-kml-id="${kmlFile.id}"`
+                    })}
+                    <span style="font-size: 11px; color: #475569; margin-left: 4px;">颜色：</span>
+                    ${renderCustomColorPicker({
+                      className: 'kml-color-input',
+                      value: getKmlColor(kmlFile),
+                      attrs: `data-kml-id="${kmlFile.id}"`
+                    })}
+                  </div>
+                </div>
+                <div class="kml-file-tool-actions">
+                  ${isEditingThis ? `<button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${kmlFile.id}" title="新增标注点" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>` : ''}
+                  <button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${kmlFile.id}" title="导出 KML 文件" aria-label="导出 KML 文件" style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 14px; height: 14px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
+                </div>
+              </div>
+              <div class="kml-features-list">
+                ${(kmlFile.features || []).map(feat => {
+                  let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
+                  if (feat.type === 'LineString') {
+                    iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>'
+                  }
+                  if (feat.type === 'Polygon') {
+                    iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
+                  }
+                  return `
+                    <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
+                      <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
+                        <span class="kml-feature-icon">${iconSvg}</span>
+                        <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
+                      </div>
+                      ${isEditingThis ? `
+                        <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
+                      ` : ''}
+                    </div>
+                  `
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        `
+      }).join('') || '<div style="font-size: 12px; color: #9ca3af; text-align: center; padding: 8px 0;">无已发布公共图层</div>'}
+    </div>
+  `
   container.innerHTML = html
 }
 

@@ -1105,8 +1105,17 @@ function updateKmlPanelUI () {
   const container = document.getElementById('kml-files-list')
   if (!container) return
 
+  const personalExpanded = !expandedKmlIds.has('personal-section')
   const publicExpanded = !expandedKmlIds.has('public-section')
+
   container.innerHTML = `
+    <div class="kml-section-header" data-kml-action="toggle-section" data-section-id="personal-section">
+      <span>个人图层 (${kmlList.length})</span>
+      <span>${personalExpanded ? '▲' : '▼'}</span>
+    </div>
+    <div id="kml-personal-list" class="kml-section-list" style="display: ${personalExpanded ? 'flex' : 'none'};">
+      ${kmlList.map(renderKmlCard).join('') || '<div class="kml-empty">无个人图层</div>'}
+    </div>
     <div class="kml-section-header" data-kml-action="toggle-section" data-section-id="public-section">
       <span>公共图层 (${publicKmlList.length})</span>
       <div>
@@ -1118,10 +1127,6 @@ function updateKmlPanelUI () {
     </div>
     <div id="kml-public-list" class="kml-section-list" style="display: ${publicExpanded ? 'flex' : 'none'};">
       ${publicKmlList.map(renderKmlCard).join('') || '<div class="kml-empty">无已发布公共图层</div>'}
-    </div>
-    <div class="kml-section-title">个人图层 (${kmlList.length})</div>
-    <div class="kml-section-list">
-      ${kmlList.map(renderKmlCard).join('')}
     </div>
   `
 }
