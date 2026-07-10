@@ -269,6 +269,7 @@ function normalizeKmlFile (kmlFile) {
     theme: kmlFile.theme || 'default',
     color: kmlFile.color || '#0f766e',
     coordCorrection: kmlFile.coordCorrection || KML_COORD_CORRECTION,
+    lockDrag: kmlFile.lockDrag === true,
     enabled: kmlFile.enabled !== false,
     features: Array.isArray(kmlFile.features) ? kmlFile.features : [],
   }
@@ -461,6 +462,7 @@ function renderFeature (map, kmlFile, feature) {
   let layer
   const editable = isKmlEditable(kmlFile)
   const theme = getKmlTheme(kmlFile)
+  const dragAllowed = editable && !kmlFile.lockDrag
   
   if (feature.type === 'Point') {
     const latlng = getMapPoint(kmlFile, feature)
@@ -474,16 +476,16 @@ function renderFeature (map, kmlFile, feature) {
         iconAnchor: [6, 6]
       })
       layer = L.marker(latlng, {
-        draggable: editable,
+        draggable: dragAllowed,
         icon: simpleIcon
       })
     } else {
       layer = L.marker(latlng, {
-        draggable: editable
+        draggable: dragAllowed
       })
     }
 
-    if (editable) {
+    if (dragAllowed) {
       // 监听拖动开始：保存撤销快照，并在拖动时关闭 popup 气泡
       layer.on('dragstart', () => {
         pushKmlHistory()
@@ -646,6 +648,10 @@ function updateKmlPanelUI (map) {
                     <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
                     <span>坐标纠偏</span>
                   </label>
+                  <label class="kml-correction-switch" title="开启后将锁定该图层下所有标注点位，防止误触拖拽移动">
+                    <input type="checkbox" data-kml-lock-drag data-kml-id="${kmlFile.id}" ${kmlFile.lockDrag ? 'checked' : ''}>
+                    <span>锁定移动</span>
+                  </label>
                   <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px;">
                     <span style="font-size: 11px; color: #475569;">样式：</span>
                     ${renderCustomSelect({
@@ -739,6 +745,10 @@ function updateKmlPanelUI (map) {
                   <label class="kml-correction-switch" title="公共图层不可在此修改纠偏配置">
                     <input type="checkbox" disabled checked ${kmlFile.coordCorrection !== 'none' ? 'checked' : ''}>
                     <span>坐标纠偏</span>
+                  </label>
+                  <label class="kml-correction-switch" title="公共图层禁止点位移动">
+                    <input type="checkbox" disabled checked>
+                    <span>锁定移动</span>
                   </label>
                   <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px;">
                     <span style="font-size: 11px; color: #475569;">样式：</span>
@@ -1455,6 +1465,20 @@ export function initKmlSupport (map) {
       return
     }
 
+    if (target.matches('[data-kml-lock-drag]')) {
+      const kmlId = target.getAttribute('data-kml-id')
+      const kmlFile = kmlList.find(k => k.id === kmlId)
+      if (!kmlFile) return
+
+      kmlFile.lockDrag = target.checked
+      saveToStorage()
+      if (isKmlEnabled(kmlFile)) {
+        renderKmlLayers(map, kmlFile)
+      }
+      updateKmlPanelUI(map)
+      return
+    }
+
     if (target.matches('.kml-theme-select')) {
       const kmlId = target.getAttribute('data-kml-id')
       let kmlFile = kmlList.find(k => k.id === kmlId)
@@ -1640,6 +1664,7 @@ export function createTrackKml2d (name) {
       isDefault: false,
       theme: 'simple',
       coordCorrection: KML_COORD_CORRECTION,
+      lockDrag: true, // 默认开启锁定点位移动限制，防止意外拖动
       features: []
     }
     kmlList.push(kmlFile)

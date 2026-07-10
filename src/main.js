@@ -277,7 +277,7 @@ async function initLeafletMap () {
         skipNextClick = false
         return
       }
-      updatePosition(map, amapGeolocation, intervalLocationState.active ? intervalLocationState.zoomLevel : 18, intervalLocationState.active)
+      updatePosition(map, amapGeolocation, intervalLocationState.active ? intervalLocationState.zoomLevel : 18, false)
     },
     resetBearing: () => {
       if (map.setBearing) {

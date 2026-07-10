@@ -128,6 +128,7 @@ function normalizeKmlFile (kmlFile) {
     theme: kmlFile.theme || 'default',
     color: kmlFile.color || '#0f766e',
     coordCorrection: kmlFile.coordCorrection || KML_COORD_CORRECTION,
+    lockDrag: kmlFile.lockDrag === true,
     enabled: kmlFile.enabled !== false,
     features: Array.isArray(kmlFile.features) ? kmlFile.features : [],
   }
@@ -1067,6 +1068,10 @@ function renderKmlCard (kmlFile) {
               <input type="checkbox" data-kml-correction data-kml-id="${kmlFile.id}" ${kmlFile.isPublic ? 'disabled' : ''} ${shouldCorrectCoords(kmlFile) ? 'checked' : ''}>
               <span>坐标纠偏</span>
             </label>
+            <label class="kml-correction-switch" title="${kmlFile.isPublic ? '公共图层禁止点位移动' : '开启后将锁定该图层下所有标注点位，防止误触拖拽移动'}">
+              <input type="checkbox" data-kml-lock-drag data-kml-id="${kmlFile.id}" ${kmlFile.isPublic ? 'disabled checked' : ''} ${kmlFile.lockDrag ? 'checked' : ''}>
+              <span>锁定移动</span>
+            </label>
             <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px;">
               <span style="font-size: 11px; color: #475569;">样式：</span>
               ${renderCustomSelect({
@@ -1435,6 +1440,21 @@ function bindPanelEvents () {
       return
     }
 
+    if (target.matches('[data-kml-lock-drag]')) {
+      const kmlId = target.getAttribute('data-kml-id')
+      const kmlFile = kmlList.find(k => k.id === kmlId)
+      if (!kmlFile) return
+
+      pushKmlHistory()
+      kmlFile.lockDrag = target.checked
+      saveToStorage()
+      if (isKmlEnabled(kmlFile)) {
+        renderKmlLayers(kmlFile)
+      }
+      updateKmlPanelUI()
+      return
+    }
+
     if (target.matches('.kml-theme-select')) {
       const kmlId = target.getAttribute('data-kml-id')
       let kmlFile = kmlList.find(k => k.id === kmlId)
@@ -1560,6 +1580,7 @@ export function createTrackKml3d (name) {
       isDefault: false,
       theme: 'simple',
       coordCorrection: KML_COORD_CORRECTION,
+      lockDrag: true, // 默认开启锁定点位移动限制，防止意外拖动
       features: []
     }
     kmlList.push(kmlFile)

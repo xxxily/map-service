@@ -1701,7 +1701,7 @@ function bindUiEvents () {
       const targetHeight = intervalLocationState3d.active 
         ? zoomToHeight(intervalLocationState3d.zoomLevel) 
         : 1200
-      updatePosition3d(viewer, amapGeolocation, targetHeight, intervalLocationState3d.active)
+      updatePosition3d(viewer, amapGeolocation, targetHeight, false)
     })
 
     // 配合 Visibility API 对黑屏/切到后台重新唤醒时的位置补偿
