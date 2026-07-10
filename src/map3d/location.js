@@ -118,11 +118,16 @@ export const intervalLocationState3d = {
   onlyLine: localStorage.getItem('location_only_line') !== 'false', // 是否仅保留路线
   autoRotate: localStorage.getItem('location_auto_rotate') !== 'false', // 是否自动旋转地图
   currentHeading: 0, // 当前运行时的车头朝向航向角 (0-360)
-  recordKmlId: localStorage.getItem('location_record_kml_id') || null, // 绑定的 KML ID
+  recordKmlId: null, // 初始化为 null，新持续定位重新创建，防止脏 ID 残留覆盖旧轨迹
   lastPosition: null, // 存储最新的定位点数据 { lng, lat, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次轨迹数据
   historyEntities: [] // 渲染在 3D 地图上的实体集合
 }
+
+// 页面载入时主动清理可能存在的意外退出残留轨迹关联状态
+try {
+  localStorage.removeItem('location_record_kml_id')
+} catch (err) {}
 
 // 辅助函数：触发 3D 定位扩散波纹
 function triggerRipple3d (viewer, position) {
@@ -545,8 +550,8 @@ export function stopIntervalLocation3d (viewer) {
     intervalLocationState3d.timerId = null
   }
 
-  // 停止定位时做最后的 KML 写入（保存最后一个点位到 KML）
-  if (intervalLocationState3d.recordTrack && intervalLocationState3d.recordKmlId) {
+  // 停止定位时做最后的 KML 写入，必须确保当前内存中存在至少一个定位点或历史点，防止刷新页面后由于内存清空而覆盖擦除已有的 KML 轨迹数据
+  if (intervalLocationState3d.recordTrack && intervalLocationState3d.recordKmlId && (intervalLocationState3d.historyPoints.length > 0 || intervalLocationState3d.lastPosition !== null)) {
     updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
   }
 

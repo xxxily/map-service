@@ -108,11 +108,16 @@ export const intervalLocationState = {
   recordTrack: localStorage.getItem('location_record_track') !== 'false', // 是否开启轨迹记录
   onlyLine: localStorage.getItem('location_only_line') !== 'false', // 是否仅保留路线
   autoRotate: localStorage.getItem('location_auto_rotate') !== 'false', // 是否自动旋转地图
-  recordKmlId: localStorage.getItem('location_record_kml_id') || null, // 绑定的 KML ID
+  recordKmlId: null, // 初始化为 null，新持续定位重新创建，防止脏 ID 残留覆盖旧轨迹
   lastPosition: null, // 存入最新的定位点数据 { latlng, timestamp, accuracy }
   historyPoints: [],  // 最近 3-5 次的定位点数据数组
   historyLayers: [],  // 渲染在地图上的 L.circleMarker 图层实例数组
 }
+
+// 页面载入时主动清理可能存在的意外退出残留轨迹关联状态
+try {
+  localStorage.removeItem('location_record_kml_id')
+} catch (err) {}
 
 // 辅助函数：绘制历史定位轨迹点
 function renderHistoryPoints (map, points) {
@@ -473,8 +478,8 @@ export function stopIntervalLocation2d (map) {
     intervalLocationState.timerId = null
   }
 
-  // 停止定位时做最后的 KML 写入（保存最后一个点位到 KML）
-  if (intervalLocationState.recordTrack && intervalLocationState.recordKmlId) {
+  // 停止定位时做最后的 KML 写入，必须确保当前内存中存在至少一个定位点或历史点，防止刷新页面后由于内存清空而覆盖擦除已有的 KML 轨迹数据
+  if (intervalLocationState.recordTrack && intervalLocationState.recordKmlId && (intervalLocationState.historyPoints.length > 0 || intervalLocationState.lastPosition !== null)) {
     updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition, intervalLocationState.onlyLine)
   }
 
