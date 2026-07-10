@@ -22,6 +22,13 @@ function transformLng (lng, lat) {
   return ret
 }
 
+export function normalizeLongitude (lng) {
+  const number = Number(lng)
+  if (!Number.isFinite(number)) return lng
+  const normalized = ((number + 180) % 360 + 360) % 360 - 180
+  return normalized === -180 && number > 0 ? 180 : normalized
+}
+
 export function wgs84ToGcj02 ([lng, lat]) {
   if (outOfChina(lng, lat)) {
     return [lng, lat]

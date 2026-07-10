@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'map-service-v1.2.3'
+const CACHE_VERSION = 'map-service-v1.2.4'
 const APP_SHELL = [
   '/',
   '/offline.html',
@@ -7,6 +7,7 @@ const APP_SHELL = [
   '/pwa-icon-512.png',
   '/pwa-icon.svg',
   '/manifest.webmanifest',
+  '/location-keepalive.mp4',
 ]
 
 self.addEventListener('install', (event) => {

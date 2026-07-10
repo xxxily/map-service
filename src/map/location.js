@@ -1,12 +1,38 @@
 import L from 'leaflet'
 import { showAlert } from '../ui/dialog.js'
-import { getBestPosition, isValidPosition, positionToLeafletLatLng } from './geolocation.js'
-import { createTrackKml2d, updateTrackKml2d } from './kml.js'
+import {
+  createContinuousGeolocationSource,
+  getBestPosition,
+  isValidPosition,
+  positionToGcj02,
+  positionToLeafletLatLng,
+} from './geolocation.js'
+import {
+  assessPositionSample,
+  createContinuousLocationController,
+} from './continuous-location.js'
+import { createLocationLifecycleTarget } from './location-lifecycle.js'
+import {
+  createTrackRecordingSession,
+  getTrackRecordingPoints,
+  hasTrackRecordingData,
+  normalizeHistoryPointLimit,
+  pauseTrackRecordingSession,
+  readBoundedIntegerSetting,
+  readLocationSetting,
+  recordTrackPosition,
+  resetTrackRecordingSession,
+  resumeTrackRecordingSession,
+  trimTrackRecordingSession,
+  trimTrackPointHistory,
+} from './location-track.js'
+import { createTrackKml2d, hasTrackKml2d, updateTrackKml2d } from './kml.js'
+import { startLocationKeepAlive, stopLocationKeepAlive } from './location-keepalive.js'
 
-// Audio keep alive and Screen Wake Lock for mobile background processes
-let keepAliveAudio = null
-let wakeLock = null
-let fallbackVideo = null
+const MAX_RENDERED_HISTORY_POINTS = 120
+const TRACK_CHECKPOINT_MIN_INTERVAL_MS = 15000
+const TRACK_PERSIST_RETRY_BASE_MS = 5000
+const TRACK_PERSIST_RETRY_MAX_MS = 5 * 60_000
 
 function calculateBearing (lat1, lng1, lat2, lng2) {
   const dLng = (lng2 - lng1) * Math.PI / 180
@@ -20,96 +46,35 @@ function calculateBearing (lat1, lng1, lat2, lng2) {
   return (brng + 360) % 360
 }
 
-async function requestWakeLock () {
-  // 优先使用标准 Screen Wake Lock API
-  if ('wakeLock' in navigator) {
-    try {
-      wakeLock = await navigator.wakeLock.request('screen')
-      console.log('[WakeLock] Screen Wake Lock API is active')
-      return
-    } catch (err) {
-      console.warn(`[WakeLock] Screen Wake Lock API failed: ${err.message}, falling back to video.`)
-    }
-  }
-
-  // 降级方案：动态在后台播放 1x1 像素的极简无声音频/视频源
-  if (!fallbackVideo) {
-    fallbackVideo = document.createElement('video')
-    // 1x1 像素、静音、无内容极简 MP4 Base64
-    const silentMp4 = 'data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29tc252cwAAAChmcmVlAAAAAG1kYXQAAAAIZ29vZwAAArxtb292AABhY212aGQAAAAA0t2u1tLdrtYAAAPoAAAAKAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACNnRyYWsAAABcdGtoZAAAAAPQ3a7W0N2u1gAAAAEAAAAAAAD6AAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEgbWRpYQAAACxtZGhkAAAAANLdrtbS3a7WAAAAAAAAB1QAAAAAc254aAAAAAAALWhkcmxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAACdmlkZW9saW5rAAAAAIJtaW5mAAAAEHZtstraightAAAAAAAJZGluawAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAAB8c3RibAAAAGRzdHNkAAAAAAAAAAEAAABUYXZjMQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAQABAAUAAAAFAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaP//AAAAJHdyaXRlAAAAAAAAAAEAAAAQYXZjQ0ABAQAA/wADAAAAAEJ0ZHN0cwAAAAAAAAABAAAAAQAAA+gAAAAUc3RzYwAAAAAAAAABAAAAAQAAAAEAAAABAAAAFHN0c3oAAAAAAAAADwAAA+gAAAAQc3RjbwAAAAAAAAABAAAAMAAA'
-    fallbackVideo.src = silentMp4
-    fallbackVideo.setAttribute('playsinline', '')
-    fallbackVideo.setAttribute('muted', '')
-    fallbackVideo.loop = true
-    fallbackVideo.muted = true
-    fallbackVideo.style.position = 'absolute'
-    fallbackVideo.style.width = '1px'
-    fallbackVideo.style.height = '1px'
-    fallbackVideo.style.opacity = '0.01'
-    fallbackVideo.style.pointerEvents = 'none'
-    document.body.appendChild(fallbackVideo)
-  }
-
-  fallbackVideo.play().then(() => {
-    console.log('[WakeLock] Screen Wake Lock fallback video is playing')
-  }).catch(err => {
-    console.warn('[WakeLock] Fallback video play blocked', err)
-  })
-}
-
-function releaseWakeLock () {
-  if (wakeLock) {
-    wakeLock.release().then(() => {
-      wakeLock = null
-      console.log('[WakeLock] Screen Wake Lock API was released')
-    }).catch(err => {
-      console.warn(`[WakeLock] Failed to release Screen Wake Lock API: ${err.message}`)
-    })
-  }
-
-  if (fallbackVideo) {
-    fallbackVideo.pause()
-    console.log('[WakeLock] Screen Wake Lock fallback video was paused')
-  }
-}
-
-// 自动在亮屏/切回前台时重新请求被浏览器自动释放的 Wake Lock
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && intervalLocationState.active) {
-    await requestWakeLock()
-  }
-})
-
-function startKeepAlive () {
-  const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
-  if (!keepAliveAudio) {
-    keepAliveAudio = new Audio(silentWav)
-    keepAliveAudio.loop = true
-  }
-  keepAliveAudio.play().catch(err => {
-    console.warn('Audio keep alive play blocked', err)
-  })
-}
-
-function stopKeepAlive () {
-  if (keepAliveAudio) {
-    keepAliveAudio.pause()
-  }
-}
-
-
 // 2D 持续定位全局状态
 export const intervalLocationState = {
   active: false,
   timerId: null,
-  intervalSeconds: parseInt(localStorage.getItem('location_interval') || '15', 10),
-  zoomLevel: parseInt(localStorage.getItem('location_zoom') || '16', 10),
-  maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
-  recordTrack: localStorage.getItem('location_record_track') !== 'false', // 是否开启轨迹记录
-  onlyLine: localStorage.getItem('location_only_line') !== 'false', // 是否仅保留路线
-  autoRotate: localStorage.getItem('location_auto_rotate') !== 'false', // 是否自动旋转地图
+  phase: 'idle',
+  generation: 0,
+  lastSignalAt: null,
+  lastFixAt: null,
+  lastProviderTimestamp: null,
+  consecutiveTimestampAnomalies: 0,
+  consecutiveFailures: 0,
+  restartCount: 0,
+  lastError: null,
+  permissionState: 'unknown',
+  intervalSeconds: readBoundedIntegerSetting('location_interval', 15, { min: 1, max: 60 }),
+  zoomLevel: readBoundedIntegerSetting('location_zoom', 16, { min: 3, max: 18 }),
+  maxHistoryPoints: readBoundedIntegerSetting('location_max_points', 0, { min: 0, max: 100_000 }),
+  recordTrack: readLocationSetting('location_record_track', 'true') !== 'false', // 是否开启轨迹记录
+  onlyLine: readLocationSetting('location_only_line', 'true') !== 'false', // 是否仅保留路线
+  autoRotate: readLocationSetting('location_auto_rotate', 'true') !== 'false', // 是否自动旋转地图
   recordKmlId: null, // 初始化为 null，新持续定位重新创建，防止脏 ID 残留覆盖旧轨迹
   lastPosition: null, // 存入最新的定位点数据 { latlng, timestamp, accuracy }
+  suspectPosition: null, // 单个超大跳点候选；连续一致时用于安全重定基准
+  lastTrackPersistAt: 0,
+  lastTrackPersistAttemptAt: 0,
+  nextTrackPersistRetryAt: 0,
+  trackPersistFailures: 0,
+  persistenceError: null,
+  recordingSession: createTrackRecordingSession(),
   historyPoints: [],  // 最近 3-5 次的定位点数据数组
   historyLayers: [],  // 渲染在地图上的 L.circleMarker 图层实例数组
 }
@@ -119,14 +84,142 @@ try {
   localStorage.removeItem('location_record_kml_id')
 } catch (err) {}
 
+function createTrackName () {
+  const now = new Date()
+  return `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+}
+
+function ensureTrackKml2d (allowInactive = false) {
+  if (!intervalLocationState.recordTrack && !allowInactive) {
+    return null
+  }
+  if (hasTrackKml2d(intervalLocationState.recordKmlId)) {
+    return intervalLocationState.recordKmlId
+  }
+  if (intervalLocationState.recordKmlId) clearTrackKmlSession2d()
+
+  const kmlId = createTrackKml2d(createTrackName())
+  if (!kmlId) {
+    intervalLocationState.persistenceError = '无法创建轨迹文件'
+    return null
+  }
+
+  intervalLocationState.recordKmlId = kmlId
+  try {
+    localStorage.setItem('location_record_kml_id', kmlId)
+  } catch (err) {
+    intervalLocationState.persistenceError = '轨迹会话标识保存失败'
+  }
+  return kmlId
+}
+
+function clearTrackKmlSession2d () {
+  intervalLocationState.recordKmlId = null
+  intervalLocationState.lastTrackPersistAt = 0
+  intervalLocationState.lastTrackPersistAttemptAt = 0
+  intervalLocationState.nextTrackPersistRetryAt = 0
+  intervalLocationState.trackPersistFailures = 0
+  try {
+    localStorage.removeItem('location_record_kml_id')
+  } catch (err) {}
+}
+
+function resetTrackPersistBackoff2d () {
+  intervalLocationState.lastTrackPersistAt = 0
+  intervalLocationState.lastTrackPersistAttemptAt = 0
+  intervalLocationState.nextTrackPersistRetryAt = 0
+  intervalLocationState.trackPersistFailures = 0
+}
+
+function startTrackRecording2d () {
+  resumeTrackRecordingSession(intervalLocationState.recordingSession, {
+    currentPosition: intervalLocationState.lastPosition,
+    maxHistoryPoints: intervalLocationState.maxHistoryPoints,
+  })
+}
+
+function stopTrackRecording2d () {
+  pauseTrackRecordingSession(intervalLocationState.recordingSession, {
+    maxHistoryPoints: intervalLocationState.maxHistoryPoints,
+  })
+}
+
+function captureTrackPosition2d ({ replaceLast = false } = {}) {
+  return recordTrackPosition(
+    intervalLocationState.recordingSession,
+    intervalLocationState.lastPosition,
+    {
+      replaceLast,
+      maxHistoryPoints: intervalLocationState.maxHistoryPoints,
+    },
+  )
+}
+
+function markTrackPersistFailure2d (now) {
+  intervalLocationState.trackPersistFailures += 1
+  const retryDelay = Math.min(
+    TRACK_PERSIST_RETRY_MAX_MS,
+    TRACK_PERSIST_RETRY_BASE_MS * (2 ** Math.min(intervalLocationState.trackPersistFailures - 1, 10)),
+  )
+  intervalLocationState.nextTrackPersistRetryAt = now + retryDelay
+  intervalLocationState.persistenceError = '轨迹保存失败，定位仍在继续'
+}
+
+function persistTrack2d (map, { force = false } = {}) {
+  if (!intervalLocationState.recordTrack && !force) return false
+  const now = Date.now()
+  if (intervalLocationState.lastTrackPersistAttemptAt &&
+      now < intervalLocationState.lastTrackPersistAttemptAt) {
+    intervalLocationState.lastTrackPersistAt = 0
+    intervalLocationState.nextTrackPersistRetryAt = 0
+  }
+  intervalLocationState.lastTrackPersistAttemptAt = now
+  if (!force && now < intervalLocationState.nextTrackPersistRetryAt) return false
+  if (!ensureTrackKml2d(force)) {
+    markTrackPersistFailure2d(now)
+    return false
+  }
+  const checkpointInterval = Math.max(
+    TRACK_CHECKPOINT_MIN_INTERVAL_MS,
+    Number(intervalLocationState.intervalSeconds || 0) * 1000
+  )
+  if (!force && intervalLocationState.lastTrackPersistAt &&
+      now - intervalLocationState.lastTrackPersistAt < checkpointInterval) {
+    return true
+  }
+
+  const recorded = getTrackRecordingPoints(intervalLocationState.recordingSession)
+  const saved = updateTrackKml2d(
+    map,
+    intervalLocationState.recordKmlId,
+    recorded.historyPoints,
+    recorded.lastPosition,
+    intervalLocationState.onlyLine,
+    recorded.segments,
+  )
+  if (saved) {
+    intervalLocationState.lastTrackPersistAt = now
+    intervalLocationState.nextTrackPersistRetryAt = 0
+    intervalLocationState.trackPersistFailures = 0
+    intervalLocationState.persistenceError = null
+  } else {
+    markTrackPersistFailure2d(now)
+  }
+  return saved
+}
+
 // 辅助函数：绘制历史定位轨迹点
 function renderHistoryPoints (map, points) {
   // 清除旧轨迹点图层
   intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
   intervalLocationState.historyLayers = []
 
-  const len = points.length
-  points.forEach((pt, index) => {
+  // 完整轨迹仍保留在内存/KML 中，但地图只绘制最近一段，避免长途运行时
+  // 每轮删除并重建成千上万个 Marker 阻塞主线程。
+  const visiblePoints = points.slice(-MAX_RENDERED_HISTORY_POINTS)
+  const pointNumberOffset = points.length - visiblePoints.length
+  const len = visiblePoints.length
+  visiblePoints.forEach((pt, index) => {
     // 透明度逐渐渐变：越新的历史点越不透明（0.08 到 0.35）
     const opacity = len > 1
       ? 0.08 + (index / (len - 1)) * 0.27
@@ -144,7 +237,7 @@ function renderHistoryPoints (map, points) {
     // 计算移动速度：
     // 优先拿当前点和其下一个点（若为最新的历史点，则和当前的主定位点）计算速度；否则和前一个点计算。
     let speedInfo = ''
-    let nextPt = points[index + 1]
+    let nextPt = visiblePoints[index + 1]
     if (index === len - 1 && intervalLocationState.lastPosition) {
       nextPt = intervalLocationState.lastPosition
     }
@@ -158,7 +251,7 @@ function renderHistoryPoints (map, points) {
         speedInfo = `<br>移动速度：${speedKmh.toFixed(1)} km/h (${speedMps.toFixed(1)} m/s)`
       }
     } else if (index > 0) {
-      const prevPt = points[index - 1]
+      const prevPt = visiblePoints[index - 1]
       const dist = L.latLng(pt.latlng).distanceTo(L.latLng(prevPt.latlng))
       const timeDiff = Math.abs(pt.timestamp - prevPt.timestamp) / 1000
       if (timeDiff > 0) {
@@ -171,7 +264,7 @@ function renderHistoryPoints (map, points) {
     const timeStr = new Date(pt.timestamp).toLocaleTimeString()
     const popupContent = `
       <div style="font-size: 12px; line-height: 1.5; color: #374151; min-width: 140px;">
-        <strong style="color: #0f766e;">历史定位点 #${index + 1}</strong><br>
+        <strong style="color: #0f766e;">历史定位点 #${pointNumberOffset + index + 1}</strong><br>
         定位时间：${timeStr}<br>
         定位精度：${pt.accuracy ? Math.round(pt.accuracy) + ' 米' : '未知'}${speedInfo}
       </div>
@@ -247,48 +340,106 @@ export function addTargetMarker (map, location, options = {}) {
   return marker
 }
 
-async function getFilteredPosition2d (map, geolocation, customZoom, isIntervalUpdate, retryCount = 0) {
-  const result = await getBestPosition(geolocation).catch((err) => {
-    console.error('获取地理位置失败', err)
-    return null
+function waitForLocationRetry (signal, delay = 500) {
+  if (signal?.aborted) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', handleAbort)
+      resolve(true)
+    }, delay)
+    const handleAbort = () => {
+      clearTimeout(timer)
+      resolve(false)
+    }
+    signal?.addEventListener?.('abort', handleAbort, { once: true })
   })
+}
+
+async function getFilteredPosition2d (map, geolocation, customZoom, isIntervalUpdate, retryCount = 0, runtime = {}) {
+  const result = retryCount === 0 && runtime.position
+    ? runtime.position
+    : await getBestPosition(geolocation, { signal: runtime.signal })
+
+  if (runtime.signal?.aborted) return null
 
   if (!isValidPosition(result)) {
     return null
   }
 
+  const gcjPosition = positionToGcj02(result)
   const mapPosition = positionToLeafletLatLng(result)
 
-  // 仅在持续定位且有上一点位置记录时，过滤突变大（>200米）的漂移脏点
+  // 使用时间差、精度和合理最大速度判断异常点；一个超大跳点只作为候选，
+  // 第二个与候选一致的独立样本会安全重定基准，避免旧 200 米锚点永久锁死。
   if (isIntervalUpdate && intervalLocationState.lastPosition) {
-    const dist = L.latLng(mapPosition).distanceTo(L.latLng(intervalLocationState.lastPosition.latlng))
-    if (dist > 200) {
-      console.warn(`[2D 定位] 检测到可能的漂移脏点，距离上一点 ${Math.round(dist)} 米`)
-      if (retryCount === 0) {
-        console.log('[2D 定位] 立即进行重试定位一次...')
-        await new Promise(resolve => setTimeout(resolve, 500))
-        return await getFilteredPosition2d(map, geolocation, customZoom, isIntervalUpdate, 1)
-      } else {
-        console.warn('[2D 定位] 重试后依然偏差过大，丢弃该定位点')
-        return null
-      }
+    const locationSample = {
+      lat: gcjPosition.lat,
+      lng: gcjPosition.lng,
+      accuracy: result.accuracy,
+      timestamp: Number.isFinite(Number(result.timestamp)) ? Number(result.timestamp) : Date.now(),
     }
+    const assessment = assessPositionSample({
+      lastAccepted: intervalLocationState.lastPosition.locationSample,
+      suspect: intervalLocationState.suspectPosition,
+    }, locationSample, {
+      defaultIntervalMs: intervalLocationState.intervalSeconds * 1000,
+    })
+
+    intervalLocationState.suspectPosition = assessment.suspect
+    if (!assessment.accepted) {
+      console.warn(`[2D 定位] 隔离疑似漂移点：距旧点 ${Math.round(assessment.distanceMeters || 0)} 米，动态允许 ${Math.round(assessment.allowedDistanceMeters || 0)} 米`)
+      if (retryCount === 0) {
+        const shouldRetry = await waitForLocationRetry(runtime.signal)
+        if (shouldRetry) {
+          return getFilteredPosition2d(map, geolocation, customZoom, isIntervalUpdate, 1, {
+            ...runtime,
+            position: null,
+          })
+        }
+      }
+      return null
+    }
+
+    intervalLocationState.suspectPosition = null
+    if (assessment.reanchored) {
+      console.info('[2D 定位] 连续新位置已确认，自动重新建立轨迹基准')
+    }
+    return { result, mapPosition, locationSample, reanchored: assessment.reanchored }
   }
 
-  return { result, mapPosition }
+  return {
+    result,
+    mapPosition,
+    locationSample: {
+      lat: gcjPosition.lat,
+      lng: gcjPosition.lng,
+      accuracy: result.accuracy,
+      timestamp: Number.isFinite(Number(result.timestamp)) ? Number(result.timestamp) : Date.now(),
+    },
+    reanchored: false,
+  }
 }
 
-export async function updatePosition (map, geolocation = null, customZoom = 18, isIntervalUpdate = false) {
-  const filtered = await getFilteredPosition2d(map, geolocation, customZoom, isIntervalUpdate)
-
-  if (!filtered) {
-    if (!isIntervalUpdate) {
-      await showAlert('获取地理位置失败，请手动选择')
+export async function updatePosition (map, geolocation = null, customZoom = 18, isIntervalUpdate = false, runtime = {}) {
+  let filtered = null
+  try {
+    filtered = await getFilteredPosition2d(map, geolocation, customZoom, isIntervalUpdate, 0, runtime)
+  } catch (err) {
+    if (!runtime.signal?.aborted) {
+      console.error(`获取地理位置失败（${String(err?.code || err?.name || 'unknown')}）`)
     }
-    return
   }
 
-  const { result, mapPosition } = filtered
+  if (!filtered) {
+    if (!isIntervalUpdate && !runtime.signal?.aborted) {
+      await showAlert('获取地理位置失败，请手动选择')
+    }
+    return false
+  }
+
+  if (runtime.signal?.aborted) return false
+
+  const { result, mapPosition, locationSample, reanchored } = filtered
   
   // 更新地图视口与主定位图标
   map.setView(mapPosition, customZoom)
@@ -305,34 +456,30 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 
     if (isStationary) {
       // 移动幅度小，不生产新轨迹点，但累计在当前位置的停留时间
-      const now = Date.now()
-      if (!intervalLocationState.lastPosition.firstTimestamp) {
-        intervalLocationState.lastPosition.firstTimestamp = intervalLocationState.lastPosition.timestamp
+      const currentPosition = intervalLocationState.lastPosition
+      if (!Number.isFinite(currentPosition.firstTimestamp)) {
+        currentPosition.firstTimestamp = currentPosition.timestamp
       }
-      intervalLocationState.lastPosition.staySeconds = (now - intervalLocationState.lastPosition.firstTimestamp) / 1000
+      currentPosition.latlng = mapPosition
+      currentPosition.timestamp = locationSample.timestamp
+      currentPosition.accuracy = result.accuracy
+      currentPosition.locationSample = locationSample
+      currentPosition.reanchored = reanchored
+      currentPosition.staySeconds = Math.max(
+        0,
+        (locationSample.timestamp - currentPosition.firstTimestamp) / 1000,
+      )
+      captureTrackPosition2d({ replaceLast: true })
 
       // 主 Marker 重新在该坐标触发扩散波纹
       addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
 
-      // 实时同步停留时间到 KML 中
-      if (intervalLocationState.recordTrack) {
-        if (!intervalLocationState.recordKmlId) {
-          const now = new Date()
-          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-          const kmlId = createTrackKml2d(name)
-          if (kmlId) {
-            intervalLocationState.recordKmlId = kmlId
-            localStorage.setItem('location_record_kml_id', kmlId)
-          }
-        }
-        if (intervalLocationState.recordKmlId) {
-          updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
-        }
-      }
+      // 节流检查点，避免 1 秒间隔的长途轨迹每秒全量序列化和重绘。
+      if (intervalLocationState.recordTrack) persistTrack2d(map)
     } else {
       // 移动幅度大，生产新点
       if (intervalLocationState.lastPosition) {
-        if (!intervalLocationState.lastPosition.firstTimestamp) {
+        if (!Number.isFinite(intervalLocationState.lastPosition.firstTimestamp)) {
           intervalLocationState.lastPosition.firstTimestamp = intervalLocationState.lastPosition.timestamp
         }
         if (!intervalLocationState.lastPosition.staySeconds) {
@@ -340,7 +487,7 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
         }
 
         // 自动计算旋转角使得历史轨迹呈现车辆朝上效果
-        if (intervalLocationState.autoRotate) {
+        if (intervalLocationState.autoRotate && !reanchored) {
           const p1 = intervalLocationState.lastPosition.latlng
           const p2 = mapPosition
           let lat1 = null, lng1 = null, lat2 = null, lng2 = null
@@ -366,19 +513,19 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 
         intervalLocationState.historyPoints.push(intervalLocationState.lastPosition)
 
-        const maxPts = intervalLocationState.maxHistoryPoints || 0
-        if (maxPts > 0 && intervalLocationState.historyPoints.length > maxPts) {
-          intervalLocationState.historyPoints.shift()
-        }
+        trimTrackPointHistory(intervalLocationState.historyPoints, intervalLocationState.maxHistoryPoints)
       }
 
       intervalLocationState.lastPosition = {
         latlng: mapPosition,
-        timestamp: Date.now(),
-        firstTimestamp: Date.now(),
+        timestamp: locationSample.timestamp,
+        firstTimestamp: locationSample.timestamp,
         staySeconds: 0,
-        accuracy: result.accuracy
+        accuracy: result.accuracy,
+        locationSample,
+        reanchored,
       }
+      captureTrackPosition2d()
 
       // 绘制轨迹点
       renderHistoryPoints(map, intervalLocationState.historyPoints)
@@ -386,111 +533,189 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
       // 主 Marker 呼吸灯 + 伴随扩散波纹
       addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
 
-      // 实时同步新点位到 KML 中
-      if (intervalLocationState.recordTrack) {
-        if (!intervalLocationState.recordKmlId) {
-          const now = new Date()
-          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-          const kmlId = createTrackKml2d(name)
-          if (kmlId) {
-            intervalLocationState.recordKmlId = kmlId
-            localStorage.setItem('location_record_kml_id', kmlId)
-          }
-        }
-        if (intervalLocationState.recordKmlId) {
-          updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition)
-        }
-      }
+      if (intervalLocationState.recordTrack) persistTrack2d(map)
     }
   } else {
     // 常规模式使用默认图标，不带轨迹
     addTargetMarker(map, mapPosition, { isInterval: false, playRipple: false })
   }
+  return true
+}
+
+let intervalLocationController2d = null
+
+function persistLocationSettings2d () {
+  try {
+    localStorage.setItem('location_interval', String(intervalLocationState.intervalSeconds))
+    localStorage.setItem('location_zoom', String(intervalLocationState.zoomLevel))
+    localStorage.setItem('location_max_points', String(intervalLocationState.maxHistoryPoints))
+    localStorage.setItem('location_record_track', String(intervalLocationState.recordTrack))
+    localStorage.setItem('location_only_line', String(intervalLocationState.onlyLine))
+    localStorage.setItem('location_auto_rotate', String(intervalLocationState.autoRotate))
+  } catch (err) {
+    console.error('保存定位设置失败', err)
+  }
+}
+
+function emitContinuousLocationState2d (snapshot) {
+  if (typeof window?.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return
+  window.dispatchEvent(new CustomEvent('continuous-location-statechange', {
+    detail: { mode: '2d', ...snapshot },
+  }))
+}
+
+function syncControllerState2d (map, snapshot) {
+  const previousPhase = intervalLocationState.phase
+  intervalLocationState.active = snapshot.desiredActive
+  intervalLocationState.phase = snapshot.phase
+  intervalLocationState.generation = snapshot.generation
+  intervalLocationState.lastSignalAt = snapshot.lastSignalAt
+  intervalLocationState.lastFixAt = snapshot.lastFixAt
+  intervalLocationState.lastProviderTimestamp = snapshot.lastProviderTimestamp
+  intervalLocationState.consecutiveTimestampAnomalies = snapshot.consecutiveTimestampAnomalies
+  intervalLocationState.consecutiveFailures = snapshot.consecutiveFailures
+  intervalLocationState.restartCount = snapshot.restartCount
+  intervalLocationState.lastError = snapshot.lastError
+  intervalLocationState.permissionState = snapshot.permissionState
+  intervalLocationState.timerId = null
+
+  if (intervalLocationState.recordTrack &&
+      snapshot.phase === 'suspended' && previousPhase !== 'suspended' &&
+      (intervalLocationState.lastPosition || intervalLocationState.historyPoints.length > 0)) {
+    persistTrack2d(map, { force: true })
+  }
+  emitContinuousLocationState2d(snapshot)
+}
+
+export function configureIntervalLocation2d (map, {
+  interval,
+  zoom,
+  maxHistoryPoints = intervalLocationState.maxHistoryPoints,
+  recordTrack = intervalLocationState.recordTrack,
+  onlyLine = intervalLocationState.onlyLine,
+  autoRotate = intervalLocationState.autoRotate,
+}) {
+  const wasRecording = intervalLocationState.recordTrack
+  let finalPersistSucceeded = wasRecording && !recordTrack &&
+    hasTrackRecordingData(intervalLocationState.recordingSession)
+    ? persistTrack2d(map, { force: true })
+    : true
+
+  const normalizedMaxHistoryPoints = normalizeHistoryPointLimit(maxHistoryPoints)
+
+  intervalLocationState.intervalSeconds = interval
+  intervalLocationState.zoomLevel = zoom
+  intervalLocationState.maxHistoryPoints = normalizedMaxHistoryPoints
+  intervalLocationState.recordTrack = recordTrack
+  intervalLocationState.onlyLine = onlyLine
+  intervalLocationState.autoRotate = autoRotate
+
+  const historyTrimmed = trimTrackPointHistory(
+    intervalLocationState.historyPoints,
+    normalizedMaxHistoryPoints,
+  )
+  trimTrackRecordingSession(
+    intervalLocationState.recordingSession,
+    normalizedMaxHistoryPoints,
+  )
+  if (historyTrimmed) renderHistoryPoints(map, intervalLocationState.historyPoints)
+
+  if (wasRecording && !recordTrack) {
+    stopTrackRecording2d()
+  } else if (!wasRecording && recordTrack) {
+    startTrackRecording2d()
+    resetTrackPersistBackoff2d()
+  }
+  persistLocationSettings2d()
+
+  if (recordTrack) {
+    finalPersistSucceeded = persistTrack2d(map, { force: true }) && finalPersistSucceeded
+  }
+  intervalLocationController2d?.configure({ intervalMs: interval * 1000 })
+  return { ...intervalLocationState, finalPersistSucceeded }
 }
 
 // 启动 2D 持续定位
 export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false, onlyLine = false, autoRotate = false) {
-  if (intervalLocationState.timerId) {
-    clearInterval(intervalLocationState.timerId)
-  }
+  intervalLocationController2d?.destroy()
+  intervalLocationController2d = null
 
-  // 记录到 localStorage 以便持久化记忆
-  try {
-    localStorage.setItem('location_interval', String(interval))
-    localStorage.setItem('location_zoom', String(zoom))
-    localStorage.setItem('location_max_points', String(maxHistoryPoints))
-    localStorage.setItem('location_record_track', String(recordTrack))
-    localStorage.setItem('location_only_line', String(onlyLine))
-    localStorage.setItem('location_auto_rotate', String(autoRotate))
-  } catch (err) {
-    console.error('Failed to save location settings:', err)
-  }
-
-  intervalLocationState.active = true
   intervalLocationState.intervalSeconds = interval
   intervalLocationState.zoomLevel = zoom
-  intervalLocationState.maxHistoryPoints = maxHistoryPoints
+  intervalLocationState.maxHistoryPoints = normalizeHistoryPointLimit(maxHistoryPoints)
   intervalLocationState.recordTrack = recordTrack
   intervalLocationState.onlyLine = onlyLine
   intervalLocationState.autoRotate = autoRotate
-  
-  // 仅在首次启动时重新创建 KML 文件；如果中途编辑/重连则继续使用现有的 recordKmlId
-  if (recordTrack && !intervalLocationState.recordKmlId) {
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = String(now.getMonth() + 1).padStart(2, '0')
-    const date = String(now.getDate()).padStart(2, '0')
-    const hours = String(now.getHours()).padStart(2, '0')
-    const minutes = String(now.getMinutes()).padStart(2, '0')
-    const defaultName = `轨迹_${year}${month}${date}_${hours}${minutes}`
-    
-    const kmlId = createTrackKml2d(defaultName)
-    if (kmlId) {
-      intervalLocationState.recordKmlId = kmlId
-      localStorage.setItem('location_record_kml_id', kmlId)
-    }
-  }
+  intervalLocationState.lastTrackPersistAt = 0
+  intervalLocationState.persistenceError = null
+  clearTrackKmlSession2d()
 
   intervalLocationState.lastPosition = null
+  intervalLocationState.suspectPosition = null
   intervalLocationState.historyPoints = []
+  resetTrackRecordingSession(intervalLocationState.recordingSession, { active: recordTrack })
+  persistLocationSettings2d()
+  if (recordTrack) ensureTrackKml2d()
   
   // 清空之前的轨迹图层
   intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
   intervalLocationState.historyLayers = []
 
-  // 启动音频后台保活与防止休眠暗屏的 Wake Lock
-  startKeepAlive()
-  requestWakeLock()
+  void startLocationKeepAlive()
 
-  // 立即触发第一次定位
-  updatePosition(map, geolocation, zoom, true)
-
-  // 启动定时循环
-  intervalLocationState.timerId = setInterval(() => {
-    updatePosition(map, geolocation, intervalLocationState.zoomLevel, true)
-  }, interval * 1000)
+  const source = createContinuousGeolocationSource(geolocation)
+  intervalLocationController2d = createContinuousLocationController({
+    source,
+    lifecycle: createLocationLifecycleTarget(),
+    intervalMs: interval * 1000,
+    positionOptions: {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 0,
+    },
+    onPosition: (position, runtime) => updatePosition(
+      map,
+      geolocation,
+      intervalLocationState.zoomLevel,
+      true,
+      { ...runtime, position },
+    ),
+    onStateChange: snapshot => syncControllerState2d(map, snapshot),
+  })
+  intervalLocationController2d.start()
 }
 
 // 停止 2D 持续定位
 export function stopIntervalLocation2d (map) {
-  if (intervalLocationState.timerId) {
-    clearInterval(intervalLocationState.timerId)
-    intervalLocationState.timerId = null
-  }
+  // 先撤销用户运行意图并使旧 generation 失效，随后才执行最终落盘。
+  intervalLocationController2d?.stop()
+  intervalLocationController2d?.destroy()
+  intervalLocationController2d = null
 
   // 停止定位时做最后的 KML 写入，必须确保当前内存中存在至少一个定位点或历史点，防止刷新页面后由于内存清空而覆盖擦除已有的 KML 轨迹数据
-  if (intervalLocationState.recordTrack && intervalLocationState.recordKmlId && (intervalLocationState.historyPoints.length > 0 || intervalLocationState.lastPosition !== null)) {
-    updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition, intervalLocationState.onlyLine)
+  const recorded = getTrackRecordingPoints(intervalLocationState.recordingSession)
+  let finalPersistSucceeded = true
+  const hasRecordedData = recorded.segments.length > 0 ||
+    recorded.historyPoints.length > 0 || recorded.lastPosition !== null
+  const needsFinalPersist = hasRecordedData && (
+    intervalLocationState.recordTrack ||
+    Boolean(intervalLocationState.persistenceError) ||
+    !hasTrackKml2d(intervalLocationState.recordKmlId)
+  )
+  if (needsFinalPersist) {
+    finalPersistSucceeded = persistTrack2d(map, { force: true })
   }
+  const finalPersistenceError = finalPersistSucceeded ? null : intervalLocationState.persistenceError
 
   // 停止音频后台保活并释放 Wake Lock
-  stopKeepAlive()
-  releaseWakeLock()
+  stopLocationKeepAlive()
 
   intervalLocationState.active = false
-  intervalLocationState.recordKmlId = null
-  localStorage.removeItem('location_record_kml_id')
+  intervalLocationState.phase = 'idle'
+  clearTrackKmlSession2d()
   intervalLocationState.lastPosition = null
+  intervalLocationState.suspectPosition = null
+  resetTrackRecordingSession(intervalLocationState.recordingSession)
   
   // 清理历史点图层
   intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
@@ -514,5 +739,9 @@ export function stopIntervalLocation2d (map) {
       }
     }
   })
-}
 
+  return {
+    finalPersistSucceeded,
+    persistenceError: finalPersistenceError,
+  }
+}

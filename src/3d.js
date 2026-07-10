@@ -32,11 +32,21 @@ import { initKmlSupport3d } from './map3d/kml.js'
 import {
   updatePosition3d,
   intervalLocationState3d,
+  configureIntervalLocation3d,
   startIntervalLocation3d,
   stopIntervalLocation3d
 } from './map3d/location.js'
+import {
+  applyContinuousLocationButtonState,
+  formatContinuousLocationState,
+} from './map/continuous-location.js'
 import { showChoiceDialog, showEditDialog, showAlert } from './ui/dialog.js'
 import { initAmapSearch3d, toggleSearchMode3d } from './map3d/search.js'
+import {
+  MAX_LOCATION_HISTORY_POINTS,
+  MAX_LOCATION_INTERVAL_SECONDS,
+  parseBoundedInteger,
+} from './map/location-track.js'
 
 // 配置 Cesium 资源基础路径
 window.CESIUM_BASE_URL = '/cesium/'
@@ -1293,7 +1303,8 @@ const syncCameraStateToUrl = debounce(() => {
   // 4. 当前选中的底图图层名称
   const activeRadio = document.querySelector('#map3d-layer-control input[name="leaflet-base-layers"]:checked')
   const layerId = activeRadio ? activeRadio.getAttribute('data-layer') : 'amap-hybrid'
-  const layerName2D = layerNameMapping[layerId] || layerId
+  const activeLayer = globalCatalogLayers.find(layer => layer.id === layerId)
+  const layerName2D = activeLayer?.name || layerId
 
   // 5. 拼装符合 2D 规范的坐标字符串coords
   const coords = `${lat.toFixed(6)},${lng.toFixed(6)},${zoom},${bearing}`
@@ -1559,82 +1570,63 @@ function bindUiEvents () {
 
       if (!res) return
 
-      const interval = parseInt(res.interval, 10)
-      const zoom = parseInt(res.zoom, 10)
-      const maxHistoryPoints = parseInt(res.maxPoints, 10)
+      const interval = parseBoundedInteger(res.interval, { min: 1, max: MAX_LOCATION_INTERVAL_SECONDS })
+      const zoom = parseBoundedInteger(res.zoom, { min: 3, max: 18 })
+      const maxHistoryPoints = parseBoundedInteger(res.maxPoints, { min: 0, max: MAX_LOCATION_HISTORY_POINTS })
       const recordTrack = res.recordTrack === 'true'
       const onlyLine = res.onlyLine === 'true'
       const autoRotate = res.autoRotate === 'true'
 
-      if (isNaN(interval) || interval < 1) {
-        await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
+      if (interval === null) {
+        await showAlert(`定位时间间隔必须是 1 到 ${MAX_LOCATION_INTERVAL_SECONDS} 之间的整数！`)
         await showLocationConfigDialog()
         return
       }
 
-      if (isNaN(zoom) || zoom < 3 || zoom > 18) {
+      if (zoom === null) {
         await showAlert('图层级别必须在 3 到 18 之间！')
         await showLocationConfigDialog()
         return
       }
 
-      if (isNaN(maxHistoryPoints) || maxHistoryPoints < 0) {
-        await showAlert('记住最近点位数必须是大于或等于 0 的整数！')
+      if (maxHistoryPoints === null) {
+        await showAlert(`记住最近点位数必须是 0 到 ${MAX_LOCATION_HISTORY_POINTS} 之间的整数！`)
         await showLocationConfigDialog()
         return
       }
 
       // 如果当前定位在运行中，支持热编辑同步
       if (intervalLocationState3d.active) {
-        intervalLocationState3d.intervalSeconds = interval
-        intervalLocationState3d.zoomLevel = zoom
-        intervalLocationState3d.maxHistoryPoints = maxHistoryPoints
+        const configureResult = configureIntervalLocation3d(viewer, {
+          interval,
+          zoom,
+          maxHistoryPoints,
+          recordTrack,
+          onlyLine,
+          autoRotate,
+        })
 
-        // 轨迹状态 关 -> 开
-        if (recordTrack && !intervalLocationState3d.recordTrack && !intervalLocationState3d.recordKmlId) {
-          const now = new Date()
-          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-          const kmlId = createTrackKml3d(name)
-          if (kmlId) {
-            intervalLocationState3d.recordKmlId = kmlId
-            localStorage.setItem('location_record_kml_id', kmlId)
-          }
-        }
-
-        intervalLocationState3d.recordTrack = recordTrack
-        intervalLocationState3d.onlyLine = onlyLine
-        intervalLocationState3d.autoRotate = autoRotate
-
-        localStorage.setItem('location_interval', String(interval))
-        localStorage.setItem('location_zoom', String(zoom))
-        localStorage.setItem('location_max_points', String(maxHistoryPoints))
-        localStorage.setItem('location_record_track', String(recordTrack))
-        localStorage.setItem('location_only_line', String(onlyLine))
-        localStorage.setItem('location_auto_rotate', String(autoRotate))
-
-        if (intervalLocationState3d.timerId) {
-          clearInterval(intervalLocationState3d.timerId)
-        }
-        intervalLocationState3d.timerId = setInterval(() => {
-          const currentHeight = 20000000.0 / Math.pow(2, intervalLocationState3d.zoomLevel)
-          updatePosition3d(viewer, amapGeolocation, currentHeight, true)
-        }, interval * 1000)
-
-        // 立即向 KML 同步当前改动
-        if (intervalLocationState3d.recordTrack && intervalLocationState3d.recordKmlId) {
-          updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
-        }
-
-        await showAlert('定位管理参数已更新！')
+        await showAlert(configureResult.finalPersistSucceeded === false
+          ? '定位参数已更新，但暂停前的最新轨迹未能完整保存；定位采集不受影响，请检查浏览器存储空间。'
+          : '定位管理参数已更新！')
       } else {
         startIntervalLocation3d(viewer, amapGeolocation, interval, zoom, maxHistoryPoints, recordTrack, onlyLine, autoRotate)
       }
     }
 
     const showLocationManageDialog = async () => {
+      const lastFixText = intervalLocationState3d.lastFixAt
+        ? new Date(intervalLocationState3d.lastFixAt).toLocaleTimeString()
+        : '尚未收到有效位置'
+      const errorText = intervalLocationState3d.lastError?.message
+        ? `\n最近异常：${intervalLocationState3d.lastError.message}`
+        : ''
+      const persistenceText = intervalLocationState3d.persistenceError
+        ? `\n轨迹保存：${intervalLocationState3d.persistenceError}`
+        : ''
       const choice = await showChoiceDialog({
         title: '定位管理',
-        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState3d.intervalSeconds} 秒\n图层级别：${intervalLocationState3d.zoomLevel}\n轨迹记录：${intervalLocationState3d.recordTrack ? (intervalLocationState3d.onlyLine ? '开启 (仅路线)' : '开启 (路线和点)') : '关闭'}`,
+        message: `实际状态：${formatContinuousLocationState(intervalLocationState3d)}\n最后更新：${lastFixText}\n连续失败：${intervalLocationState3d.consecutiveFailures} 次\n自动恢复：${intervalLocationState3d.restartCount} 次\n时间间隔：${intervalLocationState3d.intervalSeconds} 秒\n图层级别：${intervalLocationState3d.zoomLevel}\n轨迹记录：${intervalLocationState3d.recordTrack ? (intervalLocationState3d.onlyLine ? '开启 (仅路线)' : '开启 (路线和点)') : '关闭'}${errorText}${persistenceText}`,
         choices: [
           { text: '编辑', value: 'edit', class: 'app-dialog-primary' },
           { text: '停止定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
@@ -1644,8 +1636,10 @@ function bindUiEvents () {
       if (choice === 'edit') {
         await showLocationConfigDialog()
       } else if (choice === 'stop') {
-        stopIntervalLocation3d(viewer)
-        await showAlert('持续定位已关闭')
+        const stopResult = stopIntervalLocation3d(viewer)
+        await showAlert(stopResult.finalPersistSucceeded === false
+          ? '持续定位已关闭，但最后一段轨迹未能完整保存，请检查浏览器存储空间。'
+          : '持续定位已关闭')
       }
     }
 
@@ -1693,6 +1687,11 @@ function bindUiEvents () {
     positionBtn.addEventListener('mouseleave', clearTimer)
     positionBtn.addEventListener('touchcancel', clearTimer)
 
+    window.addEventListener('continuous-location-statechange', (event) => {
+      if (event.detail?.mode !== '3d') return
+      applyContinuousLocationButtonState(positionBtn, event.detail)
+    })
+
     positionBtn.addEventListener('click', () => {
       if (skipNextClick) {
         skipNextClick = false
@@ -1704,13 +1703,6 @@ function bindUiEvents () {
       updatePosition3d(viewer, amapGeolocation, targetHeight, false)
     })
 
-    // 配合 Visibility API 对黑屏/切到后台重新唤醒时的位置补偿
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && intervalLocationState3d.active) {
-        const targetHeight = zoomToHeight(intervalLocationState3d.zoomLevel)
-        updatePosition3d(viewer, amapGeolocation, targetHeight, true)
-      }
-    })
   }
 
   // 4. 地球自转控制

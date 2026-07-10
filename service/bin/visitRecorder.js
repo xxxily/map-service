@@ -10,6 +10,7 @@ import morgan from 'morgan'
 import path from 'path'
 import { createStream } from 'rotating-file-stream'
 import rootPath from './rootPath.js'
+import { sanitizeLogUrl } from './logSanitizer.js'
 
 const accessLogStream = createStream('access.log', {
   path: path.join(rootPath, './log/visitRecorder'),
@@ -25,9 +26,11 @@ const visitRecorder = {
       const date = new Date()
       return date.toLocaleString()
     })
+    morgan.token('safeUrl', req => sanitizeLogUrl(req.originalUrl || req.url))
+    morgan.token('safeReferrer', req => sanitizeLogUrl(req.get?.('referer') || req.get?.('referrer') || '-'))
 
     /* 自定义format，其中包含自定义的token */
-    morgan.format('combined', ':remote-addr - :remote-user [:localDate] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"')
+    morgan.format('combined', ':remote-addr - :remote-user [:localDate] ":method :safeUrl HTTP/:http-version" :status :res[content-length] ":safeReferrer" ":user-agent"')
 
     app.use(morgan('combined', {
       stream: accessLogStream,

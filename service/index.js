@@ -76,6 +76,12 @@ const index = {
     /* 注册访问记录服务 */
     visitRecorder.init(app)
 
+    // 地图 URL 包含坐标状态；禁止后续瓦片/API 请求通过 Referer 泄露行程位置。
+    app.use((req, res, next) => {
+      res.set('Referrer-Policy', 'no-referrer')
+      next()
+    })
+
     /* 注册静态资源目录服务 */
     const options = {
       dotfiles: 'ignore',

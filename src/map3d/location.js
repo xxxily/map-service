@@ -2,16 +2,46 @@ import {
   Cartesian2,
   Cartesian3,
   Color,
+  ColorMaterialProperty,
   HeightReference,
   LabelStyle,
   VerticalOrigin,
   Math as CesiumMath,
   CallbackProperty,
 } from 'cesium'
-import { getBestPosition, isValidPosition, positionToGcj02 } from '../map/geolocation.js'
-import { createTrackKml3d, updateTrackKml3d } from './kml.js'
+import {
+  createContinuousGeolocationSource,
+  getBestPosition,
+  isValidPosition,
+  positionToGcj02,
+} from '../map/geolocation.js'
+import {
+  assessPositionSample,
+  createContinuousLocationController,
+} from '../map/continuous-location.js'
+import { createLocationLifecycleTarget } from '../map/location-lifecycle.js'
+import { startLocationKeepAlive, stopLocationKeepAlive } from '../map/location-keepalive.js'
+import {
+  createTrackRecordingSession,
+  getTrackRecordingPoints,
+  hasTrackRecordingData,
+  normalizeHistoryPointLimit,
+  pauseTrackRecordingSession,
+  readBoundedIntegerSetting,
+  readLocationSetting,
+  recordTrackPosition,
+  resetTrackRecordingSession,
+  resumeTrackRecordingSession,
+  trimTrackRecordingSession,
+  trimTrackPointHistory,
+} from '../map/location-track.js'
+import { createTrackKml3d, hasTrackKml3d, updateTrackKml3d } from './kml.js'
 
 let targetEntity = null
+const MAX_RENDERED_HISTORY_POINTS = 120
+const TRACK_CHECKPOINT_MIN_INTERVAL_MS = 15000
+const TRACK_PERSIST_RETRY_BASE_MS = 5000
+const TRACK_PERSIST_RETRY_MAX_MS = 5 * 60_000
 
 function calculateBearing (lat1, lng1, lat2, lng2) {
   const dLng = (lng2 - lng1) * Math.PI / 180
@@ -25,101 +55,36 @@ function calculateBearing (lat1, lng1, lat2, lng2) {
   return (brng + 360) % 360
 }
 
-// Audio keep alive and Screen Wake Lock for mobile background processes
-let keepAliveAudio = null
-let wakeLock = null
-let fallbackVideo = null
-
-async function requestWakeLock () {
-  // 优先使用标准 Screen Wake Lock API
-  if ('wakeLock' in navigator) {
-    try {
-      wakeLock = await navigator.wakeLock.request('screen')
-      console.log('[WakeLock 3D] Screen Wake Lock API is active')
-      return
-    } catch (err) {
-      console.warn(`[WakeLock 3D] Screen Wake Lock API failed: ${err.message}, falling back to video.`)
-    }
-  }
-
-  // 降级方案：动态在后台播放 1x1 像素的极简无声音频/视频源
-  if (!fallbackVideo) {
-    fallbackVideo = document.createElement('video')
-    // 1x1 像素、静音、无内容极简 MP4 Base64
-    const silentMp4 = 'data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29tc252cwAAAChmcmVlAAAAAG1kYXQAAAAIZ29vZwAAArxtb292AABhY212aGQAAAAA0t2u1tLdrtYAAAPoAAAAKAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACNnRyYWsAAABcdGtoZAAAAAPQ3a7W0N2u1gAAAAEAAAAAAAD6AAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEgbWRpYQAAACxtZGhkAAAAANLdrtbS3a7WAAAAAAAAB1QAAAAAc254aAAAAAAALWhkcmxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAACdmlkZW9saW5rAAAAAIJtaW5mAAAAEHZtstraightAAAAAAAJZGluawAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAAB8c3RibAAAAGRzdHNkAAAAAAAAAAEAAABUYXZjMQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAQABAAUAAAAFAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaP//AAAAJHdyaXRlAAAAAAAAAAEAAAAQYXZjQ0ABAQAA/wADAAAAAEJ0ZHN0cwAAAAAAAAABAAAAAQAAA+gAAAAUc3RzYwAAAAAAAAABAAAAAQAAAAEAAAABAAAAFHN0c3oAAAAAAAAADwAAA+gAAAAQc3RjbwAAAAAAAAABAAAAMAAA'
-    fallbackVideo.src = silentMp4
-    fallbackVideo.setAttribute('playsinline', '')
-    fallbackVideo.setAttribute('muted', '')
-    fallbackVideo.loop = true
-    fallbackVideo.muted = true
-    fallbackVideo.style.position = 'absolute'
-    fallbackVideo.style.width = '1px'
-    fallbackVideo.style.height = '1px'
-    fallbackVideo.style.opacity = '0.01'
-    fallbackVideo.style.pointerEvents = 'none'
-    document.body.appendChild(fallbackVideo)
-  }
-
-  fallbackVideo.play().then(() => {
-    console.log('[WakeLock 3D] Screen Wake Lock fallback video is playing')
-  }).catch(err => {
-    console.warn('[WakeLock 3D] Fallback video play blocked', err)
-  })
-}
-
-function releaseWakeLock () {
-  if (wakeLock) {
-    wakeLock.release().then(() => {
-      wakeLock = null
-      console.log('[WakeLock 3D] Screen Wake Lock API was released')
-    }).catch(err => {
-      console.warn(`[WakeLock 3D] Failed to release Screen Wake Lock API: ${err.message}`)
-    })
-  }
-
-  if (fallbackVideo) {
-    fallbackVideo.pause()
-    console.log('[WakeLock 3D] Screen Wake Lock fallback video was paused')
-  }
-}
-
-// 自动在亮屏/切回前台时重新请求被浏览器自动释放的 Wake Lock
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && intervalLocationState3d.active) {
-    await requestWakeLock()
-  }
-})
-
-function startKeepAlive () {
-  const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
-  if (!keepAliveAudio) {
-    keepAliveAudio = new Audio(silentWav)
-    keepAliveAudio.loop = true
-  }
-  keepAliveAudio.play().catch(err => {
-    console.warn('Audio keep alive play blocked', err)
-  })
-}
-
-function stopKeepAlive () {
-  if (keepAliveAudio) {
-    keepAliveAudio.pause()
-  }
-}
-
 // 3D 持续定位全局状态
 export const intervalLocationState3d = {
   active: false,
   timerId: null,
-  intervalSeconds: parseInt(localStorage.getItem('location_interval') || '15', 10),
-  zoomLevel: parseInt(localStorage.getItem('location_zoom') || '16', 10),
-  maxHistoryPoints: parseInt(localStorage.getItem('location_max_points') || '0', 10),
-  recordTrack: localStorage.getItem('location_record_track') !== 'false', // 是否开启轨迹记录
-  onlyLine: localStorage.getItem('location_only_line') !== 'false', // 是否仅保留路线
-  autoRotate: localStorage.getItem('location_auto_rotate') !== 'false', // 是否自动旋转地图
+  phase: 'idle',
+  generation: 0,
+  lastSignalAt: null,
+  lastFixAt: null,
+  lastProviderTimestamp: null,
+  consecutiveTimestampAnomalies: 0,
+  consecutiveFailures: 0,
+  restartCount: 0,
+  lastError: null,
+  permissionState: 'unknown',
+  intervalSeconds: readBoundedIntegerSetting('location_interval', 15, { min: 1, max: 60 }),
+  zoomLevel: readBoundedIntegerSetting('location_zoom', 16, { min: 3, max: 18 }),
+  maxHistoryPoints: readBoundedIntegerSetting('location_max_points', 0, { min: 0, max: 100_000 }),
+  recordTrack: readLocationSetting('location_record_track', 'true') !== 'false', // 是否开启轨迹记录
+  onlyLine: readLocationSetting('location_only_line', 'true') !== 'false', // 是否仅保留路线
+  autoRotate: readLocationSetting('location_auto_rotate', 'true') !== 'false', // 是否自动旋转地图
   currentHeading: 0, // 当前运行时的车头朝向航向角 (0-360)
   recordKmlId: null, // 初始化为 null，新持续定位重新创建，防止脏 ID 残留覆盖旧轨迹
   lastPosition: null, // 存储最新的定位点数据 { lng, lat, timestamp, accuracy }
+  suspectPosition: null, // 单个异常跳点候选，连续一致时允许安全重定基准
+  lastTrackPersistAt: 0,
+  lastTrackPersistAttemptAt: 0,
+  nextTrackPersistRetryAt: 0,
+  trackPersistFailures: 0,
+  persistenceError: null,
+  recordingSession: createTrackRecordingSession(),
   historyPoints: [],  // 最近 3-5 次轨迹数据
   historyEntities: [] // 渲染在 3D 地图上的实体集合
 }
@@ -128,6 +93,129 @@ export const intervalLocationState3d = {
 try {
   localStorage.removeItem('location_record_kml_id')
 } catch (err) {}
+
+function createTrackName3d () {
+  const now = new Date()
+  return `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+}
+
+function ensureTrackKml3d (allowInactive = false) {
+  if (!intervalLocationState3d.recordTrack && !allowInactive) {
+    return null
+  }
+  if (hasTrackKml3d(intervalLocationState3d.recordKmlId)) {
+    return intervalLocationState3d.recordKmlId
+  }
+  if (intervalLocationState3d.recordKmlId) clearTrackKmlSession3d()
+
+  const kmlId = createTrackKml3d(createTrackName3d())
+  if (!kmlId) {
+    intervalLocationState3d.persistenceError = '无法创建轨迹文件'
+    return null
+  }
+
+  intervalLocationState3d.recordKmlId = kmlId
+  try {
+    localStorage.setItem('location_record_kml_id', kmlId)
+  } catch (err) {
+    intervalLocationState3d.persistenceError = '轨迹会话标识保存失败'
+  }
+  return kmlId
+}
+
+function clearTrackKmlSession3d () {
+  intervalLocationState3d.recordKmlId = null
+  intervalLocationState3d.lastTrackPersistAt = 0
+  intervalLocationState3d.lastTrackPersistAttemptAt = 0
+  intervalLocationState3d.nextTrackPersistRetryAt = 0
+  intervalLocationState3d.trackPersistFailures = 0
+  try {
+    localStorage.removeItem('location_record_kml_id')
+  } catch (err) {}
+}
+
+function resetTrackPersistBackoff3d () {
+  intervalLocationState3d.lastTrackPersistAt = 0
+  intervalLocationState3d.lastTrackPersistAttemptAt = 0
+  intervalLocationState3d.nextTrackPersistRetryAt = 0
+  intervalLocationState3d.trackPersistFailures = 0
+}
+
+function startTrackRecording3d () {
+  resumeTrackRecordingSession(intervalLocationState3d.recordingSession, {
+    currentPosition: intervalLocationState3d.lastPosition,
+    maxHistoryPoints: intervalLocationState3d.maxHistoryPoints,
+  })
+}
+
+function stopTrackRecording3d () {
+  pauseTrackRecordingSession(intervalLocationState3d.recordingSession, {
+    maxHistoryPoints: intervalLocationState3d.maxHistoryPoints,
+  })
+}
+
+function captureTrackPosition3d ({ replaceLast = false } = {}) {
+  return recordTrackPosition(
+    intervalLocationState3d.recordingSession,
+    intervalLocationState3d.lastPosition,
+    {
+      replaceLast,
+      maxHistoryPoints: intervalLocationState3d.maxHistoryPoints,
+    },
+  )
+}
+
+function markTrackPersistFailure3d (now) {
+  intervalLocationState3d.trackPersistFailures += 1
+  const retryDelay = Math.min(
+    TRACK_PERSIST_RETRY_MAX_MS,
+    TRACK_PERSIST_RETRY_BASE_MS * (2 ** Math.min(intervalLocationState3d.trackPersistFailures - 1, 10)),
+  )
+  intervalLocationState3d.nextTrackPersistRetryAt = now + retryDelay
+  intervalLocationState3d.persistenceError = '轨迹保存失败，定位仍在继续'
+}
+
+function persistTrack3d ({ force = false } = {}) {
+  if (!intervalLocationState3d.recordTrack && !force) return false
+  const now = Date.now()
+  if (intervalLocationState3d.lastTrackPersistAttemptAt &&
+      now < intervalLocationState3d.lastTrackPersistAttemptAt) {
+    intervalLocationState3d.lastTrackPersistAt = 0
+    intervalLocationState3d.nextTrackPersistRetryAt = 0
+  }
+  intervalLocationState3d.lastTrackPersistAttemptAt = now
+  if (!force && now < intervalLocationState3d.nextTrackPersistRetryAt) return false
+  if (!ensureTrackKml3d(force)) {
+    markTrackPersistFailure3d(now)
+    return false
+  }
+  const checkpointInterval = Math.max(
+    TRACK_CHECKPOINT_MIN_INTERVAL_MS,
+    Number(intervalLocationState3d.intervalSeconds || 0) * 1000
+  )
+  if (!force && intervalLocationState3d.lastTrackPersistAt &&
+      now - intervalLocationState3d.lastTrackPersistAt < checkpointInterval) {
+    return true
+  }
+
+  const recorded = getTrackRecordingPoints(intervalLocationState3d.recordingSession)
+  const saved = updateTrackKml3d(
+    intervalLocationState3d.recordKmlId,
+    recorded.historyPoints,
+    recorded.lastPosition,
+    intervalLocationState3d.onlyLine,
+    recorded.segments,
+  )
+  if (saved) {
+    intervalLocationState3d.lastTrackPersistAt = now
+    intervalLocationState3d.nextTrackPersistRetryAt = 0
+    intervalLocationState3d.trackPersistFailures = 0
+    intervalLocationState3d.persistenceError = null
+  } else {
+    markTrackPersistFailure3d(now)
+  }
+  return saved
+}
 
 // 辅助函数：触发 3D 定位扩散波纹
 function triggerRipple3d (viewer, position) {
@@ -143,7 +231,8 @@ function triggerRipple3d (viewer, position) {
     ellipse: {
       semiMajorAxis: radiusCallback,
       semiMinorAxis: radiusCallback,
-      material: colorCallback,
+      material: new ColorMaterialProperty(colorCallback),
+      height: 0,
       heightReference: HeightReference.CLAMP_TO_GROUND
     }
   })
@@ -169,14 +258,18 @@ function renderHistoryPoints3d (viewer, points) {
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
   intervalLocationState3d.historyEntities = []
 
-  const len = points.length
-  points.forEach((pt, index) => {
+  // 完整轨迹继续用于 KML；3D 场景只保留最近一段可视实体，防止长途
+  // 运行时每轮全量重建造成实体数量和主线程耗时无限增长。
+  const visiblePoints = points.slice(-MAX_RENDERED_HISTORY_POINTS)
+  const pointNumberOffset = points.length - visiblePoints.length
+  const len = visiblePoints.length
+  visiblePoints.forEach((pt, index) => {
     const opacity = len > 1
       ? 0.08 + (index / (len - 1)) * 0.27
       : 0.35
 
     let speedInfo = ''
-    let nextPt = points[index + 1]
+    let nextPt = visiblePoints[index + 1]
     if (index === len - 1 && intervalLocationState3d.lastPosition) {
       nextPt = intervalLocationState3d.lastPosition
     }
@@ -192,7 +285,7 @@ function renderHistoryPoints3d (viewer, points) {
         speedInfo = `<br>移动速度：${speedKmh.toFixed(1)} km/h (${speedMps.toFixed(1)} m/s)`
       }
     } else if (index > 0) {
-      const prevPt = points[index - 1]
+      const prevPt = visiblePoints[index - 1]
       const ptCartesian = Cartesian3.fromDegrees(pt.lng, pt.lat, 0)
       const prevCartesian = Cartesian3.fromDegrees(prevPt.lng, prevPt.lat, 0)
       const dist = Cartesian3.distance(ptCartesian, prevCartesian)
@@ -207,7 +300,7 @@ function renderHistoryPoints3d (viewer, points) {
     const timeStr = new Date(pt.timestamp).toLocaleTimeString()
     const descriptionHtml = `
       <div style="font-size: 13px; line-height: 1.5; color: #374151;">
-        <strong style="color: #0f766e;">历史定位点 #${index + 1}</strong><br>
+        <strong style="color: #0f766e;">历史定位点 #${pointNumberOffset + index + 1}</strong><br>
         定位时间：${timeStr}<br>
         定位精度：${pt.accuracy ? Math.round(pt.accuracy) + ' 米' : '未知'}${speedInfo}
       </div>
@@ -223,7 +316,7 @@ function renderHistoryPoints3d (viewer, points) {
         heightReference: HeightReference.CLAMP_TO_GROUND,
         disableDepthTestDistance: Number.POSITIVE_INFINITY
       },
-      name: `历史定位点 #${index + 1}`,
+      name: `历史定位点 #${pointNumberOffset + index + 1}`,
       description: descriptionHtml
     })
 
@@ -317,11 +410,27 @@ export function addTargetMarker3d (viewer, location, options = {}) {
   return targetEntity
 }
 
-async function getFilteredPosition3d (viewer, geolocation, customHeight, isIntervalUpdate, retryCount = 0) {
-  const result = await getBestPosition(geolocation).catch((err) => {
-    console.error('获取地理位置失败', err)
-    return null
+function waitForLocationRetry3d (signal, delay = 500) {
+  if (signal?.aborted) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', handleAbort)
+      resolve(true)
+    }, delay)
+    const handleAbort = () => {
+      clearTimeout(timer)
+      resolve(false)
+    }
+    signal?.addEventListener?.('abort', handleAbort, { once: true })
   })
+}
+
+async function getFilteredPosition3d (viewer, geolocation, customHeight, isIntervalUpdate, retryCount = 0, runtime = {}) {
+  const result = retryCount === 0 && runtime.position
+    ? runtime.position
+    : await getBestPosition(geolocation, { signal: runtime.signal })
+
+  if (runtime.signal?.aborted) return null
 
   if (!isValidPosition(result)) {
     return null
@@ -329,39 +438,77 @@ async function getFilteredPosition3d (viewer, geolocation, customHeight, isInter
 
   const mapPosition = positionToGcj02(result)
 
-  // 仅在持续定位且有上一轨迹点时，过滤突变大（>200米）的漂移脏点
+  // 动态阈值同时考虑时间、精度和合理速度；连续两个一致的新位置可以
+  // 自动重定基准，避免高速/隧道恢复后被旧 200 米阈值永久锁死。
   if (isIntervalUpdate && intervalLocationState3d.lastPosition) {
-    const ptCartesian = Cartesian3.fromDegrees(intervalLocationState3d.lastPosition.lng, intervalLocationState3d.lastPosition.lat, 0)
-    const nextCartesian = Cartesian3.fromDegrees(mapPosition.lng, mapPosition.lat, 0)
-    const dist = Cartesian3.distance(ptCartesian, nextCartesian)
-
-    if (dist > 200) {
-      console.warn(`[3D 定位] 检测到可能的漂移脏点，距离上一点 ${Math.round(dist)} 米`)
-      if (retryCount === 0) {
-        console.log('[3D 定位] 立即进行重试定位一次...')
-        await new Promise(resolve => setTimeout(resolve, 500))
-        return await getFilteredPosition3d(viewer, geolocation, customHeight, isIntervalUpdate, 1)
-      } else {
-        console.warn('[3D 定位] 重试后依然偏差过大，丢弃该定位点')
-        return null
-      }
+    const locationSample = {
+      lat: mapPosition.lat,
+      lng: mapPosition.lng,
+      accuracy: result.accuracy,
+      timestamp: Number.isFinite(Number(result.timestamp)) ? Number(result.timestamp) : Date.now(),
     }
+    const assessment = assessPositionSample({
+      lastAccepted: intervalLocationState3d.lastPosition.locationSample,
+      suspect: intervalLocationState3d.suspectPosition,
+    }, locationSample, {
+      defaultIntervalMs: intervalLocationState3d.intervalSeconds * 1000,
+    })
+
+    intervalLocationState3d.suspectPosition = assessment.suspect
+    if (!assessment.accepted) {
+      console.warn(`[3D 定位] 隔离疑似漂移点：距旧点 ${Math.round(assessment.distanceMeters || 0)} 米，动态允许 ${Math.round(assessment.allowedDistanceMeters || 0)} 米`)
+      if (retryCount === 0) {
+        const shouldRetry = await waitForLocationRetry3d(runtime.signal)
+        if (shouldRetry) {
+          return getFilteredPosition3d(viewer, geolocation, customHeight, isIntervalUpdate, 1, {
+            ...runtime,
+            position: null,
+          })
+        }
+      }
+      return null
+    }
+
+    intervalLocationState3d.suspectPosition = null
+    if (assessment.reanchored) {
+      console.info('[3D 定位] 连续新位置已确认，自动重新建立轨迹基准')
+    }
+    return { result, mapPosition, locationSample, reanchored: assessment.reanchored }
   }
 
-  return { result, mapPosition }
+  return {
+    result,
+    mapPosition,
+    locationSample: {
+      lat: mapPosition.lat,
+      lng: mapPosition.lng,
+      accuracy: result.accuracy,
+      timestamp: Number.isFinite(Number(result.timestamp)) ? Number(result.timestamp) : Date.now(),
+    },
+    reanchored: false,
+  }
 }
 
-export async function updatePosition3d (viewer, geolocation = null, customHeight = 1200, isIntervalUpdate = false) {
-  const filtered = await getFilteredPosition3d(viewer, geolocation, customHeight, isIntervalUpdate)
-
-  if (!filtered) {
-    if (!isIntervalUpdate) {
-      await showAlert('获取地理位置失败，请手动选择')
+export async function updatePosition3d (viewer, geolocation = null, customHeight = 1200, isIntervalUpdate = false, runtime = {}) {
+  let filtered = null
+  try {
+    filtered = await getFilteredPosition3d(viewer, geolocation, customHeight, isIntervalUpdate, 0, runtime)
+  } catch (err) {
+    if (!runtime.signal?.aborted) {
+      console.error(`获取地理位置失败（${String(err?.code || err?.name || 'unknown')}）`)
     }
-    return
   }
 
-  const { result, mapPosition } = filtered
+  if (!filtered) {
+    if (!isIntervalUpdate && !runtime.signal?.aborted) {
+      await showAlert('获取地理位置失败，请手动选择')
+    }
+    return false
+  }
+
+  if (runtime.signal?.aborted) return false
+
+  const { result, mapPosition, locationSample, reanchored } = filtered
   
   // 飞往位置（开启自动旋转时代入最新计算出的航向角）
   const headingVal = intervalLocationState3d.autoRotate ? (intervalLocationState3d.currentHeading || 0) : 0
@@ -380,35 +527,31 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 
     if (isStationary) {
       // 移动幅度小，不生产新轨迹点，但累计在当前位置的停留时间
-      const now = Date.now()
-      if (!intervalLocationState3d.lastPosition.firstTimestamp) {
-        intervalLocationState3d.lastPosition.firstTimestamp = intervalLocationState3d.lastPosition.timestamp
+      const currentPosition = intervalLocationState3d.lastPosition
+      if (!Number.isFinite(currentPosition.firstTimestamp)) {
+        currentPosition.firstTimestamp = currentPosition.timestamp
       }
-      intervalLocationState3d.lastPosition.staySeconds = (now - intervalLocationState3d.lastPosition.firstTimestamp) / 1000
+      currentPosition.lng = mapPosition.lng
+      currentPosition.lat = mapPosition.lat
+      currentPosition.timestamp = locationSample.timestamp
+      currentPosition.accuracy = result.accuracy
+      currentPosition.locationSample = locationSample
+      currentPosition.reanchored = reanchored
+      currentPosition.staySeconds = Math.max(
+        0,
+        (locationSample.timestamp - currentPosition.firstTimestamp) / 1000,
+      )
+      captureTrackPosition3d({ replaceLast: true })
 
       // 主定位点重新在该坐标触发扩散波纹
       addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
       triggerRipple3d(viewer, mapPosition)
 
-      // 实时同步停留时间到 KML 中
-      if (intervalLocationState3d.recordTrack) {
-        if (!intervalLocationState3d.recordKmlId) {
-          const now = new Date()
-          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-          const kmlId = createTrackKml3d(name)
-          if (kmlId) {
-            intervalLocationState3d.recordKmlId = kmlId
-            localStorage.setItem('location_record_kml_id', kmlId)
-          }
-        }
-        if (intervalLocationState3d.recordKmlId) {
-          updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
-        }
-      }
+      if (intervalLocationState3d.recordTrack) persistTrack3d()
     } else {
       // 移动幅度大，生产新点
       if (intervalLocationState3d.lastPosition) {
-        if (!intervalLocationState3d.lastPosition.firstTimestamp) {
+        if (!Number.isFinite(intervalLocationState3d.lastPosition.firstTimestamp)) {
           intervalLocationState3d.lastPosition.firstTimestamp = intervalLocationState3d.lastPosition.timestamp
         }
         if (!intervalLocationState3d.lastPosition.staySeconds) {
@@ -416,7 +559,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
         }
 
         // 自动计算旋转偏角
-        if (intervalLocationState3d.autoRotate) {
+        if (intervalLocationState3d.autoRotate && !reanchored) {
           const p1 = intervalLocationState3d.lastPosition
           const p2 = mapPosition
           if (p1 && typeof p1.lng === 'number' && typeof p1.lat === 'number') {
@@ -434,20 +577,20 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 
         intervalLocationState3d.historyPoints.push(intervalLocationState3d.lastPosition)
 
-        const maxPts = intervalLocationState3d.maxHistoryPoints || 0
-        if (maxPts > 0 && intervalLocationState3d.historyPoints.length > maxPts) {
-          intervalLocationState3d.historyPoints.shift()
-        }
+        trimTrackPointHistory(intervalLocationState3d.historyPoints, intervalLocationState3d.maxHistoryPoints)
       }
 
       intervalLocationState3d.lastPosition = {
         lng: mapPosition.lng,
         lat: mapPosition.lat,
-        timestamp: Date.now(),
-        firstTimestamp: Date.now(),
+        timestamp: locationSample.timestamp,
+        firstTimestamp: locationSample.timestamp,
         staySeconds: 0,
-        accuracy: result.accuracy
+        accuracy: result.accuracy,
+        locationSample,
+        reanchored,
       }
+      captureTrackPosition3d()
 
       // 绘制 3D 轨迹点
       renderHistoryPoints3d(viewer, intervalLocationState3d.historyPoints)
@@ -456,113 +599,191 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
       triggerRipple3d(viewer, mapPosition)
 
-      // 实时同步新点位到 KML 中
-      if (intervalLocationState3d.recordTrack) {
-        if (!intervalLocationState3d.recordKmlId) {
-          const now = new Date()
-          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-          const kmlId = createTrackKml3d(name)
-          if (kmlId) {
-            intervalLocationState3d.recordKmlId = kmlId
-            localStorage.setItem('location_record_kml_id', kmlId)
-          }
-        }
-        if (intervalLocationState3d.recordKmlId) {
-          updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
-        }
-      }
+      if (intervalLocationState3d.recordTrack) persistTrack3d()
     }
   } else {
     // 普通点定位
     addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: false })
   }
+  return true
+}
+
+let intervalLocationController3d = null
+
+function persistLocationSettings3d () {
+  try {
+    localStorage.setItem('location_interval', String(intervalLocationState3d.intervalSeconds))
+    localStorage.setItem('location_zoom', String(intervalLocationState3d.zoomLevel))
+    localStorage.setItem('location_max_points', String(intervalLocationState3d.maxHistoryPoints))
+    localStorage.setItem('location_record_track', String(intervalLocationState3d.recordTrack))
+    localStorage.setItem('location_only_line', String(intervalLocationState3d.onlyLine))
+    localStorage.setItem('location_auto_rotate', String(intervalLocationState3d.autoRotate))
+  } catch (err) {
+    console.error('保存定位设置失败', err)
+  }
+}
+
+function emitContinuousLocationState3d (snapshot) {
+  if (typeof window?.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return
+  window.dispatchEvent(new CustomEvent('continuous-location-statechange', {
+    detail: { mode: '3d', ...snapshot },
+  }))
+}
+
+function syncControllerState3d (snapshot) {
+  const previousPhase = intervalLocationState3d.phase
+  intervalLocationState3d.active = snapshot.desiredActive
+  intervalLocationState3d.phase = snapshot.phase
+  intervalLocationState3d.generation = snapshot.generation
+  intervalLocationState3d.lastSignalAt = snapshot.lastSignalAt
+  intervalLocationState3d.lastFixAt = snapshot.lastFixAt
+  intervalLocationState3d.lastProviderTimestamp = snapshot.lastProviderTimestamp
+  intervalLocationState3d.consecutiveTimestampAnomalies = snapshot.consecutiveTimestampAnomalies
+  intervalLocationState3d.consecutiveFailures = snapshot.consecutiveFailures
+  intervalLocationState3d.restartCount = snapshot.restartCount
+  intervalLocationState3d.lastError = snapshot.lastError
+  intervalLocationState3d.permissionState = snapshot.permissionState
+  intervalLocationState3d.timerId = null
+
+  if (intervalLocationState3d.recordTrack &&
+      snapshot.phase === 'suspended' && previousPhase !== 'suspended' &&
+      (intervalLocationState3d.lastPosition || intervalLocationState3d.historyPoints.length > 0)) {
+    persistTrack3d({ force: true })
+  }
+  emitContinuousLocationState3d(snapshot)
+}
+
+export function configureIntervalLocation3d (viewer, {
+  interval,
+  zoom,
+  maxHistoryPoints = intervalLocationState3d.maxHistoryPoints,
+  recordTrack = intervalLocationState3d.recordTrack,
+  onlyLine = intervalLocationState3d.onlyLine,
+  autoRotate = intervalLocationState3d.autoRotate,
+}) {
+  const wasRecording = intervalLocationState3d.recordTrack
+  let finalPersistSucceeded = wasRecording && !recordTrack &&
+    hasTrackRecordingData(intervalLocationState3d.recordingSession)
+    ? persistTrack3d({ force: true })
+    : true
+
+  const normalizedMaxHistoryPoints = normalizeHistoryPointLimit(maxHistoryPoints)
+
+  intervalLocationState3d.intervalSeconds = interval
+  intervalLocationState3d.zoomLevel = zoom
+  intervalLocationState3d.maxHistoryPoints = normalizedMaxHistoryPoints
+  intervalLocationState3d.recordTrack = recordTrack
+  intervalLocationState3d.onlyLine = onlyLine
+  intervalLocationState3d.autoRotate = autoRotate
+
+  const historyTrimmed = trimTrackPointHistory(
+    intervalLocationState3d.historyPoints,
+    normalizedMaxHistoryPoints,
+  )
+  trimTrackRecordingSession(
+    intervalLocationState3d.recordingSession,
+    normalizedMaxHistoryPoints,
+  )
+  if (historyTrimmed) renderHistoryPoints3d(viewer, intervalLocationState3d.historyPoints)
+
+  if (wasRecording && !recordTrack) {
+    stopTrackRecording3d()
+  } else if (!wasRecording && recordTrack) {
+    startTrackRecording3d()
+    resetTrackPersistBackoff3d()
+  }
+  persistLocationSettings3d()
+
+  if (recordTrack) {
+    finalPersistSucceeded = persistTrack3d({ force: true }) && finalPersistSucceeded
+  }
+  intervalLocationController3d?.configure({ intervalMs: interval * 1000 })
+  return { ...intervalLocationState3d, finalPersistSucceeded }
 }
 
 // 启动 3D 持续定位
 export function startIntervalLocation3d (viewer, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false, onlyLine = false, autoRotate = false) {
-  if (intervalLocationState3d.timerId) {
-    clearInterval(intervalLocationState3d.timerId)
-  }
+  intervalLocationController3d?.destroy()
+  intervalLocationController3d = null
 
-  // 记录到 localStorage 以便持久化记忆
-  try {
-    localStorage.setItem('location_interval', String(interval))
-    localStorage.setItem('location_zoom', String(zoom))
-    localStorage.setItem('location_max_points', String(maxHistoryPoints))
-    localStorage.setItem('location_record_track', String(recordTrack))
-    localStorage.setItem('location_only_line', String(onlyLine))
-    localStorage.setItem('location_auto_rotate', String(autoRotate))
-  } catch (err) {
-    console.error('Failed to save location settings:', err)
-  }
-
-  const height = 20000000.0 / Math.pow(2, zoom)
-
-  intervalLocationState3d.active = true
   intervalLocationState3d.intervalSeconds = interval
   intervalLocationState3d.zoomLevel = zoom
-  intervalLocationState3d.maxHistoryPoints = maxHistoryPoints
+  intervalLocationState3d.maxHistoryPoints = normalizeHistoryPointLimit(maxHistoryPoints)
   intervalLocationState3d.recordTrack = recordTrack
   intervalLocationState3d.onlyLine = onlyLine
   intervalLocationState3d.autoRotate = autoRotate
   intervalLocationState3d.currentHeading = 0
-
-  // 仅在首次启动时重新创建 KML 文件；如果中途编辑/重连则继续使用现有的 recordKmlId
-  if (recordTrack && !intervalLocationState3d.recordKmlId) {
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = String(now.getMonth() + 1).padStart(2, '0')
-    const date = String(now.getDate()).padStart(2, '0')
-    const hours = String(now.getHours()).padStart(2, '0')
-    const minutes = String(now.getMinutes()).padStart(2, '0')
-    const defaultName = `轨迹_${year}${month}${date}_${hours}${minutes}`
-    
-    const kmlId = createTrackKml3d(defaultName)
-    if (kmlId) {
-      intervalLocationState3d.recordKmlId = kmlId
-      localStorage.setItem('location_record_kml_id', kmlId)
-    }
-  }
+  intervalLocationState3d.lastTrackPersistAt = 0
+  intervalLocationState3d.persistenceError = null
+  clearTrackKmlSession3d()
 
   intervalLocationState3d.lastPosition = null
+  intervalLocationState3d.suspectPosition = null
   intervalLocationState3d.historyPoints = []
+  resetTrackRecordingSession(intervalLocationState3d.recordingSession, { active: recordTrack })
+  persistLocationSettings3d()
+  if (recordTrack) ensureTrackKml3d()
 
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
   intervalLocationState3d.historyEntities = []
 
-  // 启动音频后台保活与防止暗屏休眠的 Wake Lock
-  startKeepAlive()
-  requestWakeLock()
+  void startLocationKeepAlive()
 
-  // 立即进行首次定位
-  updatePosition3d(viewer, geolocation, height, true)
-
-  intervalLocationState3d.timerId = setInterval(() => {
-    const currentHeight = 20000000.0 / Math.pow(2, intervalLocationState3d.zoomLevel)
-    updatePosition3d(viewer, geolocation, currentHeight, true)
-  }, interval * 1000)
+  const source = createContinuousGeolocationSource(geolocation)
+  intervalLocationController3d = createContinuousLocationController({
+    source,
+    lifecycle: createLocationLifecycleTarget(),
+    intervalMs: interval * 1000,
+    positionOptions: {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 0,
+    },
+    onPosition: (position, runtime) => {
+      const currentHeight = 20000000.0 / Math.pow(2, intervalLocationState3d.zoomLevel)
+      return updatePosition3d(
+        viewer,
+        geolocation,
+        currentHeight,
+        true,
+        { ...runtime, position },
+      )
+    },
+    onStateChange: syncControllerState3d,
+  })
+  intervalLocationController3d.start()
 }
 
 // 停止 3D 持续定位
 export function stopIntervalLocation3d (viewer) {
-  if (intervalLocationState3d.timerId) {
-    clearInterval(intervalLocationState3d.timerId)
-    intervalLocationState3d.timerId = null
-  }
+  intervalLocationController3d?.stop()
+  intervalLocationController3d?.destroy()
+  intervalLocationController3d = null
 
   // 停止定位时做最后的 KML 写入，必须确保当前内存中存在至少一个定位点或历史点，防止刷新页面后由于内存清空而覆盖擦除已有的 KML 轨迹数据
-  if (intervalLocationState3d.recordTrack && intervalLocationState3d.recordKmlId && (intervalLocationState3d.historyPoints.length > 0 || intervalLocationState3d.lastPosition !== null)) {
-    updateTrackKml3d(intervalLocationState3d.recordKmlId, intervalLocationState3d.historyPoints, intervalLocationState3d.lastPosition, intervalLocationState3d.onlyLine)
+  const recorded = getTrackRecordingPoints(intervalLocationState3d.recordingSession)
+  let finalPersistSucceeded = true
+  const hasRecordedData = recorded.segments.length > 0 ||
+    recorded.historyPoints.length > 0 || recorded.lastPosition !== null
+  const needsFinalPersist = hasRecordedData && (
+    intervalLocationState3d.recordTrack ||
+    Boolean(intervalLocationState3d.persistenceError) ||
+    !hasTrackKml3d(intervalLocationState3d.recordKmlId)
+  )
+  if (needsFinalPersist) {
+    finalPersistSucceeded = persistTrack3d({ force: true })
   }
+  const finalPersistenceError = finalPersistSucceeded ? null : intervalLocationState3d.persistenceError
 
   // 停止音频后台保活并释放 Wake Lock
-  stopKeepAlive()
-  releaseWakeLock()
+  stopLocationKeepAlive()
 
   intervalLocationState3d.active = false
-  intervalLocationState3d.recordKmlId = null
-  localStorage.removeItem('location_record_kml_id')
+  intervalLocationState3d.phase = 'idle'
+  clearTrackKmlSession3d()
   intervalLocationState3d.lastPosition = null
+  intervalLocationState3d.suspectPosition = null
+  resetTrackRecordingSession(intervalLocationState3d.recordingSession)
 
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
   intervalLocationState3d.historyEntities = []
@@ -578,5 +799,9 @@ export function stopIntervalLocation3d (viewer) {
       addTargetMarker3d(viewer, { lng, lat }, { label: '当前位置', isInterval: false })
     }
   }
-}
 
+  return {
+    finalPersistSucceeded,
+    persistenceError: finalPersistenceError,
+  }
+}

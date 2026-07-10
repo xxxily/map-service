@@ -13,9 +13,14 @@ import {
   addTargetMarker,
   updatePosition,
   intervalLocationState,
+  configureIntervalLocation2d,
   startIntervalLocation2d,
   stopIntervalLocation2d
 } from './map/location.js'
+import {
+  applyContinuousLocationButtonState,
+  formatContinuousLocationState,
+} from './map/continuous-location.js'
 import { showChoiceDialog, showEditDialog, showAlert } from './ui/dialog.js'
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
@@ -25,6 +30,11 @@ import { registerServiceWorker } from './pwa.js'
 import { initKmlSupport } from './map/kml.js'
 import { initGuidelines, toggleGuidelineMode } from './map/guidelines.js'
 import { initAfterAccessCheck } from './map/access-control.js'
+import {
+  MAX_LOCATION_HISTORY_POINTS,
+  MAX_LOCATION_INTERVAL_SECONDS,
+  parseBoundedInteger,
+} from './map/location-track.js'
 
 // 优化移动端手势缩放时容易误触旋转的问题：加入旋转阈值(12度)与无缝软启动交互
 if (L.Map.TouchGestures) {
@@ -378,81 +388,63 @@ async function initLeafletMap () {
 
       if (!res) return
 
-      const interval = parseInt(res.interval, 10)
-      const zoom = parseInt(res.zoom, 10)
-      const maxHistoryPoints = parseInt(res.maxPoints, 10)
+      const interval = parseBoundedInteger(res.interval, { min: 1, max: MAX_LOCATION_INTERVAL_SECONDS })
+      const zoom = parseBoundedInteger(res.zoom, { min: 3, max: 18 })
+      const maxHistoryPoints = parseBoundedInteger(res.maxPoints, { min: 0, max: MAX_LOCATION_HISTORY_POINTS })
       const recordTrack = res.recordTrack === 'true'
       const onlyLine = res.onlyLine === 'true'
       const autoRotate = res.autoRotate === 'true'
 
-      if (isNaN(interval) || interval < 1) {
-        await showAlert('定位时间间隔必须是大于或等于 1 的正整数！')
+      if (interval === null) {
+        await showAlert(`定位时间间隔必须是 1 到 ${MAX_LOCATION_INTERVAL_SECONDS} 之间的整数！`)
         await showLocationConfigDialog()
         return
       }
 
-      if (isNaN(zoom) || zoom < 3 || zoom > 18) {
+      if (zoom === null) {
         await showAlert('图层级别必须在 3 到 18 之间！')
         await showLocationConfigDialog()
         return
       }
 
-      if (isNaN(maxHistoryPoints) || maxHistoryPoints < 0) {
-        await showAlert('记住最近点位数必须是大于或等于 0 的整数！')
+      if (maxHistoryPoints === null) {
+        await showAlert(`记住最近点位数必须是 0 到 ${MAX_LOCATION_HISTORY_POINTS} 之间的整数！`)
         await showLocationConfigDialog()
         return
       }
 
       // 如果当前定位在运行中，执行中途热编辑
       if (intervalLocationState.active) {
-        intervalLocationState.intervalSeconds = interval
-        intervalLocationState.zoomLevel = zoom
-        intervalLocationState.maxHistoryPoints = maxHistoryPoints
+        const configureResult = configureIntervalLocation2d(map, {
+          interval,
+          zoom,
+          maxHistoryPoints,
+          recordTrack,
+          onlyLine,
+          autoRotate,
+        })
 
-        // 轨迹状态从 关 -> 开
-        if (recordTrack && !intervalLocationState.recordTrack && !intervalLocationState.recordKmlId) {
-          const now = new Date()
-          const name = `轨迹_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-          const kmlId = createTrackKml2d(name)
-          if (kmlId) {
-            intervalLocationState.recordKmlId = kmlId
-            localStorage.setItem('location_record_kml_id', kmlId)
-          }
-        }
-
-        intervalLocationState.recordTrack = recordTrack
-        intervalLocationState.onlyLine = onlyLine
-        intervalLocationState.autoRotate = autoRotate
-
-        localStorage.setItem('location_interval', String(interval))
-        localStorage.setItem('location_zoom', String(zoom))
-        localStorage.setItem('location_max_points', String(maxHistoryPoints))
-        localStorage.setItem('location_record_track', String(recordTrack))
-        localStorage.setItem('location_only_line', String(onlyLine))
-        localStorage.setItem('location_auto_rotate', String(autoRotate))
-
-        if (intervalLocationState.timerId) {
-          clearInterval(intervalLocationState.timerId)
-        }
-        intervalLocationState.timerId = setInterval(() => {
-          updatePosition(map, amapGeolocation, intervalLocationState.zoomLevel, true)
-        }, interval * 1000)
-
-        // 立即同步最新的变化到 KML
-        if (intervalLocationState.recordTrack && intervalLocationState.recordKmlId) {
-          updateTrackKml2d(map, intervalLocationState.recordKmlId, intervalLocationState.historyPoints, intervalLocationState.lastPosition, intervalLocationState.onlyLine)
-        }
-
-        await showAlert('定位管理参数已更新！')
+        await showAlert(configureResult.finalPersistSucceeded === false
+          ? '定位参数已更新，但暂停前的最新轨迹未能完整保存；定位采集不受影响，请检查浏览器存储空间。'
+          : '定位管理参数已更新！')
       } else {
         startIntervalLocation2d(map, amapGeolocation, interval, zoom, maxHistoryPoints, recordTrack, onlyLine, autoRotate)
       }
     }
 
     const showLocationManageDialog = async () => {
+      const lastFixText = intervalLocationState.lastFixAt
+        ? new Date(intervalLocationState.lastFixAt).toLocaleTimeString()
+        : '尚未收到有效位置'
+      const errorText = intervalLocationState.lastError?.message
+        ? `\n最近异常：${intervalLocationState.lastError.message}`
+        : ''
+      const persistenceText = intervalLocationState.persistenceError
+        ? `\n轨迹保存：${intervalLocationState.persistenceError}`
+        : ''
       const choice = await showChoiceDialog({
         title: '定位管理',
-        message: `当前持续定位运行中：\n时间间隔：${intervalLocationState.intervalSeconds} 秒\n图层级别：${intervalLocationState.zoomLevel}\n轨迹记录：${intervalLocationState.recordTrack ? (intervalLocationState.onlyLine ? '开启 (仅路线)' : '开启 (路线和点)') : '关闭'}`,
+        message: `实际状态：${formatContinuousLocationState(intervalLocationState)}\n最后更新：${lastFixText}\n连续失败：${intervalLocationState.consecutiveFailures} 次\n自动恢复：${intervalLocationState.restartCount} 次\n时间间隔：${intervalLocationState.intervalSeconds} 秒\n图层级别：${intervalLocationState.zoomLevel}\n轨迹记录：${intervalLocationState.recordTrack ? (intervalLocationState.onlyLine ? '开启 (仅路线)' : '开启 (路线和点)') : '关闭'}${errorText}${persistenceText}`,
         choices: [
           { text: '编辑', value: 'edit', class: 'app-dialog-primary' },
           { text: '停止定位', value: 'stop', class: 'app-dialog-secondary app-dialog-danger' }
@@ -462,8 +454,10 @@ async function initLeafletMap () {
       if (choice === 'edit') {
         await showLocationConfigDialog()
       } else if (choice === 'stop') {
-        stopIntervalLocation2d(map)
-        await showAlert('持续定位已关闭')
+        const stopResult = stopIntervalLocation2d(map)
+        await showAlert(stopResult.finalPersistSucceeded === false
+          ? '持续定位已关闭，但最后一段轨迹未能完整保存，请检查浏览器存储空间。'
+          : '持续定位已关闭')
       }
     }
 
@@ -510,6 +504,11 @@ async function initLeafletMap () {
     positionBtn.addEventListener('touchmove', moveTouch, { passive: true })
     positionBtn.addEventListener('mouseleave', clearTimer)
     positionBtn.addEventListener('touchcancel', clearTimer)
+
+    window.addEventListener('continuous-location-statechange', (event) => {
+      if (event.detail?.mode !== '2d') return
+      applyContinuousLocationButtonState(positionBtn, event.detail)
+    })
   }
 
   mapMenu.addEventListener('click', (event) => {
@@ -530,12 +529,6 @@ async function initLeafletMap () {
     }
   })
 
-  // 配合 Visibility API 对黑屏/切到后台重新唤醒时的位置补偿
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && intervalLocationState.active) {
-      updatePosition(map, amapGeolocation, intervalLocationState.zoomLevel, true)
-    }
-  })
 }
 
 if (isAdminLocation(window.location)) {

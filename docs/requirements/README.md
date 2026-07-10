@@ -21,6 +21,7 @@
 - [图源管理与图层配置重构需求](./tile-source-and-layer-management.md)
 - [矢量图源渲染、预置图源库与密钥池需求](./vector-source-rendering-and-key-pool.md)
 - [功能完备地图应用建设需求](./full-featured-map-application.md)
+- [持续定位长期运行可靠性需求](./continuous-location-reliability.md)
 - [管理后台 MVP](./admin-console-mvp.md)
 - [KML 导入导出](./kml-import-export.md)
 - [KML 点位富媒体内容展示](./kml-feature-rich-content.md)

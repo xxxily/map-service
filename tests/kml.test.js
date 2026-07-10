@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { gcj02ToWgs84, wgs84ToGcj02 } from '../src/map/coord-transform.js'
+import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02 } from '../src/map/coord-transform.js'
 import { generateKmlText } from '../src/map/kml-format.js'
 
 test('WGS84 coordinates convert to GCJ-02 for AMap display and restore accurately', () => {
@@ -45,4 +45,20 @@ test('KML export is independent from file visibility state', () => {
   assert.match(kml, /<name>hidden\.kml<\/name>/)
   assert.match(kml, /<name>隐藏点位<\/name>/)
   assert.match(kml, /<coordinates>113\.264385,23\.129112,0<\/coordinates>/)
+})
+
+test('wrapped western longitudes are normalized before KML serialization', () => {
+  const wrappedLongitude = 237.5805
+  const normalized = normalizeLongitude(wrappedLongitude)
+  const coordinates = gcj02ToWgs84([normalized, 37.3352])
+  const kml = generateKmlText('western-track.kml', [{
+    type: 'Point',
+    name: '西半球轨迹点',
+    coordinates,
+  }])
+
+  assert.ok(normalized >= -180 && normalized <= 180)
+  assert.ok(Math.abs(normalized - (-122.4195)) < 1e-10)
+  assert.doesNotMatch(kml, /237\.5805/)
+  assert.match(kml, /-122\.41949/)
 })

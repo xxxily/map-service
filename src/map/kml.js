@@ -1,9 +1,15 @@
 import L from 'leaflet'
 import { showConfirm, showEditDialog, showAlert } from '../ui/dialog.js'
 import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListeners } from '../ui/controls.js'
-import { gcj02ToWgs84, wgs84ToGcj02Deep } from './coord-transform.js'
+import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from './coord-transform.js'
 import { generateKmlText, parseKML } from './kml-format.js'
 import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from './kml-content-panel.js'
+import {
+  buildTrackSegments,
+  getTrackDisplayFeatures,
+  LIVE_TRACK_RENDER_LINE_POINT_LIMIT,
+  LIVE_TRACK_RENDER_POINT_LIMIT,
+} from './location-track.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_LAST_TARGET_KEY = 'map_kml_last_target_id'
@@ -251,7 +257,12 @@ function loadFromStorage () {
   kmlList = kmlList.map(normalizeKmlFile)
   shouldSave = ensureDefaultKmlFile() || shouldSave
   if (shouldSave) {
-    saveToStorage()
+    try {
+      saveToStorage()
+    } catch (err) {
+      // Storage 被禁用时仍保留内存 KML，不能阻断地图和持续定位初始化。
+      console.error('KML 本地存储不可用，将临时使用内存模式', err)
+    }
   }
 }
 
@@ -544,7 +555,7 @@ function removeKmlLayers (map, kmlFile) {
   const targetKml = typeof kmlFile === 'string'
     ? (kmlList.find(k => k.id === kmlFile) || publicKmlList.find(k => k.id === kmlFile))
     : kmlFile
-  targetKml?.features?.forEach(feature => {
+  getTrackDisplayFeatures(targetKml).forEach(feature => {
     featureLayers.delete(feature.id)
   })
 }
@@ -565,7 +576,7 @@ function renderKmlLayers (map, kmlFile) {
   
   const group = L.featureGroup()
   
-  kmlFile.features.forEach(feat => {
+  getTrackDisplayFeatures(kmlFile).forEach(feat => {
     const layer = renderFeature(map, kmlFile, feat)
     if (layer) {
       group.addLayer(layer)
@@ -608,6 +619,7 @@ function updateKmlPanelUI (map) {
       ${kmlList.map(kmlFile => {
         const enabled = isKmlEnabled(kmlFile)
         const expanded = expandedKmlIds.has(kmlFile.id)
+        const displayFeatures = getTrackDisplayFeatures(kmlFile)
         const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
         const visibilityButton = kmlFile.isDefault
           ? ''
@@ -678,7 +690,8 @@ function updateKmlPanelUI (map) {
                 </div>
               </div>
               <div class="kml-features-list">
-                ${kmlFile.features.map(feat => {
+                ${displayFeatures.length < kmlFile.features.length ? `<div class="kml-feature-limit-note">为保证长途运行流畅，仅展示最近 ${LIVE_TRACK_RENDER_POINT_LIMIT} 个轨迹点；导出仍包含全部记录。</div>` : ''}
+                ${displayFeatures.map(feat => {
                   let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
                   if (feat.type === 'LineString') {
                     iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>'
@@ -1656,8 +1669,9 @@ function preventAllKmlPropagation (el) {
 }
 
 export function createTrackKml2d (name) {
+  let kmlFile = null
   try {
-    const kmlFile = {
+    kmlFile = {
       id: `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       name: name || '未命名轨迹',
       enabled: true,
@@ -1665,29 +1679,36 @@ export function createTrackKml2d (name) {
       theme: 'simple',
       coordCorrection: KML_COORD_CORRECTION,
       lockDrag: true, // 默认开启锁定点位移动限制，防止意外拖动
+      isLiveTrack: true,
+      renderPointLimit: LIVE_TRACK_RENDER_POINT_LIMIT,
+      renderLinePointLimit: LIVE_TRACK_RENDER_LINE_POINT_LIMIT,
       features: []
     }
     kmlList.push(kmlFile)
     saveToStorage()
     return kmlFile.id
   } catch (err) {
+    if (kmlFile) {
+      const index = kmlList.indexOf(kmlFile)
+      if (index >= 0) kmlList.splice(index, 1)
+    }
     console.error('createTrackKml2d failed:', err)
     return null
   }
 }
 
-export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyLine = false) {
+export function hasTrackKml2d (kmlId) {
+  return Boolean(kmlId && kmlList.some(kmlFile => kmlFile.id === kmlId))
+}
+
+export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyLine = false, completedSegments = []) {
   try {
     const kmlFile = kmlList.find(k => k.id === kmlId)
     if (!kmlFile) return false
 
-    const allPts = [...historyPoints]
-    if (lastPosition) {
-      allPts.push(lastPosition)
-    }
-
-    const lineCoordinates = []
-    allPts.forEach(pt => {
+    const segments = buildTrackSegments(historyPoints, lastPosition, completedSegments)
+    const allPts = segments.flat()
+    const coordinatesForPoint = (pt) => {
       let lat = null
       let lng = null
       if (pt && pt.latlng) {
@@ -1700,20 +1721,22 @@ export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyL
         }
       }
       if (typeof lat === 'number' && typeof lng === 'number') {
-        const gcj02 = [lng, lat]
-        lineCoordinates.push(gcj02ToWgs84(gcj02))
+        const gcj02 = [normalizeLongitude(lng), lat]
+        return gcj02ToWgs84(gcj02)
       }
-    })
+      return null
+    }
 
     const features = []
-
-    if (lineCoordinates.length > 1) {
+    segments.forEach((segment, segmentIndex) => {
+      const lineCoordinates = segment.map(coordinatesForPoint).filter(Boolean)
+      if (lineCoordinates.length <= 1) return
       let startTimeStr = '未知'
       let endTimeStr = '未知'
       let durationStr = '未知'
-      if (allPts.length > 0) {
-        const firstPt = allPts[0]
-        const lastPt = allPts[allPts.length - 1]
+      if (segment.length > 0) {
+        const firstPt = segment[0]
+        const lastPt = segment[segment.length - 1]
         
         const formatDateTime = (ts) => {
           const d = new Date(ts)
@@ -1745,13 +1768,13 @@ export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyL
       }
 
       features.push({
-        id: `feat-line-${Date.now()}`,
+        id: `track-line-${kmlId}-${segmentIndex}`,
         type: 'LineString',
-        name: '移动轨迹',
-        description: `开始时间：${startTimeStr}\n结束时间：${endTimeStr}\n持续时长：${durationStr}\n总记录点数：${allPts.length} 个`,
+        name: segments.length > 1 ? `移动轨迹 #${segmentIndex + 1}` : '移动轨迹',
+        description: `开始时间：${startTimeStr}\n结束时间：${endTimeStr}\n持续时长：${durationStr}\n本段记录点数：${segment.length} 个`,
         coordinates: lineCoordinates
       })
-    }
+    })
 
     if (!onlyLine) {
       allPts.forEach((pt, index) => {
@@ -1769,7 +1792,7 @@ export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyL
         if (typeof lat !== 'number' || typeof lng !== 'number') {
           return
         }
-        const gcj02 = [lng, lat]
+        const gcj02 = [normalizeLongitude(lng), lat]
         const wgs84 = gcj02ToWgs84(gcj02)
         const timeStr = new Date(pt.timestamp).toLocaleTimeString()
         
@@ -1785,7 +1808,7 @@ export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyL
         const description = `定位时间：${timeStr}\n定位精度：${pt.accuracy ? Math.round(pt.accuracy) + ' 米' : '未知'}\n停留时长：${stayInfo}`
 
         features.push({
-          id: `feat-pt-${Date.now()}-${index}`,
+          id: `track-point-${kmlId}-${index}`,
           type: 'Point',
           name: `点 #${index + 1} (${new Date(pt.timestamp).toLocaleTimeString()})`,
           description,
@@ -1794,15 +1817,27 @@ export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyL
       })
     }
 
+    // 必须在覆盖 features 前按旧 ID 清理索引；否则每轮生成的新轨迹会把旧
+    // featureLayers 引用永久遗留在 Map 中，长途运行时形成持续内存泄漏。
+    const oldFeatures = kmlFile.features
     kmlFile.features = features
-    saveToStorage()
+    try {
+      saveToStorage()
+    } catch (err) {
+      kmlFile.features = oldFeatures
+      throw err
+    }
 
-    renderKmlLayers(map, kmlFile)
-    updateKmlPanelUI(map)
+    try {
+      removeKmlLayers(map, { ...kmlFile, features: oldFeatures })
+      renderKmlLayers(map, kmlFile)
+      updateKmlPanelUI(map)
+    } catch (renderError) {
+      console.error('updateTrackKml2d render failed:', renderError)
+    }
     return true
   } catch (err) {
     console.error('updateTrackKml2d failed:', err)
     return false
   }
 }
-
