@@ -18,6 +18,9 @@
 
 当前需求文档：
 
+- [3D 相机交互与真实地形立体渲染 v2](./3d-camera-interaction-and-terrain-rendering-v2.md)（当前 3D 交互与地形专项基线）
+- [3D 地图交互与地形效果改进需求（历史）](./3d-map-interaction-and-terrain-improvements.md)
+- [3D 地图与首页功能对标需求](./3d-feature-parity-with-index.md)
 - [图源管理与图层配置重构需求](./tile-source-and-layer-management.md)
 - [矢量图源渲染、预置图源库与密钥池需求](./vector-source-rendering-and-key-pool.md)
 - [功能完备地图应用建设需求](./full-featured-map-application.md)

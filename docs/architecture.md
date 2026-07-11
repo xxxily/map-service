@@ -4,7 +4,9 @@
 
 - `service/index.js` 创建 Express 应用，挂载中间件，注册 API，服务静态资源并启动定时任务。
 - `index.html` 是 Vite 源 HTML 入口。
+- `3d.html` 是 Cesium 三维地图的 Vite HTML 入口；生产服务将 `/3d` 映射到构建后的 `3d.html`。
 - `src/main.js` 负责浏览器端地图应用启动和后台视图切换。
+- `src/3d.js` 负责三维地图启动、受控底图目录、相机模式、地形状态与三维工具编排。
 - `src/admin/` 是管理后台前端模块。
 - `service/app/` 是 `npm run build` 生成的生产静态产物，由 Express 服务。
 
@@ -14,9 +16,16 @@
 
 ```text
 index.html                 Vite HTML 入口
+3d.html                    Cesium 三维地图 HTML 入口
 src/config.js              前端运行配置
 src/main.js                应用启动和视图切换
+src/3d.js                  Cesium 三维地图启动和页面编排
 src/map/                   Leaflet 地图、定位、搜索、URL 状态
+src/map3d/                 Cesium 的 KML、辅助线、搜索、定位和相机/场景模块
+src/map3d/camera-interaction.js  指针手势分类、平移、绕点与缩放适配器
+src/map3d/scene-quality.js        受控地形 provider 与场景质量预设
+src/map3d/terrain-runtime.js      地形状态 reducer、验证规则、受限重试与统一取点降级
+src/map3d-styles.css       Cesium 页面专属样式和状态提示
 src/admin/api.js           管理后台 API 客户端
 src/admin/dashboard.js     管理后台编排层
 src/admin/layout.js        后台布局和登录页
@@ -29,8 +38,28 @@ src/styles.css             Vite 引入的全局样式
 service/app/               构建后的静态产物
 ```
 
-浏览器只保留 `/` 一个页面入口。地图是默认视图，管理后台通过 `/?view=admin`
-打开。旧的 `map.html` 和独立静态脚本已经移除。
+浏览器有两个地图入口：`/` 是 Leaflet 2D 地图，`/3d` 是 Cesium 三维地图；管理后台通过
+`/admin/<tab>` 打开。Vite 构建同时生成 `index.html` 和 `3d.html`，Express 对 HTML 入口发送
+`Cache-Control: no-cache`，避免部署后继续使用旧页面壳。旧的 `map.html` 和独立静态脚本已经移除。
+
+## 三维地图与真实地形
+
+`src/3d.js` 仅编排 Cesium Viewer、图层、页面控件和运行时状态；可独立测试的相机及场景规则拆分在
+`src/map3d/` 下，避免多组 DOM 监听器同时修改相机。
+
+- `camera-interaction.js` 接管 Cesium canvas 的 Pointer Events，并关闭会与其竞争的 Cesium 默认相机输入。普通左键拖拽和单指拖动平移；`Shift + 左键` 或中键绕开始时锁定的地表点旋转/调倾角；滚轮、触摸板与双指手势按锚点缩放。KML 与辅助线等工具模式优先于相机手势。无地表命中时，平移按相机高度、FOV 和 canvas **CSS** 尺寸换算，先限制 CSS 位移、再限制世界坐标位移，不能使用高 DPR drawing buffer 尺寸。
+- 相机、KML、辅助线和 URL 相机同步取点均优先“深度命中 → 地形射线 → 椭球体命中”；相机锚点无法取得时才使用视口中心，避免真实地形下仍固定使用椭球体。
+- `scene-quality.js` 只接受已知的 `provider` 枚举：`arcgis-terrain3d`、`cesium-world-terrain`、`maptiler-quantized-mesh`、`self-hosted`、`ellipsoid`。页面不提供任意地形 URL，也不增加 terrain relay/proxy。
+- 当前构建期默认 provider 是 `arcgis-terrain3d`，用于不自建 DEM 的 PoC。ArcGIS Terrain3D、Cesium World Terrain 和 MapTiler 的服务条款、可用性、覆盖范围与凭据必须在部署时独立审批；默认值不构成生产授权承诺。
+- `terrain-runtime.js` 的 `terrainRuntime` 与 2D/3D 操作档位独立，按 `standby`、`disabled`、`loading`、`verifying`、`active`、`degraded`、`fallback` 展示状态。加载 20 秒超时进入 fallback；验证 12 秒超时或异常保留 provider 并进入 degraded；连续 3 次瓦片错误回退椭球体。可重试的临时 fallback 在 3D 档位最多自动重试两次（1.5 秒、3 秒），手动重试会重置预算。
+- `#terrain-status-panel` 将 live status 与独立的 `#terrain-retry-btn` 分开，防止状态文本更新破坏按钮；按钮仅在 `degraded`/`fallback` 可用。超时或不可恢复错误回退椭球体，但不得影响图层、KML、辅助线和基本相机操作。
+- 场景质量预设为 `economy`、`balanced`、`quality`，分别调节分辨率上限、地形 LOD、缓存、光照、大气、阴影和后处理。当前 `auto` 规范化为 `balanced`；自动帧率降档尚未实现。用户可见质量档 UI、键盘等价控制和独立相机适配器开关属于本次待完成项，不能误记为现有能力。
+- 高程夸张按相机高度连续衰减，低空增强、约 2,000 km 及以上恢复为 `1x`。DEM 只能提供山体/沟谷起伏，不等价于城市建筑或摄影测量 3D Tiles。
+- 模式切换、平面化、山地演示和全局视角复位遵守 `prefers-reduced-motion`；方向复位的同类适配需在本次最终回归中确认。
+- Cesium 与地形服务的版权和 attribution 必须保持可见，不能用 CSS 隐藏 provider credits。
+
+地形的详细交互契约、状态机、服务边界、验收和后续决策见
+`docs/requirements/3d-camera-interaction-and-terrain-rendering-v2.md`。
 
 管理后台不是单个巨石页面，而是按职责拆分：
 

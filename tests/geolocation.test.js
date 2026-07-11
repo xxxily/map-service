@@ -5,6 +5,7 @@ import {
   getAmapPosition,
   getBestPosition,
   getBrowserPosition,
+  initAmapGeolocation,
   normalizeBrowserPosition,
   positionToGcj02,
   positionToLeafletLatLng,
@@ -35,16 +36,6 @@ function createBrowserNavigator (getCurrentPosition) {
   }
 }
 
-async function withoutWarnings (callback) {
-  const originalWarn = console.warn
-  try {
-    console.warn = () => {}
-    return await callback()
-  } finally {
-    console.warn = originalWarn
-  }
-}
-
 test('positionToGcj02 keeps AMap GCJ-02 coordinates unchanged', () => {
   const position = {
     lat: 23.129112,
@@ -58,6 +49,7 @@ test('positionToGcj02 keeps AMap GCJ-02 coordinates unchanged', () => {
     lng: position.lng,
     accuracy: undefined,
     source: 'amap',
+    coordType: 'gcj02',
     locationType: undefined,
   })
 })
@@ -76,8 +68,20 @@ test('positionToGcj02 converts browser WGS84 coordinates once', () => {
     lng: expectedLng,
     accuracy: undefined,
     source: 'browser',
+    coordType: 'gcj02',
     locationType: undefined,
   })
+})
+
+test('positionToGcj02 is idempotent after the first conversion', () => {
+  const once = positionToGcj02({
+    lat: 23.129112,
+    lng: 113.264385,
+    coordType: 'wgs84',
+    source: 'browser',
+  })
+
+  assert.deepEqual(positionToGcj02(once), once)
 })
 
 test('positionToLeafletLatLng normalizes western longitudes for wrapped map bounds', () => {
@@ -113,47 +117,32 @@ test('normalizeBrowserPosition rejects missing and out-of-range coordinates', ()
   assert.equal(normalizeBrowserPosition(createBrowserPosition({ lng: -181 })), null)
 })
 
-test('getBestPosition uses AMap first when it succeeds', async () => {
-  const geolocation = {
-    getCurrentPosition (callback) {
-      callback('complete', {
-        position: {
-          getLat: () => 23.1,
-          getLng: () => 113.2,
-        },
-        accuracy: 12,
-        location_type: 'html5',
-        timestamp: 3210,
-      })
-    },
+test('AMap geolocation disables coarse IP positioning', () => {
+  let receivedOptions = null
+  class Geolocation {
+    constructor (options) {
+      receivedOptions = options
+    }
   }
 
-  const position = await getBestPosition(geolocation)
+  initAmapGeolocation({ Geolocation })
 
-  assert.deepEqual(position, {
-    lat: 23.1,
-    lng: 113.2,
-    accuracy: 12,
-    source: 'amap',
-    coordType: 'gcj02',
-    locationType: 'html5',
-    timestamp: 3210,
-  })
+  assert.equal(receivedOptions.convert, true)
+  assert.equal(receivedOptions.noIpLocate, 3)
 })
 
-test('getBestPosition falls back to browser geolocation when AMap fails', async () => {
-  const navigatorLike = createBrowserNavigator((resolve) => {
-    resolve(createBrowserPosition({ timestamp: 4321 }))
-  })
+test('getBestPosition uses the same browser WGS84 source as continuous positioning', async () => {
+  let amapCalls = 0
   const geolocation = {
-    getCurrentPosition (callback) {
-      callback('error', { message: 'amap failed', code: 'AMAP_FAILED' })
+    getCurrentPosition () {
+      amapCalls += 1
     },
   }
+  const navigatorLike = createBrowserNavigator((resolve) => {
+    resolve(createBrowserPosition({ timestamp: 3210 }))
+  })
 
-  const position = await withoutWarnings(() => getBestPosition(geolocation, {
-    navigator: navigatorLike,
-  }))
+  const position = await getBestPosition(geolocation, { navigator: navigatorLike })
 
   assert.deepEqual(position, {
     lat: 23.1,
@@ -162,51 +151,47 @@ test('getBestPosition falls back to browser geolocation when AMap fails', async 
     source: 'browser',
     coordType: 'wgs84',
     locationType: 'html5',
-    timestamp: 4321,
+    timestamp: 3210,
   })
+  assert.equal(amapCalls, 0)
 })
 
-test('getBestPosition treats an AMap complete response with invalid coordinates as failure', async () => {
-  let browserCalls = 0
-  const navigatorLike = createBrowserNavigator((resolve) => {
-    browserCalls += 1
-    resolve(createBrowserPosition())
+test('getBestPosition does not replace a browser failure with an ambiguous AMap coordinate', async () => {
+  const browserError = { code: 2, message: 'position unavailable' }
+  const navigatorLike = createBrowserNavigator((resolve, reject) => {
+    reject(browserError)
   })
+  let amapCalls = 0
   const geolocation = {
+    getCurrentPosition () {
+      amapCalls += 1
+    },
+  }
+
+  await assert.rejects(
+    getBestPosition(geolocation, { navigator: navigatorLike }),
+    error => error === browserError,
+  )
+  assert.equal(amapCalls, 0)
+})
+
+test('getAmapPosition treats a complete response with invalid coordinates as failure', async () => {
+  await assert.rejects(getAmapPosition({
     getCurrentPosition (callback) {
       callback('complete', {
         position: { lat: 95, lng: 113.2 },
         accuracy: 10,
       })
     },
-  }
-
-  const position = await withoutWarnings(() => getBestPosition(geolocation, {
-    navigator: navigatorLike,
-  }))
-
-  assert.equal(position.source, 'browser')
-  assert.equal(browserCalls, 1)
+  }), error => error.code === 'POSITION_INVALID')
 })
 
-test('getBestPosition falls back when an AMap callback remains pending', async () => {
-  let browserCalls = 0
-  const navigatorLike = createBrowserNavigator((resolve) => {
-    browserCalls += 1
-    resolve(createBrowserPosition())
-  })
-  const geolocation = {
+test('getAmapPosition rejects when an AMap callback remains pending', async () => {
+  await assert.rejects(getAmapPosition({
     getCurrentPosition () {},
-  }
-
-  const position = await withoutWarnings(() => getBestPosition(geolocation, {
-    navigator: navigatorLike,
+  }, {
     amapDeadlineMs: 15,
-    browserDeadlineMs: 50,
-  }))
-
-  assert.equal(position.source, 'browser')
-  assert.equal(browserCalls, 1)
+  }), error => error.code === 'GEOLOCATION_TIMEOUT' && error.source === 'amap')
 })
 
 test('getBrowserPosition rejects when the browser callback remains pending', async () => {
@@ -291,37 +276,6 @@ test('browser timestamp falls back to the injected clock and native options rema
   })
 })
 
-test('AMap failures enter a finite per-instance cooldown', async () => {
-  let now = 1000
-  let amapCalls = 0
-  let browserCalls = 0
-  const geolocation = {
-    getCurrentPosition (callback) {
-      amapCalls += 1
-      callback('error', { message: 'temporary error', code: 'TEMPORARY' })
-    },
-  }
-  const navigatorLike = createBrowserNavigator((resolve) => {
-    browserCalls += 1
-    resolve(createBrowserPosition({ timestamp: now }))
-  })
-  const options = {
-    navigator: navigatorLike,
-    now: () => now,
-    amapCooldownMs: 100,
-  }
-
-  await withoutWarnings(async () => {
-    await getBestPosition(geolocation, options)
-    await getBestPosition(geolocation, options)
-    now = 1100
-    await getBestPosition(geolocation, options)
-  })
-
-  assert.equal(amapCalls, 2)
-  assert.equal(browserCalls, 3)
-})
-
 test('an aborted request rejects promptly and ignores a late browser result', async () => {
   let browserSuccess = null
   let coordinateReads = 0
@@ -353,13 +307,18 @@ test('an aborted request rejects promptly and ignores a late browser result', as
   assert.equal(coordinateReads, 0)
 })
 
-test('getBestPosition does not start browser fallback after aborting a pending AMap request', async () => {
+test('getBestPosition aborts its browser request without starting AMap', async () => {
   let browserCalls = 0
   const navigatorLike = createBrowserNavigator(() => {
     browserCalls += 1
   })
+  let amapCalls = 0
   const controller = new AbortController()
-  const promise = getBestPosition({ getCurrentPosition () {} }, {
+  const promise = getBestPosition({
+    getCurrentPosition () {
+      amapCalls += 1
+    },
+  }, {
     navigator: navigatorLike,
     signal: controller.signal,
     deadlineMs: 100,
@@ -367,7 +326,8 @@ test('getBestPosition does not start browser fallback after aborting a pending A
 
   controller.abort()
   await assert.rejects(promise, error => error.name === 'AbortError')
-  assert.equal(browserCalls, 0)
+  assert.equal(browserCalls, 1)
+  assert.equal(amapCalls, 0)
 })
 
 test('continuous source normalizes watch updates, forwards errors, and clears the native watch', () => {
@@ -509,25 +469,41 @@ test('continuous source rethrows synchronous native watch failures without a sec
   assert.deepEqual(errors, [])
 })
 
-test('continuous source can poll successfully when a watch remains silent', async () => {
+test('continuous watch and recovery poll keep the same browser coordinate contract', async () => {
+  let onNativePosition = null
+  const rawPosition = createBrowserPosition({
+    lat: 23.129112,
+    lng: 113.264385,
+    accuracy: 8,
+    timestamp: 7654,
+  })
   const navigatorLike = {
     geolocation: {
-      watchPosition () {
+      watchPosition (onPosition) {
+        onNativePosition = onPosition
         return 3
       },
       clearWatch () {},
       getCurrentPosition (resolve) {
-        resolve(createBrowserPosition({ timestamp: 7654 }))
+        resolve(rawPosition)
       },
     },
   }
-  const source = createContinuousGeolocationSource(null, { navigator: navigatorLike })
-  const watchId = source.watchPosition(() => {})
-  const position = await source.pollPosition({ deadlineMs: 50 })
+  let amapCalls = 0
+  const source = createContinuousGeolocationSource({
+    getCurrentPosition () {
+      amapCalls += 1
+    },
+  }, { navigator: navigatorLike })
+  const watchedPositions = []
+  const watchId = source.watchPosition(position => watchedPositions.push(position))
+  onNativePosition(rawPosition)
+  const polledPosition = await source.pollPosition({ deadlineMs: 50 })
 
   assert.equal(watchId, 1)
-  assert.equal(position.source, 'browser')
-  assert.equal(position.timestamp, 7654)
+  assert.deepEqual(polledPosition, watchedPositions[0])
+  assert.deepEqual(positionToGcj02(polledPosition), positionToGcj02(watchedPositions[0]))
+  assert.equal(amapCalls, 0)
 })
 
 test('continuous source permission subscription emits current state, changes, and unsubscribes', async () => {

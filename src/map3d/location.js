@@ -379,6 +379,8 @@ export function addTargetMarker3d (viewer, location, options = {}) {
         show: Boolean(options.label),
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
+      name: options.detailInfo ? (options.detailInfo.isInterval ? '设备追踪位置' : '当前定位位置') : '',
+      description: options.detailInfo ? createLocationPopupContent3d(options.detailInfo) : '',
     })
   } else {
     // 常规状态为普通点
@@ -404,10 +406,46 @@ export function addTargetMarker3d (viewer, location, options = {}) {
         show: Boolean(options.label),
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
+      name: options.detailInfo ? (options.detailInfo.isInterval ? '设备追踪位置' : '当前定位位置') : '',
+      description: options.detailInfo ? createLocationPopupContent3d(options.detailInfo) : '',
     })
   }
 
   return targetEntity
+}
+
+function createLocationPopupContent3d (info) {
+  const timeStr = new Date(info.timestamp).toLocaleTimeString()
+  const dateStr = new Date(info.timestamp).toLocaleDateString()
+  let extraHtml = ''
+  
+  if (info.isInterval) {
+    extraHtml += `<br>定位模式：持续追踪`
+    if (info.staySeconds > 0) {
+      const stayText = info.staySeconds > 60 
+        ? `${Math.floor(info.staySeconds / 60)} 分 ${Math.round(info.staySeconds % 60)} 秒`
+        : `${Math.round(info.staySeconds)} 秒`
+      extraHtml += `<br>停留时长：${stayText}`
+    }
+    if (info.speed) {
+      extraHtml += `<br>移动速度：${info.speed}`
+    }
+  } else {
+    extraHtml += `<br>定位模式：单次定位`
+  }
+
+  return `
+    <div style="font-size: 12px; line-height: 1.6; color: #374151; min-width: 180px;">
+      <strong style="color: #0f766e; font-size: 13px;">${info.isInterval ? '设备追踪位置' : '当前定位位置'}</strong><br>
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 4px 0 6px 0;">
+      经纬度 (GCJ-02)：${info.lat.toFixed(6)}, ${info.lng.toFixed(6)}<br>
+      原始经纬度 (WGS-84)：${info.rawLat.toFixed(6)}, ${info.rawLng.toFixed(6)}<br>
+      定位精度：${info.accuracy ? Math.round(info.accuracy) + ' 米' : '未知'}<br>
+      定位源：${info.source === 'browser' ? '浏览器 / GPS' : info.source}<br>
+      定位时间：${dateStr} ${timeStr}
+      ${extraHtml}
+    </div>
+  `
 }
 
 function waitForLocationRetry3d (signal, delay = 500) {
@@ -543,8 +581,20 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       )
       captureTrackPosition3d({ replaceLast: true })
 
+      const detailInfo = {
+        isInterval: true,
+        lat: mapPosition.lat,
+        lng: mapPosition.lng,
+        rawLat: result.lat,
+        rawLng: result.lng,
+        accuracy: result.accuracy,
+        source: result.source,
+        timestamp: locationSample.timestamp,
+        staySeconds: currentPosition.staySeconds,
+      }
+
       // 主定位点重新在该坐标触发扩散波纹
-      addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
+      addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true, detailInfo })
       triggerRipple3d(viewer, mapPosition)
 
       if (intervalLocationState3d.recordTrack) persistTrack3d()
@@ -595,15 +645,52 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       // 绘制 3D 轨迹点
       renderHistoryPoints3d(viewer, intervalLocationState3d.historyPoints)
 
+      let speed = ''
+      if (intervalLocationState3d.historyPoints.length > 0) {
+        const pt = intervalLocationState3d.historyPoints[intervalLocationState3d.historyPoints.length - 1]
+        const ptCartesian = Cartesian3.fromDegrees(mapPosition.lng, mapPosition.lat, 0)
+        const prevCartesian = Cartesian3.fromDegrees(pt.lng, pt.lat, 0)
+        const dist = Cartesian3.distance(ptCartesian, prevCartesian)
+        const timeDiff = Math.abs(locationSample.timestamp - pt.timestamp) / 1000
+        if (timeDiff > 0) {
+          const speedMps = dist / timeDiff
+          const speedKmh = speedMps * 3.6
+          speed = `${speedKmh.toFixed(1)} km/h (${speedMps.toFixed(1)} m/s)`
+        }
+      }
+
+      const detailInfo = {
+        isInterval: true,
+        lat: mapPosition.lat,
+        lng: mapPosition.lng,
+        rawLat: result.lat,
+        rawLng: result.lng,
+        accuracy: result.accuracy,
+        source: result.source,
+        timestamp: locationSample.timestamp,
+        staySeconds: 0,
+        speed,
+      }
+
       // 创建带呼吸的定位点及生成瞬间波纹 Entity
-      addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true })
+      addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true, detailInfo })
       triggerRipple3d(viewer, mapPosition)
 
       if (intervalLocationState3d.recordTrack) persistTrack3d()
     }
   } else {
+    const detailInfo = {
+      isInterval: false,
+      lat: mapPosition.lat,
+      lng: mapPosition.lng,
+      rawLat: result.lat,
+      rawLng: result.lng,
+      accuracy: result.accuracy,
+      source: result.source,
+      timestamp: locationSample.timestamp,
+    }
     // 普通点定位
-    addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: false })
+    addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: false, detailInfo })
   }
   return true
 }

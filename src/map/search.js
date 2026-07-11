@@ -1,5 +1,5 @@
 import L from 'leaflet'
-import { getBestPosition } from './geolocation.js'
+import { getBestPosition, positionToGcj02 } from './geolocation.js'
 import { showAlert } from '../ui/dialog.js'
 
 let currentSearchMarker = null
@@ -664,16 +664,17 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
 
       try {
         const position = await getBestPosition(amapGeolocation)
+        const mapPosition = positionToGcj02(position)
         startPoi = {
           name: '我的位置',
           location: {
-            lng: position.lng,
-            lat: position.lat,
+            lng: mapPosition.lng,
+            lat: mapPosition.lat,
           },
         }
         startInput.value = '我的位置'
         saveHistory('map_route_history', startPoi)
-        updatePickMarker(map, [position.lat, position.lng], true)
+        updatePickMarker(map, [mapPosition.lat, mapPosition.lng], true)
         if (startPoi && endPoi) {
           triggerRoutePlanning(map, AMap)
         }

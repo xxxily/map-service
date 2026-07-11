@@ -9,8 +9,6 @@ const BROWSER_GEOLOCATION_OPTIONS = {
 // 浏览器和高德自身都有 12 秒超时，但部分 WebView/插件异常时不会触发回调。
 // 应用层 deadline 略晚于底层超时，保证 Promise 最终一定结束。
 const DEFAULT_APPLICATION_DEADLINE_MS = BROWSER_GEOLOCATION_OPTIONS.timeout + 1000
-const DEFAULT_AMAP_FAILURE_COOLDOWN_MS = 30000
-const amapFailureCooldowns = new WeakMap()
 
 export function initAmapGeolocation (AMap) {
   if (!AMap?.Geolocation) {
@@ -20,6 +18,7 @@ export function initAmapGeolocation (AMap) {
 
   return new AMap.Geolocation({
     enableHighAccuracy: true,
+    noIpLocate: 3,
     timeout: 12000,
     maximumAge: 0,
     convert: true,
@@ -62,6 +61,7 @@ export function positionToGcj02 (position) {
       lng,
       accuracy: position.accuracy,
       source: position.source,
+      coordType: 'gcj02',
       locationType: position.locationType,
     }
   }
@@ -72,6 +72,7 @@ export function positionToGcj02 (position) {
     lng: convertedLng,
     accuracy: position.accuracy,
     source: position.source,
+    coordType: 'gcj02',
     locationType: position.locationType,
   }
 }
@@ -308,53 +309,10 @@ export function getBrowserPosition (options = {}) {
   }, options, 'browser')
 }
 
-function isObjectKey (value) {
-  return (typeof value === 'object' && value !== null) || typeof value === 'function'
-}
-
-function getCooldownNow (options) {
-  return resolveNow(options?.now)
-}
-
-function isAmapCoolingDown (geolocation, options) {
-  if (!isObjectKey(geolocation)) return false
-  const failure = amapFailureCooldowns.get(geolocation)
-  if (!failure) return false
-  if (failure.until <= getCooldownNow(options)) {
-    amapFailureCooldowns.delete(geolocation)
-    return false
-  }
-  return true
-}
-
-function startAmapCooldown (geolocation, options) {
-  if (!isObjectKey(geolocation)) return
-  const configured = toFiniteNumber(options?.amapCooldownMs ?? options?.cooldownMs)
-  const cooldownMs = configured !== null && configured >= 0
-    ? configured
-    : DEFAULT_AMAP_FAILURE_COOLDOWN_MS
-  if (cooldownMs === 0) {
-    amapFailureCooldowns.delete(geolocation)
-    return
-  }
-  amapFailureCooldowns.set(geolocation, {
-    until: getCooldownNow(options) + cooldownMs,
-  })
-}
-
-export async function getBestPosition (geolocation, options = {}) {
-  if (geolocation && !isAmapCoolingDown(geolocation, options)) {
-    try {
-      const position = await getAmapPosition(geolocation, options)
-      if (isObjectKey(geolocation)) amapFailureCooldowns.delete(geolocation)
-      return position
-    } catch (err) {
-      if (options.signal?.aborted || err?.name === 'AbortError') throw err
-      startAmapCooldown(geolocation, options)
-      console.warn(`高德定位失败（${String(err?.code || 'unknown')}），改用浏览器定位`)
-    }
-  }
-
+export function getBestPosition (_geolocation, options = {}) {
+  // 单次定位、持续 watch 和 watchdog 轮询统一使用浏览器 Geolocation：
+  // 它提供明确的 WGS-84 契约。高德 JSAPI 2.0 在不同运行环境中可能
+  // 返回无法可靠判定是否已经偏移的坐标，不能再用于设备位置仲裁。
   return getBrowserPosition(options)
 }
 

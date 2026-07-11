@@ -317,6 +317,11 @@ export function addTargetMarker (map, location, options = {}) {
     window.history.replaceState(null, '', `?coords=${coords}`)
   })
 
+  if (options.detailInfo) {
+    const popupContent = createLocationPopupContent(options.detailInfo)
+    marker.bindPopup(popupContent)
+  }
+
   // 播放瞬间定位更新的扩散波纹
   if (options.playRipple) {
     const rippleIcon = L.divIcon({
@@ -338,6 +343,40 @@ export function addTargetMarker (map, location, options = {}) {
   }
 
   return marker
+}
+
+function createLocationPopupContent (info) {
+  const timeStr = new Date(info.timestamp).toLocaleTimeString()
+  const dateStr = new Date(info.timestamp).toLocaleDateString()
+  let extraHtml = ''
+  
+  if (info.isInterval) {
+    extraHtml += `<br>定位模式：持续追踪`
+    if (info.staySeconds > 0) {
+      const stayText = info.staySeconds > 60 
+        ? `${Math.floor(info.staySeconds / 60)} 分 ${Math.round(info.staySeconds % 60)} 秒`
+        : `${Math.round(info.staySeconds)} 秒`
+      extraHtml += `<br>停留时长：${stayText}`
+    }
+    if (info.speed) {
+      extraHtml += `<br>移动速度：${info.speed}`
+    }
+  } else {
+    extraHtml += `<br>定位模式：单次定位`
+  }
+
+  return `
+    <div style="font-size: 12px; line-height: 1.6; color: #374151; min-width: 180px;">
+      <strong style="color: #0f766e; font-size: 13px;">${info.isInterval ? '设备追踪位置' : '当前定位位置'}</strong><br>
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 4px 0 6px 0;">
+      经纬度 (GCJ-02)：${info.lat.toFixed(6)}, ${info.lng.toFixed(6)}<br>
+      原始经纬度 (WGS-84)：${info.rawLat.toFixed(6)}, ${info.rawLng.toFixed(6)}<br>
+      定位精度：${info.accuracy ? Math.round(info.accuracy) + ' 米' : '未知'}<br>
+      定位源：${info.source === 'browser' ? '浏览器 / GPS' : info.source}<br>
+      定位时间：${dateStr} ${timeStr}
+      ${extraHtml}
+    </div>
+  `
 }
 
 function waitForLocationRetry (signal, delay = 500) {
@@ -471,8 +510,20 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
       )
       captureTrackPosition2d({ replaceLast: true })
 
+      const detailInfo = {
+        isInterval: true,
+        lat: mapPosition[0],
+        lng: mapPosition[1],
+        rawLat: result.lat,
+        rawLng: result.lng,
+        accuracy: result.accuracy,
+        source: result.source,
+        timestamp: locationSample.timestamp,
+        staySeconds: currentPosition.staySeconds,
+      }
+
       // 主 Marker 重新在该坐标触发扩散波纹
-      addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
+      addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true, detailInfo })
 
       // 节流检查点，避免 1 秒间隔的长途轨迹每秒全量序列化和重绘。
       if (intervalLocationState.recordTrack) persistTrack2d(map)
@@ -530,14 +581,49 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
       // 绘制轨迹点
       renderHistoryPoints(map, intervalLocationState.historyPoints)
 
+      let speed = ''
+      if (intervalLocationState.historyPoints.length > 0) {
+        const pt = intervalLocationState.historyPoints[intervalLocationState.historyPoints.length - 1]
+        const dist = L.latLng(mapPosition).distanceTo(L.latLng(pt.latlng))
+        const timeDiff = Math.abs(locationSample.timestamp - pt.timestamp) / 1000
+        if (timeDiff > 0) {
+          const speedMps = dist / timeDiff
+          const speedKmh = speedMps * 3.6
+          speed = `${speedKmh.toFixed(1)} km/h (${speedMps.toFixed(1)} m/s)`
+        }
+      }
+
+      const detailInfo = {
+        isInterval: true,
+        lat: mapPosition[0],
+        lng: mapPosition[1],
+        rawLat: result.lat,
+        rawLng: result.lng,
+        accuracy: result.accuracy,
+        source: result.source,
+        timestamp: locationSample.timestamp,
+        staySeconds: 0,
+        speed,
+      }
+
       // 主 Marker 呼吸灯 + 伴随扩散波纹
-      addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true })
+      addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true, detailInfo })
 
       if (intervalLocationState.recordTrack) persistTrack2d(map)
     }
   } else {
+    const detailInfo = {
+      isInterval: false,
+      lat: mapPosition[0],
+      lng: mapPosition[1],
+      rawLat: result.lat,
+      rawLng: result.lng,
+      accuracy: result.accuracy,
+      source: result.source,
+      timestamp: locationSample.timestamp,
+    }
     // 常规模式使用默认图标，不带轨迹
-    addTargetMarker(map, mapPosition, { isInterval: false, playRipple: false })
+    addTargetMarker(map, mapPosition, { isInterval: false, playRipple: false, detailInfo })
   }
   return true
 }

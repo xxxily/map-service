@@ -1,20 +1,19 @@
 import {
   Viewer,
   UrlTemplateImageryProvider,
-  Math as CesiumMath,
-  Cartesian3,
   Cartesian2,
+  Cartesian3,
   Cartographic,
   CesiumTerrainProvider,
+  ArcGISTiledElevationTerrainProvider,
   EllipsoidTerrainProvider,
   Ion,
   Terrain,
-  Matrix4,
-  HeadingPitchRange,
-  Quaternion,
-  Matrix3,
-  sampleTerrainMostDetailed
+  ShadowMode,
+  Math as CesiumMath,
+  sampleTerrainMostDetailed,
 } from 'cesium'
+import * as Cesium from 'cesium'
 import AMapLoader from '@amap/amap-jsapi-loader'
 
 import 'cesium/Source/Widgets/widgets.css'
@@ -23,7 +22,7 @@ import './map3d-styles.css'
 
 import { initAdminApp } from './admin/dashboard.js'
 import { isAdminLocation } from './admin/routes.js'
-import { amapConfig, terrainConfig } from './config.js'
+import { amapConfig, map3dCameraInteractionConfig, terrainConfig } from './config.js'
 import { initAfterAccessCheck } from './map/access-control.js'
 import { initAmapGeolocation } from './map/geolocation.js'
 import { registerServiceWorker } from './pwa.js'
@@ -47,6 +46,26 @@ import {
   MAX_LOCATION_INTERVAL_SECONDS,
   parseBoundedInteger,
 } from './map/location-track.js'
+import { installMap3dCameraInteraction } from './map3d/camera-interaction.js'
+import {
+  applySceneQuality,
+  formatTerrainStatus,
+  getHeightAdjustedExaggeration,
+  getTerrainProviderPlan,
+  normalizeQualitySelection,
+  normalizeQualityPreset,
+} from './map3d/scene-quality.js'
+import { getMotionSafeDuration } from './map3d/motion.js'
+import {
+  createTerrainRuntimeState,
+  evaluateTerrainVerification,
+  getTerrainAutoRetryDelayMs,
+  getSafeTerrainRuntimeOverride,
+  getTerrainRetryControlState,
+  pickSceneWorldPosition,
+  reduceTerrainRuntime,
+  TERRAIN_VERIFICATION_TIMEOUT_MS,
+} from './map3d/terrain-runtime.js'
 
 // 配置 Cesium 资源基础路径
 window.CESIUM_BASE_URL = '/cesium/'
@@ -164,28 +183,22 @@ let isRotating = false
 let lastTime = 0
 let interactionMode = '2d'
 let amapGeolocation = null
-let terrainRuntime = {
+let cameraInteraction = null
+let terrainRuntime = createTerrainRuntimeState()
+let terrainAutoRetry = {
   key: '',
-  terrain: null,
-  loading: false,
-  ready: false,
-  verified: false,
-  loadId: 0,
+  attempts: 0,
+  timerId: null,
 }
+let lastTerrainExaggeration = null
+let manuallySelectedTerrainQuality = null
 const spinRate = 0.035 // 自转速度（弧度/秒）
 const MIN_CAMERA_HEIGHT = 150.0
 const MAX_CAMERA_DISTANCE = 18000000.0
 const MIN_CAMERA_PITCH = CesiumMath.toRadians(-85.0)
 const MAX_CAMERA_PITCH = CesiumMath.toRadians(-15.0)
-const MOUSE_ORBIT_SENSITIVITY = 0.003
-const TOUCH_ORBIT_SENSITIVITY = 0.0042
-const PINCH_ZOOM_SENSITIVITY = 3.0
-const MAX_PINCH_ZOOM_FRACTION = 0.62
-const MAX_SINGLE_PINCH_MOVE = 4200000.0
-
-function clamp (value, min, max) {
-  return Math.max(min, Math.min(max, value))
-}
+const ARCGIS_TERRAIN3D_URL = 'https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer'
+const TERRAIN_LOAD_TIMEOUT_MS = 20_000
 
 function isMapToolInteractionActive () {
   return Boolean(
@@ -198,147 +211,15 @@ function getCameraHeight () {
   return viewer?.camera?.positionCartographic?.height || 8000000.0
 }
 
-function getCanvasCenterPosition () {
-  const canvas = viewer?.canvas
-  if (!canvas) return new Cartesian2(0, 0)
-  return new Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2)
-}
-
-function pickEllipsoidAt (screenPosition) {
-  if (!viewer || !screenPosition) return null
+function getCameraAnimationDuration (duration) {
   try {
-    return viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid)
-  } catch (err) {
-    return null
+    return getMotionSafeDuration(
+      duration,
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
+    )
+  } catch {
+    return getMotionSafeDuration(duration)
   }
-}
-
-function getOrbitTarget (screenPosition) {
-  return pickEllipsoidAt(screenPosition) || pickEllipsoidAt(getCanvasCenterPosition()) || Cartesian3.ZERO
-}
-
-function enforceCameraDistanceLimits () {
-  if (!viewer) return
-  const camera = viewer.camera
-  const distanceToCenter = Cartesian3.magnitude(camera.position)
-  if (distanceToCenter > MAX_CAMERA_DISTANCE) {
-    const normalizedPos = Cartesian3.normalize(camera.position, new Cartesian3())
-    Cartesian3.multiplyByScalar(normalizedPos, MAX_CAMERA_DISTANCE, camera.position)
-  }
-}
-
-function orbitCameraAroundTarget (targetPosition, deltaX, deltaY, sensitivity = MOUSE_ORBIT_SENSITIVITY) {
-  if (!viewer || !targetPosition) return
-  const camera = viewer.camera
-  const headingDelta = -deltaX * sensitivity
-  const pitchDelta = -deltaY * sensitivity
-  const offset = Cartesian3.subtract(camera.position, targetPosition, new Cartesian3())
-
-  const rotationAxis = Cartesian3.normalize(targetPosition, new Cartesian3())
-  if (Cartesian3.magnitude(rotationAxis) > 0.001) {
-    const quaternionHeading = Quaternion.fromAxisAngle(rotationAxis, headingDelta, new Quaternion())
-    const rotationMatrixHeading = Matrix3.fromQuaternion(quaternionHeading, new Matrix3())
-    Matrix3.multiplyByVector(rotationMatrixHeading, offset, offset)
-    Matrix3.multiplyByVector(rotationMatrixHeading, camera.direction, camera.direction)
-    Matrix3.multiplyByVector(rotationMatrixHeading, camera.up, camera.up)
-    Matrix3.multiplyByVector(rotationMatrixHeading, camera.right, camera.right)
-  }
-
-  const pitchAxis = camera.right
-  if (Cartesian3.magnitude(pitchAxis) > 0.001) {
-    const quaternionPitch = Quaternion.fromAxisAngle(pitchAxis, pitchDelta, new Quaternion())
-    const rotationMatrixPitch = Matrix3.fromQuaternion(quaternionPitch, new Matrix3())
-    Matrix3.multiplyByVector(rotationMatrixPitch, offset, offset)
-    Matrix3.multiplyByVector(rotationMatrixPitch, camera.direction, camera.direction)
-    Matrix3.multiplyByVector(rotationMatrixPitch, camera.up, camera.up)
-    Matrix3.multiplyByVector(rotationMatrixPitch, camera.right, camera.right)
-  }
-
-  Cartesian3.add(targetPosition, offset, camera.position)
-  Cartesian3.normalize(camera.direction, camera.direction)
-  Cartesian3.normalize(camera.up, camera.up)
-  Cartesian3.cross(camera.direction, camera.up, camera.right)
-  Cartesian3.normalize(camera.right, camera.right)
-
-  if (camera.pitch > MAX_CAMERA_PITCH || camera.pitch < MIN_CAMERA_PITCH) {
-    const targetPitch = clamp(camera.pitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
-    const distance = Math.max(MIN_CAMERA_HEIGHT, Cartesian3.distance(camera.position, targetPosition))
-    camera.lookAt(targetPosition, new HeadingPitchRange(camera.heading, targetPitch, distance))
-    camera.lookAtTransform(Matrix4.IDENTITY)
-  }
-
-  enforceCameraDistanceLimits()
-}
-
-function getPinchHeightFactor (height) {
-  if (height > 3000000) return 1.5
-  if (height > 300000) return 1.25
-  if (height < 1500) return 0.55
-  if (height < 10000) return 0.78
-  return 1
-}
-
-function zoomCameraAtScreenPoint (screenPosition, ratio) {
-  if (!viewer || !Number.isFinite(ratio) || ratio <= 0) return
-
-  const camera = viewer.camera
-  const height = Math.max(MIN_CAMERA_HEIGHT, getCameraHeight())
-  const zoomFraction = clamp(
-    Math.log(ratio) * PINCH_ZOOM_SENSITIVITY * getPinchHeightFactor(height),
-    -MAX_PINCH_ZOOM_FRACTION,
-    MAX_PINCH_ZOOM_FRACTION
-  )
-  if (Math.abs(zoomFraction) < 0.002) return
-
-  const targetPosition = pickEllipsoidAt(screenPosition) || pickEllipsoidAt(getCanvasCenterPosition())
-  const zoomDistance = Math.min(Math.abs(height * zoomFraction), MAX_SINGLE_PINCH_MOVE)
-
-  if (!targetPosition) {
-    if (zoomFraction > 0) {
-      camera.moveForward(zoomDistance)
-    } else {
-      camera.moveBackward(zoomDistance)
-    }
-    return
-  }
-
-  const direction = Cartesian3.subtract(targetPosition, camera.position, new Cartesian3())
-  const distanceToTarget = Cartesian3.magnitude(direction)
-  if (distanceToTarget <= 0) return
-  Cartesian3.normalize(direction, direction)
-
-  if (zoomFraction > 0) {
-    const moveDistance = Math.min(zoomDistance, Math.max(0, distanceToTarget - MIN_CAMERA_HEIGHT))
-    if (moveDistance > 0) {
-      camera.move(direction, moveDistance)
-    }
-  } else {
-    camera.move(direction, -zoomDistance)
-  }
-
-  enforceCameraDistanceLimits()
-}
-
-function panCameraByScreenDelta (previousMidpoint, currentMidpoint) {
-  if (!viewer || !previousMidpoint || !currentMidpoint) return
-  const camera = viewer.camera
-  const previousTarget = pickEllipsoidAt(previousMidpoint)
-  const currentTarget = pickEllipsoidAt(currentMidpoint)
-
-  if (previousTarget && currentTarget) {
-    const delta = Cartesian3.subtract(previousTarget, currentTarget, new Cartesian3())
-    Cartesian3.add(camera.position, delta, camera.position)
-    enforceCameraDistanceLimits()
-    return
-  }
-
-  const height = getCameraHeight()
-  const dx = currentMidpoint.x - previousMidpoint.x
-  const dy = currentMidpoint.y - previousMidpoint.y
-  const pixelScale = clamp(height * 0.0014, 0.8, 9000)
-  camera.moveRight(-dx * pixelScale)
-  camera.moveUp(dy * pixelScale)
-  enforceCameraDistanceLimits()
 }
 
 function setInteractionMode (mode, options = {}) {
@@ -346,12 +227,26 @@ function setInteractionMode (mode, options = {}) {
   const previousMode = interactionMode
   interactionMode = nextMode
   window.getMap3dInteractionMode = () => interactionMode
-  restoreDefaultControllerState()
 
   if (interactionMode === '3d') {
-    updateTerrainStatus('地形：3D 操作模式，当前使用平面底图', 'warn')
+    if (previousMode !== '3d' && options.tilt !== false) {
+      enableConfiguredTerrain()
+      const camera = viewer?.camera
+      if (camera) {
+        camera.flyTo({
+          destination: camera.position,
+          orientation: {
+            heading: camera.heading,
+            pitch: CesiumMath.toRadians(-52),
+            roll: 0,
+          },
+          duration: getCameraAnimationDuration(options.duration ?? 0.45),
+        })
+      }
+    } else if (previousMode !== '3d') {
+      enableConfiguredTerrain()
+    }
   } else {
-    useFlatTerrain('2D 平面模式')
     if (options.flatten !== false && previousMode !== '2d') {
       flattenCameraView({ keepHeading: true, duration: 0.35 })
     }
@@ -363,21 +258,16 @@ function setInteractionMode (mode, options = {}) {
   const is3d = interactionMode === '3d'
   button.classList.toggle('is-3d', is3d)
   button.setAttribute('aria-pressed', String(is3d))
+  button.setAttribute(
+    'aria-label',
+    is3d ? '当前为 3D 操作模式，切换到 2D 操作模式' : '当前为 2D 操作模式，切换到 3D 操作模式',
+  )
+  button.title = is3d ? '切换到 2D 操作模式' : '切换到 3D 操作模式'
   const text = button.querySelector('span')
   if (text) {
     text.textContent = is3d ? '3D' : '2D'
   }
   document.body.classList.toggle('map3d-interaction-3d', is3d)
-}
-
-function restoreDefaultControllerState () {
-  if (!viewer) return
-  const controller = viewer.scene.screenSpaceCameraController
-  controller.enableZoom = true
-  controller.enableTranslate = true
-  controller.enableRotate = true
-  controller.enableTilt = false
-  controller.enableLook = false
 }
 
 function flattenCameraView (options = {}) {
@@ -394,199 +284,50 @@ function flattenCameraView (options = {}) {
       pitch: CesiumMath.toRadians(-90.0),
       roll: 0.0,
     },
-    duration,
-  })
-}
-
-function installMobileGestureControls (canvas, controller) {
-  if (!canvas || !controller || !window.PointerEvent) return
-
-  const activePointers = new Map()
-  let gestureState = null
-  let savedControllerState = null
-
-  const saveAndSuspendController = () => {
-    if (!savedControllerState) {
-      savedControllerState = {
-        enableZoom: controller.enableZoom,
-        enableTranslate: controller.enableTranslate,
-        enableRotate: controller.enableRotate,
-        enableTilt: controller.enableTilt,
-      }
-    }
-    controller.enableZoom = false
-    controller.enableTranslate = false
-    controller.enableRotate = false
-    controller.enableTilt = false
-  }
-
-  const restoreController = () => {
-    if (!savedControllerState) return
-    controller.enableZoom = savedControllerState.enableZoom
-    controller.enableTranslate = savedControllerState.enableTranslate
-    controller.enableRotate = savedControllerState.enableRotate
-    controller.enableTilt = false
-    savedControllerState = null
-  }
-
-  const getFirstTwoPointers = () => Array.from(activePointers.values()).slice(0, 2)
-
-  const getMidpoint = (first, second) => new Cartesian2(
-    (first.x + second.x) / 2,
-    (first.y + second.y) / 2
-  )
-
-  const getDistance = (first, second) => Math.hypot(first.x - second.x, first.y - second.y)
-
-  const beginPinchGesture = () => {
-    const [first, second] = getFirstTwoPointers()
-    if (!first || !second) return
-    saveAndSuspendController()
-    gestureState = {
-      type: 'pinch',
-      previousDistance: Math.max(1, getDistance(first, second)),
-      previousMidpoint: getMidpoint(first, second),
-    }
-  }
-
-  const beginOrbitGesture = (point) => {
-    if (interactionMode !== '3d' || isMapToolInteractionActive()) return
-    saveAndSuspendController()
-    const screenPosition = new Cartesian2(point.x, point.y)
-    gestureState = {
-      type: 'orbit',
-      previousPosition: screenPosition,
-      targetPosition: getOrbitTarget(screenPosition),
-    }
-  }
-
-  const endGestureIfNeeded = () => {
-    if (activePointers.size === 0) {
-      gestureState = null
-      restoreController()
-      return
-    }
-
-    if (activePointers.size === 1 && gestureState?.type === 'pinch') {
-      const [point] = Array.from(activePointers.values())
-      gestureState = null
-      restoreController()
-      beginOrbitGesture(point)
-    }
-  }
-
-  canvas.addEventListener('pointerdown', (event) => {
-    if (event.pointerType !== 'touch') return
-    activePointers.set(event.pointerId, {
-      x: event.clientX,
-      y: event.clientY,
-    })
-
-    try {
-      canvas.setPointerCapture(event.pointerId)
-    } catch (err) {
-    }
-
-    if (activePointers.size >= 2) {
-      event.preventDefault()
-      beginPinchGesture()
-      return
-    }
-
-    if (interactionMode === '3d' && !isMapToolInteractionActive()) {
-      beginOrbitGesture({ x: event.clientX, y: event.clientY })
-    }
-  }, { passive: false })
-
-  canvas.addEventListener('pointermove', (event) => {
-    if (event.pointerType !== 'touch' || !activePointers.has(event.pointerId)) return
-
-    activePointers.set(event.pointerId, {
-      x: event.clientX,
-      y: event.clientY,
-    })
-
-    if (activePointers.size >= 2) {
-      event.preventDefault()
-      event.stopPropagation()
-      if (gestureState?.type !== 'pinch') {
-        beginPinchGesture()
-        return
-      }
-
-      const [first, second] = getFirstTwoPointers()
-      if (!first || !second) return
-
-      const currentDistance = Math.max(1, getDistance(first, second))
-      const currentMidpoint = getMidpoint(first, second)
-      const ratio = currentDistance / Math.max(1, gestureState.previousDistance)
-
-      zoomCameraAtScreenPoint(currentMidpoint, ratio)
-      if (interactionMode === '3d') {
-        panCameraByScreenDelta(gestureState.previousMidpoint, currentMidpoint)
-      }
-
-      gestureState.previousDistance = currentDistance
-      gestureState.previousMidpoint = currentMidpoint
-      return
-    }
-
-    if (gestureState?.type === 'orbit' && interactionMode === '3d' && !isMapToolInteractionActive()) {
-      event.preventDefault()
-      event.stopPropagation()
-      const currentPosition = new Cartesian2(event.clientX, event.clientY)
-      const deltaX = currentPosition.x - gestureState.previousPosition.x
-      const deltaY = currentPosition.y - gestureState.previousPosition.y
-      orbitCameraAroundTarget(gestureState.targetPosition, deltaX, deltaY, TOUCH_ORBIT_SENSITIVITY)
-      gestureState.previousPosition = currentPosition
-    }
-  }, { passive: false })
-
-  const onPointerEnd = (event) => {
-    if (event.pointerType !== 'touch') return
-    activePointers.delete(event.pointerId)
-    try {
-      canvas.releasePointerCapture(event.pointerId)
-    } catch (err) {
-    }
-    endGestureIfNeeded()
-  }
-
-  const cancelAllGestures = () => {
-    activePointers.clear()
-    gestureState = null
-    restoreController()
-  }
-
-  canvas.addEventListener('pointerup', onPointerEnd, { passive: false })
-  canvas.addEventListener('pointercancel', onPointerEnd, { passive: false })
-  canvas.addEventListener('pointerleave', onPointerEnd, { passive: false })
-  window.addEventListener('blur', cancelAllGestures)
-  window.addEventListener('pagehide', cancelAllGestures)
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      cancelAllGestures()
-    }
+    duration: getCameraAnimationDuration(duration),
   })
 }
 
 function updateTerrainStatus (message, state = '') {
   const statusEl = document.getElementById('terrain-status')
-  if (!statusEl) return
-  statusEl.textContent = message
-  statusEl.classList.remove('is-ready', 'is-warn', 'is-error')
-  if (state) {
-    statusEl.classList.add(`is-${state}`)
+  if (statusEl) {
+    statusEl.textContent = message
+    statusEl.classList.remove('is-ready', 'is-warn', 'is-error')
+    if (state) {
+      statusEl.classList.add(`is-${state}`)
+    }
   }
+
+  const retryButton = document.getElementById('terrain-retry-btn')
+  if (!retryButton) return
+  const control = getTerrainRetryControlState(terrainRuntime.state)
+  retryButton.hidden = control.hidden
+  retryButton.disabled = control.disabled
+  retryButton.setAttribute('aria-busy', String(control.busy))
+  retryButton.setAttribute('aria-disabled', String(control.disabled))
 }
 
 function getEffectiveTerrainConfig () {
-  const override = (typeof window !== 'undefined' && window.mapServiceTerrainConfig && typeof window.mapServiceTerrainConfig === 'object')
-    ? window.mapServiceTerrainConfig
-    : {}
+  const override = getSafeTerrainRuntimeOverride(
+    typeof window !== 'undefined' ? window.mapServiceTerrainConfig : null,
+  )
+  const provider = String(override.provider ?? terrainConfig.provider ?? 'arcgis-terrain3d')
+  const qualitySelection = normalizeQualitySelection(
+    manuallySelectedTerrainQuality ?? override.quality ?? terrainConfig.quality ?? 'auto',
+    'balanced',
+  )
   return {
     ...terrainConfig,
     ...override,
+    provider,
+    // URLs and credentials are deliberately not runtime-overridable.
+    selfHostedUrl: terrainConfig.selfHostedUrl ?? '',
+    mapTilerUrl: terrainConfig.mapTilerUrl ?? '',
+    ionToken: terrainConfig.ionToken ?? '',
+    // `auto` is a visible user choice; this release conservatively applies
+    // balanced until frame-time based adaptation is available.
+    quality: normalizeQualityPreset(qualitySelection),
+    qualitySelection,
     demoView: {
       ...terrainConfig.demoView,
       ...(override.demoView || {}),
@@ -594,143 +335,508 @@ function getEffectiveTerrainConfig () {
   }
 }
 
-function fallbackToEllipsoidTerrain (reason) {
-  if (!viewer || viewer.isDestroyed()) return
-  useFlatTerrain(`地形回退：${reason}`, 'error')
-  updateTerrainStatus(`地形：平面回退（${reason}）`, 'error')
-  console.warn('3D terrain fallback to ellipsoid:', reason)
+function applyCurrentSceneQuality () {
+  if (!viewer) return null
+  const config = getEffectiveTerrainConfig()
+  return applySceneQuality(viewer, config.quality, {
+    devicePixelRatio: window.devicePixelRatio,
+    shadowModes: ShadowMode,
+  })
 }
 
-function verifyTerrainProvider (provider, config, loadId) {
-  if (!provider || interactionMode !== '3d' || terrainRuntime.loadId !== loadId) return
-  const demoView = config.demoView || terrainConfig.demoView
-  const position = Cartographic.fromDegrees(demoView.lng, demoView.lat)
-  sampleTerrainMostDetailed(provider, [position]).then(([sample]) => {
-    if (interactionMode !== '3d' || terrainRuntime.loadId !== loadId) return
-    const height = Number(sample?.height)
-    if (Number.isFinite(height) && Math.abs(height) > 20) {
-      terrainRuntime.verified = true
-      updateTerrainStatus(`地形：真实地形已启用 · 采样 ${Math.round(height)} m · ${config.exaggeration}x`, 'ready')
-      console.info('3D terrain verified with sampled height:', height)
-    } else {
-      updateTerrainStatus('地形：已启用，但采样高度异常，可能仍是平面数据', 'warn')
-      console.warn('3D terrain sample returned an abnormal height:', height)
+const TERRAIN_QUALITY_OPTIONS = Object.freeze([
+  ['auto', '自动'],
+  ['economy', '节能'],
+  ['balanced', '均衡'],
+  ['quality', '高质量'],
+])
+
+function getTerrainQualityLabel (selection) {
+  if (selection === 'auto') return '自动（当前按均衡执行）'
+  return TERRAIN_QUALITY_OPTIONS.find(([id]) => id === selection)?.[1] || '均衡'
+}
+
+function ensureTerrainQualityControls () {
+  const existing = document.getElementById('terrain-quality-panel')
+  if (existing) return existing
+
+  const statusPanel = document.getElementById('terrain-status-panel')
+  if (!statusPanel) return null
+
+  const panel = document.createElement('section')
+  panel.id = 'terrain-quality-panel'
+  panel.className = 'terrain-quality-panel'
+  panel.setAttribute('role', 'group')
+  panel.setAttribute('aria-label', '三维地形渲染质量')
+
+  const label = document.createElement('span')
+  label.id = 'terrain-quality-label'
+  label.className = 'terrain-quality-label'
+  label.setAttribute('aria-live', 'polite')
+  panel.appendChild(label)
+
+  const options = document.createElement('div')
+  options.className = 'terrain-quality-options'
+  for (const [quality, labelText] of TERRAIN_QUALITY_OPTIONS) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.id = `terrain-quality-${quality}`
+    button.className = 'terrain-quality-btn'
+    button.dataset.terrainQuality = quality
+    button.textContent = labelText
+    button.setAttribute('aria-pressed', 'false')
+    button.setAttribute('aria-label', quality === 'auto'
+      ? '自动渲染质量，当前按均衡执行'
+      : `使用${labelText}渲染质量`)
+    button.addEventListener('click', () => setTerrainQualitySelection(quality))
+    options.appendChild(button)
+  }
+  panel.appendChild(options)
+
+  const keyboardHelp = document.createElement('p')
+  keyboardHelp.id = 'map3d-keyboard-help'
+  keyboardHelp.className = 'map3d-keyboard-help'
+  keyboardHelp.textContent = '键盘：聚焦地图后，方向键平移，+ / - 缩放；使用 2D/3D、复位和山地视角按钮调整视角。'
+  panel.appendChild(keyboardHelp)
+
+  statusPanel.insertAdjacentElement('afterend', panel)
+  return panel
+}
+
+function updateTerrainQualityControls () {
+  const panel = document.getElementById('terrain-quality-panel')
+  if (!panel) return
+  const { qualitySelection } = getEffectiveTerrainConfig()
+  const label = panel.querySelector('#terrain-quality-label')
+  if (label) label.textContent = `渲染质量：${getTerrainQualityLabel(qualitySelection)}`
+  panel.querySelectorAll('[data-terrain-quality]').forEach((button) => {
+    const selected = button.dataset.terrainQuality === qualitySelection
+    button.classList.toggle('is-selected', selected)
+    button.setAttribute('aria-pressed', String(selected))
+  })
+}
+
+function setTerrainQualitySelection (selection) {
+  manuallySelectedTerrainQuality = normalizeQualitySelection(selection, 'balanced')
+  if (terrainRuntime.terrain) {
+    applyCurrentSceneQuality()
+    updateTerrainExaggeration({ force: true })
+  }
+  updateTerrainQualityControls()
+  renderTerrainStatus()
+}
+
+function configureMapCanvasAccessibility () {
+  const canvas = viewer?.canvas
+  if (!canvas) return
+  canvas.setAttribute('aria-label', '三维地图。聚焦后可使用方向键平移，使用加号或减号缩放。')
+  const existingDescription = canvas.getAttribute('aria-describedby') || ''
+  const descriptionIds = new Set(existingDescription.split(/\s+/).filter(Boolean))
+  descriptionIds.add('map3d-keyboard-help')
+  canvas.setAttribute('aria-describedby', [...descriptionIds].join(' '))
+}
+
+function getTerrainStatusStyle (state = terrainRuntime.state) {
+  if (state === 'active') return 'ready'
+  if (state === 'fallback') return 'error'
+  return 'warn'
+}
+
+function renderTerrainStatus (detail = terrainRuntime.statusDetail || '') {
+  let safeDetail = detail
+  if (terrainRuntime.state === 'active' && terrainRuntime.verified && viewer?.scene) {
+    updateTerrainExaggeration()
+    safeDetail = `${viewer.scene.verticalExaggeration.toFixed(2)}x`
+  }
+  terrainRuntime.statusDetail = safeDetail
+  updateTerrainStatus(
+    formatTerrainStatus(terrainRuntime.state, safeDetail),
+    getTerrainStatusStyle(),
+  )
+  updateTerrainQualityControls()
+}
+
+function updateTerrainExaggeration (options = {}) {
+  const force = options.force === true
+  if (!viewer || !['verifying', 'active', 'degraded'].includes(terrainRuntime.state)) return
+  const config = getEffectiveTerrainConfig()
+  const nextExaggeration = getHeightAdjustedExaggeration(
+    getCameraHeight(),
+    config.quality,
+    config.exaggeration,
+  )
+  const currentExaggeration = Number(viewer.scene.verticalExaggeration)
+  if (!force && Number.isFinite(currentExaggeration) &&
+    Math.abs(currentExaggeration - nextExaggeration) < 0.002 &&
+    Math.abs((lastTerrainExaggeration ?? currentExaggeration) - nextExaggeration) < 0.002) {
+    return
+  }
+  viewer.scene.verticalExaggeration = nextExaggeration
+  viewer.scene.verticalExaggerationRelativeHeight = 0
+  lastTerrainExaggeration = nextExaggeration
+}
+
+function clearTerrainVerificationTimeout (runtime = terrainRuntime) {
+  if (runtime.verificationTimeoutId !== null) {
+    window.clearTimeout(runtime.verificationTimeoutId)
+    runtime.verificationTimeoutId = null
+  }
+}
+
+function clearTerrainAttemptResources (runtime = terrainRuntime) {
+  if (runtime.timeoutId !== null) {
+    window.clearTimeout(runtime.timeoutId)
+    runtime.timeoutId = null
+  }
+  clearTerrainVerificationTimeout(runtime)
+  for (const removeListener of runtime.listenerRemovers || []) {
+    try {
+      removeListener()
+    } catch {
+      // Provider completion can overlap listener cleanup.
     }
-  }).catch((err) => {
-    if (interactionMode !== '3d' || terrainRuntime.loadId !== loadId) return
-    updateTerrainStatus('地形：已启用，采样自检失败', 'warn')
-    console.warn('3D terrain sample check failed:', err)
+  }
+  runtime.listenerRemovers = []
+}
+
+function replaceTerrainRuntime (next) {
+  const loadId = terrainRuntime.loadId + 1
+  clearTerrainAttemptResources()
+  terrainRuntime = createTerrainRuntimeState({
+    ...next,
+    loadId,
+  })
+  return loadId
+}
+
+function clearTerrainAutoRetry () {
+  if (terrainAutoRetry.timerId !== null) {
+    window.clearTimeout(terrainAutoRetry.timerId)
+  }
+  terrainAutoRetry.timerId = null
+  terrainAutoRetry.nextRetryAt = 0
+}
+
+function resetTerrainAutoRetry (key = '') {
+  clearTerrainAutoRetry()
+  terrainAutoRetry = {
+    key,
+    attempts: 0,
+    timerId: null,
+    nextRetryAt: 0,
+  }
+}
+
+function ensureTerrainAutoRetryKey (key) {
+  if (terrainAutoRetry.key !== key) {
+    resetTerrainAutoRetry(key)
+  }
+}
+
+function scheduleTerrainAutoRetry (terrainKey) {
+  if (!terrainKey) return null
+  ensureTerrainAutoRetryKey(terrainKey)
+  if (terrainAutoRetry.timerId !== null) {
+    return Math.max(0, terrainAutoRetry.nextRetryAt - Date.now())
+  }
+
+  const delay = getTerrainAutoRetryDelayMs(terrainAutoRetry.attempts)
+  if (delay === null) return null
+
+  terrainAutoRetry.attempts += 1
+  terrainAutoRetry.nextRetryAt = Date.now() + delay
+  terrainAutoRetry.timerId = window.setTimeout(() => {
+    terrainAutoRetry.timerId = null
+    terrainAutoRetry.nextRetryAt = 0
+    if (!viewer || viewer.isDestroyed() || interactionMode !== '3d') return
+    if (terrainAutoRetry.key !== terrainKey || terrainRuntime.key !== terrainKey ||
+      terrainRuntime.state !== 'fallback' || terrainRuntime.autoRetryEligible !== true) {
+      return
+    }
+    enableConfiguredTerrain({ force: true, autoRetry: true })
+  }, delay)
+  return delay
+}
+
+function setEllipsoidTerrain (state, reason, options = {}) {
+  if (!viewer || viewer.isDestroyed()) return
+  const previousRuntime = terrainRuntime
+  const terrainKey = options.key ?? (state === 'fallback' ? previousRuntime.key : '')
+  const providerId = state === 'fallback'
+    ? options.providerId ?? previousRuntime.providerId
+    : 'ellipsoid'
+  const nextRuntime = reduceTerrainRuntime(createTerrainRuntimeState({
+    key: terrainKey,
+    providerId,
+    autoRetryEligible: options.autoRetryEligible === true,
+    statusDetail: reason,
+  }), {
+    type: state === 'fallback' ? 'fallback' : 'disabled',
+  })
+
+  replaceTerrainRuntime(nextRuntime)
+  // Cesium 1.142: assignment cancels `setTerrain`'s pending ready listener.
+  viewer.scene.terrainProvider = new EllipsoidTerrainProvider()
+  viewer.scene.verticalExaggeration = 1
+  viewer.scene.verticalExaggerationRelativeHeight = 0
+  lastTerrainExaggeration = 1
+  applySceneQuality(viewer, 'economy', {
+    devicePixelRatio: window.devicePixelRatio,
+    shadowModes: ShadowMode,
+  })
+  renderTerrainStatus(reason)
+}
+
+function fallbackToEllipsoidTerrain (reason = '服务不可用', options = {}) {
+  const terrainKey = options.key ?? terrainRuntime.key
+  const providerId = options.providerId ?? terrainRuntime.providerId
+  const autoRetryEligible = options.autoRetry === true
+  setEllipsoidTerrain('fallback', reason, {
+    key: terrainKey,
+    providerId,
+    autoRetryEligible,
+  })
+  console.warn('3D terrain unavailable; using ellipsoid fallback.')
+
+  if (autoRetryEligible) {
+    const delay = scheduleTerrainAutoRetry(terrainKey)
+    if (delay !== null) {
+      renderTerrainStatus(`${reason}，${Math.max(1, Math.ceil(delay / 1000))} 秒后自动重试`)
+    }
+  }
+}
+
+function useFlatTerrain (reason = '配置关闭') {
+  resetTerrainAutoRetry()
+  setEllipsoidTerrain('disabled', reason)
+}
+
+function markTerrainDegraded (detail, loadId) {
+  if (!viewer || viewer.isDestroyed() || terrainRuntime.loadId !== loadId) return false
+  clearTerrainVerificationTimeout()
+  const nextRuntime = reduceTerrainRuntime(terrainRuntime, { type: 'verification-failed' })
+  if (nextRuntime.state !== 'degraded') return false
+  terrainRuntime = nextRuntime
+  terrainRuntime.statusDetail = detail
+  updateTerrainExaggeration({ force: true })
+  renderTerrainStatus(detail)
+  return true
+}
+
+function verifyTerrainProvider (provider, loadId) {
+  if (!provider || terrainRuntime.loadId !== loadId || terrainRuntime.verificationStarted ||
+    terrainRuntime.state !== 'verifying') return
+  const samples = [
+    Cartographic.fromDegrees(86.925, 27.988),
+    Cartographic.fromDegrees(103.9, 30.5),
+  ]
+  terrainRuntime.verificationStarted = true
+  renderTerrainStatus('')
+
+  terrainRuntime.verificationTimeoutId = window.setTimeout(() => {
+    if (terrainRuntime.loadId !== loadId || terrainRuntime.state !== 'verifying') return
+    markTerrainDegraded('高程自检超时', loadId)
+  }, TERRAIN_VERIFICATION_TIMEOUT_MS)
+
+  sampleTerrainMostDetailed(provider, samples).then((results) => {
+    if (terrainRuntime.loadId !== loadId) return
+    clearTerrainVerificationTimeout()
+    if (terrainRuntime.state !== 'verifying') return
+
+    const verification = evaluateTerrainVerification(results)
+    if (!verification.verified) {
+      markTerrainDegraded('高程自检未确认', loadId)
+      return
+    }
+
+    const nextRuntime = reduceTerrainRuntime(terrainRuntime, { type: 'verification-passed' })
+    // A provider tile error may have changed the state while sampling was in flight.
+    if (nextRuntime.state !== 'active') return
+    terrainRuntime = nextRuntime
+    resetTerrainAutoRetry(terrainRuntime.key)
+    updateTerrainExaggeration({ force: true })
+    renderTerrainStatus()
+  }).catch(() => {
+    if (terrainRuntime.loadId !== loadId) return
+    clearTerrainVerificationTimeout()
+    if (terrainRuntime.state !== 'verifying') return
+    markTerrainDegraded('高程自检暂不可用', loadId)
   })
 }
 
 function getTerrainKey (config) {
   return [
     config.enabled ? '1' : '0',
-    config.provider || 'world',
-    config.url || '',
-    config.ionToken ? 'token' : 'no-token',
+    config.provider || 'arcgis-terrain3d',
+    config.selfHostedUrl || '',
+    config.mapTilerUrl || '',
+    config.ionToken || '',
   ].join('|')
 }
 
-function getTerrainExaggeration (config) {
-  const value = Number(config.exaggeration)
-  if (!Number.isFinite(value)) return 1.35
-  return clamp(value, 1, 2)
-}
-
-function useFlatTerrain (reason = '平面模式', state = 'warn') {
-  if (!viewer || viewer.isDestroyed()) return
-  terrainRuntime.loadId += 1
-  viewer.terrainProvider = new EllipsoidTerrainProvider()
-  viewer.scene.verticalExaggeration = 1
-  viewer.scene.verticalExaggerationRelativeHeight = 0
-  viewer.scene.globe.enableLighting = false
-  updateTerrainStatus(`地形：${reason}，未采样`, state)
-}
-
-function enableConfiguredTerrain () {
+function enableConfiguredTerrain (options = {}) {
   if (!viewer) return
+  const force = options.force === true
+  const manualRetry = options.manual === true
+  const autoRetry = options.autoRetry === true
   const config = getEffectiveTerrainConfig()
 
-  if (!config.enabled || config.provider === 'none') {
-    useFlatTerrain('配置关闭', 'warn')
+  if (!config.enabled || config.provider === 'none' || config.provider === 'ellipsoid') {
+    useFlatTerrain('配置关闭')
     return
   }
 
   try {
-    if (config.ionToken) {
-      Ion.defaultAccessToken = config.ionToken
+    const plan = getTerrainProviderPlan(config.provider, {
+      mapTilerUrl: config.mapTilerUrl,
+      selfHostedUrl: config.selfHostedUrl,
+    })
+    const terrainKey = getTerrainKey({
+      ...config,
+      provider: plan.id,
+      selfHostedUrl: plan.id === 'self-hosted' ? plan.url || '' : '',
+      mapTilerUrl: plan.id === 'maptiler-quantized-mesh' ? plan.url || '' : '',
+    })
+
+    if (manualRetry) {
+      resetTerrainAutoRetry(terrainKey)
+    } else if (!autoRetry) {
+      ensureTerrainAutoRetryKey(terrainKey)
     }
 
-    const terrainKey = getTerrainKey(config)
-    const loadId = terrainRuntime.loadId + 1
-    terrainRuntime.loadId = loadId
-    viewer.scene.verticalExaggeration = getTerrainExaggeration(config)
-    viewer.scene.verticalExaggerationRelativeHeight = 0
-    viewer.scene.globe.enableLighting = true
-
-    if (terrainRuntime.terrain && terrainRuntime.key === terrainKey) {
-      viewer.scene.setTerrain(terrainRuntime.terrain)
-      updateTerrainStatus(terrainRuntime.ready
-        ? `地形：真实地形已启用 · ${viewer.scene.verticalExaggeration}x`
-        : '地形：继续加载真实地形...', terrainRuntime.ready ? 'ready' : 'warn')
-      if (terrainRuntime.ready && !terrainRuntime.verified && terrainRuntime.terrain.provider) {
-        verifyTerrainProvider(terrainRuntime.terrain.provider, {
-          ...config,
-          exaggeration: viewer.scene.verticalExaggeration,
-        }, loadId)
+    // 同配置复用必须先命中缓存，且回退后只能等待受控退避或用户手动重试。
+    if (!force && terrainRuntime.key === terrainKey) {
+      if (terrainRuntime.terrain) {
+        applyCurrentSceneQuality()
+        updateTerrainExaggeration({ force: true })
+        renderTerrainStatus()
+        return
       }
+      if (terrainRuntime.state === 'fallback') {
+        if (terrainRuntime.autoRetryEligible === true) {
+          const delay = scheduleTerrainAutoRetry(terrainKey)
+          if (delay !== null) {
+            const reason = terrainRuntime.statusDetail || '服务不可用'
+            renderTerrainStatus(`${reason.split('，')[0]}，${Math.max(1, Math.ceil(delay / 1000))} 秒后自动重试`)
+            return
+          }
+        }
+        renderTerrainStatus()
+        return
+      }
+    }
+
+    if (plan.id === 'ellipsoid') {
+      fallbackToEllipsoidTerrain(plan.reason || '未配置可用地形源', {
+        key: terrainKey,
+        providerId: plan.id,
+      })
       return
     }
 
-    let terrain = null
-    if ((config.provider === 'url' || config.provider === 'self-hosted') && config.url) {
-      updateTerrainStatus('地形：加载自托管地形...', 'warn')
-      terrain = new Terrain(CesiumTerrainProvider.fromUrl(config.url, {
+    if (plan.kind === 'cesium-world' && !config.ionToken) {
+      fallbackToEllipsoidTerrain('未配置受控访问凭据', {
+        key: terrainKey,
+        providerId: plan.id,
+      })
+      return
+    }
+
+    if (plan.kind === 'cesium-world') {
+      Ion.defaultAccessToken = config.ionToken
+    }
+
+    applyCurrentSceneQuality()
+
+    let terrain
+    if (plan.kind === 'arcgis') {
+      terrain = new Terrain(ArcGISTiledElevationTerrainProvider.fromUrl(ARCGIS_TERRAIN3D_URL))
+    } else if (plan.kind === 'quantized-mesh') {
+      const terrainUrl = plan.url || ''
+      if (!terrainUrl) {
+        fallbackToEllipsoidTerrain('未配置受控地形地址', {
+          key: terrainKey,
+          providerId: plan.id,
+        })
+        return
+      }
+      terrain = new Terrain(CesiumTerrainProvider.fromUrl(terrainUrl, {
         requestWaterMask: true,
         requestVertexNormals: true,
       }))
     } else {
-      updateTerrainStatus(config.ionToken ? '地形：加载 Cesium World Terrain...' : '地形：加载 World Terrain（未配置 token）...', 'warn')
       terrain = Terrain.fromWorldTerrain({
         requestWaterMask: true,
         requestVertexNormals: true,
       })
     }
 
-    terrainRuntime = {
+    const loadId = replaceTerrainRuntime({
+      ...reduceTerrainRuntime(createTerrainRuntimeState(), { type: 'load' }),
       key: terrainKey,
       terrain,
-      loading: true,
-      ready: false,
-      verified: false,
-      loadId,
-    }
+      providerId: plan.id,
+      autoRetryEligible: false,
+      statusDetail: '',
+    })
+    renderTerrainStatus('')
 
-    terrain.readyEvent.addEventListener((provider) => {
-      if (!viewer || viewer.isDestroyed() || interactionMode !== '3d' || terrainRuntime.loadId !== loadId) return
-      terrainRuntime.ready = true
-      terrainRuntime.loading = false
-      updateTerrainStatus(`地形：真实地形已启用 · ${viewer.scene.verticalExaggeration}x`, 'ready')
-      provider.errorEvent.addEventListener((err) => {
-        if (interactionMode !== '3d') return
-        updateTerrainStatus('地形：瓦片加载异常，已继续保留当前视图', 'warn')
-        console.warn('3D terrain tile provider error:', err)
+    const timeoutId = window.setTimeout(() => {
+      if (terrainRuntime.loadId === loadId && terrainRuntime.terrain === terrain && terrainRuntime.loading) {
+        fallbackToEllipsoidTerrain('服务不可用', {
+          key: terrainKey,
+          providerId: plan.id,
+          autoRetry: true,
+        })
+      }
+    }, TERRAIN_LOAD_TIMEOUT_MS)
+    terrainRuntime.timeoutId = timeoutId
+
+    const removeReadyListener = terrain.readyEvent.addEventListener((provider) => {
+      if (!viewer || viewer.isDestroyed() || terrainRuntime.loadId !== loadId || terrainRuntime.terrain !== terrain) return
+      window.clearTimeout(timeoutId)
+      terrainRuntime.timeoutId = null
+      terrainRuntime = reduceTerrainRuntime(terrainRuntime, { type: 'ready' })
+      terrainRuntime.statusDetail = ''
+      updateTerrainExaggeration({ force: true })
+      renderTerrainStatus('')
+      const removeProviderErrorListener = provider.errorEvent.addEventListener(() => {
+        if (terrainRuntime.loadId !== loadId || terrainRuntime.terrain !== terrain) return
+        const nextRuntime = reduceTerrainRuntime(terrainRuntime, { type: 'tile-error' })
+        terrainRuntime = nextRuntime
+        if (terrainRuntime.state === 'fallback') {
+          fallbackToEllipsoidTerrain('瓦片持续加载异常', {
+            key: terrainKey,
+            providerId: plan.id,
+            autoRetry: true,
+          })
+          return
+        }
+        clearTerrainVerificationTimeout()
+        terrainRuntime.statusDetail = '瓦片加载异常'
+        updateTerrainExaggeration({ force: true })
+        renderTerrainStatus('瓦片加载异常')
+        console.warn('3D terrain tile request failed; retaining current terrain.')
       })
-      verifyTerrainProvider(provider, {
-        ...config,
-        exaggeration: viewer.scene.verticalExaggeration,
-      }, loadId)
+      terrainRuntime.listenerRemovers.push(removeProviderErrorListener)
+      verifyTerrainProvider(provider, loadId)
     })
 
-    terrain.errorEvent.addEventListener((err) => {
-      if (terrainRuntime.loadId !== loadId) return
-      fallbackToEllipsoidTerrain(err?.message || '加载失败')
+    const removeErrorListener = terrain.errorEvent.addEventListener(() => {
+      if (terrainRuntime.loadId !== loadId || terrainRuntime.terrain !== terrain) return
+      window.clearTimeout(timeoutId)
+      terrainRuntime.timeoutId = null
+      fallbackToEllipsoidTerrain('服务不可用', {
+        key: terrainKey,
+        providerId: plan.id,
+        autoRetry: true,
+      })
     })
+    terrainRuntime.listenerRemovers.push(removeReadyListener, removeErrorListener)
 
     viewer.scene.setTerrain(terrain)
-  } catch (err) {
-    fallbackToEllipsoidTerrain(err?.message || '初始化失败')
+  } catch {
+    fallbackToEllipsoidTerrain('服务不可用', { autoRetry: true })
   }
 }
 
@@ -738,7 +844,6 @@ function flyToTerrainDemoView () {
   if (!viewer) return
   const { demoView } = getEffectiveTerrainConfig()
   setInteractionMode('3d')
-  enableConfiguredTerrain()
   viewer.camera.flyTo({
     destination: Cartesian3.fromDegrees(demoView.lng, demoView.lat, demoView.height),
     orientation: {
@@ -746,7 +851,7 @@ function flyToTerrainDemoView () {
       pitch: CesiumMath.toRadians(demoView.pitch),
       roll: 0.0,
     },
-    duration: 1.6,
+    duration: getCameraAnimationDuration(1.6),
   })
 }
 
@@ -768,151 +873,47 @@ async function init3dEarth () {
     imageryProvider: false
   })
 
-  // 确保启用所有空间相机控制器（旋转、缩放、平移等）
+  // All camera input is normalized by the adapter below so Cesium defaults cannot race it.
   const controller = viewer.scene.screenSpaceCameraController
-  controller.enableZoom = true
-  controller.enableTranslate = true
-  controller.enableRotate = true // 高空下必须允许旋转（Rotate）以提供太空视角的拖拽滚动体验，防止地球成为死球
-  controller.enableLook = false
-  
-  // 默认情况下（未按住 Shift 时）关闭倾斜（Tilt），仅在低空允许平移，高空允许旋转球体。
-  let isShiftDragging = false
-  let lastMousePosition = null
-  let dragTargetPosition = null
-  let activeManualPointerId = null
-  let manual3dGestureUntil = 0
-
-  const resetManualDrag = (event = null) => {
-    if (event?.pointerId !== undefined && activeManualPointerId !== null && event.pointerId !== activeManualPointerId) {
-      return
-    }
-    if (event?.pointerId !== undefined && activeManualPointerId === null && !isShiftDragging) {
-      return
-    }
-    if (activeManualPointerId !== null && canvas) {
-      try {
-        canvas.releasePointerCapture(activeManualPointerId)
-      } catch (err) {
-      }
-    }
-    isShiftDragging = false
-    lastMousePosition = null
-    dragTargetPosition = null
-    activeManualPointerId = null
-    restoreDefaultControllerState()
-  }
-
-  // 动态控制交互权限：当按住 Shift 或使用中/右键进行手动操作时，挂起原生控制器，防止操作互斥冲突
-  const handleGestureCheck = (e) => {
-    if (e.pointerType === 'touch' || isMapToolInteractionActive()) return
-    const isShift = !!e.shiftKey
-    const isMiddle = e.button === 1
-    const isRight = e.button === 2
-    const shouldEnableManual3D = isShift || isMiddle || isRight
-
-    const targetRotateState = !shouldEnableManual3D
-    const targetTranslateState = !shouldEnableManual3D
-
-    if (controller.enableRotate !== targetRotateState || controller.enableTranslate !== targetTranslateState) {
-      controller.enableRotate = targetRotateState
-      controller.enableTranslate = targetTranslateState
-      controller.enableTilt = false // 始终让原生倾斜关闭，全权由我们更灵敏的 lookAt 接管
-    }
-  }
-
   const canvas = viewer.canvas
-  if (canvas) {
-    // 1. 监听指针按下 (拖拽开始)
-    canvas.addEventListener('pointerdown', (e) => {
-      handleGestureCheck(e)
-
-      const isShift = !!e.shiftKey
-      const shouldStartManualDrag = e.pointerType !== 'touch' &&
-        !isMapToolInteractionActive() &&
-        ((e.button === 0 && isShift) || e.button === 1 || e.button === 2)
-      if (shouldStartManualDrag) { // Shift + 左键、中键或右键进入手动 3D 调整
-        if (interactionMode === '2d') {
-          setInteractionMode('3d')
-        }
-        controller.enableRotate = false
-        controller.enableTranslate = false
-        controller.enableTilt = false
-        manual3dGestureUntil = Date.now() + 1200
-        isShiftDragging = true
-        activeManualPointerId = e.pointerId
-        lastMousePosition = new Cartesian2(e.clientX, e.clientY)
-        dragTargetPosition = getOrbitTarget(lastMousePosition)
-        try {
-          canvas.setPointerCapture(e.pointerId)
-        } catch (err) {
-        }
-      }
-    }, true)
-
-    // 2. 监听指针移动 (拖拽中)
-    canvas.addEventListener('pointermove', (e) => {
-      handleGestureCheck(e)
-
-      if (isShiftDragging && lastMousePosition && dragTargetPosition) {
-        if (typeof e.buttons === 'number' && (e.buttons & 1) === 0) {
-          resetManualDrag(e)
-          return
-        }
-        e.preventDefault()
-        e.stopPropagation()
-        // 计算当前鼠标相对上一帧屏幕坐标的位移量
-        const deltaX = e.clientX - lastMousePosition.x
-        const deltaY = e.clientY - lastMousePosition.y
-
-        // 更新上一次的屏幕坐标
-        lastMousePosition.x = e.clientX
-        lastMousePosition.y = e.clientY
-
-        orbitCameraAroundTarget(dragTargetPosition, deltaX, deltaY, MOUSE_ORBIT_SENSITIVITY)
-        manual3dGestureUntil = Date.now() + 1200
-      }
-    }, true)
-
-    // 3. 监听指针抬起 (拖拽结束)
-    canvas.addEventListener('pointerup', (e) => {
-      resetManualDrag(e)
-    }, true)
-    canvas.addEventListener('pointercancel', resetManualDrag, true)
-    canvas.addEventListener('pointerleave', resetManualDrag, true)
-    window.addEventListener('pointerup', resetManualDrag, true)
-    window.addEventListener('blur', resetManualDrag)
-    window.addEventListener('pagehide', resetManualDrag)
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        resetManualDrag()
-      }
-    })
-  }
-  installMobileGestureControls(canvas, controller)
+  controller.enableInputs = false
+  cameraInteraction?.destroy()
+  cameraInteraction = installMap3dCameraInteraction({
+    viewer,
+    cesium: Cesium,
+    canvas,
+    getNavigationMode: () => interactionMode,
+    isToolInteractionActive: isMapToolInteractionActive,
+    onNavigationModeRequest: () => setInteractionMode('3d'),
+    onCameraChanged: () => {
+      updateCameraStatus()
+      syncCameraStateToUrl()
+    },
+    minCameraHeight: MIN_CAMERA_HEIGHT,
+    maxCameraDistance: MAX_CAMERA_DISTANCE,
+    minPitch: MIN_CAMERA_PITCH,
+    maxPitch: MAX_CAMERA_PITCH,
+    // Disabled only for controlled rollout/rollback. The compatibility
+    // profile still owns predictable pan and zoom, but omits orbit/tilt.
+    advancedGestures: map3dCameraInteractionConfig.enhancedGesturesEnabled,
+  })
   setInteractionMode('2d', { flatten: false })
+  renderTerrainStatus('')
 
   // 限制最小缩放高度为 150.0 米，防止过度贴地或穿透进入地形内部
   controller.minimumZoomDistance = MIN_CAMERA_HEIGHT
 
-  // 1.1. 重写 showErrorPanel 阻止在未配置 Ion Token 时弹出报错黄条面板，改为在控制台输出
-  viewer.showErrorPanel = (title, message, error) => {
-    console.warn('Cesium non-fatal warning/error:', title, message, error)
+  // 不展示或记录上游细节，避免错误文本携带服务地址或访问凭据。
+  viewer.showErrorPanel = () => {
+    console.warn('Cesium non-fatal warning/error.')
   }
 
   // 1.6. 限制相机俯仰角（Pitch）防止视锥过长，并在高空时将视线对齐地心，防止平移将地球移出视野
   viewer.scene.preRender.addEventListener(() => {
     if (!viewer) return
     const camera = viewer.camera
-    
-    // 约束 1：限制最大偏离距离（防止太空视图下地球无限拉远缩小）
-    enforceCameraDistanceLimits()
-
-    // 约束 2：高空默认允许 rotate 旋转球体以平移视野，地球本身不会偏移出屏幕，此处无需额外逻辑
 
     if (interactionMode === '2d') {
-      if (isShiftDragging || Date.now() < manual3dGestureUntil) {
-        return
-      }
       const targetPitch = CesiumMath.toRadians(-90.0)
       if (Math.abs(camera.pitch - targetPitch) > 0.00001 || Math.abs(camera.roll) > 0.00001) {
         camera.setView({
@@ -927,117 +928,8 @@ async function init3dEarth () {
       return
     }
 
-    // 约束 3：3D 模式限制相机倾斜角（Pitch），防止过度平视导致视锥极长触发疯狂瓦片加载
-    if (camera.pitch > MAX_CAMERA_PITCH || camera.pitch < MIN_CAMERA_PITCH) {
-      const targetPitch = clamp(camera.pitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
-      camera.setView({
-        destination: camera.position,
-        orientation: {
-          heading: camera.heading,
-          pitch: targetPitch,
-          roll: camera.roll
-        }
-      })
-    }
+    updateTerrainExaggeration()
   })
-
-
-  // 1.5. 优化 macOS 触摸板（Trackpad）双指捏合缩放体验并防止高度/地底穿透越界
-  // macOS 触摸板双指捏合会派发带有 ctrlKey = true 的 wheel 事件，导致 Cesium 误判或忽略。
-  // 我们通过拦截该事件，直接基于屏幕坐标计算目标投影点，利用相机物理移动（move）实现精准的、高度自适应的“以鼠标指针为中心”的 3D 缩放。
-  // 并且内置了地表碰撞防护限制，避免相机飞入地心触发 "normalized result is not a number" 崩溃。
-  if (canvas) {
-    canvas.addEventListener('wheel', (e) => {
-      // A. 如果是按住 Shift 键的触摸板双指滑动（或鼠标滚轮滚动）
-      if (e.shiftKey && !e.ctrlKey && !isMapToolInteractionActive()) {
-        e.preventDefault()
-        if (interactionMode === '2d') {
-          setInteractionMode('3d')
-        }
-        manual3dGestureUntil = Date.now() + 1200
-
-        const camera = viewer.camera
-
-        // 1. 获取当前鼠标底下的三维世界坐标作为旋转/倾斜中心点
-        const mousePosition = new Cartesian2(e.clientX, e.clientY)
-        const targetPosition = getOrbitTarget(mousePosition)
-
-        // 2. 获取当前相机的 heading, pitch, 以及到目标点的距离 range
-        const distance = Cartesian3.distance(camera.position, targetPosition)
-        const range = Math.max(MIN_CAMERA_HEIGHT, distance) // 限制最小距离
-
-        // 3. 计算旋转和倾斜增量
-        // e.deltaX 代表水平滑动（用于旋转），deltaY 代表垂直滑动（用于倾斜视角）
-        const sens = 0.002 // 敏感度系数
-        let headingDelta = -e.deltaX * sens
-        let pitchDelta = -e.deltaY * sens
-
-        // 计算新的角度
-        let newHeading = camera.heading + headingDelta
-        let newPitch = camera.pitch + pitchDelta
-
-        // 限制倾斜角范围，防止穿透或者过度平视
-        newPitch = clamp(newPitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
-
-        // 4. 让相机绕着 targetPosition 进行中心偏航和俯仰，并释放锁定
-        camera.lookAt(targetPosition, new HeadingPitchRange(newHeading, newPitch, range))
-        camera.lookAtTransform(Matrix4.IDENTITY)
-        return
-      }
-
-      if (e.ctrlKey) {
-        e.preventDefault()
-
-        const camera = viewer.camera
-        const scene = viewer.scene
-
-        // 1. 获取鼠标在屏幕上的坐标
-        const mousePosition = new Cartesian2(e.clientX, e.clientY)
-
-        // 2. 将屏幕坐标转换为地球表面的三维世界坐标（以椭球体上交点为缩放中心点）
-        const targetPosition = camera.pickEllipsoid(mousePosition, scene.globe.ellipsoid)
-
-        // 3. 计算相机当前高度，用于自适应缩放步长
-        const height = camera.positionCartographic ? camera.positionCartographic.height : 8000000.0
-
-        if (!targetPosition) {
-          // 如果鼠标没有指向地球表面，则直接沿着相机的朝向（方向向量）进行缩放移动
-          const zoomAmount = height * 0.05
-          if (e.deltaY < 0) {
-            camera.moveForward(zoomAmount)
-          } else {
-            camera.moveBackward(zoomAmount)
-          }
-          return
-        }
-
-        // 4. 自适应缩放比例：根据高度进行动态百分比缩放。
-        // 根据 deltaY 的大小来决定单次滚动的缩放百分比，通常限制在高度的 3% - 18% 之间
-        const zoomPercentage = Math.min(0.18, Math.max(0.03, Math.abs(e.deltaY) * 0.025))
-        const zoomAmount = height * zoomPercentage
-
-        // 5. 计算方向向量
-        const direction = Cartesian3.subtract(targetPosition, camera.position, new Cartesian3())
-        const distance = Cartesian3.magnitude(direction)
-
-        // 归一化方向向量
-        Cartesian3.normalize(direction, direction)
-
-        if (e.deltaY < 0) {
-          // 放大：朝向目标点移动，但最多只能移到距离目标点 120 米处，防止穿透地表
-          const maxMoveDistance = Math.max(0.0, distance - 120.0)
-          const moveDistance = Math.min(zoomAmount, maxMoveDistance)
-          if (moveDistance > 0) {
-            camera.move(direction, moveDistance)
-          }
-        } else {
-          // 缩小：背离目标点移动，限制单次最大位移
-          const moveDistance = Math.min(zoomAmount, 3000000.0)
-          camera.move(direction, -moveDistance)
-        }
-      }
-    }, { passive: false })
-  }
 
   // 2. 动态加载底图（自适应读取 URL 或本地图层缓存，从 `/api/v1/map/catalog` 异步获取图层列表）
   let defaultLayerId = 'amap-hybrid'
@@ -1213,7 +1105,7 @@ function resetCameraView () {
       pitch: CesiumMath.toRadians(-90.0),
       roll: 0.0
     },
-    duration: 2.0
+    duration: getCameraAnimationDuration(2.0)
   })
 }
 
@@ -1283,12 +1175,13 @@ const syncCameraStateToUrl = debounce(() => {
   // 1. 计算当前视口中心点投影到地球表面的三维世界坐标
   const canvas = viewer.canvas
   const centerScreenPos = new Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2)
-  let centerCartesian = camera.pickEllipsoid(centerScreenPos, scene.globe.ellipsoid)
+  let centerCartesian = pickSceneWorldPosition(camera, scene, centerScreenPos)
   if (!centerCartesian) {
     centerCartesian = camera.position // 若无交点（外太空远景），回退至相机物理位置
   }
 
-  const cartographic = scene.globe.ellipsoid.cartesianToCartographic(centerCartesian)
+  const cartographic = scene.globe?.ellipsoid?.cartesianToCartographic?.(centerCartesian)
+  if (!cartographic || !Number.isFinite(cartographic.latitude) || !Number.isFinite(cartographic.longitude)) return
   const lat = CesiumMath.toDegrees(cartographic.latitude)
   const lng = CesiumMath.toDegrees(cartographic.longitude)
 
@@ -1358,11 +1251,24 @@ function bindUiEvents () {
   const layerControlPanel = document.getElementById('map3d-layer-control')
   if (!menu) return
 
+  ensureTerrainQualityControls()
+  configureMapCanvasAccessibility()
+  updateTerrainQualityControls()
+
   const modeToggleBtn = document.getElementById('map3d-mode-toggle')
   if (modeToggleBtn) {
     modeToggleBtn.addEventListener('click', () => {
       setInteractionMode(interactionMode === '3d' ? '2d' : '3d')
     })
+  }
+
+  const terrainRetryBtn = document.getElementById('terrain-retry-btn')
+  if (terrainRetryBtn) {
+    terrainRetryBtn.addEventListener('click', () => {
+      if (terrainRetryBtn.disabled) return
+      enableConfiguredTerrain({ force: true, manual: true })
+    })
+    renderTerrainStatus()
   }
 
   // 1. 图层面板选项切换绑定（Radio 方式，对齐 2D 底层逻辑）
@@ -1457,7 +1363,7 @@ function bindUiEvents () {
           pitch: camera.pitch,
           roll: camera.roll
         },
-        duration: 0.6
+        duration: getCameraAnimationDuration(0.6)
       })
     })
   }

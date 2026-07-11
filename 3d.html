@@ -52,7 +52,10 @@
       <span>2D</span>
     </button>
 
-    <div id="terrain-status" class="terrain-status" role="status" aria-live="polite">地形：初始化</div>
+    <div id="terrain-status-panel" class="terrain-status-panel">
+      <div id="terrain-status" class="terrain-status" role="status" aria-live="polite" aria-atomic="true">地形：等待进入 3D 模式</div>
+      <button type="button" id="terrain-retry-btn" class="terrain-retry-btn" aria-describedby="terrain-status" aria-label="重新加载地形" hidden>重试</button>
+    </div>
 
     <!-- 仿 Leaflet 的右上角图层控制面板（完全继承 styles.css 中 Leaflet 控件的暗黑毛玻璃风格） -->
     <div id="map3d-layer-control" class="leaflet-control-layers" style="position: fixed; top: calc(var(--control-top-desktop) - 4px); right: calc(var(--safe-area-right) + 16px); z-index: 9999; display: none;">
@@ -206,7 +209,7 @@
     </aside>
 
     <!-- 相机姿态与高度定位信息 -->
-    <div id="camera-status" class="camera-status" style="position: fixed; left: calc(var(--safe-area-left) + 8px); bottom: calc(var(--safe-area-bottom) + 26px); z-index: 800; color: rgba(29, 42, 46, 0.42); font-size: 10px; pointer-events: none;">正在定位相机...</div>
+    <div id="camera-status" class="camera-status">正在定位相机...</div>
 
     <div id="app-version" aria-label="当前版本"></div>
     <main id="admin-root" hidden></main>
