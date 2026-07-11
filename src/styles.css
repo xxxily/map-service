@@ -592,6 +592,10 @@ body.admin-view #footer-bar {
   position: relative;
 }
 
+#map-menu button[data-location-phase="tracking"]::after {
+  display: none !important;
+}
+
 #map-menu button[data-location-label]:not([data-location-phase="idle"])::after {
   position: absolute;
   top: 50%;
@@ -652,7 +656,7 @@ body.admin-view #footer-bar {
   font-size: 10px;
   line-height: 1;
   letter-spacing: 0;
-  background-color: rgba(0, 0, 0, 0.6);
+  background-color: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -670,7 +674,7 @@ body.admin-view #footer-bar {
 }
 
 #footer-bar:hover {
-  background-color: rgba(0, 0, 0, 0.8);
+  background-color: rgba(0, 0, 0, 0.65);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
   border-color: rgba(255, 255, 255, 0.3);
   color: #ffffff;
@@ -684,7 +688,7 @@ body.admin-view #footer-bar {
   max-height: 280px;
   z-index: 9999;
   box-sizing: border-box;
-  background-color: rgba(0, 0, 0, 0.75);
+  background-color: rgba(0, 0, 0, 0.55);
   backdrop-filter: saturate(120%) blur(16px);
   -webkit-backdrop-filter: saturate(120%) blur(16px);
   border: 1px solid rgba(255, 255, 255, 0.12);

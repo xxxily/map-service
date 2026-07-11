@@ -599,7 +599,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       }
 
       // 主定位点重新在该坐标触发扩散波纹
-      addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true, detailInfo })
+      addTargetMarker3d(viewer, mapPosition, { label: '', isInterval: true, detailInfo })
       triggerRipple3d(viewer, mapPosition)
       updateLocationStatusBar3d('持续定位中', result.accuracy, locationSample.timestamp)
       addPanelHistoryRecord3d({
@@ -684,7 +684,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       }
 
       // 创建带呼吸的定位点及生成瞬间波纹 Entity
-      addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true, detailInfo })
+      addTargetMarker3d(viewer, mapPosition, { label: '', isInterval: true, detailInfo })
       triggerRipple3d(viewer, mapPosition)
       updateLocationStatusBar3d('持续定位中', result.accuracy, locationSample.timestamp)
       addPanelHistoryRecord3d({
