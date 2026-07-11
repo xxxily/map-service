@@ -211,7 +211,11 @@
     <!-- 相机姿态与高度定位信息 -->
     <div id="camera-status" class="camera-status">正在定位相机...</div>
 
-    <div id="app-version" aria-label="当前版本"></div>
+    <div id="footer-bar">
+      <span id="app-version" aria-label="当前版本"></span>
+      <span class="footer-divider" style="display: none; margin: 0 4px;">|</span>
+      <span id="location-status-bar" class="location-status-bar" style="display: none;"></span>
+    </div>
     <main id="admin-root" hidden></main>
 
     <script type="module" src="/src/3d.js"></script>

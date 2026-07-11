@@ -528,6 +528,10 @@ async function getFilteredPosition3d (viewer, geolocation, customHeight, isInter
 }
 
 export async function updatePosition3d (viewer, geolocation = null, customHeight = 1200, isIntervalUpdate = false, runtime = {}) {
+  if (!isIntervalUpdate) {
+    updateLocationStatusBar3d('正在定位...')
+  }
+
   let filtered = null
   try {
     filtered = await getFilteredPosition3d(viewer, geolocation, customHeight, isIntervalUpdate, 0, runtime)
@@ -539,6 +543,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 
   if (!filtered) {
     if (!isIntervalUpdate && !runtime.signal?.aborted) {
+      updateLocationStatusBar3d('定位失败')
       await showAlert('获取地理位置失败，请手动选择')
     }
     return false
@@ -596,6 +601,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       // 主定位点重新在该坐标触发扩散波纹
       addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true, detailInfo })
       triggerRipple3d(viewer, mapPosition)
+      updateLocationStatusBar3d('已定位', result.accuracy, locationSample.timestamp)
 
       if (intervalLocationState3d.recordTrack) persistTrack3d()
     } else {
@@ -675,6 +681,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       // 创建带呼吸的定位点及生成瞬间波纹 Entity
       addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true, detailInfo })
       triggerRipple3d(viewer, mapPosition)
+      updateLocationStatusBar3d('已定位', result.accuracy, locationSample.timestamp)
 
       if (intervalLocationState3d.recordTrack) persistTrack3d()
     }
@@ -691,6 +698,7 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
     }
     // 普通点定位
     addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: false, detailInfo })
+    updateLocationStatusBar3d('已定位', result.accuracy, locationSample.timestamp)
   }
   return true
 }
@@ -738,6 +746,28 @@ function syncControllerState3d (snapshot) {
     persistTrack3d({ force: true })
   }
   emitContinuousLocationState3d(snapshot)
+
+  const phaseTexts = {
+    idle: '',
+    starting: '正在定位...',
+    tracking: '已定位',
+    stale: '信号弱',
+    recovering: '正在自动恢复...',
+    suspended: '已挂起',
+    'permission-blocked': '权限受限',
+    unsupported: '设备不支持'
+  }
+  const statusText = phaseTexts[snapshot.phase] || ''
+  if (snapshot.phase === 'idle') {
+    updateLocationStatusBar3d()
+  } else {
+    const lastPos = intervalLocationState3d.lastPosition
+    if (lastPos) {
+      updateLocationStatusBar3d(statusText, lastPos.accuracy, lastPos.timestamp)
+    } else {
+      updateLocationStatusBar3d(statusText)
+    }
+  }
 }
 
 export function configureIntervalLocation3d (viewer, {
@@ -891,4 +921,67 @@ export function stopIntervalLocation3d (viewer) {
     finalPersistSucceeded,
     persistenceError: finalPersistenceError,
   }
+}
+
+export function updateLocationStatusBar3d (statusText, accuracy, timestamp) {
+  const container = document.getElementById('location-status-bar')
+  const divider = document.querySelector('.footer-divider')
+  if (!container) return
+
+  if (!statusText && accuracy === undefined) {
+    container.style.display = 'none'
+    if (divider) divider.style.display = 'none'
+    return
+  }
+
+  if (divider) divider.style.display = 'inline'
+  container.style.display = 'inline-flex'
+
+  let timeHtml = ''
+  if (timestamp) {
+    const timeStr = new Date(timestamp).toTimeString().split(' ')[0]
+    timeHtml = `<span class="status-time" style="margin-left: 4px;">${timeStr}</span>`
+  }
+
+  let signalHtml = ''
+  if (accuracy !== undefined && accuracy !== null) {
+    let signalClass = 'location-signal-strong'
+    let inactiveClass2 = ''
+    let inactiveClass3 = ''
+    let inactiveClass4 = ''
+
+    if (accuracy <= 15) {
+      signalClass = 'location-signal-strong'
+    } else if (accuracy <= 30) {
+      signalClass = 'location-signal-strong'
+      inactiveClass4 = 'inactive'
+    } else if (accuracy <= 50) {
+      signalClass = 'location-signal-medium'
+      inactiveClass3 = 'inactive'
+      inactiveClass4 = 'inactive'
+    } else {
+      signalClass = 'location-signal-weak'
+      inactiveClass2 = 'inactive'
+      inactiveClass3 = 'inactive'
+      inactiveClass4 = 'inactive'
+    }
+
+    signalHtml = `
+      <span class="location-signal-wifi ${signalClass}" title="定位精度: ${Math.round(accuracy)}米" style="margin-left: 6px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="12" height="12">
+          <circle cx="12" cy="18" r="1.5" fill="currentColor"></circle>
+          <path d="M8.5 14.5a5 5 0 0 1 7 0" class="${inactiveClass2}"></path>
+          <path d="M5 11a10 10 0 0 1 14 0" class="${inactiveClass3}"></path>
+          <path d="M1.5 7.5a15 15 0 0 1 21 0" class="${inactiveClass4}"></path>
+        </svg>
+        <span class="status-accuracy-val" style="margin-left: 2px;">${Math.round(accuracy)}m</span>
+      </span>
+    `
+  }
+
+  container.innerHTML = `
+    <span class="status-text">${statusText}</span>
+    ${timeHtml}
+    ${signalHtml}
+  `
 }

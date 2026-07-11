@@ -54,7 +54,7 @@ body.admin-view {
 body.admin-view #map,
 body.admin-view #map-menu,
 body.admin-view #map-search-mod,
-body.admin-view #app-version {
+body.admin-view #footer-bar {
   display: none;
 }
 
@@ -643,7 +643,7 @@ body.admin-view #app-version {
   color: #2dd4bf;
 }
 
-#app-version {
+#footer-bar {
   position: fixed;
   left: calc(var(--safe-area-left) + 8px);
   bottom: calc(var(--safe-area-bottom) + 7px);
@@ -655,6 +655,63 @@ body.admin-view #app-version {
   pointer-events: none;
   user-select: none;
   text-shadow: 0 1px 1px rgba(255, 255, 255, 0.55);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#app-version {
+  color: inherit;
+  font-size: inherit;
+}
+
+.footer-divider {
+  color: rgba(29, 42, 46, 0.2);
+}
+
+.location-status-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: rgba(29, 42, 46, 0.7);
+}
+
+.location-status-bar .status-text {
+  font-weight: 600;
+}
+
+.location-status-bar .status-time {
+  color: rgba(29, 42, 46, 0.45);
+}
+
+.location-status-bar .location-signal-wifi {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.location-status-bar .location-signal-wifi svg {
+  vertical-align: middle;
+}
+
+.location-status-bar .location-signal-strong {
+  color: #0f766e;
+}
+
+.location-status-bar .location-signal-medium {
+  color: #d97706;
+}
+
+.location-status-bar .location-signal-weak {
+  color: #dc2626;
+}
+
+.location-status-bar .location-signal-wifi .inactive {
+  opacity: 0.2;
+}
+
+.location-status-bar .status-accuracy-val {
+  font-weight: bold;
 }
 
 .admin-shell {
