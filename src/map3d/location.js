@@ -601,7 +601,12 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       // 主定位点重新在该坐标触发扩散波纹
       addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true, detailInfo })
       triggerRipple3d(viewer, mapPosition)
-      updateLocationStatusBar3d('已定位', result.accuracy, locationSample.timestamp)
+      updateLocationStatusBar3d('持续定位中', result.accuracy, locationSample.timestamp)
+      addPanelHistoryRecord3d({
+        timestamp: locationSample.timestamp,
+        accuracy: result.accuracy,
+        staySeconds: currentPosition.staySeconds
+      }, true)
 
       if (intervalLocationState3d.recordTrack) persistTrack3d()
     } else {
@@ -681,7 +686,12 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       // 创建带呼吸的定位点及生成瞬间波纹 Entity
       addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: true, detailInfo })
       triggerRipple3d(viewer, mapPosition)
-      updateLocationStatusBar3d('已定位', result.accuracy, locationSample.timestamp)
+      updateLocationStatusBar3d('持续定位中', result.accuracy, locationSample.timestamp)
+      addPanelHistoryRecord3d({
+        timestamp: locationSample.timestamp,
+        accuracy: result.accuracy,
+        staySeconds: 0
+      }, false)
 
       if (intervalLocationState3d.recordTrack) persistTrack3d()
     }
@@ -699,6 +709,11 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
     // 普通点定位
     addTargetMarker3d(viewer, mapPosition, { label: '当前位置', isInterval: false, detailInfo })
     updateLocationStatusBar3d('已定位', result.accuracy, locationSample.timestamp)
+    addPanelHistoryRecord3d({
+      timestamp: locationSample.timestamp,
+      accuracy: result.accuracy,
+      staySeconds: 0
+    }, false)
   }
   return true
 }
@@ -750,7 +765,7 @@ function syncControllerState3d (snapshot) {
   const phaseTexts = {
     idle: '',
     starting: '正在定位...',
-    tracking: '已定位',
+    tracking: '持续定位中',
     stale: '信号弱',
     recovering: '正在自动恢复...',
     suspended: '已挂起',
@@ -984,4 +999,89 @@ export function updateLocationStatusBar3d (statusText, accuracy, timestamp) {
     ${timeHtml}
     ${signalHtml}
   `
+}
+
+export const panelHistoryList3d = []
+
+export function renderHistoryTable3d () {
+  const tbody = document.getElementById('history-table-body')
+  if (!tbody) return
+
+  if (panelHistoryList3d.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: #94a3b8; padding: 12px 8px;">暂无定位数据</td></tr>'
+    return
+  }
+
+  // 最近的排在最前
+  const rows = [...panelHistoryList3d].reverse().map(item => {
+    const timeStr = new Date(item.timestamp).toTimeString().split(' ')[0]
+    const accStr = item.accuracy ? `${Math.round(item.accuracy)}m` : '未知'
+    let stayStr = '-'
+    if (item.staySeconds > 0) {
+      stayStr = item.staySeconds > 60
+        ? `${Math.floor(item.staySeconds / 60)}分${Math.round(item.staySeconds % 60)}秒`
+        : `${Math.round(item.staySeconds)}秒`
+    }
+    return `
+      <tr>
+        <td>${timeStr}</td>
+        <td>${accStr}</td>
+        <td>${stayStr}</td>
+      </tr>
+    `
+  }).join('')
+
+  tbody.innerHTML = rows
+}
+
+export function initLocationHistoryPanel3d () {
+  const footerBar = document.getElementById('footer-bar')
+  const panel = document.getElementById('location-history-panel')
+  const closeBtn = document.getElementById('history-close-btn')
+
+  if (footerBar && panel) {
+    footerBar.title = '点击查看最近 100 次定位历史记录'
+    footerBar.style.pointerEvents = 'auto'
+    footerBar.style.cursor = 'pointer'
+
+    footerBar.addEventListener('click', () => {
+      const isHidden = panel.hasAttribute('hidden')
+      if (isHidden) {
+        panel.removeAttribute('hidden')
+        renderHistoryTable3d()
+      } else {
+        panel.setAttribute('hidden', '')
+      }
+    })
+  }
+
+  if (closeBtn && panel) {
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      panel.setAttribute('hidden', '')
+    })
+  }
+}
+
+export function addPanelHistoryRecord3d (item, replaceLast = false) {
+  if (replaceLast && panelHistoryList3d.length > 0) {
+    const last = panelHistoryList3d[panelHistoryList3d.length - 1]
+    last.timestamp = item.timestamp
+    last.accuracy = item.accuracy
+    last.staySeconds = item.staySeconds
+  } else {
+    panelHistoryList3d.push({
+      timestamp: item.timestamp,
+      accuracy: item.accuracy,
+      staySeconds: item.staySeconds || 0
+    })
+    if (panelHistoryList3d.length > 100) {
+      panelHistoryList3d.shift()
+    }
+  }
+
+  const panel = document.getElementById('location-history-panel')
+  if (panel && !panel.hasAttribute('hidden')) {
+    renderHistoryTable3d()
+  }
 }

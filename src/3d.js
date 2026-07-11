@@ -33,7 +33,8 @@ import {
   intervalLocationState3d,
   configureIntervalLocation3d,
   startIntervalLocation3d,
-  stopIntervalLocation3d
+  stopIntervalLocation3d,
+  initLocationHistoryPanel3d
 } from './map3d/location.js'
 import {
   applyContinuousLocationButtonState,
@@ -1060,6 +1061,7 @@ async function init3dEarth () {
   }
   initKmlSupport3d(viewer)
   initGuidelines3d(viewer)
+  initLocationHistoryPanel3d()
 
   // 8. 绑定界面交互事件
   bindUiEvents()

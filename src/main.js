@@ -15,7 +15,8 @@ import {
   intervalLocationState,
   configureIntervalLocation2d,
   startIntervalLocation2d,
-  stopIntervalLocation2d
+  stopIntervalLocation2d,
+  initLocationHistoryPanel2d
 } from './map/location.js'
 import {
   applyContinuousLocationButtonState,
@@ -240,6 +241,7 @@ async function initLeafletMap () {
 
   initKmlSupport(map)
   initGuidelines(map)
+  initLocationHistoryPanel2d()
 
   map.on('moveend', () => writeMapViewToUrl(map))
   map.on('zoomend', () => writeMapViewToUrl(map))

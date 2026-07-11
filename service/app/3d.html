@@ -9,9 +9,9 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/pwa-icon.svg">
     <title>三维地球 - 混合地图</title>
-    <script type="module" crossorigin src="/assets/map3d-gEmeZfcD.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/access-control-DvLfKVhe.js">
-    <link rel="stylesheet" crossorigin href="/assets/access-control-a6HR7qb3.css">
+    <script type="module" crossorigin src="/assets/map3d-DnGPPJFZ.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/access-control-Ctnogj9-.js">
+    <link rel="stylesheet" crossorigin href="/assets/access-control-atda4mrQ.css">
     <link rel="stylesheet" crossorigin href="/assets/map3d-BYFlgjJs.css">
   </head>
   <body>
@@ -219,6 +219,26 @@
       <span id="app-version" aria-label="当前版本"></span>
       <span class="footer-divider" style="display: none; margin: 0 4px;">|</span>
       <span id="location-status-bar" class="location-status-bar" style="display: none;"></span>
+    </div>
+    <div id="location-history-panel" class="location-history-panel" hidden>
+      <div class="history-panel-header">
+        <h3>定位历史记录 (最近100次)</h3>
+        <button type="button" class="history-close-btn" id="history-close-btn">&times;</button>
+      </div>
+      <div class="history-panel-body">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>精度</th>
+              <th>停留</th>
+            </tr>
+          </thead>
+          <tbody id="history-table-body">
+            <!-- 动态载入列表 -->
+          </tbody>
+        </table>
+      </div>
     </div>
     <main id="admin-root" hidden></main>
 

@@ -220,7 +220,7 @@ test('assessPositionSample rejects poor accuracy samples (> 50m)', () => {
 })
 
 test('formatContinuousLocationState returns short Chinese health labels', () => {
-  assert.equal(formatContinuousLocationState({ phase: 'tracking' }), '正在持续定位')
+  assert.equal(formatContinuousLocationState({ phase: 'tracking' }), '持续定位中')
   assert.equal(formatContinuousLocationState('permission-blocked'), '定位权限已被禁止')
   assert.equal(formatContinuousLocationState('future-phase'), '定位状态未知')
 })

@@ -148,6 +148,26 @@
       <span class="footer-divider" style="display: none; margin: 0 4px;">|</span>
       <span id="location-status-bar" class="location-status-bar" style="display: none;"></span>
     </div>
+    <div id="location-history-panel" class="location-history-panel" hidden>
+      <div class="history-panel-header">
+        <h3>定位历史记录 (最近100次)</h3>
+        <button type="button" class="history-close-btn" id="history-close-btn">&times;</button>
+      </div>
+      <div class="history-panel-body">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>精度</th>
+              <th>停留</th>
+            </tr>
+          </thead>
+          <tbody id="history-table-body">
+            <!-- 动态载入列表 -->
+          </tbody>
+        </table>
+      </div>
+    </div>
     <main id="admin-root" hidden></main>
     <script type="module" src="/src/main.js"></script>
   </body>

@@ -529,7 +529,12 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 
       // 主 Marker 重新在该坐标触发扩散波纹
       addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true, detailInfo })
-      updateLocationStatusBar2d('已定位', result.accuracy, locationSample.timestamp)
+      updateLocationStatusBar2d('持续定位中', result.accuracy, locationSample.timestamp)
+      addPanelHistoryRecord2d({
+        timestamp: locationSample.timestamp,
+        accuracy: result.accuracy,
+        staySeconds: currentPosition.staySeconds
+      }, true)
 
       // 节流检查点，避免 1 秒间隔的长途轨迹每秒全量序列化和重绘。
       if (intervalLocationState.recordTrack) persistTrack2d(map)
@@ -614,7 +619,12 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 
       // 主 Marker 呼吸灯 + 伴随扩散波纹
       addTargetMarker(map, mapPosition, { isInterval: true, playRipple: true, detailInfo })
-      updateLocationStatusBar2d('已定位', result.accuracy, locationSample.timestamp)
+      updateLocationStatusBar2d('持续定位中', result.accuracy, locationSample.timestamp)
+      addPanelHistoryRecord2d({
+        timestamp: locationSample.timestamp,
+        accuracy: result.accuracy,
+        staySeconds: 0
+      }, false)
 
       if (intervalLocationState.recordTrack) persistTrack2d(map)
     }
@@ -632,6 +642,11 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
     // 常规模式使用默认图标，不带轨迹
     addTargetMarker(map, mapPosition, { isInterval: false, playRipple: false, detailInfo })
     updateLocationStatusBar2d('已定位', result.accuracy, locationSample.timestamp)
+    addPanelHistoryRecord2d({
+      timestamp: locationSample.timestamp,
+      accuracy: result.accuracy,
+      staySeconds: 0
+    }, false)
   }
   return true
 }
@@ -683,7 +698,7 @@ function syncControllerState2d (map, snapshot) {
   const phaseTexts = {
     idle: '',
     starting: '正在定位...',
-    tracking: '已定位',
+    tracking: '持续定位中',
     stale: '信号弱',
     recovering: '正在自动恢复...',
     suspended: '已挂起',
@@ -923,4 +938,89 @@ export function updateLocationStatusBar2d (statusText, accuracy, timestamp) {
     ${timeHtml}
     ${signalHtml}
   `
+}
+
+export const panelHistoryList2d = []
+
+export function renderHistoryTable2d () {
+  const tbody = document.getElementById('history-table-body')
+  if (!tbody) return
+
+  if (panelHistoryList2d.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: #94a3b8; padding: 12px 8px;">暂无定位数据</td></tr>'
+    return
+  }
+
+  // 最近的排在最前
+  const rows = [...panelHistoryList2d].reverse().map(item => {
+    const timeStr = new Date(item.timestamp).toTimeString().split(' ')[0]
+    const accStr = item.accuracy ? `${Math.round(item.accuracy)}m` : '未知'
+    let stayStr = '-'
+    if (item.staySeconds > 0) {
+      stayStr = item.staySeconds > 60
+        ? `${Math.floor(item.staySeconds / 60)}分${Math.round(item.staySeconds % 60)}秒`
+        : `${Math.round(item.staySeconds)}秒`
+    }
+    return `
+      <tr>
+        <td>${timeStr}</td>
+        <td>${accStr}</td>
+        <td>${stayStr}</td>
+      </tr>
+    `
+  }).join('')
+
+  tbody.innerHTML = rows
+}
+
+export function initLocationHistoryPanel2d () {
+  const footerBar = document.getElementById('footer-bar')
+  const panel = document.getElementById('location-history-panel')
+  const closeBtn = document.getElementById('history-close-btn')
+
+  if (footerBar && panel) {
+    footerBar.title = '点击查看最近 100 次定位历史记录'
+    footerBar.style.pointerEvents = 'auto'
+    footerBar.style.cursor = 'pointer'
+
+    footerBar.addEventListener('click', () => {
+      const isHidden = panel.hasAttribute('hidden')
+      if (isHidden) {
+        panel.removeAttribute('hidden')
+        renderHistoryTable2d()
+      } else {
+        panel.setAttribute('hidden', '')
+      }
+    })
+  }
+
+  if (closeBtn && panel) {
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      panel.setAttribute('hidden', '')
+    })
+  }
+}
+
+export function addPanelHistoryRecord2d (item, replaceLast = false) {
+  if (replaceLast && panelHistoryList2d.length > 0) {
+    const last = panelHistoryList2d[panelHistoryList2d.length - 1]
+    last.timestamp = item.timestamp
+    last.accuracy = item.accuracy
+    last.staySeconds = item.staySeconds
+  } else {
+    panelHistoryList2d.push({
+      timestamp: item.timestamp,
+      accuracy: item.accuracy,
+      staySeconds: item.staySeconds || 0
+    })
+    if (panelHistoryList2d.length > 100) {
+      panelHistoryList2d.shift()
+    }
+  }
+
+  const panel = document.getElementById('location-history-panel')
+  if (panel && !panel.hasAttribute('hidden')) {
+    renderHistoryTable2d()
+  }
 }

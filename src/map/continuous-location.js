@@ -13,7 +13,7 @@ const EARTH_RADIUS_METERS = 6_371_008.8
 export const CONTINUOUS_LOCATION_PHASE_LABELS = Object.freeze({
   idle: '已停止',
   starting: '正在启动定位',
-  tracking: '正在持续定位',
+  tracking: '持续定位中',
   stale: '定位信号已中断',
   recovering: '正在恢复定位',
   suspended: '定位已暂停，等待页面恢复',
