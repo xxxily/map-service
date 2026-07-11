@@ -109,6 +109,18 @@ export function assessPositionSample (trackerState = {}, sample, options = {}) {
     }
   }
 
+  const accuracy = finiteNumber(sample?.accuracy ?? sample?.coords?.accuracy)
+  if (accuracy !== null && accuracy > 50) {
+    return {
+      accepted: false,
+      reason: 'poor-accuracy',
+      distanceMeters: null,
+      allowedDistanceMeters: null,
+      reanchored: false,
+      suspect: previousSuspect,
+    }
+  }
+
   if (!lastAccepted || !isUsableCoordinate(lastAccepted)) {
     return {
       accepted: true,

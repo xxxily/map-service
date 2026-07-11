@@ -202,6 +202,23 @@ test('assessPositionSample supports long-gap reanchoring and rejects invalid coo
   assert.equal(invalid.suspect, afterTunnel)
 })
 
+test('assessPositionSample rejects poor accuracy samples (> 50m)', () => {
+  const anchor = point(23, 113, 0, 10)
+  const sampleOk = point(23.0001, 113.0001, 15_000, 50)
+  const sampleBad = point(23.0001, 113.0001, 30_000, 51)
+  const sampleNoAccuracy = point(23.0001, 113.0001, 45_000, null)
+
+  const resOk = assessPositionSample({ lastAccepted: anchor }, sampleOk)
+  assert.equal(resOk.accepted, true)
+
+  const resBad = assessPositionSample({ lastAccepted: anchor }, sampleBad)
+  assert.equal(resBad.accepted, false)
+  assert.equal(resBad.reason, 'poor-accuracy')
+
+  const resNoAcc = assessPositionSample({ lastAccepted: anchor }, sampleNoAccuracy)
+  assert.equal(resNoAcc.accepted, true)
+})
+
 test('formatContinuousLocationState returns short Chinese health labels', () => {
   assert.equal(formatContinuousLocationState({ phase: 'tracking' }), '正在持续定位')
   assert.equal(formatContinuousLocationState('permission-blocked'), '定位权限已被禁止')

@@ -921,7 +921,7 @@ async function handleCreateKmlFile (map) {
   if (!name) return
 
   const kmlFile = createKmlFile({ name })
-  kmlList.push(kmlFile)
+  kmlList.splice(1, 0, kmlFile)
   expandedKmlIds.add(kmlFile.id)
   rememberTargetKmlId(kmlFile.id)
   saveToStorage()
@@ -1213,7 +1213,7 @@ export function initKmlSupport (map) {
           features
         })
         
-        kmlList.push(newKml)
+        kmlList.splice(1, 0, newKml)
         expandedKmlIds.add(newKml.id)
         rememberTargetKmlId(newKml.id)
         saveToStorage()
@@ -1684,7 +1684,7 @@ export function createTrackKml2d (name) {
       renderLinePointLimit: LIVE_TRACK_RENDER_LINE_POINT_LIMIT,
       features: []
     }
-    kmlList.push(kmlFile)
+    kmlList.splice(1, 0, kmlFile)
     saveToStorage()
     return kmlFile.id
   } catch (err) {

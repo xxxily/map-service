@@ -536,23 +536,41 @@ function showFeaturePopup (kmlId, featureId, windowPosition) {
   featurePopupElement = popup
 }
 
-function getLatLngFromWindowPosition (windowPosition) {
-  if (!viewerRef || !windowPosition) return null
-  let cartesian = null
+// 优先锚定深度或真实地形，避免在山地上回落到椭球面。
+export function pickKmlWorldPosition (scene, camera, windowPosition) {
+  if (!scene || !camera || !windowPosition) return null
+
   try {
-    if (viewerRef.scene.pickPositionSupported) {
-      cartesian = viewerRef.scene.pickPosition(windowPosition)
+    if (scene.pickPositionSupported !== false) {
+      const depthPosition = scene.pickPosition?.(windowPosition)
+      if (depthPosition) return depthPosition
     }
-  } catch (err) {
-    cartesian = null
+  } catch {
+    // 深度拾取在首帧或没有深度纹理时可能不可用。
   }
 
-  if (!cartesian) {
-    cartesian = viewerRef.camera.pickEllipsoid(windowPosition, viewerRef.scene.globe.ellipsoid)
+  try {
+    const ray = camera.getPickRay?.(windowPosition)
+    const terrainPosition = ray ? scene.globe?.pick?.(ray, scene) : null
+    if (terrainPosition) return terrainPosition
+  } catch {
+    // 地形数据加载过程中允许继续退化到椭球拾取。
   }
+
+  try {
+    return camera.pickEllipsoid?.(windowPosition, scene.globe?.ellipsoid) || null
+  } catch {
+    return null
+  }
+}
+
+function getLatLngFromWindowPosition (windowPosition) {
+  if (!viewerRef || !windowPosition) return null
+  const cartesian = pickKmlWorldPosition(viewerRef.scene, viewerRef.camera, windowPosition)
   if (!cartesian) return null
 
   const cartographic = viewerRef.scene.globe.ellipsoid.cartesianToCartographic(cartesian)
+  if (!cartographic) return null
   return {
     lat: CesiumMath.toDegrees(cartographic.latitude),
     lng: CesiumMath.toDegrees(cartographic.longitude),
@@ -642,7 +660,7 @@ async function handleCreateKmlFile () {
 
   pushKmlHistory()
   const kmlFile = createKmlFile({ name })
-  kmlList.push(kmlFile)
+  kmlList.splice(1, 0, kmlFile)
   expandedKmlIds.add(kmlFile.id)
   rememberTargetKmlId(kmlFile.id)
   saveToStorage()
@@ -1205,7 +1223,7 @@ function bindPanelEvents () {
           features,
         })
 
-        kmlList.push(newKml)
+        kmlList.splice(1, 0, newKml)
         expandedKmlIds.add(newKml.id)
         rememberTargetKmlId(newKml.id)
         saveToStorage()
@@ -1600,7 +1618,7 @@ export function createTrackKml3d (name) {
       renderLinePointLimit: LIVE_TRACK_RENDER_LINE_POINT_LIMIT,
       features: []
     }
-    kmlList.push(kmlFile)
+    kmlList.splice(1, 0, kmlFile)
     saveToStorage()
     return kmlFile.id
   } catch (err) {
