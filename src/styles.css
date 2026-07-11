@@ -648,31 +648,32 @@ body.admin-view #footer-bar {
   left: calc(var(--safe-area-left) + 8px);
   bottom: calc(var(--safe-area-bottom) + 7px);
   z-index: 800;
-  color: #0f172a;
+  color: rgba(255, 255, 255, 0.85);
   font-size: 10px;
   line-height: 1;
   letter-spacing: 0;
-  background: rgba(255, 255, 255, 0.85);
+  background-color: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(15, 118, 110, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 20px;
   padding: 5px 10px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   display: flex;
   align-items: center;
   gap: 4px;
   pointer-events: auto;
   cursor: pointer;
   user-select: none;
-  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.6);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
   transition: all 0.2s ease;
 }
 
 #footer-bar:hover {
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 6px 16px rgba(15, 118, 110, 0.2);
-  border-color: rgba(15, 118, 110, 0.35);
+  background-color: rgba(0, 0, 0, 0.8);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #ffffff;
 }
 
 .location-history-panel {
@@ -683,12 +684,12 @@ body.admin-view #footer-bar {
   max-height: 280px;
   z-index: 9999;
   box-sizing: border-box;
-  background: rgba(255, 255, 255, 0.88);
+  background-color: rgba(0, 0, 0, 0.75);
   backdrop-filter: saturate(120%) blur(16px);
   -webkit-backdrop-filter: saturate(120%) blur(16px);
-  border: 1px solid rgba(15, 118, 110, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
-  box-shadow: 0 12px 36px rgba(20, 37, 42, 0.25);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -707,21 +708,21 @@ body.admin-view #footer-bar {
   justify-content: space-between;
   align-items: center;
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(15, 118, 110, 0.12);
-  background: rgba(15, 118, 110, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .history-panel-header h3 {
   margin: 0;
   font-size: 12px;
   font-weight: 600;
-  color: #0f766e;
+  color: #2dd4bf;
 }
 
 .history-close-btn {
   border: none;
   background: transparent;
-  color: #64748b;
+  color: #94a3b8;
   font-size: 20px;
   cursor: pointer;
   padding: 0;
@@ -733,7 +734,7 @@ body.admin-view #footer-bar {
 }
 
 .history-close-btn:hover {
-  color: #ef4444;
+  color: #f87171;
 }
 
 .history-panel-body {
@@ -751,24 +752,24 @@ body.admin-view #footer-bar {
 
 .history-table th, .history-table td {
   padding: 6px 8px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .history-table th {
-  color: #475569;
+  color: #94a3b8;
   font-weight: 600;
-  background: rgba(0, 0, 0, 0.02);
+  background: rgba(255, 255, 255, 0.05);
   position: sticky;
   top: 0;
   z-index: 1;
 }
 
 .history-table td {
-  color: #334155;
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .history-table tr:hover {
-  background: rgba(15, 118, 110, 0.04);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 #app-version {
@@ -777,14 +778,14 @@ body.admin-view #footer-bar {
 }
 
 .footer-divider {
-  color: rgba(29, 42, 46, 0.2);
+  color: rgba(255, 255, 255, 0.25);
 }
 
 .location-status-bar {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: rgba(29, 42, 46, 0.7);
+  color: rgba(255, 255, 255, 0.95);
 }
 
 .location-status-bar .status-text {
@@ -792,7 +793,7 @@ body.admin-view #footer-bar {
 }
 
 .location-status-bar .status-time {
-  color: rgba(29, 42, 46, 0.45);
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .location-status-bar .location-signal-wifi {
@@ -806,15 +807,15 @@ body.admin-view #footer-bar {
 }
 
 .location-status-bar .location-signal-strong {
-  color: #0f766e;
+  color: #2dd4bf;
 }
 
 .location-status-bar .location-signal-medium {
-  color: #d97706;
+  color: #fbbf24;
 }
 
 .location-status-bar .location-signal-weak {
-  color: #dc2626;
+  color: #f87171;
 }
 
 .location-status-bar .location-signal-wifi .inactive {
