@@ -20,6 +20,7 @@ import {
   getTrackDisplayFeatures,
   LIVE_TRACK_RENDER_LINE_POINT_LIMIT,
   LIVE_TRACK_RENDER_POINT_LIMIT,
+  VIEWPORT_BUFFER_RATIO,
 } from '../map/location-track.js'
 import { showAlert, showConfirm, showEditDialog } from '../ui/dialog.js'
 import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListeners } from '../ui/controls.js'
@@ -37,6 +38,35 @@ const LONG_PRESS_MOVE_TOLERANCE = 10
 
 let viewerRef = null
 let kmlViewportRerenderTimer3d = null // KML 图层视口变化重渲染的 debounce timer
+let lastRenderedCamLat3d = null // 上次渲染时相机纬度
+let lastRenderedCamLng3d = null // 上次渲染时相机经度
+let lastRenderedCamHeight3d = null // 上次渲染时相机高度
+let lastRenderedZoom3d = null // 上次渲染时的等效缩放级别
+
+/**
+ * 检查当前相机位置是否仍在上次渲染的缓冲范围内，如果是则跳过重渲染。
+ */
+function isCameraWithinCache3d () {
+  if (!viewerRef?.camera || lastRenderedCamLat3d === null || lastRenderedCamHeight3d === null) return false
+  const carto = viewerRef.camera.positionCartographic
+  if (!carto) return false
+
+  const camLat = (carto.latitude * 180) / Math.PI
+  const camLng = (carto.longitude * 180) / Math.PI
+  const heightMeters = carto.height
+  if (!Number.isFinite(heightMeters) || heightMeters <= 0) return false
+
+  const currentZoom = cameraHeightToZoom(heightMeters)
+  // 缩放级别变化超过 1 级需要重新渲染（LOD 分级不同）
+  if (lastRenderedZoom3d !== null && Math.abs(currentZoom - lastRenderedZoom3d) >= 1) return false
+
+  // 计算上次渲染时的缓冲范围
+  const latRange = Math.min(90, (lastRenderedCamHeight3d / 111000) * 1.5 * VIEWPORT_BUFFER_RATIO)
+  const lngRange = Math.min(180, latRange / Math.max(0.1, Math.cos(lastRenderedCamLat3d * Math.PI / 180)))
+
+  return Math.abs(camLat - lastRenderedCamLat3d) <= latRange &&
+         Math.abs(camLng - lastRenderedCamLng3d) <= lngRange
+}
 let kmlList = []
 let publicKmlList = []
 let publicKmlPrefs = {}
@@ -465,7 +495,19 @@ function getViewportOptions3d () {
 function renderKmlLayers (kmlFile) {
   removeKmlLayers(kmlFile)
   if (!isKmlEnabled(kmlFile)) return
-  getTrackDisplayFeatures(kmlFile, getViewportOptions3d()).forEach(feature => renderFeature(kmlFile, feature))
+  const viewportOptions = getViewportOptions3d()
+  getTrackDisplayFeatures(kmlFile, viewportOptions).forEach(feature => renderFeature(kmlFile, feature))
+
+  // 更新视口缓存：live track 渲染后记录当前相机位置，用于后续跳过判断
+  if (kmlFile.isLiveTrack && viewerRef?.camera) {
+    const carto = viewerRef.camera.positionCartographic
+    if (carto) {
+      lastRenderedCamLat3d = (carto.latitude * 180) / Math.PI
+      lastRenderedCamLng3d = (carto.longitude * 180) / Math.PI
+      lastRenderedCamHeight3d = carto.height
+      lastRenderedZoom3d = cameraHeightToZoom(carto.height)
+    }
+  }
 }
 
 function renderAllKmls () {
@@ -1593,10 +1635,11 @@ function bindKeyboardEvents () {
 }
 
 /**
- * 视口变化时按需重渲染 3D KML 图层（debounce 80ms + rAF）。
+ * 视口变化时按需重渲染 3D KML 图层（debounce 150ms + setTimeout）。
  * 独立于定位生命周期，确保查看已保存轨迹时也能动态渲染。
  * 仅重渲染 isLiveTrack 的 KML 文件，普通 KML 无视口过滤不需要重渲染。
- * debounce 时间短至 80ms，配合 3x 缓冲区让用户几乎无感知。
+ * 优化：若当前相机位置仍在上次渲染的缓冲范围内则跳过，避免不必要的重渲染。
+ * 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先完成绘制再执行渲染。
  */
 function scheduleKmlViewportRerender3d () {
   if (kmlViewportRerenderTimer3d) clearTimeout(kmlViewportRerenderTimer3d)
@@ -1606,7 +1649,12 @@ function scheduleKmlViewportRerender3d () {
     const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
                          publicKmlList.some(k => k.isLiveTrack && k.enabled)
     if (!hasLiveTrack) return
-    requestAnimationFrame(() => {
+
+    // 缓存跳过：当前相机位置在上次渲染的缓冲范围内则不重渲染
+    if (isCameraWithinCache3d()) return
+
+    // 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先绘制再渲染
+    setTimeout(() => {
       kmlList.forEach(kmlFile => {
         if (kmlFile.isLiveTrack && kmlFile.enabled) {
           renderKmlLayers(kmlFile)
@@ -1617,9 +1665,9 @@ function scheduleKmlViewportRerender3d () {
           renderKmlLayers(kmlFile)
         }
       })
-      updateKmlPanelUI()
-    })
-  }, 200)
+      // 视口重渲染时不更新面板 UI，避免不必要的 DOM 操作导致卡顿
+    }, 0)
+  }, 150)
 }
 
 export function initKmlSupport3d (viewer) {
@@ -1632,7 +1680,8 @@ export function initKmlSupport3d (viewer) {
   updateKmlPanelUI()
 
   // 注册视口变化监听，按需重渲染轨迹 KML 图层
-  viewer.camera.changed.addEventListener(scheduleKmlViewportRerender3d)
+  // 使用 camera.moveEnd 替代 camera.changed，仅在相机停止移动后触发，避免移动过程中的频繁回调
+  viewer.camera.moveEnd.addEventListener(scheduleKmlViewportRerender3d)
 
   loadPublicKmls().then(() => {
     renderAllKmls()

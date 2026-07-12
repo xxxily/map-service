@@ -9,6 +9,7 @@ import {
   getTrackDisplayFeatures,
   LIVE_TRACK_RENDER_LINE_POINT_LIMIT,
   LIVE_TRACK_RENDER_POINT_LIMIT,
+  VIEWPORT_BUFFER_RATIO,
 } from './location-track.js'
 
 // 辅助函数：从 Leaflet map 获取视口参数
@@ -32,6 +33,26 @@ const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
 let kmlList = []
 let kmlViewportRerenderTimer = null // KML 图层视口变化重渲染的 debounce timer
+let lastRenderedViewportBounds = null // 上次渲染时使用的视口边界（用于缓存跳过）
+let lastRenderedZoom = null // 上次渲染时的缩放级别
+
+/**
+ * 检查当前视口是否仍在上次渲染的缓冲范围内，如果是则跳过重渲染。
+ * 缓冲范围 = 上次视口 × VIEWPORT_BUFFER_RATIO。
+ */
+function isViewportWithinCache2d (bounds, zoom) {
+  if (!lastRenderedViewportBounds || lastRenderedZoom === null) return false
+  // 缩放级别变化超过 1 级需要重新渲染（LOD 分级不同）
+  if (Math.abs(zoom - lastRenderedZoom) >= 1) return false
+  const latRange = lastRenderedViewportBounds.north - lastRenderedViewportBounds.south
+  const lngRange = lastRenderedViewportBounds.east - lastRenderedViewportBounds.west
+  const latPad = latRange * (VIEWPORT_BUFFER_RATIO - 1) / 2
+  const lngPad = lngRange * (VIEWPORT_BUFFER_RATIO - 1) / 2
+  return bounds.south >= lastRenderedViewportBounds.south - latPad &&
+         bounds.north <= lastRenderedViewportBounds.north + latPad &&
+         bounds.west >= lastRenderedViewportBounds.west - lngPad &&
+         bounds.east <= lastRenderedViewportBounds.east + lngPad
+}
 
 let publicKmlList = []
 let isEditingPublicKml = false
@@ -587,8 +608,9 @@ function renderKmlLayers (map, kmlFile) {
   if (!isKmlEnabled(kmlFile)) return
   
   const group = L.featureGroup()
+  const viewportOptions = getViewportOptions2d(map)
   
-  getTrackDisplayFeatures(kmlFile, getViewportOptions2d(map)).forEach(feat => {
+  getTrackDisplayFeatures(kmlFile, viewportOptions).forEach(feat => {
     const layer = renderFeature(map, kmlFile, feat)
     if (layer) {
       group.addLayer(layer)
@@ -597,6 +619,12 @@ function renderKmlLayers (map, kmlFile) {
   
   group.addTo(map)
   kmlLayerGroups.set(kmlFile.id, group)
+
+  // 更新视口缓存：live track 渲染后记录当前视口，用于后续跳过判断
+  if (kmlFile.isLiveTrack && viewportOptions.viewportBounds) {
+    lastRenderedViewportBounds = viewportOptions.viewportBounds
+    lastRenderedZoom = viewportOptions.zoom
+  }
 }
 
 function renderAllKmls (map) {
@@ -1159,10 +1187,11 @@ function initLongPressPointCreation (map) {
 }
 
 /**
- * 视口变化时按需重渲染 KML 图层（debounce 80ms + rAF）。
+ * 视口变化时按需重渲染 KML 图层（debounce 150ms + setTimeout）。
  * 独立于定位生命周期，确保查看已保存轨迹时也能动态渲染。
  * 仅重渲染 isLiveTrack 的 KML 文件，普通 KML 无视口过滤不需要重渲染。
- * debounce 时间短至 80ms，配合 3x 缓冲区让用户几乎无感知。
+ * 优化：若当前视口仍在上次渲染的缓冲范围内则跳过，避免不必要的重渲染。
+ * 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先完成绘制再执行渲染。
  */
 function scheduleKmlViewportRerender (map) {
   if (kmlViewportRerenderTimer) clearTimeout(kmlViewportRerenderTimer)
@@ -1171,7 +1200,15 @@ function scheduleKmlViewportRerender (map) {
     const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
                          publicKmlList.some(k => k.isLiveTrack && k.enabled)
     if (!hasLiveTrack) return
-    requestAnimationFrame(() => {
+
+    // 缓存跳过：当前视口在上次渲染的缓冲范围内则不重渲染
+    const viewportOptions = getViewportOptions2d(map)
+    if (viewportOptions.viewportBounds && isViewportWithinCache2d(viewportOptions.viewportBounds, viewportOptions.zoom)) {
+      return
+    }
+
+    // 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先绘制再渲染
+    setTimeout(() => {
       kmlList.forEach(kmlFile => {
         if (kmlFile.isLiveTrack && kmlFile.enabled) {
           renderKmlLayers(map, kmlFile)
@@ -1182,9 +1219,9 @@ function scheduleKmlViewportRerender (map) {
           renderKmlLayers(map, kmlFile)
         }
       })
-      updateKmlPanelUI(map)
-    })
-  }, 200)
+      // 视口重渲染时不更新面板 UI，避免不必要的 DOM 操作导致卡顿
+    }, 0)
+  }, 150)
 }
 
 export function initKmlSupport (map) {
