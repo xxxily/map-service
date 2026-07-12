@@ -7,14 +7,14 @@ function readProjectFile (relativePath) {
   return readFileSync(new URL(`../${relativePath}`, import.meta.url), 'utf8')
 }
 
-test('map documents and server responses disable coordinate-bearing Referer propagation', () => {
+test('map documents and server responses use strict-origin Referer policy to protect coordinates', () => {
   for (const htmlFile of ['index.html', '3d.html']) {
     const html = readProjectFile(htmlFile)
-    assert.match(html, /<meta name="referrer" content="no-referrer">/)
+    assert.match(html, /<meta name="referrer" content="strict-origin">/)
   }
 
   const serverSource = readProjectFile('service/index.js')
-  assert.match(serverSource, /res\.set\('Referrer-Policy', 'no-referrer'\)/)
+  assert.match(serverSource, /res\.set\('Referrer-Policy', 'strict-origin'\)/)
 })
 
 test('access logs redact shared map coordinates while preserving other query fields', () => {

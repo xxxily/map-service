@@ -76,9 +76,10 @@ const index = {
     /* 注册访问记录服务 */
     visitRecorder.init(app)
 
-    // 地图 URL 包含坐标状态；禁止后续瓦片/API 请求通过 Referer 泄露行程位置。
+    // 地图 URL 包含坐标状态；使用 strict-origin 仅发送 origin（协议+域名+端口），
+    // 不发送完整路径，避免坐标参数通过 Referer 泄露，同时允许高德等第三方 API 完成域名校验。
     app.use((req, res, next) => {
-      res.set('Referrer-Policy', 'no-referrer')
+      res.set('Referrer-Policy', 'strict-origin')
       next()
     })
 

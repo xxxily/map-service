@@ -1,5 +1,14 @@
 # 变更日志
 
+## 1.4.40 - 2026-07-12
+
+### 修复搜索与路线规划输入提示失效
+
+- **问题现象**：在 2D 和 3D 地图中输入搜索关键字或路线起终点时，高德 AutoComplete 联想提示完全无响应；路线规划、逆地理编码等依赖高德 REST API 的功能均受影响。
+- **根因**：提交 `50a2037`（1.4.34）为防止地图 URL 中的坐标状态通过 Referer 泄露，在服务端中间件和 HTML meta 标签中同时设置了 `Referrer-Policy: no-referrer`。该策略导致浏览器对所有跨域请求（包括高德 `restapi.amap.com`）均不发送 Referer 头，而高德 JSAPI 的 `inputtips` 等接口依赖 Referer 做域名白名单校验，未收到 Referer 时返回 `INVALID_USER_DOMAIN`（infocode: 10006），直接拒绝服务。
+- **修复方案**：将 `no-referrer` 调整为 `strict-origin`。`strict-origin` 仅发送 origin（协议+域名+端口），不发送完整路径和查询参数，既满足高德域名校验需求，又不会泄露 URL 中的坐标等敏感状态信息。
+- **改动范围**：`service/index.js` 服务端中间件响应头、`index.html` / `3d.html` 的 `<meta name="referrer">` 标签，以及对应构建产物。
+
 ## 1.4.39 - 2026-07-11
 
 ### 状态面板透明度调优与定位标签去冗余
