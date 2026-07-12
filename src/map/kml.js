@@ -1712,6 +1712,24 @@ export function hasTrackKml2d (kmlId) {
   return Boolean(kmlId && kmlList.some(kmlFile => kmlFile.id === kmlId))
 }
 
+/**
+ * 轻量级重渲染轨迹 KML 图层：不重新生成 features，仅按当前视口重新过滤和渲染。
+ * 用于视口变化（平移、缩放）时按需更新可见的点和线。
+ */
+export function rerenderTrackKml2d (map, kmlId) {
+  if (!kmlId) return false
+  const kmlFile = kmlList.find(k => k.id === kmlId)
+  if (!kmlFile) return false
+  try {
+    renderKmlLayers(map, kmlFile)
+    updateKmlPanelUI(map)
+  } catch (err) {
+    console.error('rerenderTrackKml2d failed:', err)
+    return false
+  }
+  return true
+}
+
 export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyLine = false, completedSegments = []) {
   try {
     const kmlFile = kmlList.find(k => k.id === kmlId)

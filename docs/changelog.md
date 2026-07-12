@@ -1,5 +1,16 @@
 # 变更日志
 
+## 1.4.42 - 2026-07-12
+
+### 修复视口移动后轨迹线和点不动态渲染
+
+- **问题背景**：1.4.41 版本实现视口过滤 + LOD 后，视口变化时仅重渲染了直接历史定位点（circleMarker / billboard），未重渲染 KML 图层（轨迹 LineString 和点要素），导致平移/缩放后视口内的线和点需要刷新页面才出现。
+- **修复方案**：
+  - 在 `kml.js` / `map3d/kml.js` 中新增 `rerenderTrackKml2d` / `rerenderTrackKml3d` 轻量级函数，仅按当前视口重新过滤和渲染已有 KML features，不重新生成数据。
+  - 在 `scheduleViewportRerender2d` / `scheduleViewportRerender3d` 的 rAF 回调中，除调用 `renderHistoryPoints` 外，同时调用 `rerenderTrackKml2d` / `rerenderTrackKml3d`，确保视口变化时 KML 图层（线 + 点）也按需重渲染。
+  - 面板 UI 同步更新显示过滤后的要素数量。
+- **影响范围**：2D（Leaflet）和 3D（Cesium）均修复。
+
 ## 1.4.41 - 2026-07-12
 
 ### 轨迹渲染视口过滤与 LOD 分级优化

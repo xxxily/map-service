@@ -1645,6 +1645,24 @@ export function hasTrackKml3d (kmlId) {
   return Boolean(kmlId && kmlList.some(kmlFile => kmlFile.id === kmlId))
 }
 
+/**
+ * 轻量级重渲染轨迹 KML 图层（3D）：不重新生成 features，仅按当前相机视口重新过滤和渲染。
+ * 用于视口变化（相机移动）时按需更新可见的点和线。
+ */
+export function rerenderTrackKml3d (kmlId) {
+  if (!kmlId) return false
+  const kmlFile = kmlList.find(k => k.id === kmlId)
+  if (!kmlFile) return false
+  try {
+    renderKmlLayers(kmlFile)
+    updateKmlPanelUI()
+  } catch (err) {
+    console.error('rerenderTrackKml3d failed:', err)
+    return false
+  }
+  return true
+}
+
 export function updateTrackKml3d (kmlId, historyPoints, lastPosition, onlyLine = false, completedSegments = []) {
   try {
     const kmlFile = kmlList.find(k => k.id === kmlId)

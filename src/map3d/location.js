@@ -40,7 +40,7 @@ import {
   trimTrackPointHistory,
   VIEWPORT_MAX_POINTS,
 } from '../map/location-track.js'
-import { createTrackKml3d, hasTrackKml3d, updateTrackKml3d } from './kml.js'
+import { createTrackKml3d, hasTrackKml3d, updateTrackKml3d, rerenderTrackKml3d } from './kml.js'
 
 let targetEntity = null
 const MAX_RENDERED_HISTORY_POINTS = VIEWPORT_MAX_POINTS // 保留常量作为 hard cap fallback
@@ -266,11 +266,13 @@ function scheduleViewportRerender3d () {
   if (viewportRerenderTimer3d) clearTimeout(viewportRerenderTimer3d)
   viewportRerenderTimer3d = setTimeout(() => {
     viewportRerenderTimer3d = null
-    if (activeViewer3d && intervalLocationState3d.active && intervalLocationState3d.historyPoints.length > 0) {
-      requestAnimationFrame(() => {
-        renderHistoryPoints3d(activeViewer3d, intervalLocationState3d.historyPoints)
-      })
-    }
+    if (!activeViewer3d || !intervalLocationState3d.active || intervalLocationState3d.historyPoints.length === 0) return
+    requestAnimationFrame(() => {
+      // ① 重渲染直接历史定位点（billboard）
+      renderHistoryPoints3d(activeViewer3d, intervalLocationState3d.historyPoints)
+      // ② 重渲染 KML 图层（轨迹线和点要素），按新视口重新过滤
+      rerenderTrackKml3d(intervalLocationState3d.recordKmlId)
+    })
   }, 200)
 }
 
