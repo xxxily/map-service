@@ -166,8 +166,8 @@ test('filterPointsInViewport2d applies buffer ratio', () => {
     { lat: 50, lng: 150, latlng: [50, 150] }, // far outside
   ]
   // Bounds: south=22, west=112, north=24, east=114
-  // With 1.5 buffer: pad = range * 0.25 = lat 0.5, lng 0.5
-  // Extended: south=21.5, west=111.5, north=24.5, east=114.5
+  // With 3.0 buffer: pad = range * 1.0 = lat 2, lng 2
+  // Extended: south=20, west=110, north=26, east=116
   const bounds = { south: 22, west: 112, north: 24, east: 114 }
   const result = filterPointsInViewport2d(points, bounds)
 
@@ -232,10 +232,10 @@ test('filterLineInViewport2d preserves viewport-intersecting vertices and neighb
   const bounds = { south: 22, west: 112, north: 28, east: 118 }
   const result = filterLineInViewport2d(coords, bounds)
 
-  // With buffer: extended bounds include more points
+  // With 3.0 buffer: extended bounds include more points
   // Points in or near viewport+buffer should be preserved
-  assert.ok(result.length >= 7, `expected at least 7, got ${result.length}`)
-  assert.ok(result.length <= 12, `expected at most 12, got ${result.length}`)
+  assert.ok(result.length >= 10, `expected at least 10, got ${result.length}`)
+  assert.ok(result.length <= 20, `expected at most 20, got ${result.length}`)
   // First point should be early in the array (neighbor before bounds)
   assert.ok(result[0][0] <= 112, `first lng should be <= 112, got ${result[0][0]}`)
   // Last point should be late in the array (neighbor after bounds)
@@ -304,13 +304,13 @@ test('getTrackDisplayFeatures with viewport bounds filters points outside viewpo
   const displayed = getTrackDisplayFeatures(kmlFile, { viewportBounds, zoom: 16 })
   const displayedPoints = displayed.filter(f => f.type === 'Point')
 
-  // Should be much less than 100 points
-  assert.ok(displayedPoints.length < 50, `expected < 50, got ${displayedPoints.length}`)
-  // All displayed points should be within viewport+buffer
+  // Should be much less than 100 points (3x buffer includes more area)
+  assert.ok(displayedPoints.length < 80, `expected < 80, got ${displayedPoints.length}`)
+  // All displayed points should be within viewport+buffer (3x buffer: pad=2)
   displayedPoints.forEach(pt => {
     const [lng, lat] = pt.coordinates
-    assert.ok(lat >= 23 && lat <= 27, `lat ${lat} outside viewport`)
-    assert.ok(lng >= 113 && lng <= 117, `lng ${lng} outside viewport`)
+    assert.ok(lat >= 22 && lat <= 28, `lat ${lat} outside viewport`)
+    assert.ok(lng >= 112 && lng <= 118, `lng ${lng} outside viewport`)
   })
 })
 

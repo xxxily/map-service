@@ -1593,9 +1593,10 @@ function bindKeyboardEvents () {
 }
 
 /**
- * 视口变化时按需重渲染 3D KML 图层（debounce 200ms + rAF）。
+ * 视口变化时按需重渲染 3D KML 图层（debounce 80ms + rAF）。
  * 独立于定位生命周期，确保查看已保存轨迹时也能动态渲染。
  * 仅重渲染 isLiveTrack 的 KML 文件，普通 KML 无视口过滤不需要重渲染。
+ * debounce 时间短至 80ms，配合 3x 缓冲区让用户几乎无感知。
  */
 function scheduleKmlViewportRerender3d () {
   if (kmlViewportRerenderTimer3d) clearTimeout(kmlViewportRerenderTimer3d)

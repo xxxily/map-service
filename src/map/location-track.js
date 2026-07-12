@@ -8,8 +8,8 @@ export const MAX_LOCATION_HISTORY_POINTS = 100_000
 // 详见 docs/requirements/track-rendering-viewport-lod.md
 // ============================================================================
 
-/** 视口缓冲系数：渲染范围 = 当前视口 × 1.5，预渲染视口外 25% 的区域 */
-export const VIEWPORT_BUFFER_RATIO = 1.5
+/** 视口缓冲系数：渲染范围 = 当前视口 × 3.0，预渲染视口外 1 倍的区域 */
+export const VIEWPORT_BUFFER_RATIO = 3.0
 
 /** 硬上限：视口内最多渲染的点数（跨 LOD 绝对天花板） */
 export const VIEWPORT_MAX_POINTS = 500
