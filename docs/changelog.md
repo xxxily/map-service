@@ -1,5 +1,17 @@
 # 变更日志
 
+## 1.4.44 - 2026-07-12
+
+### 修复持续定位时历史记录只剩最近一次的问题
+
+- **问题根因**：1.4.41 版本将视口过滤 + LOD 应用到了 `renderHistoryPoints`（直接 circleMarker 渲染），导致持续定位时 `map.setView` 将地图居中到当前位置后，之前的历史点全部落在视口外被过滤掉，用户只能看到 1 个点，误以为历史记录丢失。
+- **修复方案**：
+  - `renderHistoryPoints` / `renderHistoryPoints3d` 恢复为 `slice(-N)` 策略（上限 500），不再应用视口过滤和 LOD。
+  - 视口过滤 + LOD 仅保留在 KML 图层（`renderKmlLayers`）中，因为 KML 图层包含大量 LineString 和 Point 要素，是性能瓶颈所在。
+  - 移除了 `location.js` / `map3d/location.js` 中冗余的视口变化监听器（`scheduleViewportRerender2d/3d`），因为直接 circleMarker 不需要按视口重渲染。
+  - KML 图层的视口动态重渲染由 `kml.js` / `map3d/kml.js` 自身的监听器独立处理（1.4.43 已修复）。
+- **影响范围**：2D（Leaflet）和 3D（Cesium）均修复。
+
 ## 1.4.43 - 2026-07-12
 
 ### 彻底修复视口移动后轨迹不动态渲染

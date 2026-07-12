@@ -22,11 +22,7 @@ import {
 import { createLocationLifecycleTarget } from '../map/location-lifecycle.js'
 import { startLocationKeepAlive, stopLocationKeepAlive } from '../map/location-keepalive.js'
 import {
-  applyLodToPointList,
-  cameraHeightToZoom,
   createTrackRecordingSession,
-  filterPointsInViewport3d,
-  getTrackLodConfig,
   getTrackRecordingPoints,
   hasTrackRecordingData,
   normalizeHistoryPointLimit,
@@ -47,7 +43,6 @@ const MAX_RENDERED_HISTORY_POINTS = VIEWPORT_MAX_POINTS // 保留常量作为 ha
 const TRACK_CHECKPOINT_MIN_INTERVAL_MS = 15000
 const TRACK_PERSIST_RETRY_BASE_MS = 5000
 const TRACK_PERSIST_RETRY_MAX_MS = 5 * 60_000
-let viewportRerenderTimer3d = null // 视口变化触发重渲染的 debounce timer
 
 function calculateBearing (lat1, lng1, lat2, lng2) {
   const dLng = (lng2 - lng1) * Math.PI / 180
@@ -259,46 +254,18 @@ function triggerRipple3d (viewer, position) {
   }, 30)
 }
 
-// 辅助函数：视口变化时触发 3D 轨迹点重渲染（debounce 200ms + rAF）
-// viewer 通过闭包捕获，因为 Cesium camera.changed 事件不传递 viewer 参数
-let activeViewer3d = null
-function scheduleViewportRerender3d () {
-  if (viewportRerenderTimer3d) clearTimeout(viewportRerenderTimer3d)
-  viewportRerenderTimer3d = setTimeout(() => {
-    viewportRerenderTimer3d = null
-    if (!activeViewer3d || !intervalLocationState3d.active || intervalLocationState3d.historyPoints.length === 0) return
-    requestAnimationFrame(() => {
-      // 重渲染直接历史定位点（billboard）
-      // KML 图层的视口重渲染由 kml.js 自身的监听器独立处理
-      renderHistoryPoints3d(activeViewer3d, intervalLocationState3d.historyPoints)
-    })
-  }, 200)
-}
-
 // 辅助函数：绘制 3D 轨迹点
 function renderHistoryPoints3d (viewer, points) {
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
   intervalLocationState3d.historyEntities = []
 
-  // 视口过滤 + LOD 分级：替代旧的 slice(-120) 固定截断
-  const carto = viewer?.camera?.positionCartographic
-  const zoom = carto ? cameraHeightToZoom(carto.height) : 16
-  const lodConfig = getTrackLodConfig(zoom)
-
-  // ① 视口过滤
-  let visiblePoints = filterPointsInViewport3d(points, viewer)
-
-  // ② LOD 抽稀
-  visiblePoints = applyLodToPointList(visiblePoints, lodConfig)
-
-  // ③ 硬上限保护
+  // 直接历史定位点（billboard）不做视口过滤，仅保留最近 N 个点。
+  // 视口过滤 + LOD 仅用于 KML 图层（轨迹线和点要素），避免长途运行时性能问题。
+  let visiblePoints = points
   if (visiblePoints.length > MAX_RENDERED_HISTORY_POINTS) {
     visiblePoints = visiblePoints.slice(-MAX_RENDERED_HISTORY_POINTS)
   }
-
-  // pointNumberOffset 用于正确显示点的序号（基于原始点数组的偏移）
-  const firstOriginalIndex = points.indexOf(visiblePoints[0])
-  const pointNumberOffset = firstOriginalIndex >= 0 ? firstOriginalIndex : (points.length - visiblePoints.length)
+  const pointNumberOffset = points.length - visiblePoints.length
   const len = visiblePoints.length
   visiblePoints.forEach((pt, index) => {
     const opacity = len > 1
@@ -896,11 +863,6 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom, ma
   intervalLocationState3d.historyEntities.forEach(ent => viewer.entities.remove(ent))
   intervalLocationState3d.historyEntities = []
 
-  // 注册视口变化监听，按需重渲染轨迹点
-  if (viewportRerenderTimer3d) { clearTimeout(viewportRerenderTimer3d); viewportRerenderTimer3d = null }
-  activeViewer3d = viewer
-  viewer.camera.changed.addEventListener(scheduleViewportRerender3d)
-
   void startLocationKeepAlive()
 
   const source = createContinuousGeolocationSource(geolocation)
@@ -933,11 +895,6 @@ export function stopIntervalLocation3d (viewer) {
   intervalLocationController3d?.stop()
   intervalLocationController3d?.destroy()
   intervalLocationController3d = null
-
-  // 注销视口变化监听
-  if (viewportRerenderTimer3d) { clearTimeout(viewportRerenderTimer3d); viewportRerenderTimer3d = null }
-  viewer.camera.changed.removeEventListener(scheduleViewportRerender3d)
-  activeViewer3d = null
 
   // 停止定位时做最后的 KML 写入，必须确保当前内存中存在至少一个定位点或历史点，防止刷新页面后由于内存清空而覆盖擦除已有的 KML 轨迹数据
   const recorded = getTrackRecordingPoints(intervalLocationState3d.recordingSession)
