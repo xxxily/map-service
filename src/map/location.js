@@ -30,7 +30,7 @@ import {
   trimTrackPointHistory,
   VIEWPORT_MAX_POINTS,
 } from './location-track.js'
-import { createTrackKml2d, hasTrackKml2d, updateTrackKml2d, rerenderTrackKml2d } from './kml.js'
+import { createTrackKml2d, hasTrackKml2d, updateTrackKml2d } from './kml.js'
 import { startLocationKeepAlive, stopLocationKeepAlive } from './location-keepalive.js'
 
 const MAX_RENDERED_HISTORY_POINTS = VIEWPORT_MAX_POINTS // 保留常量作为 hard cap fallback
@@ -230,10 +230,9 @@ function scheduleViewportRerender2d (map) {
     viewportRerenderTimer2d = null
     if (!intervalLocationState.active || intervalLocationState.historyPoints.length === 0) return
     requestAnimationFrame(() => {
-      // ① 重渲染直接历史定位点（circleMarker）
+      // 重渲染直接历史定位点（circleMarker）
+      // KML 图层的视口重渲染由 kml.js 自身的监听器独立处理
       renderHistoryPoints(map, intervalLocationState.historyPoints)
-      // ② 重渲染 KML 图层（轨迹线和点要素），按新视口重新过滤
-      rerenderTrackKml2d(map, intervalLocationState.recordKmlId)
     })
   }, 200)
 }

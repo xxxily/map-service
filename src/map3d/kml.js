@@ -36,6 +36,7 @@ const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
 
 let viewerRef = null
+let kmlViewportRerenderTimer3d = null // KML 图层视口变化重渲染的 debounce timer
 let kmlList = []
 let publicKmlList = []
 let publicKmlPrefs = {}
@@ -1591,6 +1592,35 @@ function bindKeyboardEvents () {
   })
 }
 
+/**
+ * 视口变化时按需重渲染 3D KML 图层（debounce 200ms + rAF）。
+ * 独立于定位生命周期，确保查看已保存轨迹时也能动态渲染。
+ * 仅重渲染 isLiveTrack 的 KML 文件，普通 KML 无视口过滤不需要重渲染。
+ */
+function scheduleKmlViewportRerender3d () {
+  if (kmlViewportRerenderTimer3d) clearTimeout(kmlViewportRerenderTimer3d)
+  kmlViewportRerenderTimer3d = setTimeout(() => {
+    kmlViewportRerenderTimer3d = null
+    if (!viewerRef) return
+    const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
+                         publicKmlList.some(k => k.isLiveTrack && k.enabled)
+    if (!hasLiveTrack) return
+    requestAnimationFrame(() => {
+      kmlList.forEach(kmlFile => {
+        if (kmlFile.isLiveTrack && kmlFile.enabled) {
+          renderKmlLayers(kmlFile)
+        }
+      })
+      publicKmlList.forEach(kmlFile => {
+        if (kmlFile.isLiveTrack && kmlFile.enabled) {
+          renderKmlLayers(kmlFile)
+        }
+      })
+      updateKmlPanelUI()
+    })
+  }, 200)
+}
+
 export function initKmlSupport3d (viewer) {
   viewerRef = viewer
   window.getIsKmlPickupModeActive = () => isAddingPoint
@@ -1599,6 +1629,9 @@ export function initKmlSupport3d (viewer) {
   loadFromStorage()
   renderAllKmls()
   updateKmlPanelUI()
+
+  // 注册视口变化监听，按需重渲染轨迹 KML 图层
+  viewer.camera.changed.addEventListener(scheduleKmlViewportRerender3d)
 
   loadPublicKmls().then(() => {
     renderAllKmls()
@@ -1643,24 +1676,6 @@ export function createTrackKml3d (name) {
 
 export function hasTrackKml3d (kmlId) {
   return Boolean(kmlId && kmlList.some(kmlFile => kmlFile.id === kmlId))
-}
-
-/**
- * 轻量级重渲染轨迹 KML 图层（3D）：不重新生成 features，仅按当前相机视口重新过滤和渲染。
- * 用于视口变化（相机移动）时按需更新可见的点和线。
- */
-export function rerenderTrackKml3d (kmlId) {
-  if (!kmlId) return false
-  const kmlFile = kmlList.find(k => k.id === kmlId)
-  if (!kmlFile) return false
-  try {
-    renderKmlLayers(kmlFile)
-    updateKmlPanelUI()
-  } catch (err) {
-    console.error('rerenderTrackKml3d failed:', err)
-    return false
-  }
-  return true
 }
 
 export function updateTrackKml3d (kmlId, historyPoints, lastPosition, onlyLine = false, completedSegments = []) {

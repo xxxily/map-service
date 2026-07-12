@@ -1,5 +1,17 @@
 # 变更日志
 
+## 1.4.43 - 2026-07-12
+
+### 彻底修复视口移动后轨迹不动态渲染
+
+- **问题根因**：1.4.42 版本的修复未生效，因为视口变化监听器只在 `startIntervalLocation` 期间注册、`stopIntervalLocation` 时注销，且有 `intervalLocationState.active` 前置条件。查看已保存轨迹时（非活跃定位期间）**根本没有监听器**，所以平移/缩放后 KML 图层不会重渲染。
+- **正确修复方案**：将视口变化监听器从定位模块移至 KML 模块自身：
+  - `kml.js` 的 `initKmlSupport(map)` 中注册 `map.on('moveend zoomend', scheduleKmlViewportRerender)`，在页面初始化时即生效，不依赖定位生命周期。
+  - `map3d/kml.js` 的 `initKmlSupport3d(viewer)` 中注册 `viewer.camera.changed.addEventListener(scheduleKmlViewportRerender3d)`。
+  - 新增 `scheduleKmlViewportRerender` / `scheduleKmlViewportRerender3d` 函数，debounce 200ms + rAF，仅重渲染 `isLiveTrack && enabled` 的 KML 文件。
+  - 从 `location.js` / `map3d/location.js` 的视口 handler 中移除冗余的 KML 重渲染调用，避免双重渲染。
+  - 移除不再需要的 `rerenderTrackKml2d` / `rerenderTrackKml3d` 导出函数。
+
 ## 1.4.42 - 2026-07-12
 
 ### 修复视口移动后轨迹线和点不动态渲染

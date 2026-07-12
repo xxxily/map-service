@@ -31,6 +31,7 @@ const DEFAULT_KML_NAME = '默认标注'
 const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
 let kmlList = []
+let kmlViewportRerenderTimer = null // KML 图层视口变化重渲染的 debounce timer
 
 let publicKmlList = []
 let isEditingPublicKml = false
@@ -1157,11 +1158,42 @@ function initLongPressPointCreation (map) {
   })
 }
 
+/**
+ * 视口变化时按需重渲染 KML 图层（debounce 200ms + rAF）。
+ * 独立于定位生命周期，确保查看已保存轨迹时也能动态渲染。
+ * 仅重渲染 isLiveTrack 的 KML 文件，普通 KML 无视口过滤不需要重渲染。
+ */
+function scheduleKmlViewportRerender (map) {
+  if (kmlViewportRerenderTimer) clearTimeout(kmlViewportRerenderTimer)
+  kmlViewportRerenderTimer = setTimeout(() => {
+    kmlViewportRerenderTimer = null
+    const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
+                         publicKmlList.some(k => k.isLiveTrack && k.enabled)
+    if (!hasLiveTrack) return
+    requestAnimationFrame(() => {
+      kmlList.forEach(kmlFile => {
+        if (kmlFile.isLiveTrack && kmlFile.enabled) {
+          renderKmlLayers(map, kmlFile)
+        }
+      })
+      publicKmlList.forEach(kmlFile => {
+        if (kmlFile.isLiveTrack && kmlFile.enabled) {
+          renderKmlLayers(map, kmlFile)
+        }
+      })
+      updateKmlPanelUI(map)
+    })
+  }, 200)
+}
+
 export function initKmlSupport (map) {
   window.getActiveKmlMarkers = getActiveKmlMarkers
   loadFromStorage()
   initCustomControlsListeners()
-  
+
+  // 注册视口变化监听，按需重渲染轨迹 KML 图层
+  map.on('moveend zoomend', () => scheduleKmlViewportRerender(map))
+
   loadPublicKmls(map).then(() => {
     renderAllKmls(map)
     updateKmlPanelUI(map)
@@ -1710,24 +1742,6 @@ export function createTrackKml2d (name) {
 
 export function hasTrackKml2d (kmlId) {
   return Boolean(kmlId && kmlList.some(kmlFile => kmlFile.id === kmlId))
-}
-
-/**
- * 轻量级重渲染轨迹 KML 图层：不重新生成 features，仅按当前视口重新过滤和渲染。
- * 用于视口变化（平移、缩放）时按需更新可见的点和线。
- */
-export function rerenderTrackKml2d (map, kmlId) {
-  if (!kmlId) return false
-  const kmlFile = kmlList.find(k => k.id === kmlId)
-  if (!kmlFile) return false
-  try {
-    renderKmlLayers(map, kmlFile)
-    updateKmlPanelUI(map)
-  } catch (err) {
-    console.error('rerenderTrackKml2d failed:', err)
-    return false
-  }
-  return true
 }
 
 export function updateTrackKml2d (map, kmlId, historyPoints, lastPosition, onlyLine = false, completedSegments = []) {
