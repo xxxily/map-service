@@ -13,7 +13,10 @@ import {
 } from './continuous-location.js'
 import { createLocationLifecycleTarget } from './location-lifecycle.js'
 import {
+  applyLodToPointList,
   createTrackRecordingSession,
+  filterPointsInViewport2d,
+  getTrackLodConfig,
   getTrackRecordingPoints,
   hasTrackRecordingData,
   normalizeHistoryPointLimit,
@@ -25,14 +28,16 @@ import {
   resumeTrackRecordingSession,
   trimTrackRecordingSession,
   trimTrackPointHistory,
+  VIEWPORT_MAX_POINTS,
 } from './location-track.js'
 import { createTrackKml2d, hasTrackKml2d, updateTrackKml2d } from './kml.js'
 import { startLocationKeepAlive, stopLocationKeepAlive } from './location-keepalive.js'
 
-const MAX_RENDERED_HISTORY_POINTS = 120
+const MAX_RENDERED_HISTORY_POINTS = VIEWPORT_MAX_POINTS // 保留常量作为 hard cap fallback
 const TRACK_CHECKPOINT_MIN_INTERVAL_MS = 15000
 const TRACK_PERSIST_RETRY_BASE_MS = 5000
 const TRACK_PERSIST_RETRY_MAX_MS = 5 * 60_000
+let viewportRerenderTimer2d = null // 视口变化触发重渲染的 debounce timer
 
 function calculateBearing (lat1, lng1, lat2, lng2) {
   const dLng = (lng2 - lng1) * Math.PI / 180
@@ -208,16 +213,56 @@ function persistTrack2d (map, { force = false } = {}) {
   return saved
 }
 
+// 辅助函数：从 Leaflet map 获取视口边界
+function getViewportBounds2d (map) {
+  if (!map || typeof map.getBounds !== 'function') return null
+  const bounds = map.getBounds()
+  if (!bounds || !bounds.isValid()) return null
+  const ne = bounds.getNorthEast()
+  const sw = bounds.getSouthWest()
+  return { south: sw.lat, west: sw.lng, north: ne.lat, east: ne.lng }
+}
+
+// 辅助函数：视口变化时触发轨迹点重渲染（debounce 200ms + rAF）
+function scheduleViewportRerender2d (map) {
+  if (viewportRerenderTimer2d) clearTimeout(viewportRerenderTimer2d)
+  viewportRerenderTimer2d = setTimeout(() => {
+    viewportRerenderTimer2d = null
+    if (intervalLocationState.active && intervalLocationState.historyPoints.length > 0) {
+      requestAnimationFrame(() => {
+        renderHistoryPoints(map, intervalLocationState.historyPoints)
+      })
+    }
+  }, 200)
+}
+
 // 辅助函数：绘制历史定位轨迹点
 function renderHistoryPoints (map, points) {
   // 清除旧轨迹点图层
   intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
   intervalLocationState.historyLayers = []
 
-  // 完整轨迹仍保留在内存/KML 中，但地图只绘制最近一段，避免长途运行时
-  // 每轮删除并重建成千上万个 Marker 阻塞主线程。
-  const visiblePoints = points.slice(-MAX_RENDERED_HISTORY_POINTS)
-  const pointNumberOffset = points.length - visiblePoints.length
+  // 视口过滤 + LOD 分级：替代旧的 slice(-120) 固定截断
+  const zoom = map && typeof map.getZoom === 'function' ? map.getZoom() : 16
+  const lodConfig = getTrackLodConfig(zoom)
+  const viewportBounds = getViewportBounds2d(map)
+
+  // ① 视口过滤
+  let visiblePoints = viewportBounds
+    ? filterPointsInViewport2d(points, viewportBounds)
+    : points
+
+  // ② LOD 抽稀
+  visiblePoints = applyLodToPointList(visiblePoints, lodConfig)
+
+  // ③ 硬上限保护
+  if (visiblePoints.length > MAX_RENDERED_HISTORY_POINTS) {
+    visiblePoints = visiblePoints.slice(-MAX_RENDERED_HISTORY_POINTS)
+  }
+
+  // pointNumberOffset 用于正确显示点的序号（基于原始点数组的偏移）
+  const firstOriginalIndex = points.indexOf(visiblePoints[0])
+  const pointNumberOffset = firstOriginalIndex >= 0 ? firstOriginalIndex : (points.length - visiblePoints.length)
   const len = visiblePoints.length
   visiblePoints.forEach((pt, index) => {
     // 透明度逐渐渐变：越新的历史点越不透明（0.08 到 0.35）
@@ -792,6 +837,10 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHi
   intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
   intervalLocationState.historyLayers = []
 
+  // 注册视口变化监听，按需重渲染轨迹点
+  if (viewportRerenderTimer2d) { clearTimeout(viewportRerenderTimer2d); viewportRerenderTimer2d = null }
+  map.on('moveend zoomend', scheduleViewportRerender2d)
+
   void startLocationKeepAlive()
 
   const source = createContinuousGeolocationSource(geolocation)
@@ -822,6 +871,10 @@ export function stopIntervalLocation2d (map) {
   intervalLocationController2d?.stop()
   intervalLocationController2d?.destroy()
   intervalLocationController2d = null
+
+  // 注销视口变化监听
+  if (viewportRerenderTimer2d) { clearTimeout(viewportRerenderTimer2d); viewportRerenderTimer2d = null }
+  map.off('moveend zoomend', scheduleViewportRerender2d)
 
   // 停止定位时做最后的 KML 写入，必须确保当前内存中存在至少一个定位点或历史点，防止刷新页面后由于内存清空而覆盖擦除已有的 KML 轨迹数据
   const recorded = getTrackRecordingPoints(intervalLocationState.recordingSession)

@@ -3,6 +3,36 @@ export const LIVE_TRACK_RENDER_LINE_POINT_LIMIT = 2000
 export const MAX_LOCATION_INTERVAL_SECONDS = 60
 export const MAX_LOCATION_HISTORY_POINTS = 100_000
 
+// ============================================================================
+// 轨迹渲染视口过滤与 LOD 分级
+// 详见 docs/requirements/track-rendering-viewport-lod.md
+// ============================================================================
+
+/** 视口缓冲系数：渲染范围 = 当前视口 × 1.5，预渲染视口外 25% 的区域 */
+export const VIEWPORT_BUFFER_RATIO = 1.5
+
+/** 硬上限：视口内最多渲染的点数（跨 LOD 绝对天花板） */
+export const VIEWPORT_MAX_POINTS = 500
+
+/** 硬上限：视口内每条线最多渲染的顶点数 */
+export const VIEWPORT_MAX_LINE_VERTICES = 5000
+
+/**
+ * LOD 分级配置表：根据缩放级别决定渲染密度。
+ * - maxPoints: 该级别下视口内最多渲染的点标记数
+ * - maxLineVertices: 该级别下每条线最多渲染的顶点数
+ * - pointInterval: 点抽取间隔（每 N 取 1），Infinity 表示不渲染点
+ */
+export const TRACK_LOD_CONFIGS = [
+  { zoomMin: 0, zoomMax: 7, maxPoints: 0, maxLineVertices: 300, pointInterval: Infinity },
+  { zoomMin: 8, zoomMax: 12, maxPoints: 80, maxLineVertices: 1000, pointInterval: 5 },
+  { zoomMin: 13, zoomMax: 15, maxPoints: 200, maxLineVertices: 3000, pointInterval: 2 },
+  { zoomMin: 16, zoomMax: 99, maxPoints: 500, maxLineVertices: 5000, pointInterval: 1 },
+]
+
+/** 3D 相机高度换算缩放级别的基准高度（与 startIntervalLocation3d 一致） */
+const CAMERA_HEIGHT_BASE = 20_000_000
+
 function finiteNumber (value) {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null
   const number = Number(value)
@@ -236,9 +266,376 @@ export function buildTrackSegments (historyPoints, lastPosition, completedSegmen
   return segments
 }
 
-export function getTrackDisplayFeatures (kmlFile) {
+/**
+ * 根据缩放级别获取 LOD 配置。
+ * @param {number} zoom - 地图缩放级别
+ * @returns {{ maxPoints: number, maxLineVertices: number, pointInterval: number }}
+ */
+export function getTrackLodConfig (zoom) {
+  const z = Number.isFinite(zoom) ? Math.max(0, Math.floor(zoom)) : 0
+  const config = TRACK_LOD_CONFIGS.find(c => z >= c.zoomMin && z <= c.zoomMax)
+  return config || TRACK_LOD_CONFIGS[TRACK_LOD_CONFIGS.length - 1]
+}
+
+/**
+ * 3D 相机高度 → 缩放级别换算。
+ * @param {number} cameraHeightMeters - 相机高度（米）
+ * @returns {number} 等效缩放级别
+ */
+export function cameraHeightToZoom (cameraHeightMeters) {
+  if (!Number.isFinite(cameraHeightMeters) || cameraHeightMeters <= 0) return 0
+  return Math.max(0, Math.log2(CAMERA_HEIGHT_BASE / cameraHeightMeters))
+}
+
+/**
+ * 均匀采样线坐标（首尾必保留）。
+ * @param {Array} coordinates - 原始坐标数组
+ * @param {number} maxVertices - 最大顶点数
+ * @returns {Array} 采样后的坐标数组
+ */
+export function downsampleLineCoordinates (coordinates, maxVertices) {
+  if (!Array.isArray(coordinates) || coordinates.length <= 2) return coordinates || []
+  const limit = Math.max(2, Math.floor(maxVertices))
+  if (coordinates.length <= limit) return coordinates
+
+  const result = [coordinates[0]]
+  for (let i = 1; i < limit - 1; i += 1) {
+    const sourceIndex = Math.floor(i * (coordinates.length - 1) / (limit - 1))
+    result.push(coordinates[sourceIndex])
+  }
+  result.push(coordinates[coordinates.length - 1])
+  return result
+}
+
+/**
+ * 对点列表按 LOD 配置进行间隔抽样 + 上限截断。
+ * 始终保留最新的点（数组末尾）。
+ * @param {Array} points - 原始点数组（按时间排序，末尾为最新）
+ * @param {{ maxPoints: number, pointInterval: number }} lodConfig
+ * @returns {Array} 抽样后的点数组
+ */
+export function applyLodToPointList (points, lodConfig) {
+  if (!Array.isArray(points) || points.length === 0) return []
+  const interval = Math.max(1, Math.floor(lodConfig.pointInterval) || 1)
+  const maxPoints = Math.max(0, Math.floor(lodConfig.maxPoints) || 0)
+  if (maxPoints === 0) return []
+
+  // 间隔抽样：从末尾（最新）向前取，每 interval 取 1
+  const sampled = []
+  for (let i = points.length - 1; i >= 0 && sampled.length < maxPoints; i -= interval) {
+    sampled.unshift(points[i])
+  }
+  return sampled
+}
+
+/**
+ * 2D 视口过滤：根据 Leaflet bounds 过滤点。
+ * 接受 { lat, lng } 或 [lat, lng] 格式的点。
+ * @param {Array} points - 点数组
+ * @param {{ south: number, west: number, north: number, east: number }} bounds - 视口边界
+ * @param {number} [bufferRatio=1.5] - 缓冲系数
+ * @returns {Array} 视口内的点
+ */
+export function filterPointsInViewport2d (points, bounds, bufferRatio = VIEWPORT_BUFFER_RATIO) {
+  if (!Array.isArray(points) || !bounds) return points || []
+  const { south, west, north, east } = bounds
+  if (![south, west, north, east].every(Number.isFinite)) return points
+
+  // 计算缓冲后的边界
+  const latRange = north - south
+  const lngRange = east - west
+  const latPad = latRange * (bufferRatio - 1) / 2
+  const lngPad = lngRange * (bufferRatio - 1) / 2
+  const minLat = south - latPad
+  const maxLat = north + latPad
+  const minLng = west - lngPad
+  const maxLng = east + lngPad
+
+  // 处理经度跨越 ±180° 的情况
+  const crossesAntimeridian = minLng < -180 || maxLng > 180
+
+  return points.filter(pt => {
+    const lat = typeof pt.lat === 'number' ? pt.lat : (Array.isArray(pt.latlng) ? pt.latlng[0] : pt.latlng?.lat)
+    const lng = typeof pt.lng === 'number' ? pt.lng : (Array.isArray(pt.latlng) ? pt.latlng[1] : pt.latlng?.lng)
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
+    if (lat < minLat || lat > maxLat) return false
+    if (crossesAntimeridian) {
+      const normLng = ((lng + 540) % 360) - 180
+      return normLng >= minLng || normLng <= maxLng
+    }
+    return lng >= minLng && lng <= maxLng
+  })
+}
+
+/**
+ * 3D 视口过滤：根据 Cesium 相机视口过滤点。
+ * 通过相机高度和位置估算可见范围。
+ * @param {Array} points - 点数组
+ * @param {object} viewer - Cesium Viewer 实例
+ * @param {number} [bufferRatio=1.5] - 缓冲系数
+ * @returns {Array} 视口内的点
+ */
+export function filterPointsInViewport3d (points, viewer, bufferRatio = VIEWPORT_BUFFER_RATIO) {
+  if (!Array.isArray(points) || !viewer?.camera) return points || []
+  const camera = viewer.camera
+  const carto = camera.positionCartographic
+  if (!carto) return points
+
+  // 相机高度决定可见范围（简化估算）
+  const heightMeters = carto.height
+  if (!Number.isFinite(heightMeters) || heightMeters <= 0) return points
+
+  const camLat = (carto.latitude * 180) / Math.PI
+  const camLng = (carto.longitude * 180) / Math.PI
+
+  // 可见范围估算：高度越高，可见范围越大
+  // 约每 1m 高度对应 0.00001 度（约 1.1m），考虑俯仰角放大 1.5 倍
+  const latRange = Math.min(90, (heightMeters / 111000) * 1.5 * bufferRatio)
+  const lngRange = Math.min(180, latRange / Math.max(0.1, Math.cos(camLat * Math.PI / 180)))
+
+  const minLat = camLat - latRange
+  const maxLat = camLat + latRange
+  const minLng = camLng - lngRange
+  const maxLng = camLng + lngRange
+
+  return points.filter(pt => {
+    const lat = typeof pt.lat === 'number' ? pt.lat : (Array.isArray(pt.latlng) ? pt.latlng[0] : pt.latlng?.lat)
+    const lng = typeof pt.lng === 'number' ? pt.lng : (Array.isArray(pt.latlng) ? pt.latlng[1] : pt.latlng?.lng)
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
+    return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng
+  })
+}
+
+/**
+ * 2D 视口过滤线坐标：保留视口内及相邻段的顶点。
+ * @param {Array} coordinates - [lng, lat] 坐标数组（WGS84）
+ * @param {{ south: number, west: number, north: number, east: number }} bounds
+ * @param {number} [bufferRatio=1.5]
+ * @returns {Array} 过滤后的坐标数组
+ */
+export function filterLineInViewport2d (coordinates, bounds, bufferRatio = VIEWPORT_BUFFER_RATIO) {
+  if (!Array.isArray(coordinates) || coordinates.length <= 2 || !bounds) return coordinates || []
+  const { south, west, north, east } = bounds
+  if (![south, west, north, east].every(Number.isFinite)) return coordinates
+
+  const latRange = north - south
+  const lngRange = east - west
+  const latPad = latRange * (bufferRatio - 1) / 2
+  const lngPad = lngRange * (bufferRatio - 1) / 2
+  const minLat = south - latPad
+  const maxLat = north + latPad
+  const minLng = west - lngPad
+  const maxLng = east + lngPad
+
+  const isInBounds = (coord) => {
+    if (!Array.isArray(coord) || coord.length < 2) return false
+    const [lng, lat] = coord
+    return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng
+  }
+
+  // 保留视口内的点及其前后各一个点（保证线段连续性）
+  const result = []
+  for (let i = 0; i < coordinates.length; i++) {
+    const inBounds = isInBounds(coordinates[i])
+    const prevInBounds = i > 0 && isInBounds(coordinates[i - 1])
+    const nextInBounds = i < coordinates.length - 1 && isInBounds(coordinates[i + 1])
+    if (inBounds || prevInBounds || nextInBounds) {
+      result.push(coordinates[i])
+    }
+  }
+  return result.length >= 2 ? result : coordinates
+}
+
+/**
+ * 3D 视口过滤线坐标。
+ * @param {Array} coordinates - [lng, lat] 坐标数组
+ * @param {object} viewer - Cesium Viewer 实例
+ * @param {number} [bufferRatio=1.5]
+ * @returns {Array} 过滤后的坐标数组
+ */
+export function filterLineInViewport3d (coordinates, viewer, bufferRatio = VIEWPORT_BUFFER_RATIO) {
+  if (!Array.isArray(coordinates) || coordinates.length <= 2 || !viewer?.camera) return coordinates || []
+  const camera = viewer.camera
+  const carto = camera.positionCartographic
+  if (!carto) return coordinates
+
+  const heightMeters = carto.height
+  if (!Number.isFinite(heightMeters) || heightMeters <= 0) return coordinates
+
+  const camLat = (carto.latitude * 180) / Math.PI
+  const camLng = (carto.longitude * 180) / Math.PI
+  const latRange = Math.min(90, (heightMeters / 111000) * 1.5 * bufferRatio)
+  const lngRange = Math.min(180, latRange / Math.max(0.1, Math.cos(camLat * Math.PI / 180)))
+  const minLat = camLat - latRange
+  const maxLat = camLat + latRange
+  const minLng = camLng - lngRange
+  const maxLng = camLng + lngRange
+
+  const isInBounds = (coord) => {
+    if (!Array.isArray(coord) || coord.length < 2) return false
+    const [lng, lat] = coord
+    return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng
+  }
+
+  const result = []
+  for (let i = 0; i < coordinates.length; i++) {
+    const inBounds = isInBounds(coordinates[i])
+    const prevInBounds = i > 0 && isInBounds(coordinates[i - 1])
+    const nextInBounds = i < coordinates.length - 1 && isInBounds(coordinates[i + 1])
+    if (inBounds || prevInBounds || nextInBounds) {
+      result.push(coordinates[i])
+    }
+  }
+  return result.length >= 2 ? result : coordinates
+}
+
+/**
+ * 获取轨迹显示特征（视口感知增强版）。
+ *
+ * @param {object} kmlFile - KML 文件对象
+ * @param {object} [options] - 可选参数
+ * @param {{ south: number, west: number, north: number, east: number } | null} [options.viewportBounds]
+ *        视口边界，提供时启用视口过滤
+ * @param {number | null} [options.zoom]
+ *        缩放级别，提供时启用 LOD 过滤；不提供时退化为旧逻辑
+ * @param {object | null} [options.viewer3d]
+ *        Cesium Viewer 实例，3D 模式下用于视口过滤（优先于 viewportBounds）
+ * @returns {Array} 过滤后的特征数组
+ */
+export function getTrackDisplayFeatures (kmlFile, options = {}) {
   const features = Array.isArray(kmlFile?.features) ? kmlFile.features : []
   if (!kmlFile?.isLiveTrack) return features
+
+  const { viewportBounds = null, zoom = null, viewer3d = null } = options
+  const useViewport = Boolean(viewportBounds || viewer3d)
+  const useLod = Number.isFinite(zoom)
+
+  // 无视口和 LOD 参数时，退化为旧逻辑（向后兼容）
+  if (!useViewport && !useLod) {
+    return getTrackDisplayFeaturesLegacy(kmlFile)
+  }
+
+  const lodConfig = useLod
+    ? getTrackLodConfig(zoom)
+    : { maxPoints: LIVE_TRACK_RENDER_POINT_LIMIT, maxLineVertices: LIVE_TRACK_RENDER_LINE_POINT_LIMIT, pointInterval: 1 }
+
+  // 线特征数，用于分配每条线的顶点预算
+  const lineCount = features.filter(feature => feature?.type === 'LineString').length
+  const perLinePointLimit = Math.max(2, Math.floor(lodConfig.maxLineVertices / Math.max(1, lineCount)))
+
+  // 第一遍：过滤线特征（视口裁剪 + 顶点抽稀）
+  const processedLines = []
+  for (let index = 0; index < features.length; index += 1) {
+    const feature = features[index]
+    if (feature?.type !== 'LineString' || !Array.isArray(feature.coordinates)) {
+      if (feature?.type === 'LineString') processedLines.push({ index, feature })
+      continue
+    }
+
+    let coords = feature.coordinates
+
+    // 视口过滤线坐标
+    if (viewer3d) {
+      coords = filterLineInViewport3d(coords, viewer3d)
+    } else if (viewportBounds) {
+      coords = filterLineInViewport2d(coords, viewportBounds)
+    }
+
+    // LOD 顶点抽稀
+    coords = downsampleLineCoordinates(coords, perLinePointLimit)
+
+    if (coords.length >= 2) {
+      processedLines.push({ index, feature: { ...feature, coordinates: coords } })
+    }
+  }
+
+  // 第二遍：过滤点特征（视口过滤 + LOD 抽样）
+  let pointFeatures = []
+  for (let index = 0; index < features.length; index += 1) {
+    const feature = features[index]
+    if (feature?.type !== 'Point') continue
+    pointFeatures.push({ index, feature })
+  }
+
+  // 视口过滤点
+  if (viewer3d) {
+    pointFeatures = pointFeatures.filter(({ feature }) => {
+      const coord = feature.coordinates
+      if (!Array.isArray(coord) || coord.length < 2) return false
+      const camera = viewer3d.camera
+      const carto = camera.positionCartographic
+      if (!carto) return true
+      const heightMeters = carto.height
+      const camLat = (carto.latitude * 180) / Math.PI
+      const camLng = (carto.longitude * 180) / Math.PI
+      const latRange = Math.min(90, (heightMeters / 111000) * 1.5 * VIEWPORT_BUFFER_RATIO)
+      const lngRange = Math.min(180, latRange / Math.max(0.1, Math.cos(camLat * Math.PI / 180)))
+      const [lng, lat] = coord
+      return lat >= camLat - latRange && lat <= camLat + latRange &&
+             lng >= camLng - lngRange && lng <= camLng + lngRange
+    })
+  } else if (viewportBounds) {
+    const { south, west, north, east } = viewportBounds
+    const latRange = north - south
+    const lngRange = east - west
+    const latPad = latRange * (VIEWPORT_BUFFER_RATIO - 1) / 2
+    const lngPad = lngRange * (VIEWPORT_BUFFER_RATIO - 1) / 2
+    const minLat = south - latPad
+    const maxLat = north + latPad
+    const minLng = west - lngPad
+    const maxLng = east + lngPad
+    pointFeatures = pointFeatures.filter(({ feature }) => {
+      const coord = feature.coordinates
+      if (!Array.isArray(coord) || coord.length < 2) return false
+      const [lng, lat] = coord
+      return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng
+    })
+  }
+
+  // LOD 点抽样（从末尾向前，保留最新点）
+  const maxPoints = Math.min(lodConfig.maxPoints, VIEWPORT_MAX_POINTS)
+  if (maxPoints === 0) {
+    pointFeatures = []
+  } else if (pointFeatures.length > maxPoints) {
+    const interval = Math.max(1, Math.floor(lodConfig.pointInterval) || 1)
+    const sampled = []
+    for (let i = pointFeatures.length - 1; i >= 0 && sampled.length < maxPoints; i -= interval) {
+      sampled.unshift(pointFeatures[i])
+    }
+    pointFeatures = sampled
+  } else if (lodConfig.pointInterval > 1 && pointFeatures.length > 0) {
+    // 点数未超上限但需要按间隔抽样
+    const interval = Math.max(1, Math.floor(lodConfig.pointInterval) || 1)
+    if (interval > 1) {
+      const sampled = []
+      for (let i = pointFeatures.length - 1; i >= 0; i -= interval) {
+        sampled.unshift(pointFeatures[i])
+      }
+      pointFeatures = sampled
+    }
+  }
+
+  // 合并结果，保持原始顺序
+  const keepIndices = new Set([
+    ...processedLines.map(item => item.index),
+    ...pointFeatures.map(item => item.index),
+  ])
+
+  const lineMap = new Map(processedLines.map(item => [item.index, item.feature]))
+
+  return features.flatMap((feature, index) => {
+    if (!keepIndices.has(index)) return []
+    const replacement = lineMap.get(index)
+    return replacement ? [replacement] : [feature]
+  })
+}
+
+/**
+ * 旧版 getTrackDisplayFeatures 逻辑（向后兼容 fallback）。
+ * 当不提供视口和 LOD 参数时使用。
+ */
+function getTrackDisplayFeaturesLegacy (kmlFile) {
+  const features = Array.isArray(kmlFile?.features) ? kmlFile.features : []
 
   const configuredLimit = finiteNumber(kmlFile.renderPointLimit)
   const pointLimit = configuredLimit === null

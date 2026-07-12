@@ -11,6 +11,17 @@ import {
   LIVE_TRACK_RENDER_POINT_LIMIT,
 } from './location-track.js'
 
+// 辅助函数：从 Leaflet map 获取视口参数
+function getViewportOptions2d (map) {
+  if (!map || typeof map.getBounds !== 'function') return {}
+  const bounds = map.getBounds()
+  if (!bounds || !bounds.isValid()) return {}
+  const ne = bounds.getNorthEast()
+  const sw = bounds.getSouthWest()
+  const zoom = typeof map.getZoom === 'function' ? map.getZoom() : 16
+  return { viewportBounds: { south: sw.lat, west: sw.lng, north: ne.lat, east: ne.lng }, zoom }
+}
+
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_LAST_TARGET_KEY = 'map_kml_last_target_id'
 const KML_COORD_CORRECTION = 'wgs84-to-gcj02'
@@ -576,7 +587,7 @@ function renderKmlLayers (map, kmlFile) {
   
   const group = L.featureGroup()
   
-  getTrackDisplayFeatures(kmlFile).forEach(feat => {
+  getTrackDisplayFeatures(kmlFile, getViewportOptions2d(map)).forEach(feat => {
     const layer = renderFeature(map, kmlFile, feat)
     if (layer) {
       group.addLayer(layer)
@@ -619,7 +630,7 @@ function updateKmlPanelUI (map) {
       ${kmlList.map(kmlFile => {
         const enabled = isKmlEnabled(kmlFile)
         const expanded = expandedKmlIds.has(kmlFile.id)
-        const displayFeatures = getTrackDisplayFeatures(kmlFile)
+        const displayFeatures = getTrackDisplayFeatures(kmlFile, getViewportOptions2d(map))
         const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
         const visibilityButton = kmlFile.isDefault
           ? ''
@@ -690,7 +701,7 @@ function updateKmlPanelUI (map) {
                 </div>
               </div>
               <div class="kml-features-list">
-                ${displayFeatures.length < kmlFile.features.length ? `<div class="kml-feature-limit-note">为保证长途运行流畅，仅展示最近 ${LIVE_TRACK_RENDER_POINT_LIMIT} 个轨迹点；导出仍包含全部记录。</div>` : ''}
+                ${displayFeatures.length < kmlFile.features.length ? `<div class="kml-feature-limit-note">已按当前视口和缩放级别过滤显示，共 ${kmlFile.features.length} 个记录点中展示 ${displayFeatures.length} 个；导出仍包含全部记录。</div>` : ''}
                 ${displayFeatures.map(feat => {
                   let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
                   if (feat.type === 'LineString') {

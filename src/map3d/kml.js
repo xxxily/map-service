@@ -16,6 +16,7 @@ import { generateKmlText, parseKML } from '../map/kml-format.js'
 import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from '../map/kml-content-panel.js'
 import {
   buildTrackSegments,
+  cameraHeightToZoom,
   getTrackDisplayFeatures,
   LIVE_TRACK_RENDER_LINE_POINT_LIMIT,
   LIVE_TRACK_RENDER_POINT_LIMIT,
@@ -451,10 +452,19 @@ function removeKmlLayers (kmlFileOrId) {
   })
 }
 
+// 辅助函数：从 Cesium viewer 获取视口参数
+function getViewportOptions3d () {
+  if (!viewerRef?.camera) return {}
+  const carto = viewerRef.camera.positionCartographic
+  if (!carto) return {}
+  const zoom = cameraHeightToZoom(carto.height)
+  return { zoom, viewer3d: viewerRef }
+}
+
 function renderKmlLayers (kmlFile) {
   removeKmlLayers(kmlFile)
   if (!isKmlEnabled(kmlFile)) return
-  getTrackDisplayFeatures(kmlFile).forEach(feature => renderFeature(kmlFile, feature))
+  getTrackDisplayFeatures(kmlFile, getViewportOptions3d()).forEach(feature => renderFeature(kmlFile, feature))
 }
 
 function renderAllKmls () {
@@ -1049,7 +1059,7 @@ function renderFeatureItem (kmlFile, feature, editable) {
 function renderKmlCard (kmlFile) {
   const enabled = isKmlEnabled(kmlFile)
   const expanded = expandedKmlIds.has(kmlFile.id)
-  const displayFeatures = getTrackDisplayFeatures(kmlFile)
+  const displayFeatures = getTrackDisplayFeatures(kmlFile, getViewportOptions3d())
   const editable = isKmlEditable(kmlFile)
   const visibilityTitle = enabled ? `隐藏此${kmlFile.isPublic ? '公共' : ''}图层` : `显示此${kmlFile.isPublic ? '公共' : ''}图层`
   const isEditingThis = isEditingPublicKml && editingPublicKmlId === kmlFile.id
@@ -1128,7 +1138,7 @@ function renderKmlCard (kmlFile) {
           </div>
         </div>
         <div class="kml-features-list">
-          ${displayFeatures.length < (kmlFile.features || []).length ? `<div class="kml-feature-limit-note">为保证长途运行流畅，仅展示最近 ${LIVE_TRACK_RENDER_POINT_LIMIT} 个轨迹点；导出仍包含全部记录。</div>` : ''}
+          ${displayFeatures.length < (kmlFile.features || []).length ? `<div class="kml-feature-limit-note">已按当前视口和缩放级别过滤显示，共 ${(kmlFile.features || []).length} 个记录点中展示 ${displayFeatures.length} 个；导出仍包含全部记录。</div>` : ''}
           ${displayFeatures.map(feature => renderFeatureItem(kmlFile, feature, editable)).join('')}
         </div>
       </div>
