@@ -184,3 +184,30 @@ test('SharedKmlManager returns published feature content view', async () => {
     /KML 点位不存在或未发布/
   )
 })
+
+test('SharedKmlManager preserves KML media HTML and style hints', async () => {
+  const store = new MockStore()
+  const manager = new SharedKmlManager({ store })
+  const kmlText = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>图片点位</name>
+      <styleUrl>#MarkerStylePicture</styleUrl>
+      <description><![CDATA[<div><img src="https://cdn.example.com/media?id=1" alt="现场照片"></div>]]></description>
+      <Point><coordinates>111.4585,21.8390,0</coordinates></Point>
+    </Placemark>
+  </Document>
+</kml>`
+
+  const imported = await manager.import(Buffer.from(kmlText), '媒体点位.kml', {
+    status: 'published',
+  })
+  const feature = imported.features[0]
+  const view = await manager.getFeatureContent(imported.id, feature.id, false)
+
+  assert.equal(feature.styleUrl, '#MarkerStylePicture')
+  assert.match(feature.description, /<img src=/)
+  assert.equal(view.contentSummary.imageCount, 1)
+  assert.equal(view.groups.find(group => group.type === 'image').items[0].title, '现场照片')
+})

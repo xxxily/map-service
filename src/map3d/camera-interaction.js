@@ -257,7 +257,12 @@ export function getMinimumCameraHeightAboveTerrain (scene, cartographic, minimum
   const clearance = Math.max(1, finiteNumber(minimumClearance, DEFAULT_MIN_CAMERA_HEIGHT))
   try {
     const terrainHeight = finiteNumber(scene?.globe?.getHeight?.(cartographic), NaN)
-    return Number.isFinite(terrainHeight) ? terrainHeight + clearance : clearance
+    if (!Number.isFinite(terrainHeight)) return clearance
+    const exaggeration = Math.max(0, finiteNumber(scene?.verticalExaggeration, 1))
+    const relativeHeight = finiteNumber(scene?.verticalExaggerationRelativeHeight, 0)
+    const exaggeratedTerrainHeight = relativeHeight +
+      ((terrainHeight - relativeHeight) * exaggeration)
+    return exaggeratedTerrainHeight + clearance
   } catch (err) {
     return clearance
   }
@@ -367,6 +372,7 @@ export function installMap3dCameraInteraction (options = {}) {
   if (!viewer || !canvas || !cesium || typeof canvas.addEventListener !== 'function') {
     return {
       cancel () {},
+      constrain () {},
       destroy () {},
     }
   }
@@ -932,6 +938,7 @@ export function installMap3dCameraInteraction (options = {}) {
 
   return {
     cancel,
+    constrain: constrainCamera,
     destroy () {
       cancel()
       for (const removeListener of listeners.splice(0)) removeListener()

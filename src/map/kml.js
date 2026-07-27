@@ -4,6 +4,8 @@ import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListener
 import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from './coord-transform.js'
 import { generateKmlText, parseKML } from './kml-format.js'
 import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from './kml-content-panel.js'
+import { getFeatureDescriptionText } from '../../shared/kml-content.js'
+import { getKmlMediaListIcon, getKmlMediaMarkerDescriptor } from './kml-media-marker.js'
 import {
   buildTrackSegments,
   getTrackDisplayFeatures,
@@ -478,6 +480,7 @@ function getFeatureLabel (feature) {
 
 function renderFeaturePopup (kmlId, feature, isEditable) {
   const contentSummary = getFeatureContentSummaryText(feature)
+  const description = getFeatureDescriptionText(feature)
   const actionsHtml = isEditable
     ? `
       <div class="kml-popup-actions">
@@ -494,7 +497,7 @@ function renderFeaturePopup (kmlId, feature, isEditable) {
   return `
     <div class="kml-popup-content">
       <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
-      <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
+      <div class="kml-popup-desc">${escapeHtml(description || (contentSummary ? '包含富媒体内容' : '暂无描述'))}</div>
       ${contentSummary ? `<div class="kml-popup-content-summary">${escapeHtml(contentSummary)}</div>` : ''}
       ${actionsHtml}
     </div>
@@ -510,8 +513,22 @@ function renderFeature (map, kmlFile, feature) {
   
   if (feature.type === 'Point') {
     const latlng = getMapPoint(kmlFile, feature)
+    const mediaMarker = getKmlMediaMarkerDescriptor(feature)
     
-    if (theme === 'simple') {
+    if (mediaMarker) {
+      const mediaIcon = L.divIcon({
+        className: 'kml-media-point-icon',
+        html: mediaMarker.html,
+        iconSize: mediaMarker.iconSize,
+        iconAnchor: mediaMarker.iconAnchor,
+        popupAnchor: mediaMarker.popupAnchor,
+      })
+      layer = L.marker(latlng, {
+        draggable: dragAllowed,
+        icon: mediaIcon,
+        title: mediaMarker.label,
+      })
+    } else if (theme === 'simple') {
       const colorVal = getKmlColor(kmlFile)
       const simpleIcon = L.divIcon({
         className: 'kml-simple-point-icon',
@@ -739,6 +756,7 @@ function updateKmlPanelUI (map) {
                   if (feat.type === 'Polygon') {
                     iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
                   }
+                  iconSvg = getKmlMediaListIcon(feat) || iconSvg
                   return `
                     <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
                       <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
@@ -836,6 +854,7 @@ function updateKmlPanelUI (map) {
                   if (feat.type === 'Polygon') {
                     iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
                   }
+                  iconSvg = getKmlMediaListIcon(feat) || iconSvg
                   return `
                     <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
                       <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">

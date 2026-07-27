@@ -3,7 +3,10 @@ import { test } from 'node:test'
 import {
   buildFeatureContentView,
   classifyContentUrl,
+  extractContentReferences,
   extractContentUrls,
+  getFeatureDescriptionText,
+  getPrimaryFeatureContentType,
 } from '../service/bin/admin/kmlContent.js'
 
 test('extractContentUrls extracts https links, deduplicates and tracks truncation', () => {
@@ -75,4 +78,55 @@ test('buildFeatureContentView returns grouped content summary', () => {
   assert.equal(view.contentSummary.hasRichContent, true)
   assert.equal(view.sourceSummary.descriptionLinks, 4)
   assert.equal(view.groups.find(group => group.type === 'iframe').items[0].embedPolicy.referrerPolicy, 'no-referrer')
+})
+
+test('HTML media tags classify extensionless sources and support audio', () => {
+  const description = [
+    '<div>现场记录</div>',
+    '<picture><source srcset="https://cdn.example.com/photo?id=1" type="image/webp"><img src="https://cdn.example.com/photo?id=1" alt="入口照片"></picture>',
+    '<video><source src="https://cdn.example.com/movie?id=2" type="video/mp4"></video>',
+    '<audio src="https://cdn.example.com/sound?id=3" title="现场录音"></audio>',
+    '<iframe src="https://portal.example.com/device?id=4" title="设备页面"></iframe>',
+  ].join('')
+
+  const references = extractContentReferences(description)
+  const view = buildFeatureContentView({ id: 'feat-html', description }, {
+    iframeAllowlist: ['portal.example.com'],
+  })
+
+  assert.equal(references.references.length, 4)
+  assert.deepEqual(references.references.map(item => item.typeHint), ['image', 'video', 'audio', 'iframe'])
+  assert.equal(view.contentSummary.imageCount, 1)
+  assert.equal(view.contentSummary.videoCount, 1)
+  assert.equal(view.contentSummary.audioCount, 1)
+  assert.equal(view.contentSummary.iframeCount, 1)
+  assert.equal(view.groups.find(group => group.type === 'image').items[0].title, '入口照片')
+  assert.equal(view.groups.find(group => group.type === 'audio').items[0].title, '现场录音')
+  assert.equal(getFeatureDescriptionText(description), '现场记录')
+})
+
+test('HTML media tags retain URL security boundaries', () => {
+  const description = [
+    '<img src="http://cdn.example.com/insecure">',
+    '<video src="https://127.0.0.1/private"></video>',
+    '<iframe src="https://portal.example.com/device/1"></iframe>',
+  ].join('')
+  const view = buildFeatureContentView({ description })
+
+  assert.equal(view.contentSummary.imageCount, 0)
+  assert.equal(view.contentSummary.videoCount, 0)
+  assert.equal(view.contentSummary.iframeCount, 0)
+  assert.equal(view.contentSummary.linkCount, 1)
+  assert.equal(view.sourceSummary.rejected, 2)
+})
+
+test('KML style hints drive the primary marker media type', () => {
+  const feature = {
+    styleUrl: '#MarkerStylePicture',
+    description: '<div><img src="https://down-files.example.com/f/dn1?id=1"></div>',
+  }
+
+  assert.equal(getPrimaryFeatureContentType(feature), 'image')
+  assert.equal(getFeatureDescriptionText(feature), '')
+  assert.equal(getFeatureDescriptionText('无效实体 &#99999999;'), '无效实体 &#99999999;')
 })

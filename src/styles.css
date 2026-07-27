@@ -2257,6 +2257,22 @@ body.admin-view #footer-bar {
   flex-shrink: 0;
 }
 
+.kml-media-list-icon-video {
+  color: #dc2626;
+}
+
+.kml-media-list-icon-audio {
+  color: #7c3aed;
+}
+
+.kml-media-list-icon-iframe {
+  color: #2563eb;
+}
+
+.kml-media-list-icon-link {
+  color: #475569;
+}
+
 .kml-feature-name {
   font-size: 12px;
   white-space: nowrap;
@@ -2523,6 +2539,27 @@ body.admin-view #footer-bar {
   display: block;
 }
 
+.kml-content-image-item > span {
+  display: none;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 10px;
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.kml-content-image-item.is-load-error img {
+  display: none;
+}
+
+.kml-content-image-item.is-load-error > span {
+  display: flex;
+}
+
 .kml-content-card {
   display: flex;
   flex-direction: column;
@@ -2540,6 +2577,16 @@ body.admin-view #footer-bar {
   border: 0;
   border-radius: 6px;
   background: #0f172a;
+}
+
+.kml-content-card audio {
+  width: 100%;
+  min-height: 40px;
+}
+
+.kml-content-card.is-load-error video,
+.kml-content-card.is-load-error audio {
+  display: none;
 }
 
 .kml-content-card a,
@@ -3539,6 +3586,31 @@ body.admin-view #footer-bar {
 }
 
 /* KML 简约样式 */
+.kml-media-point-icon {
+  border: none;
+  background: none;
+}
+
+.kml-media-marker {
+  display: block;
+  width: 32px;
+  height: 40px;
+  filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.35));
+  transform-origin: 50% 100%;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.kml-media-marker svg {
+  display: block;
+  width: 32px;
+  height: 40px;
+}
+
+.leaflet-marker-icon:hover .kml-media-marker {
+  filter: drop-shadow(0 3px 5px rgba(15, 23, 42, 0.42));
+  transform: translateY(-1px) scale(1.06);
+}
+
 .kml-simple-point-icon {
   background: none;
   border: none;

@@ -11,9 +11,11 @@ import {
   Math as CesiumMath,
 } from 'cesium'
 import { escapeHtml } from '../admin/utils.js'
+import { getFeatureDescriptionText } from '../../shared/kml-content.js'
 import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from '../map/coord-transform.js'
 import { generateKmlText, parseKML } from '../map/kml-format.js'
 import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from '../map/kml-content-panel.js'
+import { getKmlMediaBillboard, getKmlMediaListIcon } from '../map/kml-media-marker.js'
 import {
   buildTrackSegments,
   cameraHeightToZoom,
@@ -390,6 +392,7 @@ function renderFeature (kmlFile, feature) {
 
   if (feature.type === 'Point') {
     const point = getPointLatLng(kmlFile, feature)
+    const mediaBillboard = getKmlMediaBillboard(feature)
     
     const pointGraphics = {
       pixelSize: theme === 'simple' ? 8 : 11,
@@ -408,14 +411,24 @@ function renderFeature (kmlFile, feature) {
       outlineWidth: 3,
       style: LabelStyle.FILL_AND_OUTLINE,
       verticalOrigin: VerticalOrigin.BOTTOM,
-      pixelOffset: new Cartesian2(0, -18),
+      pixelOffset: new Cartesian2(0, mediaBillboard ? -43 : -18),
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
     }
 
     const entity = markEntity(viewerRef.entities.add({
       name: feature.name || 'KML 标注',
       position: Cartesian3.fromDegrees(point.lng, point.lat, 8),
-      point: pointGraphics,
+      point: mediaBillboard ? undefined : pointGraphics,
+      billboard: mediaBillboard
+        ? {
+            image: mediaBillboard.image,
+            width: mediaBillboard.iconSize[0],
+            height: mediaBillboard.iconSize[1],
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          }
+        : undefined,
       label: labelGraphics
     }), kmlId, feature.id)
     entities.push(entity)
@@ -524,6 +537,7 @@ function renderAllKmls () {
 
 function renderFeaturePopup (kmlId, feature, editable) {
   const contentSummary = getFeatureContentSummaryText(feature)
+  const description = getFeatureDescriptionText(feature)
   const actionsHtml = editable
     ? `
       <div class="kml-popup-actions">
@@ -540,7 +554,7 @@ function renderFeaturePopup (kmlId, feature, editable) {
   return `
     <div class="kml-popup-content">
       <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
-      <div class="kml-popup-desc">${escapeHtml(feature.description || '暂无描述')}</div>
+      <div class="kml-popup-desc">${escapeHtml(description || (contentSummary ? '包含富媒体内容' : '暂无描述'))}</div>
       ${contentSummary ? `<div class="kml-popup-content-summary">${escapeHtml(contentSummary)}</div>` : ''}
       ${actionsHtml}
     </div>
@@ -1082,11 +1096,12 @@ async function exitEditingPublicKml () {
 }
 
 function renderFeatureItem (kmlFile, feature, editable) {
-  const iconSvg = feature.type === 'LineString'
+  const geometryIconSvg = feature.type === 'LineString'
     ? '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/></svg>'
     : feature.type === 'Polygon'
       ? '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
       : '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
+  const iconSvg = getKmlMediaListIcon(feature) || geometryIconSvg
 
   return `
     <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feature.id}">

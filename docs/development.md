@@ -80,8 +80,9 @@ npm run build
 ```bash
 VITE_CESIUM_TERRAIN_PROVIDER=arcgis-terrain3d
 VITE_MAPTILER_TERRAIN_URL=<经审批的_MapTiler_Quantized_Mesh_endpoint>
-VITE_CESIUM_TERRAIN_EXAGGERATION=1.35
+VITE_CESIUM_TERRAIN_EXAGGERATION=1.18
 VITE_CESIUM_SCENE_QUALITY=auto
+VITE_MAP3D_CAMERA_PROFILE=enhanced
 ```
 
 当前默认是 `arcgis-terrain3d`，仅作为不自建 DEM 的当前 PoC/默认尝试路径。发布前必须自行确认 ArcGIS 的许可、覆盖范围、网络可达性和 CORS 策略。`cesium-world-terrain` 是待部署审批的候选，需要通过 `VITE_CESIUM_ION_TOKEN` 提供服务商允许公开、最小权限、来源受限且可撤销的只读 Token；不要把管理员 Token、私密 Token 或长期无来源限制 Token 写入 `VITE_*`，因为构建后的前端可以读取它。
@@ -90,11 +91,11 @@ VITE_CESIUM_SCENE_QUALITY=auto
 
 受控运行时对象 `window.mapServiceTerrainConfig` 只能覆盖 `enabled`、`provider`、`quality`、`exaggeration` 和 `demoView`。其中的 `selfHostedUrl`、`mapTilerUrl`、`ionToken` 或其他 URL/Token 字段一律忽略，仍以构建期配置为准；不得通过运行时脚本、查询参数、localStorage 或页面交互注入地形地址或凭据。
 
-三维页的初始状态为 `standby`（等待进入 3D），随后按 `disabled`、`loading`、`verifying`、`active`、`degraded`、`fallback` 展示真实运行态。加载 20 秒超时会进入椭球体 fallback；验证 12 秒超时、采样异常或起伏不足会保留当前 provider 并进入 degraded；连续三次瓦片错误才回退椭球体。`#terrain-status` 是独立的 `aria-live` 状态区域，`#terrain-retry-btn` 是可访问的手动重试按钮，只在 degraded/fallback 显示；重试只重建地形 provider，不改变当前图层、KML、辅助线或相机位置。
+三维页的初始状态为 `standby`（等待进入 3D），随后按 `disabled`、`loading`、`verifying`、`active`、`degraded`、`fallback` 展示真实运行态。加载 20 秒超时会进入椭球体 fallback；验证使用固定 LOD 10 的喜马拉雅/贡嘎局部点簇，12 秒 watchdog 超时、采样异常或局部起伏不足会保留当前 provider 并进入 degraded；连续三次瓦片错误才回退椭球体。`#terrain-status` 是独立的 `aria-live` 状态区域，`#terrain-retry-btn` 是可访问的手动重试按钮，只在 degraded/fallback 显示；重试只重建地形 provider，不改变当前图层、KML、辅助线或相机位置。
 
-可重试的临时 fallback 只在仍处于 3D 操作档位时自动尝试两次，退避为 1.5 秒和 3 秒；验证成功或用户手动重试会重置预算。缺少受控地址、显式关闭或缺少受控 Ion 凭据不得触发无限自动请求。遇到上游失败时先验证网络、CORS、服务条款和 provider 配置；不要在控制台、问题单、截图或公开 API 中粘贴 Token、完整服务 URL 或上游请求头。Cesium provider attribution 也必须保留可见。
+可重试的临时 fallback 只在仍处于 3D 操作档位时真正发起两次，退避为 1.5 秒和 3 秒；退避期间切到 2D 不消耗预算，验证成功或用户手动重试会重置预算。缺少受控地址、显式关闭或缺少受控 Ion 凭据不得触发无限自动请求。遇到上游失败时先验证网络、CORS、服务条款和 provider 配置；不要在控制台、问题单、截图或公开 API 中粘贴 Token、完整服务 URL 或上游请求头。Cesium provider attribution 也必须保留可见。
 
-`prefers-reduced-motion` 已用于模式切换、平面化、山地演示和全局视角复位；方向复位应与这些路径保持一致，修改后须在浏览器回归。质量档 UI、键盘等价操作和独立相机适配器特性开关是本次待完成项，在它们交付前不得在用户文档中称为已支持。
+`prefers-reduced-motion` 已用于模式切换、平面化、山地演示、全局视角复位和方向复位。页面提供 `auto`/`economy`/`balanced`/`quality` 四段质量控件；canvas 聚焦时支持方向键平移与 `+`/`-` 缩放，输入框和地图工具模式不会被抢占。`VITE_MAP3D_CAMERA_PROFILE=compatibility` 可独立关闭增强绕点/倾角并保留基础平移/缩放；旧 `VITE_MAP3D_CAMERA_ADAPTER_ENABLED=false` 兼容映射到该档位。
 
 ### 三维验证清单
 

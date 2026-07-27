@@ -1,6 +1,6 @@
 export const QUALITY_PRESETS = Object.freeze({
   economy: Object.freeze({
-    maxExaggeration: 1.15,
+    maxExaggeration: 1.08,
     maximumScreenSpaceError: 3.5,
     tileCacheSize: 60,
     resolutionCap: 1,
@@ -9,7 +9,7 @@ export const QUALITY_PRESETS = Object.freeze({
     enableHdr: false,
   }),
   balanced: Object.freeze({
-    maxExaggeration: 1.35,
+    maxExaggeration: 1.2,
     maximumScreenSpaceError: 2,
     tileCacheSize: 100,
     resolutionCap: 1.5,
@@ -18,7 +18,7 @@ export const QUALITY_PRESETS = Object.freeze({
     enableHdr: false,
   }),
   quality: Object.freeze({
-    maxExaggeration: 1.55,
+    maxExaggeration: 1.35,
     maximumScreenSpaceError: 1.25,
     tileCacheSize: 160,
     resolutionCap: 2,

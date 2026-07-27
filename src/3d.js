@@ -4,6 +4,8 @@ import {
   Cartesian2,
   Cartesian3,
   Cartographic,
+  BoundingSphere,
+  HeadingPitchRange,
   CesiumTerrainProvider,
   ArcGISTiledElevationTerrainProvider,
   EllipsoidTerrainProvider,
@@ -11,7 +13,7 @@ import {
   Terrain,
   ShadowMode,
   Math as CesiumMath,
-  sampleTerrainMostDetailed,
+  sampleTerrain,
 } from 'cesium'
 import * as Cesium from 'cesium'
 import AMapLoader from '@amap/amap-jsapi-loader'
@@ -58,13 +60,22 @@ import {
 } from './map3d/scene-quality.js'
 import { getMotionSafeDuration } from './map3d/motion.js'
 import {
+  ensureTerrainQualityControls as ensureTerrainQualityControlPanel,
+  updateTerrainQualityControls as updateTerrainQualityControlPanel,
+} from './map3d/quality-controls.js'
+import {
   createTerrainRuntimeState,
+  createTerrainAutoRetryState,
+  canStartTerrainAutoRetry,
+  consumeTerrainAutoRetryAttempt,
   evaluateTerrainVerification,
   getTerrainAutoRetryDelayMs,
   getSafeTerrainRuntimeOverride,
   getTerrainRetryControlState,
   pickSceneWorldPosition,
   reduceTerrainRuntime,
+  TERRAIN_VERIFICATION_LEVEL,
+  TERRAIN_VERIFICATION_REGIONS,
   TERRAIN_VERIFICATION_TIMEOUT_MS,
 } from './map3d/terrain-runtime.js'
 
@@ -186,11 +197,7 @@ let interactionMode = '2d'
 let amapGeolocation = null
 let cameraInteraction = null
 let terrainRuntime = createTerrainRuntimeState()
-let terrainAutoRetry = {
-  key: '',
-  attempts: 0,
-  timerId: null,
-}
+let terrainAutoRetry = createTerrainAutoRetryState()
 let lastTerrainExaggeration = null
 let manuallySelectedTerrainQuality = null
 const spinRate = 0.035 // 自转速度（弧度/秒）
@@ -345,76 +352,15 @@ function applyCurrentSceneQuality () {
   })
 }
 
-const TERRAIN_QUALITY_OPTIONS = Object.freeze([
-  ['auto', '自动'],
-  ['economy', '节能'],
-  ['balanced', '均衡'],
-  ['quality', '高质量'],
-])
-
-function getTerrainQualityLabel (selection) {
-  if (selection === 'auto') return '自动（当前按均衡执行）'
-  return TERRAIN_QUALITY_OPTIONS.find(([id]) => id === selection)?.[1] || '均衡'
-}
-
 function ensureTerrainQualityControls () {
-  const existing = document.getElementById('terrain-quality-panel')
-  if (existing) return existing
-
-  const statusPanel = document.getElementById('terrain-status-panel')
-  if (!statusPanel) return null
-
-  const panel = document.createElement('section')
-  panel.id = 'terrain-quality-panel'
-  panel.className = 'terrain-quality-panel'
-  panel.setAttribute('role', 'group')
-  panel.setAttribute('aria-label', '三维地形渲染质量')
-
-  const label = document.createElement('span')
-  label.id = 'terrain-quality-label'
-  label.className = 'terrain-quality-label'
-  label.setAttribute('aria-live', 'polite')
-  panel.appendChild(label)
-
-  const options = document.createElement('div')
-  options.className = 'terrain-quality-options'
-  for (const [quality, labelText] of TERRAIN_QUALITY_OPTIONS) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.id = `terrain-quality-${quality}`
-    button.className = 'terrain-quality-btn'
-    button.dataset.terrainQuality = quality
-    button.textContent = labelText
-    button.setAttribute('aria-pressed', 'false')
-    button.setAttribute('aria-label', quality === 'auto'
-      ? '自动渲染质量，当前按均衡执行'
-      : `使用${labelText}渲染质量`)
-    button.addEventListener('click', () => setTerrainQualitySelection(quality))
-    options.appendChild(button)
-  }
-  panel.appendChild(options)
-
-  const keyboardHelp = document.createElement('p')
-  keyboardHelp.id = 'map3d-keyboard-help'
-  keyboardHelp.className = 'map3d-keyboard-help'
-  keyboardHelp.textContent = '键盘：聚焦地图后，方向键平移，+ / - 缩放；使用 2D/3D、复位和山地视角按钮调整视角。'
-  panel.appendChild(keyboardHelp)
-
-  statusPanel.insertAdjacentElement('afterend', panel)
-  return panel
+  return ensureTerrainQualityControlPanel(document, setTerrainQualitySelection)
 }
 
 function updateTerrainQualityControls () {
   const panel = document.getElementById('terrain-quality-panel')
   if (!panel) return
   const { qualitySelection } = getEffectiveTerrainConfig()
-  const label = panel.querySelector('#terrain-quality-label')
-  if (label) label.textContent = `渲染质量：${getTerrainQualityLabel(qualitySelection)}`
-  panel.querySelectorAll('[data-terrain-quality]').forEach((button) => {
-    const selected = button.dataset.terrainQuality === qualitySelection
-    button.classList.toggle('is-selected', selected)
-    button.setAttribute('aria-pressed', String(selected))
-  })
+  updateTerrainQualityControlPanel(panel, qualitySelection, terrainRuntime.state)
 }
 
 function setTerrainQualitySelection (selection) {
@@ -459,13 +405,15 @@ function renderTerrainStatus (detail = terrainRuntime.statusDetail || '') {
 
 function updateTerrainExaggeration (options = {}) {
   const force = options.force === true
-  if (!viewer || !['verifying', 'active', 'degraded'].includes(terrainRuntime.state)) return
+  if (!viewer || !['loading', 'verifying', 'active', 'degraded'].includes(terrainRuntime.state)) return
   const config = getEffectiveTerrainConfig()
-  const nextExaggeration = getHeightAdjustedExaggeration(
-    getCameraHeight(),
-    config.quality,
-    config.exaggeration,
-  )
+  const nextExaggeration = terrainRuntime.verified
+    ? getHeightAdjustedExaggeration(
+        getCameraHeight(),
+        config.quality,
+        config.exaggeration,
+      )
+    : 1
   const currentExaggeration = Number(viewer.scene.verticalExaggeration)
   if (!force && Number.isFinite(currentExaggeration) &&
     Math.abs(currentExaggeration - nextExaggeration) < 0.002 &&
@@ -475,6 +423,7 @@ function updateTerrainExaggeration (options = {}) {
   viewer.scene.verticalExaggeration = nextExaggeration
   viewer.scene.verticalExaggerationRelativeHeight = 0
   lastTerrainExaggeration = nextExaggeration
+  cameraInteraction?.constrain?.()
 }
 
 function clearTerrainVerificationTimeout (runtime = terrainRuntime) {
@@ -520,12 +469,7 @@ function clearTerrainAutoRetry () {
 
 function resetTerrainAutoRetry (key = '') {
   clearTerrainAutoRetry()
-  terrainAutoRetry = {
-    key,
-    attempts: 0,
-    timerId: null,
-    nextRetryAt: 0,
-  }
+  terrainAutoRetry = createTerrainAutoRetryState({ key })
 }
 
 function ensureTerrainAutoRetryKey (key) {
@@ -544,16 +488,21 @@ function scheduleTerrainAutoRetry (terrainKey) {
   const delay = getTerrainAutoRetryDelayMs(terrainAutoRetry.attempts)
   if (delay === null) return null
 
-  terrainAutoRetry.attempts += 1
   terrainAutoRetry.nextRetryAt = Date.now() + delay
   terrainAutoRetry.timerId = window.setTimeout(() => {
     terrainAutoRetry.timerId = null
     terrainAutoRetry.nextRetryAt = 0
-    if (!viewer || viewer.isDestroyed() || interactionMode !== '3d') return
-    if (terrainAutoRetry.key !== terrainKey || terrainRuntime.key !== terrainKey ||
-      terrainRuntime.state !== 'fallback' || terrainRuntime.autoRetryEligible !== true) {
-      return
-    }
+    if (!viewer || viewer.isDestroyed()) return
+    if (!canStartTerrainAutoRetry({
+      interactionMode,
+      key: terrainAutoRetry.key,
+      runtimeKey: terrainRuntime.key,
+      state: terrainRuntime.state,
+      autoRetryEligible: terrainRuntime.autoRetryEligible,
+    })) return
+    const retryAttempt = consumeTerrainAutoRetryAttempt(terrainAutoRetry)
+    if (!retryAttempt.started) return
+    terrainAutoRetry = retryAttempt.state
     enableConfiguredTerrain({ force: true, autoRetry: true })
   }, delay)
   return delay
@@ -627,10 +576,11 @@ function markTerrainDegraded (detail, loadId) {
 function verifyTerrainProvider (provider, loadId) {
   if (!provider || terrainRuntime.loadId !== loadId || terrainRuntime.verificationStarted ||
     terrainRuntime.state !== 'verifying') return
-  const samples = [
-    Cartographic.fromDegrees(86.925, 27.988),
-    Cartographic.fromDegrees(103.9, 30.5),
-  ]
+  const regionSamples = TERRAIN_VERIFICATION_REGIONS.map(region => ({
+    id: region.id,
+    samples: region.positions.map(([lng, lat]) => Cartographic.fromDegrees(lng, lat)),
+  }))
+  const samples = regionSamples.flatMap(region => region.samples)
   terrainRuntime.verificationStarted = true
   renderTerrainStatus('')
 
@@ -639,12 +589,18 @@ function verifyTerrainProvider (provider, loadId) {
     markTerrainDegraded('高程自检超时', loadId)
   }, TERRAIN_VERIFICATION_TIMEOUT_MS)
 
-  sampleTerrainMostDetailed(provider, samples).then((results) => {
+  sampleTerrain(provider, TERRAIN_VERIFICATION_LEVEL, samples).then((results) => {
     if (terrainRuntime.loadId !== loadId) return
     clearTerrainVerificationTimeout()
     if (terrainRuntime.state !== 'verifying') return
 
-    const verification = evaluateTerrainVerification(results)
+    let offset = 0
+    const verifiedRegions = regionSamples.map(region => {
+      const regionResults = results.slice(offset, offset + region.samples.length)
+      offset += region.samples.length
+      return { id: region.id, samples: regionResults }
+    })
+    const verification = evaluateTerrainVerification(verifiedRegions)
     if (!verification.verified) {
       markTerrainDegraded('高程自检未确认', loadId)
       return
@@ -681,6 +637,8 @@ function enableConfiguredTerrain (options = {}) {
   const manualRetry = options.manual === true
   const autoRetry = options.autoRetry === true
   const config = getEffectiveTerrainConfig()
+  let terrainKey = getTerrainKey(config)
+  let providerId = config.provider || 'arcgis-terrain3d'
 
   if (!config.enabled || config.provider === 'none' || config.provider === 'ellipsoid') {
     useFlatTerrain('配置关闭')
@@ -692,7 +650,8 @@ function enableConfiguredTerrain (options = {}) {
       mapTilerUrl: config.mapTilerUrl,
       selfHostedUrl: config.selfHostedUrl,
     })
-    const terrainKey = getTerrainKey({
+    providerId = plan.id
+    terrainKey = getTerrainKey({
       ...config,
       provider: plan.id,
       selfHostedUrl: plan.id === 'self-hosted' ? plan.url || '' : '',
@@ -780,6 +739,7 @@ function enableConfiguredTerrain (options = {}) {
       autoRetryEligible: false,
       statusDetail: '',
     })
+    updateTerrainExaggeration({ force: true })
     renderTerrainStatus('')
 
     const timeoutId = window.setTimeout(() => {
@@ -837,7 +797,11 @@ function enableConfiguredTerrain (options = {}) {
 
     viewer.scene.setTerrain(terrain)
   } catch {
-    fallbackToEllipsoidTerrain('服务不可用', { autoRetry: true })
+    fallbackToEllipsoidTerrain('服务不可用', {
+      key: terrainKey,
+      providerId,
+      autoRetry: true,
+    })
   }
 }
 
@@ -845,13 +809,20 @@ function flyToTerrainDemoView () {
   if (!viewer) return
   const { demoView } = getEffectiveTerrainConfig()
   setInteractionMode('3d')
-  viewer.camera.flyTo({
-    destination: Cartesian3.fromDegrees(demoView.lng, demoView.lat, demoView.height),
-    orientation: {
-      heading: CesiumMath.toRadians(demoView.heading),
-      pitch: CesiumMath.toRadians(demoView.pitch),
-      roll: 0.0,
-    },
+  const targetCartographic = Cartographic.fromDegrees(demoView.lng, demoView.lat)
+  const loadedHeight = viewer.scene.globe?.getHeight?.(targetCartographic)
+  const target = Cartesian3.fromDegrees(
+    demoView.lng,
+    demoView.lat,
+    Number.isFinite(loadedHeight) ? loadedHeight : 0,
+  )
+  const range = Math.max(10_000, Number(demoView.range ?? demoView.height) || 32_000)
+  viewer.camera.flyToBoundingSphere(new BoundingSphere(target, 0), {
+    offset: new HeadingPitchRange(
+      CesiumMath.toRadians(demoView.heading),
+      CesiumMath.toRadians(demoView.pitch),
+      range,
+    ),
     duration: getCameraAnimationDuration(1.6),
   })
 }
@@ -898,6 +869,7 @@ async function init3dEarth () {
     // profile still owns predictable pan and zoom, but omits orbit/tilt.
     advancedGestures: map3dCameraInteractionConfig.enhancedGesturesEnabled,
   })
+  document.body.dataset.map3dCameraInteraction = map3dCameraInteractionConfig.profile
   setInteractionMode('2d', { flatten: false })
   renderTerrainStatus('')
 

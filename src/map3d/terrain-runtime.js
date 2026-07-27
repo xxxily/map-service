@@ -5,8 +5,28 @@ function finiteNumber (value) {
 
 export const TERRAIN_TILE_ERROR_FALLBACK_THRESHOLD = 3
 export const TERRAIN_VERIFICATION_TIMEOUT_MS = 12_000
+export const TERRAIN_VERIFICATION_LEVEL = 10
 export const TERRAIN_AUTO_RETRY_MAX_ATTEMPTS = 2
 export const TERRAIN_AUTO_RETRY_BASE_DELAY_MS = 1_500
+
+export const TERRAIN_VERIFICATION_REGIONS = Object.freeze([
+  Object.freeze({
+    id: 'himalaya',
+    positions: Object.freeze([
+      Object.freeze([86.925, 27.988]),
+      Object.freeze([86.84, 28.04]),
+      Object.freeze([87.01, 27.94]),
+    ]),
+  }),
+  Object.freeze({
+    id: 'gongga',
+    positions: Object.freeze([
+      Object.freeze([101.88, 29.59]),
+      Object.freeze([101.76, 29.50]),
+      Object.freeze([102.00, 29.68]),
+    ]),
+  }),
+])
 
 const TERRAIN_RUNTIME_DEFAULTS = Object.freeze({
   key: '',
@@ -125,18 +145,32 @@ export function reduceTerrainRuntime (runtime, event = {}) {
   return current
 }
 
-export function evaluateTerrainVerification (samples, options = {}) {
-  const minimumSamples = Math.max(2, Math.floor(finiteNumber(options.minimumSamples) ?? 2))
+export function evaluateTerrainVerification (regions, options = {}) {
+  const minimumRegions = Math.max(1, Math.floor(finiteNumber(options.minimumRegions) ?? 2))
+  const minimumSamplesPerRegion = Math.max(
+    2,
+    Math.floor(finiteNumber(options.minimumSamplesPerRegion) ?? 2),
+  )
   const minimumSpread = Math.max(0, finiteNumber(options.minimumSpread) ?? 100)
-  const heights = (Array.isArray(samples) ? samples : [])
-    .map(sample => Number(sample?.height))
-    .filter(Number.isFinite)
-  const spread = heights.length > 1 ? Math.max(...heights) - Math.min(...heights) : 0
+  const regionResults = (Array.isArray(regions) ? regions : []).map((region, index) => {
+    const heights = (Array.isArray(region?.samples) ? region.samples : [])
+      .map(sample => Number(sample?.height))
+      .filter(Number.isFinite)
+    const spread = heights.length > 1 ? Math.max(...heights) - Math.min(...heights) : 0
+    return {
+      id: String(region?.id || `region-${index + 1}`),
+      verified: heights.length >= minimumSamplesPerRegion && spread > minimumSpread,
+      heightCount: heights.length,
+      spread,
+    }
+  })
+  const verifiedRegionCount = regionResults.filter(region => region.verified).length
 
   return {
-    verified: heights.length >= minimumSamples && spread > minimumSpread,
-    heightCount: heights.length,
-    spread,
+    verified: verifiedRegionCount >= minimumRegions,
+    regionCount: regionResults.length,
+    verifiedRegionCount,
+    regions: regionResults,
   }
 }
 
@@ -153,6 +187,37 @@ export function getTerrainAutoRetryDelayMs (attempt, options = {}) {
   return Math.min(maximumDelay, baseDelay * (2 ** index))
 }
 
+export function createTerrainAutoRetryState (input = {}) {
+  return {
+    key: typeof input.key === 'string' ? input.key : '',
+    attempts: Math.max(0, Math.floor(finiteNumber(input.attempts) ?? 0)),
+    timerId: input.timerId ?? null,
+    nextRetryAt: Math.max(0, finiteNumber(input.nextRetryAt) ?? 0),
+  }
+}
+
+export function canStartTerrainAutoRetry (input = {}) {
+  return input.interactionMode === '3d' &&
+    typeof input.key === 'string' && input.key.length > 0 &&
+    input.key === input.runtimeKey &&
+    input.state === 'fallback' &&
+    input.autoRetryEligible === true
+}
+
+export function consumeTerrainAutoRetryAttempt (input = {}, options = {}) {
+  const state = createTerrainAutoRetryState(input)
+  if (getTerrainAutoRetryDelayMs(state.attempts, options) === null) {
+    return { started: false, state }
+  }
+  return {
+    started: true,
+    state: {
+      ...state,
+      attempts: state.attempts + 1,
+    },
+  }
+}
+
 // 运行时只允许调节展示项；凭据和受控地址只能来自构建配置。
 export function getSafeTerrainRuntimeOverride (input) {
   if (!input || typeof input !== 'object') return {}
@@ -167,7 +232,7 @@ export function getSafeTerrainRuntimeOverride (input) {
 
   if (input.demoView && typeof input.demoView === 'object') {
     const demoView = {}
-    for (const key of ['lng', 'lat', 'height', 'heading', 'pitch']) {
+    for (const key of ['lng', 'lat', 'height', 'range', 'heading', 'pitch']) {
       const value = finiteNumber(input.demoView[key])
       if (value !== null) demoView[key] = value
     }

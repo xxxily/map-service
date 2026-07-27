@@ -5,6 +5,7 @@ import {
   clamp,
   classifyTwoPointerGesture,
   getFallbackPanWorldDelta,
+  getKeyboardNavigationCommand,
   getMinimumCameraHeightAboveTerrain,
   getTouchGestureMetrics,
   getZoomFraction,
@@ -191,6 +192,22 @@ test('getZoomFraction is signed and clamps large pinch changes', () => {
   assert.equal(getZoomFraction(100, 10_000, { maxFraction: 0.2 }), 0.2)
 })
 
+test('keyboard commands support canvas pan/zoom without browser modifier conflicts', () => {
+  assert.deepEqual(getKeyboardNavigationCommand({ key: 'ArrowLeft' }), { type: 'pan', x: -56, y: 0 })
+  assert.deepEqual(getKeyboardNavigationCommand({ key: 'ArrowDown' }, { panPixels: 40 }), {
+    type: 'pan', x: 0, y: 40,
+  })
+  assert.deepEqual(getKeyboardNavigationCommand({ key: '+', shiftKey: true }), {
+    type: 'zoom', fraction: 0.18,
+  })
+  assert.deepEqual(getKeyboardNavigationCommand({ key: '-', code: 'Minus' }), {
+    type: 'zoom', fraction: -0.18,
+  })
+  assert.equal(getKeyboardNavigationCommand({ key: 'ArrowRight', ctrlKey: true }), null)
+  assert.equal(getKeyboardNavigationCommand({ key: '+', metaKey: true }), null)
+  assert.equal(getKeyboardNavigationCommand({ key: 'Process', isComposing: true }), null)
+})
+
 test('world picking prefers depth, then terrain, then ellipsoid', () => {
   const order = []
   const position = { x: 12, y: 34 }
@@ -244,7 +261,37 @@ test('terrain clearance uses loaded terrain height and falls back without async 
   }
   assert.equal(getMinimumCameraHeightAboveTerrain(scene, cartographic, 150), 1_390)
   assert.equal(calls, 1)
+  scene.verticalExaggeration = 1.35
+  scene.verticalExaggerationRelativeHeight = 1_000
+  assert.equal(getMinimumCameraHeightAboveTerrain(scene, cartographic, 150), 1_474)
   assert.equal(getMinimumCameraHeightAboveTerrain({ globe: { getHeight: () => undefined } }, cartographic, 150), 150)
+})
+
+test('canvas keydown handles navigation only while the canvas owns focus', () => {
+  const focusedDocument = { hidden: false, activeElement: null }
+  const fixture = createCameraInteractionFixture({ document: focusedDocument })
+  focusedDocument.activeElement = fixture.canvas
+  const key = createPointerEvent(0, 0, 0, {
+    key: 'ArrowRight',
+    code: 'ArrowRight',
+    target: fixture.canvas,
+    buttons: 0,
+  })
+  fixture.canvas.emit('keydown', key)
+  assert.equal(key.prevented, 1)
+  assert.notEqual(fixture.camera.position.x, 0)
+
+  focusedDocument.activeElement = { tagName: 'INPUT' }
+  const ignored = createPointerEvent(0, 0, 0, {
+    key: 'ArrowLeft',
+    target: fixture.canvas,
+    buttons: 0,
+  })
+  const before = fixture.camera.position.x
+  fixture.canvas.emit('keydown', ignored)
+  assert.equal(ignored.prevented, 0)
+  assert.equal(fixture.camera.position.x, before)
+  fixture.interaction.destroy()
 })
 
 test('fallback pan maps CSS pixels through camera height, fovy, and canvas dimensions', () => {
@@ -322,6 +369,30 @@ test('plain left clicks pass through, while drag starts after the CSS-pixel thre
   assert.equal(thresholdMove.stopped, 0)
   assert.equal(laterMove.stopped, 1, 'later drag movement is exclusively handled by the adapter')
   canvas.emit('pointerup', createPointerEvent(8, 55, 40, { buttons: 0 }))
+  interaction.destroy()
+})
+
+test('compatibility profile keeps pan while disabling shift and middle-button orbit', () => {
+  const { camera, cameraCalls, canvas, interaction, windowLike } = createCameraInteractionFixture({
+    advancedGestures: false,
+  })
+  const down = createPointerEvent(20, 40, 40, { shiftKey: true })
+  canvas.emit('pointerdown', down)
+  windowLike.emit('pointermove', createPointerEvent(20, 60, 40, { shiftKey: true }))
+  assert.equal(cameraCalls.length, 0, 'shift-drag does not orbit in compatibility mode')
+  assert.notEqual(camera.position.x, 0, 'the same drag remains a predictable pan')
+  canvas.emit('pointerup', createPointerEvent(20, 60, 40, { buttons: 0 }))
+
+  const middle = createPointerEvent(21, 60, 60, {
+    button: 1,
+    buttons: BUTTON_MASK.MIDDLE,
+  })
+  canvas.emit('pointerdown', middle)
+  windowLike.emit('pointermove', createPointerEvent(21, 80, 60, {
+    button: 1,
+    buttons: BUTTON_MASK.MIDDLE,
+  }))
+  assert.equal(cameraCalls.length, 0)
   interaction.destroy()
 })
 

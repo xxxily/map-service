@@ -1146,7 +1146,7 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 
 获取已发布公共 KML 单个点位的富媒体内容视图。接口继承前台访问控制；如果地图访问密码已启用，必须先通过访问验证。
 
-第一阶段只解析点位 `description` 中的 HTTPS URL，不做任意 URL 代理、远程抓取、截图、转码或上传。图片、视频、iframe 和普通链接按规则分组返回。iframe 默认拒绝，只在服务端 `MAP_SERVICE_KML_IFRAME_ALLOWLIST` 配置命中时作为 `iframe` 类型返回，否则作为普通链接处理。
+第一阶段解析点位 `description` 中的 HTTPS 文本链接，以及 `img`、`picture/source`、`video/source`、`audio/source`、`iframe`、`embed`、`object` 和 `a` 标签中的 URL，不做任意 URL 代理、远程抓取、截图、转码或上传。图片、视频、音频、iframe 和普通链接按规则分组返回；原始 HTML 不会直接返回给渲染组件。媒体标签中的无扩展名 URL 按标签语义分类。iframe 默认拒绝，只在服务端 `MAP_SERVICE_KML_IFRAME_ALLOWLIST` 配置命中时作为 `iframe` 类型返回，否则作为普通链接处理。
 
 成功响应示例：
 
@@ -1181,6 +1181,11 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
         "items": []
       },
       {
+        "type": "audio",
+        "title": "音频",
+        "items": []
+      },
+      {
         "type": "iframe",
         "title": "页面",
         "items": []
@@ -1194,6 +1199,7 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
     "contentSummary": {
       "imageCount": 1,
       "videoCount": 0,
+      "audioCount": 0,
       "iframeCount": 0,
       "linkCount": 0,
       "hasRichContent": true
@@ -1227,11 +1233,11 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 
 | 字段 | 说明 |
 | --- | --- |
-| `groups[].type` | 内容分组类型：`image` / `video` / `iframe` / `link` |
+| `groups[].type` | 内容分组类型：`image` / `video` / `audio` / `iframe` / `link` |
 | `groups[].items[].sourceType` | 第一阶段固定为 `description-link` |
 | `groups[].items[].url` | 已脱敏后的 HTTPS URL；敏感查询参数会替换为 `****` |
 | `groups[].items[].embedPolicy` | iframe 内容的 sandbox 和 referrer policy；非 iframe 为 `null` |
-| `contentSummary` | 点位内容数量摘要，用于前端轻量展示 |
+| `contentSummary` | 点位内容数量摘要，包括 `imageCount`、`videoCount`、`audioCount`、`iframeCount`、`linkCount` 和 `hasRichContent` |
 | `sourceSummary.truncated` | 描述中 URL 超过解析上限时为 `true` |
 | `rejected` | 因协议、主机安全策略等被拒绝的 URL 摘要 |
 

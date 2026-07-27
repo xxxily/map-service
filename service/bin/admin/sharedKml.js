@@ -47,9 +47,11 @@ function parseKml (kmlText) {
     const placemarkContent = match[1]
     const rawName = extractTagContent(placemarkContent, 'name')
     const rawDesc = extractTagContent(placemarkContent, 'description')
+    const rawStyleUrl = extractTagContent(placemarkContent, 'styleUrl')
 
     const name = rawName ? decodeXmlEntities(rawName) : `未命名要素 ${i}`
     const description = rawDesc ? decodeXmlEntities(rawDesc) : ''
+    const styleUrl = rawStyleUrl ? decodeXmlEntities(rawStyleUrl) : ''
 
     let type = null
     let coordinates = null
@@ -88,6 +90,7 @@ function parseKml (kmlText) {
         type,
         name,
         description,
+        ...(styleUrl ? { styleUrl } : {}),
         coordinates,
       })
     }

@@ -51,11 +51,12 @@ service/app/               构建后的静态产物
 - 相机、KML、辅助线和 URL 相机同步取点均优先“深度命中 → 地形射线 → 椭球体命中”；相机锚点无法取得时才使用视口中心，避免真实地形下仍固定使用椭球体。
 - `scene-quality.js` 只接受已知的 `provider` 枚举：`arcgis-terrain3d`、`cesium-world-terrain`、`maptiler-quantized-mesh`、`self-hosted`、`ellipsoid`。页面不提供任意地形 URL，也不增加 terrain relay/proxy。
 - 当前构建期默认 provider 是 `arcgis-terrain3d`，用于不自建 DEM 的 PoC。ArcGIS Terrain3D、Cesium World Terrain 和 MapTiler 的服务条款、可用性、覆盖范围与凭据必须在部署时独立审批；默认值不构成生产授权承诺。
-- `terrain-runtime.js` 的 `terrainRuntime` 与 2D/3D 操作档位独立，按 `standby`、`disabled`、`loading`、`verifying`、`active`、`degraded`、`fallback` 展示状态。加载 20 秒超时进入 fallback；验证 12 秒超时或异常保留 provider 并进入 degraded；连续 3 次瓦片错误回退椭球体。可重试的临时 fallback 在 3D 档位最多自动重试两次（1.5 秒、3 秒），手动重试会重置预算。
+- `terrain-runtime.js` 的 `terrainRuntime` 与 2D/3D 操作档位独立，按 `standby`、`disabled`、`loading`、`verifying`、`active`、`degraded`、`fallback` 展示状态。加载 20 秒超时进入 fallback；验证使用固定 LOD 10 的两个局部点簇并受 12 秒 watchdog 约束；连续 3 次瓦片错误回退椭球体。可重试的临时 fallback 在 3D 档位最多真正发起两次（1.5 秒、3 秒），离开 3D 不消耗尚未执行的预算，手动重试会重置预算。
 - `#terrain-status-panel` 将 live status 与独立的 `#terrain-retry-btn` 分开，防止状态文本更新破坏按钮；按钮仅在 `degraded`/`fallback` 可用。超时或不可恢复错误回退椭球体，但不得影响图层、KML、辅助线和基本相机操作。
-- 场景质量预设为 `economy`、`balanced`、`quality`，分别调节分辨率上限、地形 LOD、缓存、光照、大气、阴影和后处理。当前 `auto` 规范化为 `balanced`；自动帧率降档尚未实现。用户可见质量档 UI、键盘等价控制和独立相机适配器开关属于本次待完成项，不能误记为现有能力。
+- 场景质量预设为 `economy`、`balanced`、`quality`，分别调节分辨率上限、地形 LOD、缓存、光照、大气、阴影和后处理；页面提供固定定位的响应式四段控件，`auto` 当前规范化为 `balanced`，自动帧率降档仍属后续。`quality-controls.js` 负责 DOM/ARIA 契约，canvas 在聚焦且非工具模式时提供方向键平移和 `+`/`-` 缩放。
+- `VITE_MAP3D_CAMERA_PROFILE` 只允许 `enhanced`/`compatibility`；兼容档保留相机适配器中已验证的平移、缩放和键盘基础路径，仅关闭高风险绕点/倾角增强，因此可与 `terrain.enabled` 和质量档独立回滚。
 - 高程夸张按相机高度连续衰减，低空增强、约 2,000 km 及以上恢复为 `1x`。DEM 只能提供山体/沟谷起伏，不等价于城市建筑或摄影测量 3D Tiles。
-- 模式切换、平面化、山地演示和全局视角复位遵守 `prefers-reduced-motion`；方向复位的同类适配需在本次最终回归中确认。
+- 模式切换、平面化、山地演示、全局视角复位和方向复位统一通过 `motion.js` 遵守 `prefers-reduced-motion`。
 - Cesium 与地形服务的版权和 attribution 必须保持可见，不能用 CSS 隐藏 provider credits。
 
 地形的详细交互契约、状态机、服务边界、验收和后续决策见

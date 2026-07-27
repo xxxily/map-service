@@ -1,19 +1,19 @@
 # KML 点位富媒体内容展示需求
 
-状态：第一阶段已实现链接解析、公开点位内容接口和前台详情面板；第二阶段内容库集成规划见 `kml-rich-content-phase2-content-library.md`。后续新增接口仍必须同步更新 `docs/api.md`、相关后端测试和前端交互说明。
+状态：第一阶段已实现链接及受支持 HTML 媒体标签解析、公开点位内容接口、媒体点位图标和前台详情面板；第二阶段内容库集成规划见 `kml-rich-content-phase2-content-library.md`。后续新增接口仍必须同步更新 `docs/api.md`、相关后端测试和前端交互说明。
 
 ## 背景和目标
 
 当前 KML 点位弹窗只展示要素名称和描述，适合轻量标注，但无法支撑现场照片、视频记录、外部业务页面、巡检报告、设备详情等内容展示。实际业务中，这些内容往往不应该直接写入 KML 点位：
 
-- KML 更适合表达空间要素，图片、视频和页面属于独立内容资源。
+- KML 更适合表达空间要素，图片、视频、音频和页面属于独立内容资源。
 - 同一个内容库可能服务多个点位、图层或业务对象。
 - 点位可能先通过描述中的链接、业务 URL 或外部页面关联内容，后续再演进为可管理的内容库 ID。
-- 大图片、视频和 iframe 页面如果直接放入点位弹窗，会造成性能、安全和移动端体验问题。
+- 大图片、视频、音频和 iframe 页面如果直接放入点位弹窗，会造成性能、安全和移动端体验问题。
 
 本需求目标是在不破坏现有 KML 导入导出和公共 KML 工作流的前提下，为 KML 点位提供可演进的富媒体内容展示能力：
 
-1. 第一阶段支持从点位描述或管理配置中的链接识别图片、视频和可嵌入页面。
+1. 第一阶段支持从点位描述或管理配置中的链接及 `img`、`video`、`audio`、`iframe` 等标签识别图片、视频、音频和可嵌入页面。
 2. 第二阶段引入服务端内容库，以内容库 ID 或绑定规则加载一组相关内容。
 3. 第三阶段再扩展上传资产、标签检索、批量关联、权限和审计。
 
@@ -45,8 +45,9 @@
 
 ### 范围内
 
-- KML 点位详情展示图片、视频、iframe 页面和普通链接。
-- 从 KML 点位 `description` 中提取 URL，并按安全规则分类展示。
+- KML 点位详情展示图片、视频、音频、iframe 页面和普通链接。
+- 从 KML 点位 `description` 的纯文本链接和受支持 HTML 媒体标签中提取 URL，并按安全规则分类展示。
+- 图片、视频、音频和页面点位在 2D/3D 地图上显示对应媒体图标；图标只表达轻量类型，不预加载媒体资源。
 - 管理端维护内容库和内容项的服务端数据模型。
 - 内容库通过 ID、点位绑定或链接匹配规则与 KML 点位发生关系。
 - 前台 2D Leaflet 和 3D Cesium 共用同一套点位详情内容模型。
@@ -60,18 +61,18 @@
 - 第一阶段不做本地大文件上传、对象存储、断点续传和视频转码。
 - 第一阶段不做复杂 CMS、多人协同编辑、版本回滚和内容审批流。
 - 不把富媒体内容写入标准 KML 导出文件。
-- 不允许前台输入任意 HTML 并作为点位详情渲染。
+- 不允许把任意 HTML 原样注入点位详情；仅解析受支持标签的 URL、标题和纯文字，随后使用受控组件渲染。
 - 不支持绕过目标站点 `X-Frame-Options` 或 CSP 的 iframe 嵌入。
 
 ## 核心决策
 
 ### KML 与内容解耦
 
-KML Feature 只保留空间要素和少量文本属性。图片、视频、iframe 页面和内容库关系放在独立存储中，通过解析或绑定关系在点位详情阶段合并。
+KML Feature 只保留空间要素和少量文本属性。图片、视频、音频、iframe 页面和内容库关系放在独立存储中，通过解析或绑定关系在点位详情阶段合并。
 
 现有 `.kml` 导入导出保持兼容：
 
-- 导入时继续解析 `name`、`description` 和几何。
+- 导入时继续解析 `name`、`description` 和几何，并保留媒体识别所需的 `styleUrl` 提示。
 - 导出时继续输出标准 KML，不包含内容库、iframe 配置或服务端内部 ID。
 - 如果点位描述中本来包含 URL，导出时按原描述文本保留，但不额外注入内容库元数据。
 
@@ -81,7 +82,7 @@ KML Feature 只保留空间要素和少量文本属性。图片、视频、ifram
 
 1. 先展示轻量 popup，包含名称、摘要和“详情”入口。
 2. 打开详情面板后再加载富媒体内容。
-3. 图片、视频和 iframe 继续懒加载，只有进入对应分组或可视区域时才加载真实资源。
+3. 图片、视频、音频和 iframe 继续懒加载，只有进入对应分组或可视区域时才加载真实资源。
 
 公共 KML 和动态 Feature Layer 应通过单要素详情或内容解析接口加载富媒体，列表和 bbox 接口不得默认返回媒体数组。
 
@@ -91,7 +92,7 @@ KML Feature 只保留空间要素和少量文本属性。图片、视频、ifram
 
 | 方式 | 阶段 | 说明 | 适用场景 |
 | --- | --- | --- | --- |
-| `description-links` | 第一阶段 | 从点位描述中提取 URL，按规则识别图片、视频、iframe 或普通链接 | 快速试用、导入外部 KML |
+| `description-links` | 第一阶段 | 从点位描述中的文本链接或受支持媒体标签提取 URL，按规则识别图片、视频、音频、iframe 或普通链接 | 快速试用、导入外部 KML |
 | `manual-binding` | 第二阶段 | 管理员把点位或业务标识绑定到内容库或内容项 | 公共 KML 内容维护 |
 | `library-id` | 第二阶段后 | 点位或外部系统只提供内容库 ID，前台按 ID 加载完整内容集合 | 对接已有业务内容库 |
 
@@ -101,7 +102,7 @@ KML Feature 只保留空间要素和少量文本属性。图片、视频、ifram
 
 ### Content Library
 
-内容库是一组可发布的富媒体内容集合。一个内容库可以包含图片、视频、iframe 页面和普通链接。
+内容库是一组可发布的富媒体内容集合。一个内容库可以包含图片、视频、音频、iframe 页面和普通链接。
 
 建议 ID 格式：
 
@@ -115,6 +116,7 @@ content-lib-<timestamp>-<random>
 
 - `image`：图片 URL 或后续上传图片。
 - `video`：视频 URL 或受支持平台视频。
+- `audio`：音频 URL 或现场录音。
 - `iframe`：允许嵌入的外部页面。
 - `link`：普通外链，不以内嵌方式展示。
 
@@ -150,6 +152,11 @@ content-lib-<timestamp>-<random>
       "items": []
     },
     {
+      "type": "audio",
+      "title": "音频",
+      "items": []
+    },
+    {
       "type": "iframe",
       "title": "页面",
       "items": []
@@ -172,12 +179,13 @@ content-lib-<timestamp>-<random>
 
 ### F1. URL 提取和分类
 
-系统应提供纯函数从点位 `description` 和后续 `properties.links` 中提取 URL。
+系统应提供纯函数从点位 `description` 和后续 `properties.links` 中提取 URL。`description` 可以是纯文本，也可以包含受支持的 HTML 媒体标签。
 
 提取规则：
 
 - 只接受 `https://` URL；第一阶段不接受 `javascript:`、`data:`、`file:`、`ftp:` 等协议。
 - URL 文本前后空白、中文标点和 Markdown 链接语法应能被正常处理。
+- `img[src/srcset]`、`picture/source`、`video[src]/source`、`audio[src]/source`、`iframe[src]`、`embed[src]`、`object[data]` 和 `a[href]` 应提取对应 URL；标签本身不得直接渲染。
 - 去重时按规范化后的 URL 比较，保留首次出现顺序。
 - 单个点位最多解析 50 个 URL，超过部分丢弃并在解析结果中标记 `truncated: true`。
 - URL 不应在服务端日志中完整记录查询参数，尤其是 `token`、`key`、`secret`、`password`、`signature` 等敏感参数。
@@ -188,10 +196,11 @@ content-lib-<timestamp>-<random>
 | --- | --- | --- |
 | `image` | URL 扩展名或响应元数据为 `jpg`、`jpeg`、`png`、`webp`、`gif`、`avif` | 图片缩略图和查看器 |
 | `video` | URL 扩展名为 `mp4`、`webm`、`mov`、`m3u8`，或命中受支持视频平台规则 | 视频卡片或平台嵌入 |
+| `audio` | URL 扩展名为 `mp3`、`wav`、`ogg`、`m4a`、`aac`、`flac`、`opus`，或来自 `audio/source` 标签 | 原生音频控制条和外链兜底 |
 | `iframe` | URL 域名命中 iframe 白名单，且管理配置允许内嵌 | sandbox iframe |
 | `link` | 其他安全 URL | 普通外链卡片 |
 
-第一阶段不要求服务端远程请求 URL 获取 `Content-Type`。没有扩展名或无法判断时归类为 `link`。
+第一阶段不要求服务端远程请求 URL 获取 `Content-Type`。媒体标签中的无扩展名 URL 按标签语义分类；纯文本无扩展名 URL 或无法判断的链接归类为 `link`。
 
 ### F2. 点位详情入口
 
@@ -199,7 +208,7 @@ content-lib-<timestamp>-<random>
 
 - 名称。
 - 描述摘要，最长展示 2 到 4 行。
-- 内容数量摘要，例如“3 张图片 / 1 个视频 / 1 个页面”。
+- 内容数量摘要，例如“3 张图片 / 1 个视频 / 1 段音频 / 1 个页面”。
 - “详情”按钮。
 - 可编辑点位仍保留编辑和删除入口。
 
@@ -242,6 +251,12 @@ content-lib-<timestamp>-<random>
 - 移动端面板中视频必须保持稳定宽高比，不能挤压地图主体布局。
 
 平台视频只允许使用已知嵌入 URL 模板，不直接把任意视频页面 URL 塞入 iframe。
+
+### F4A. 音频展示
+
+- 支持 `mp3`、`wav`、`ogg`、`m4a`、`aac`、`flac`、`opus` 等常见音频链接和 `audio/source` 标签。
+- 使用原生音频控件，默认不自动播放，预加载策略为 `metadata`。
+- 播放失败时保留打开原链接入口；音频加载失败不得影响其他内容或地图交互。
 
 ### F5. iframe 页面展示
 
@@ -338,7 +353,7 @@ iframe 渲染要求：
 
 个人 KML 仍保存在浏览器 localStorage。第一阶段个人 KML 不依赖服务端内容库：
 
-- 前端可以从个人点位 `description` 中本地提取链接并展示。
+- 前端可以从个人点位 `description` 中本地提取文本链接和受支持 HTML 媒体标签并展示。
 - 个人 KML 不支持服务端内容库绑定，除非用户具备管理员身份并将个人 KML 发布为公共 KML。
 - 个人 KML 导出保持现有行为。
 
@@ -355,6 +370,7 @@ iframe 渲染要求：
   "contentSummary": {
     "imageCount": 3,
     "videoCount": 1,
+    "audioCount": 1,
     "iframeCount": 0,
     "linkCount": 2,
     "hasRichContent": true
@@ -622,7 +638,7 @@ GET /api/v1/feature-layers/:layerId/features/:featureId/content
 - 地图初始加载、公共 KML 列表、bbox features 和 clusters 接口不加载完整媒体内容。
 - 点位内容接口应按需调用，并可按 `version` 缓存。
 - 前端切换点位时使用 `AbortController` 取消旧请求。
-- 图片、视频和 iframe 使用懒加载。
+- 图片、视频、音频和 iframe 使用懒加载。
 - 单个点位公开内容默认上限：
   - 图片 100 项。
   - 视频 30 项。
@@ -653,7 +669,7 @@ GET /api/v1/feature-layers/:layerId/features/:featureId/content
 
 ## 验收标准
 
-- 用户点击公共 KML 点位，可以在详情面板中看到从描述链接解析出的图片、视频、iframe 或普通链接。
+- 用户点击公共 KML 点位，可以在详情面板中看到从描述文本链接或媒体标签解析出的图片、视频、音频、iframe 或普通链接。
 - 管理员可以创建内容库，添加 URL 内容项，发布后绑定到指定公共 KML 点位。
 - 前台公开接口不返回未发布内容库、未发布内容项、管理备注和敏感字段。
 - iframe 只允许白名单域名嵌入；非白名单 URL 只能作为普通链接打开。
@@ -668,7 +684,7 @@ GET /api/v1/feature-layers/:layerId/features/:featureId/content
 ### 第一阶段：链接解析和前台展示
 
 - 从 KML 点位描述中提取 URL。
-- 前端点位详情面板支持图片、视频、iframe allowlist 和普通链接展示。
+- 前端点位详情面板支持图片、视频、音频、iframe allowlist 和普通链接展示。
 - 公共 KML 增加点位内容解析接口。
 - 不做内容库后台，不做上传，不做 URL 远程抓取。
 

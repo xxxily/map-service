@@ -14,9 +14,11 @@ export function parseKML (kmlText) {
     const placemark = placemarks[i]
     const nameNode = placemark.getElementsByTagName('name')[0]
     const descNode = placemark.getElementsByTagName('description')[0]
+    const styleNode = placemark.getElementsByTagName('styleUrl')[0]
 
-    const name = nameNode ? nameNode.textContent.trim() : `未命名要素 ${i + 1}`
-    const description = descNode ? descNode.textContent.trim() : ''
+    const name = nameNode?.textContent.trim() || `未命名要素 ${i + 1}`
+    const description = descNode ? getDescriptionContent(descNode) : ''
+    const styleUrl = styleNode?.textContent.trim() || ''
 
     let type = null
     let coordinates = null
@@ -46,12 +48,26 @@ export function parseKML (kmlText) {
         type,
         name,
         description,
+        ...(styleUrl ? { styleUrl } : {}),
         coordinates,
       })
     }
   }
 
   return features
+}
+
+function getDescriptionContent (descriptionNode) {
+  const serializer = new XMLSerializer()
+  return [...descriptionNode.childNodes]
+    .map(node => {
+      if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+        return node.nodeValue || ''
+      }
+      return serializer.serializeToString(node)
+    })
+    .join('')
+    .trim()
 }
 
 function parseCoords (coordText) {

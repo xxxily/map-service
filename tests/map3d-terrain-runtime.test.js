@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  canStartTerrainAutoRetry,
+  consumeTerrainAutoRetryAttempt,
+  createTerrainAutoRetryState,
   createTerrainRuntimeState,
   evaluateTerrainVerification,
   getTerrainAutoRetryDelayMs,
@@ -19,7 +22,7 @@ test('runtime terrain overrides exclude endpoints and credentials', () => {
     ionToken: 'must-not-pass',
     selfHostedUrl: 'https://private.example.test/terrain',
     mapTilerUrl: 'https://private.example.test/maptiler',
-    demoView: { lng: 120, lat: 30, height: 3000, heading: 20, pitch: -35, ignored: 'x' },
+    demoView: { lng: 120, lat: 30, range: 32_000, heading: 20, pitch: -35, ignored: 'x' },
   })
 
   assert.deepEqual(override, {
@@ -27,7 +30,7 @@ test('runtime terrain overrides exclude endpoints and credentials', () => {
     provider: 'arcgis-terrain3d',
     quality: 'quality',
     exaggeration: 1.45,
-    demoView: { lng: 120, lat: 30, height: 3000, heading: 20, pitch: -35 },
+    demoView: { lng: 120, lat: 30, range: 32_000, heading: 20, pitch: -35 },
   })
 })
 
@@ -73,25 +76,58 @@ test('terrain verification failures and repeated tile errors follow the safe deg
 })
 
 test('terrain verification samples and automatic retry delays are bounded and deterministic', () => {
-  assert.deepEqual(evaluateTerrainVerification([{ height: 1_000 }, { height: 1_250 }]), {
-    verified: true,
-    heightCount: 2,
-    spread: 250,
-  })
-  assert.deepEqual(evaluateTerrainVerification([{ height: 1_000 }, { height: 1_050 }]), {
-    verified: false,
-    heightCount: 2,
-    spread: 50,
-  })
-  assert.deepEqual(evaluateTerrainVerification([{ height: Number.NaN }]), {
-    verified: false,
-    heightCount: 0,
-    spread: 0,
-  })
+  const verified = evaluateTerrainVerification([
+    { id: 'a', samples: [{ height: 1_000 }, { height: 1_250 }, { height: 1_120 }] },
+    { id: 'b', samples: [{ height: 400 }, { height: 720 }, { height: 510 }] },
+  ])
+  assert.equal(verified.verified, true)
+  assert.equal(verified.verifiedRegionCount, 2)
+  assert.deepEqual(verified.regions.map(region => region.spread), [250, 320])
+
+  const distantButFlat = evaluateTerrainVerification([
+    { id: 'low-flat', samples: [{ height: 100 }, { height: 130 }, { height: 125 }] },
+    { id: 'high-flat', samples: [{ height: 4_000 }, { height: 4_040 }, { height: 4_020 }] },
+  ])
+  assert.equal(distantButFlat.verified, false,
+    'absolute height differences between regions must not impersonate local terrain relief')
+  assert.equal(distantButFlat.verifiedRegionCount, 0)
+
+  const missingRegion = evaluateTerrainVerification([
+    { id: 'valid', samples: [{ height: 1_000 }, { height: 1_250 }] },
+    { id: 'missing', samples: [{ height: Number.NaN }] },
+  ])
+  assert.equal(missingRegion.verified, false)
+  assert.equal(missingRegion.regions[1].heightCount, 0)
 
   assert.equal(getTerrainAutoRetryDelayMs(0), 1_500)
   assert.equal(getTerrainAutoRetryDelayMs(1), 3_000)
   assert.equal(getTerrainAutoRetryDelayMs(2), null)
+})
+
+test('automatic retry budget is consumed only when a matching 3D fallback starts', () => {
+  const retryable = {
+    interactionMode: '3d',
+    key: 'terrain-a',
+    runtimeKey: 'terrain-a',
+    state: 'fallback',
+    autoRetryEligible: true,
+  }
+  assert.equal(canStartTerrainAutoRetry(retryable), true)
+  assert.equal(canStartTerrainAutoRetry({ ...retryable, interactionMode: '2d' }), false)
+  assert.equal(canStartTerrainAutoRetry({ ...retryable, runtimeKey: 'terrain-b' }), false)
+  assert.equal(canStartTerrainAutoRetry({ ...retryable, state: 'active' }), false)
+
+  let state = createTerrainAutoRetryState({ key: 'terrain-a' })
+  let consumed = consumeTerrainAutoRetryAttempt(state)
+  assert.equal(consumed.started, true)
+  assert.equal(consumed.state.attempts, 1)
+  state = consumed.state
+  consumed = consumeTerrainAutoRetryAttempt(state)
+  assert.equal(consumed.started, true)
+  assert.equal(consumed.state.attempts, 2)
+  consumed = consumeTerrainAutoRetryAttempt(consumed.state)
+  assert.equal(consumed.started, false)
+  assert.equal(consumed.state.attempts, 2)
 })
 
 test('scene world pick prefers depth then terrain then ellipsoid', () => {

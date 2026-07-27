@@ -6,14 +6,20 @@ import {
   getHeightAdjustedExaggeration,
   getRecommendedPixelRatio,
   getTerrainProviderPlan,
+  normalizeQualitySelection,
   normalizeQualityPreset,
+  QUALITY_PRESETS,
 } from '../src/map3d/scene-quality.js'
 
 test('scene quality normalizes settings and caps device pixel ratio', () => {
   assert.equal(normalizeQualityPreset('auto'), 'balanced')
   assert.equal(normalizeQualityPreset('unknown'), 'balanced')
+  assert.equal(normalizeQualitySelection('auto'), 'auto')
   assert.equal(getRecommendedPixelRatio(3, 'economy'), 1)
   assert.equal(getRecommendedPixelRatio(3, 'quality'), 2)
+  assert.equal(QUALITY_PRESETS.economy.maxExaggeration, 1.08)
+  assert.equal(QUALITY_PRESETS.balanced.maxExaggeration, 1.2)
+  assert.equal(QUALITY_PRESETS.quality.maxExaggeration, 1.35)
 })
 
 test('terrain plans only accept known providers and self-hosted URLs', () => {
@@ -29,7 +35,7 @@ test('terrain plans only accept known providers and self-hosted URLs', () => {
 })
 
 test('exaggeration smoothly returns to one at high altitude', () => {
-  assert.equal(getHeightAdjustedExaggeration(0, 'quality'), 1.55)
+  assert.equal(getHeightAdjustedExaggeration(0, 'quality'), 1.35)
   assert.equal(getHeightAdjustedExaggeration(2_000_000, 'quality'), 1)
   assert.ok(getHeightAdjustedExaggeration(500_000, 'balanced') > 1)
 })
