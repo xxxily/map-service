@@ -31,3 +31,10 @@ test('access logs redact shared map coordinates while preserving other query fie
     '/?coords=%5Bredacted%5D',
   )
 })
+
+test('access logs redact KML compatibility media targets', () => {
+  assert.equal(
+    sanitizeLogUrl('/api/v1/kml/media?url=https%3A%2F%2Fdown-files.2bulu.com%2Ff%2Fdn1%3FdownParams%3Dsecret'),
+    '/api/v1/kml/media?url=%5Bredacted%5D',
+  )
+})

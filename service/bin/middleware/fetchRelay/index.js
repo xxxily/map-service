@@ -243,6 +243,10 @@ class FetchRelay {
       })
     }
 
+    if (Number.isInteger(options.maxRedirects)) {
+      axiosConf.maxRedirects = Math.max(0, options.maxRedirects)
+    }
+
     const proxySource = Object.hasOwn(options, 'proxy') ? options.proxy : null
     const proxy = normalizeProxyConfig(proxySource)
     if (proxy) {

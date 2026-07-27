@@ -91,6 +91,21 @@ test('fetch relay writes metadata and serves fresh cache without upstream call',
   }
 })
 
+test('fetch relay forwards a bounded redirect policy without writing cache', async () => {
+  const targetUrl = 'https://down-files.2bulu.com/f/dn1?downParams=opaque-value'
+  const { relay, calls, cleanup } = createRelay([{}])
+
+  try {
+    const result = await relay.fetch(targetUrl, { cache: false, maxRedirects: 0 })
+    assert.equal(await readStream(result.stream), 'tile-data')
+    assert.equal(result.cacheStatus, 'BYPASS')
+    assert.equal(calls[0].maxRedirects, 0)
+    assert.equal(await fs.pathExists(relay.getCachePaths(targetUrl).cachePath), false)
+  } finally {
+    await cleanup()
+  }
+})
+
 test('fetch relay stores source/layer/publish metadata and source ttl policy', async () => {
   const targetUrl = 'https://www.google.com/maps/vt?lyrs=s&x=41&y=42&z=12'
   const { relay, cleanup } = createRelay([{}])

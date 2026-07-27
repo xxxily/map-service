@@ -16,6 +16,11 @@ import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
 import SharedKmlManager from './admin/sharedKml.js'
 import TileCatalogManager from './admin/tileCatalog.js'
+import {
+  assertKmlMediaPublicAddress,
+  validateKmlMediaResponse,
+  validateKmlMediaTarget,
+} from './admin/kmlMedia.js'
 import fs from 'fs-extra'
 import path from 'path'
 import { Readable } from 'node:stream'
@@ -162,6 +167,21 @@ const service = {
       ...options,
       proxy: Object.hasOwn(options, 'proxy') ? options.proxy : null,
     })
+  },
+
+  async fetchKmlMedia (url) {
+    const target = validateKmlMediaTarget(url)
+    await assertKmlMediaPublicAddress(target)
+    const relayResult = await service.fetchRelay(target, {
+      cache: false,
+      maxRedirects: 0,
+    })
+    try {
+      return validateKmlMediaResponse(relayResult)
+    } catch (err) {
+      relayResult?.stream?.destroy()
+      throw err
+    }
   },
 
   async fetchTileSource (sourceId, tile, options = {}) {

@@ -33,6 +33,8 @@ src/admin/state.js         后台状态和导航定义
 src/admin/utils.js         后台通用格式化/转义工具
 src/admin/panels/          后台各面板组件
 src/ui/dialog.js           统一 Web 弹窗组件
+src/ui/media-preview.js    2D/3D 共用的图片、视频、音频和 iframe 预览器
+src/ui/media-preview-state.js  媒体类型、图库索引和图片缩放边界纯函数
 src/pwa.js                 Service Worker 注册
 src/styles.css             Vite 引入的全局样式
 service/app/               构建后的静态产物
@@ -41,6 +43,14 @@ service/app/               构建后的静态产物
 浏览器有两个地图入口：`/` 是 Leaflet 2D 地图，`/3d` 是 Cesium 三维地图；管理后台通过
 `/admin/<tab>` 打开。Vite 构建同时生成 `index.html` 和 `3d.html`，Express 对 HTML 入口发送
 `Cache-Control: no-cache`，避免部署后继续使用旧页面壳。旧的 `map.html` 和独立静态脚本已经移除。
+
+KML 点位详情由 `src/map/kml-content-panel.js` 统一渲染，图片、视频、音频和白名单 iframe 通过
+`src/ui/media-preview.js` 进入同一个模态预览层。预览器只消费已经由共享内容规则分类的 HTTPS
+媒体项，文字和 URL 使用 DOM 属性或 `textContent` 设置；`@panzoom/panzoom` 只负责图片手势与
+变换，媒体暂停/释放、焦点恢复、安全外链、iframe sandbox 和响应式布局仍由项目组件控制。
+`renderUrl` 默认与原始媒体 URL 相同；只有命中固定 `down-files.2bulu.com/f/dn1` 规则时才指向
+`/api/v1/kml/media`。该接口继承访问控制，并在服务层执行精确主机/路径、DNS、MIME 和 20 MB
+大小校验；它不是可配置的任意 URL 代理。
 
 ## 三维地图与真实地形
 
@@ -76,6 +86,7 @@ service/app/               构建后的静态产物
 - `service/bin/simpleApi.js` 注册 `/api/v1` 路由。
 - `service/bin/service.js` 是 API handler 使用的服务层。
 - `service/bin/admin/` 包含后台认证、运行时设置、访问统计、图层目录和预缓存任务管理。
+- `service/bin/admin/kmlMedia.js` 校验固定旧 KML 图片兼容目标、DNS 地址和响应边界。
 - `service/bin/middleware/fetchRelay/index.js` 负责瓦片代理缓存。
 - `service/bin/whitelist.js` 限制可代理的瓦片上游 host 和 path。
 - `service/bin/cronJob/` 包含定时任务。

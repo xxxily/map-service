@@ -5,8 +5,10 @@ import {
   classifyContentUrl,
   extractContentReferences,
   extractContentUrls,
+  getKmlMediaRenderUrl,
   getFeatureDescriptionText,
   getPrimaryFeatureContentType,
+  normalizeKmlMediaRelayTarget,
 } from '../service/bin/admin/kmlContent.js'
 
 test('extractContentUrls extracts https links, deduplicates and tracks truncation', () => {
@@ -129,4 +131,23 @@ test('KML style hints drive the primary marker media type', () => {
   assert.equal(getPrimaryFeatureContentType(feature), 'image')
   assert.equal(getFeatureDescriptionText(feature), '')
   assert.equal(getFeatureDescriptionText('无效实体 &#99999999;'), '无效实体 &#99999999;')
+})
+
+test('legacy 2bulu images use the fixed KML media compatibility endpoint', () => {
+  const target = 'https://down-files.2bulu.com/f/dn1?downParams=opaque-value'
+  const view = buildFeatureContentView({
+    description: `<img src="${target}" alt="现场照片">`,
+  })
+  const item = view.groups.find(group => group.type === 'image').items[0]
+
+  assert.equal(normalizeKmlMediaRelayTarget(target), target)
+  assert.equal(item.url, target)
+  assert.equal(item.renderUrl, getKmlMediaRenderUrl(target))
+  assert.equal(item.thumbnailUrl, item.renderUrl)
+  assert.match(item.renderUrl, /^\/api\/v1\/kml\/media\?url=/)
+  assert.equal(normalizeKmlMediaRelayTarget('https://down-files.2bulu.com/private?id=1'), '')
+  assert.equal(normalizeKmlMediaRelayTarget('https://evil.example/f/dn1?id=1'), '')
+  assert.equal(normalizeKmlMediaRelayTarget('http://down-files.2bulu.com/f/dn1?id=1'), '')
+  assert.equal(normalizeKmlMediaRelayTarget('https://down-files.2bulu.com/f/dn1?other=1'), '')
+  assert.equal(normalizeKmlMediaRelayTarget('https://down-files.2bulu.com/f/dn1?downParams='), '')
 })

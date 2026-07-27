@@ -62,6 +62,27 @@ npm run build
 - 新增后台面板时，需要同步加入 `src/admin/state.js` 的导航定义和 `npm run check`。
 - 需要提示或确认时，使用 `src/ui/dialog.js`，不要直接调用 `alert`、`confirm`、`prompt`。
 
+### KML 富媒体预览开发
+
+KML 图片、视频、音频和白名单 iframe 的预览统一由 `src/ui/media-preview.js` 负责，2D 和 3D
+不得各自实现预览层。`src/map/kml-content-panel.js` 只渲染详情分组和预览入口，普通链接仍是明确
+外链。图片平移缩放复用 `@panzoom/panzoom`；新增手势时不能覆盖它的 Pointer Events，也不能把
+媒体 URL 重新拼成未转义 HTML。
+
+旧 KML 图片兼容规则只允许在 `shared/kml-content.js` 与 `service/bin/admin/kmlMedia.js` 的共同
+约束下扩展。不得只在前端增加 relay URL；新增主机或路径前必须同步补充 DNS 私网拦截、MIME、
+文件大小、访问控制和日志脱敏测试，并更新 `docs/api.md`。原始文件入口始终使用内容项 `url`，
+缩略图和预览媒体才可使用 `renderUrl`。
+
+修改预览交互后至少验证：
+
+- 图片在桌面、移动竖屏和移动横屏中以 `1x` 完整居中，标题和控件没有溢出或遮挡。
+- 按钮、滑杆、滚轮、双指、拖拽、双击、复位和多图循环切换正常，缩放保持在 `1x` 到 `6x`。
+- 视频默认不自动播放并保持 `16:9`，音频控件不溢出；切换或关闭后音视频停止且 DOM 资源清空。
+- iframe 延续内容项 sandbox/referrer policy，加载失败时仍可通过原始页面入口兜底。
+- `野兰谷.kml` 的兼容缩略图和预览图均从 `/api/v1/kml/media` 成功加载，原始文件链接不被替换。
+- `Escape`、关闭按钮和桌面遮罩均可退出，页面滚动锁和焦点在退出后恢复，控制台无脚本错误。
+
 ## 三维地图开发
 
 三维地图使用 Cesium。页面编排保留在 `src/3d.js`，可测试规则放在 `src/map3d/`：

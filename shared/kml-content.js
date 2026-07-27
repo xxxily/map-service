@@ -1,4 +1,8 @@
 const URL_LIMIT = 50
+const KML_MEDIA_RELAY_ENDPOINT = '/api/v1/kml/media'
+const KML_MEDIA_COMPATIBILITY_RULES = new Map([
+  ['down-files.2bulu.com', new Set(['/f/dn1'])],
+])
 
 export const CONTENT_GROUP_ORDER = ['image', 'video', 'audio', 'iframe', 'link']
 export const CONTENT_GROUP_TITLES = {
@@ -59,6 +63,22 @@ function normalizeUrl (value) {
   } catch (err) {
     return null
   }
+}
+
+export function normalizeKmlMediaRelayTarget (value) {
+  const parsed = normalizeUrl(value)
+  if (!parsed || parsed.protocol !== 'https:' || parsed.username || parsed.password) return ''
+  if (parsed.port && parsed.port !== '443') return ''
+  const allowedPaths = KML_MEDIA_COMPATIBILITY_RULES.get(parsed.hostname.toLowerCase())
+  if (!allowedPaths?.has(parsed.pathname)) return ''
+  const queryKeys = [...parsed.searchParams.keys()]
+  if (queryKeys.length !== 1 || queryKeys[0] !== 'downParams' || !parsed.searchParams.get('downParams')) return ''
+  return parsed.toString()
+}
+
+export function getKmlMediaRenderUrl (value) {
+  const target = normalizeKmlMediaRelayTarget(value)
+  return target ? `${KML_MEDIA_RELAY_ENDPOINT}?url=${encodeURIComponent(target)}` : String(value || '')
 }
 
 function isPrivateIpv4 (hostname) {
@@ -280,14 +300,18 @@ function createContentItem (parsed, index, options = {}) {
   }
 
   const maskedUrl = maskSensitiveQueryParams(parsed)
+  const renderUrl = type === 'image'
+    ? getKmlMediaRenderUrl(maskedUrl)
+    : maskedUrl
   return {
     id: `description-link-${index + 1}`,
     type,
     title: String(options.title || '').trim() || parsed.hostname,
     description: '',
     url: maskedUrl,
+    renderUrl,
     displayUrl: maskedUrl,
-    thumbnailUrl: type === 'image' ? maskedUrl : '',
+    thumbnailUrl: type === 'image' ? renderUrl : '',
     sourceType: 'description-link',
     embedPolicy: type === 'iframe'
       ? {

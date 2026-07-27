@@ -1134,6 +1134,47 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 
 ## KML 接口
 
+### `GET /api/v1/kml/media?url=<encoded-url>`
+
+获取固定旧图片下载地址的兼容响应。该接口不是任意 URL 代理，仅接受完整 URL 编码后的
+`https://down-files.2bulu.com/f/dn1?downParams=...`；其他协议、主机、端口、路径和查询参数一律拒绝。
+
+鉴权方式：继承前台地图访问控制。未启用访问密码时可直接访问；启用后必须携带有效的
+`map_access_token` Cookie。
+
+请求示例：
+
+```http
+GET /api/v1/kml/media?url=https%3A%2F%2Fdown-files.2bulu.com%2Ff%2Fdn1%3FdownParams%3Dopaque-value
+```
+
+成功响应为图片二进制流，不使用 `jsonSuc` 包装。响应保留受控的 `Content-Type`、
+`Content-Length`、`ETag` 等上游缓存字段，并增加 `X-Cache`。服务端只接受不超过 20 MB、
+带有效 `Content-Length` 的 `image/*` 响应。
+
+错误状态：
+
+| HTTP 状态 | 场景 |
+| --- | --- |
+| `400` | 缺少 `url` 参数 |
+| `401` | 地图访问控制已启用但 Cookie 无效 |
+| `403` | URL 未命中固定主机/路径，或 DNS 解析到不允许的地址 |
+| `413` | 图片超过 20 MB |
+| `415` | 上游响应不是 `image/*` |
+| `502` | DNS 解析失败、上游不可用或未提供有效文件大小 |
+
+错误响应继续使用项目统一结构，示例：
+
+```json
+{
+  "code": -1,
+  "result": null,
+  "error": {
+    "message": "媒体 URL 不在兼容白名单内"
+  }
+}
+```
+
 ### `GET /api/v1/kml/shared`
 
 获取已发布的公共 KML 列表。
@@ -1146,7 +1187,7 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 
 获取已发布公共 KML 单个点位的富媒体内容视图。接口继承前台访问控制；如果地图访问密码已启用，必须先通过访问验证。
 
-第一阶段解析点位 `description` 中的 HTTPS 文本链接，以及 `img`、`picture/source`、`video/source`、`audio/source`、`iframe`、`embed`、`object` 和 `a` 标签中的 URL，不做任意 URL 代理、远程抓取、截图、转码或上传。图片、视频、音频、iframe 和普通链接按规则分组返回；原始 HTML 不会直接返回给渲染组件。媒体标签中的无扩展名 URL 按标签语义分类。iframe 默认拒绝，只在服务端 `MAP_SERVICE_KML_IFRAME_ALLOWLIST` 配置命中时作为 `iframe` 类型返回，否则作为普通链接处理。
+第一阶段解析点位 `description` 中的 HTTPS 文本链接，以及 `img`、`picture/source`、`video/source`、`audio/source`、`iframe`、`embed`、`object` 和 `a` 标签中的 URL，不做任意 URL 代理、截图、转码或上传。图片、视频、音频、iframe 和普通链接按规则分组返回；原始 HTML 不会直接返回给渲染组件。媒体标签中的无扩展名 URL 按标签语义分类。iframe 默认拒绝，只在服务端 `MAP_SERVICE_KML_IFRAME_ALLOWLIST` 配置命中时作为 `iframe` 类型返回，否则作为普通链接处理。固定旧图片地址可能额外返回同源 `renderUrl`，仅用于兼容加载，原始 `url` 保持不变。
 
 成功响应示例：
 
@@ -1168,6 +1209,7 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
             "title": "cdn.example.com",
             "description": "",
             "url": "https://cdn.example.com/site-a/front.webp",
+            "renderUrl": "https://cdn.example.com/site-a/front.webp",
             "displayUrl": "https://cdn.example.com/site-a/front.webp",
             "thumbnailUrl": "https://cdn.example.com/site-a/front.webp",
             "sourceType": "description-link",
@@ -1236,6 +1278,7 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 | `groups[].type` | 内容分组类型：`image` / `video` / `audio` / `iframe` / `link` |
 | `groups[].items[].sourceType` | 第一阶段固定为 `description-link` |
 | `groups[].items[].url` | 已脱敏后的 HTTPS URL；敏感查询参数会替换为 `****` |
+| `groups[].items[].renderUrl` | 前端实际媒体加载地址；通常与 `url` 相同，固定旧图片地址会使用 `/api/v1/kml/media` |
 | `groups[].items[].embedPolicy` | iframe 内容的 sandbox 和 referrer policy；非 iframe 为 `null` |
 | `contentSummary` | 点位内容数量摘要，包括 `imageCount`、`videoCount`、`audioCount`、`iframeCount`、`linkCount` 和 `hasRichContent` |
 | `sourceSummary.truncated` | 描述中 URL 超过解析上限时为 `true` |

@@ -336,6 +336,17 @@ const simpleApi = {
       },
     },
     {
+      path: '/kml/media',
+      method: 'get',
+      describe: '获取白名单内的 KML 兼容图片',
+      tags: ['kml'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchKmlMedia(req.query.url)
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
       path: '/admin/auth/login',
       method: 'post',
       describe: '管理后台登录',

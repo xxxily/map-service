@@ -6,5 +6,7 @@ export {
   formatContentSummary,
   getFeatureContentTypes,
   getFeatureDescriptionText,
+  getKmlMediaRenderUrl,
   getPrimaryFeatureContentType,
+  normalizeKmlMediaRelayTarget,
 } from '../../../shared/kml-content.js'

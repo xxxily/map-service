@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { test } from 'node:test'
+import {
+  clampMediaPreviewScale,
+  getWrappedMediaIndex,
+  normalizeMediaPreviewItems,
+} from '../src/ui/media-preview-state.js'
+
+test('media preview wraps gallery navigation and clamps image scale', () => {
+  assert.equal(getWrappedMediaIndex(-1, 3), 2)
+  assert.equal(getWrappedMediaIndex(3, 3), 0)
+  assert.equal(getWrappedMediaIndex(1, 0), 0)
+  assert.equal(clampMediaPreviewScale(0.2), 1)
+  assert.equal(clampMediaPreviewScale(3.4), 3.4)
+  assert.equal(clampMediaPreviewScale(20), 6)
+  assert.equal(clampMediaPreviewScale('invalid'), 1)
+})
+
+test('media preview only accepts supported HTTPS media items', () => {
+  const items = normalizeMediaPreviewItems([
+    { type: 'image', url: 'https://cdn.example.com/a.jpg', title: 'A' },
+    { type: 'link', url: 'https://example.com/' },
+    { type: 'video', url: 'http://cdn.example.com/b.mp4' },
+    { url: 'https://cdn.example.com/c.mp3', title: 'C' },
+  ], 'audio')
+
+  assert.deepEqual(items.map(item => item.type), ['image', 'audio'])
+  assert.equal(items[1].title, 'C')
+})
+
+test('KML media thumbnails open the in-app preview instead of a blank browser page', () => {
+  const panelSource = readFileSync(new URL('../src/map/kml-content-panel.js', import.meta.url), 'utf8')
+  const previewSource = readFileSync(new URL('../src/ui/media-preview.js', import.meta.url), 'utf8')
+
+  assert.match(panelSource, /data-kml-media-preview/)
+  assert.match(panelSource, /openMediaPreview/)
+  assert.doesNotMatch(panelSource, /<a class="kml-content-image-item"/)
+  assert.match(previewSource, /item\?\.renderUrl \|\| item\?\.url/)
+  assert.match(previewSource, /source\.href = item\.url/)
+})
