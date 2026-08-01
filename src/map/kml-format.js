@@ -16,7 +16,7 @@ export function parseKML (kmlText) {
     const descNode = placemark.getElementsByTagName('description')[0]
     const styleNode = placemark.getElementsByTagName('styleUrl')[0]
 
-    const name = nameNode?.textContent.trim() || `未命名要素 ${i + 1}`
+    const name = nameNode?.textContent.trim() || ''
     const description = descNode ? getDescriptionContent(descNode) : ''
     const styleUrl = styleNode?.textContent.trim() || ''
 

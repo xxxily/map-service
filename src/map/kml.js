@@ -465,7 +465,7 @@ function createPointFeature (kmlFile, latlng, result) {
   return {
     id: `feat-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     type: 'Point',
-    name: result.name.trim() || '新增标注点',
+    name: result.name.trim(),
     description: result.description.trim(),
     coordinates: mapLatLngToStoredCoordinate(kmlFile, latlng),
   }
@@ -473,7 +473,7 @@ function createPointFeature (kmlFile, latlng, result) {
 
 function getFeatureLabel (feature) {
   const name = String(feature?.name || '').replace(/\s+/g, ' ').trim()
-  if (!name) return '未命名要素'
+  if (!name) return ''
   if (name.length <= KML_POINT_LABEL_MAX_LENGTH) return name
   return `${name.slice(0, KML_POINT_LABEL_MAX_LENGTH)}...`
 }
@@ -496,7 +496,7 @@ function renderFeaturePopup (kmlId, feature, isEditable) {
     `
   return `
     <div class="kml-popup-content">
-      <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
+      <div class="kml-popup-title">${escapeHtml(feature.name || '未命名点位')}</div>
       <div class="kml-popup-desc">${escapeHtml(description || (contentSummary ? '包含富媒体内容' : '暂无描述'))}</div>
       ${contentSummary ? `<div class="kml-popup-content-summary">${escapeHtml(contentSummary)}</div>` : ''}
       ${actionsHtml}
@@ -562,13 +562,16 @@ function renderFeature (map, kmlFile, feature) {
     }
 
     if (theme !== 'simple') {
-      layer.bindTooltip(escapeHtml(getFeatureLabel(feature)), {
-        permanent: true,
-        direction: 'top',
-        offset: [-16, -18],
-        opacity: 1,
-        className: 'kml-point-label',
-      })
+      const label = getFeatureLabel(feature)
+      if (label) {
+        layer.bindTooltip(escapeHtml(label), {
+          permanent: true,
+          direction: 'top',
+          offset: [-16, -18],
+          opacity: 1,
+          className: 'kml-point-label',
+        })
+      }
     }
   } else if (feature.type === 'LineString') {
     const latlngs = getMapLatLngs(kmlFile, feature)
@@ -922,7 +925,7 @@ async function handleEditFeature (map, kmlId, featureId) {
   })
   
   if (result) {
-    feature.name = result.name.trim() || '未命名要素'
+    feature.name = result.name.trim()
     feature.description = result.description.trim()
     saveKmlChanges(kmlFile)
     
@@ -930,7 +933,12 @@ async function handleEditFeature (map, kmlId, featureId) {
     if (layer) {
       layer.setPopupContent(renderFeaturePopup(kmlId, feature, isKmlEditable(kmlFile)))
       if (feature.type === 'Point') {
-        layer.setTooltipContent(escapeHtml(getFeatureLabel(feature)))
+        const label = getFeatureLabel(feature)
+        if (label) {
+          layer.setTooltipContent(escapeHtml(label))
+        } else {
+          layer.unbindTooltip()
+        }
       }
       layer.closePopup()
       setTimeout(() => layer.openPopup(), 100)

@@ -305,7 +305,7 @@ function buildKmlTargetOptions () {
 
 function getFeatureLabel (feature) {
   const name = String(feature?.name || '').replace(/\s+/g, ' ').trim()
-  if (!name) return '未命名要素'
+  if (!name) return ''
   if (name.length <= KML_POINT_LABEL_MAX_LENGTH) return name
   return `${name.slice(0, KML_POINT_LABEL_MAX_LENGTH)}...`
 }
@@ -314,7 +314,7 @@ function createPointFeature (kmlFile, latlng, result) {
   return {
     id: `feat-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     type: 'Point',
-    name: result.name.trim() || '新增标注点',
+    name: result.name.trim(),
     description: result.description.trim(),
     coordinates: mapLatLngToStoredCoordinate(kmlFile, latlng),
   }
@@ -403,8 +403,9 @@ function renderFeature (kmlFile, feature) {
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
     }
 
-    const labelGraphics = theme === 'simple' ? undefined : {
-      text: getFeatureLabel(feature),
+    const labelText = theme === 'simple' ? '' : getFeatureLabel(feature)
+    const labelGraphics = labelText ? {
+      text: labelText,
       font: '12px sans-serif',
       fillColor: Color.WHITE,
       outlineColor: Color.BLACK,
@@ -413,7 +414,7 @@ function renderFeature (kmlFile, feature) {
       verticalOrigin: VerticalOrigin.BOTTOM,
       pixelOffset: new Cartesian2(0, mediaBillboard ? -43 : -18),
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
-    }
+    } : undefined
 
     const entity = markEntity(viewerRef.entities.add({
       name: feature.name || 'KML 标注',
@@ -689,7 +690,7 @@ async function handleEditFeature (kmlId, featureId) {
 
   if (!result) return
   pushKmlHistory()
-  feature.name = result.name.trim() || '未命名要素'
+  feature.name = result.name.trim()
   feature.description = result.description.trim()
   saveKmlChanges(kmlFile)
   renderKmlLayers(kmlFile)

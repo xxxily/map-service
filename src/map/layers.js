@@ -332,28 +332,47 @@ export function triggerMapScreenshot (map) {
       ...document.querySelectorAll('.amap-sug-result')
     ]
 
-    elementsToHide.forEach(el => {
-      if (el) el.style.setProperty('display', 'none', 'important')
+    const hideElements = () => {
+      elementsToHide.forEach(el => {
+        if (el) el.style.setProperty('display', 'none', 'important')
+      })
+    }
+    const restoreElements = () => {
+      elementsToHide.forEach(el => {
+        if (el) el.style.removeProperty('display')
+      })
+    }
+
+    // foreignObjectRendering 让浏览器原生渲染 DOM 快照：修复地图旋转
+    // (bearing ≠ 0) 时 Leaflet SVG 线段在默认计算渲染模式下丢失的问题。
+    // 不支持 foreignObject 的浏览器回退到默认渲染模式重试一次。
+    const captureOptions = {
+      useCORS: true,
+      foreignObjectRendering: true,
+      logging: false,
+      backgroundColor: null,
+      ignoreElements: (element) => {
+        if (element.classList.contains('leaflet-control-container') ||
+            element.id === 'map-menu' ||
+            element.id === 'guideline-toolbar' ||
+            element.id === 'kml-panel') {
+          return true
+        }
+        return false
+      }
+    }
+
+    const renderCanvas = (options) => new Promise((resolve, reject) => {
+      window.requestAnimationFrame(() => {
+        html2canvas(mapContainer, options).then(resolve, reject)
+      })
     })
 
-    window.requestAnimationFrame(() => {
-      html2canvas(mapContainer, {
-        useCORS: true,
-        logging: false,
-        backgroundColor: null,
-        ignoreElements: (element) => {
-          if (element.classList.contains('leaflet-control-container') ||
-              element.id === 'map-menu' ||
-              element.id === 'guideline-toolbar' ||
-              element.id === 'kml-panel') {
-            return true
-          }
-          return false
-        }
-      }).then(canvas => {
-        elementsToHide.forEach(el => {
-          if (el) el.style.removeProperty('display')
-        })
+    hideElements()
+    renderCanvas(captureOptions)
+      .catch(() => renderCanvas({ ...captureOptions, foreignObjectRendering: false }))
+      .then(canvas => {
+        restoreElements()
         toast.remove()
 
         const dataUrl = canvas.toDataURL('image/png')
@@ -395,9 +414,7 @@ export function triggerMapScreenshot (map) {
           showToast('截图已下载 (当前浏览器不支持剪贴板图片写入)', '#0f766e')
         }
       }).catch(err => {
-        elementsToHide.forEach(el => {
-          if (el) el.style.removeProperty('display')
-        })
+        restoreElements()
         toast.remove()
         console.error('截图失败:', err)
 
@@ -408,7 +425,6 @@ export function triggerMapScreenshot (map) {
         document.body.appendChild(errorToast)
         setTimeout(() => errorToast.remove(), 3000)
       })
-    })
   }).catch(err => {
     toast.remove()
     console.error('加载 html2canvas 失败:', err)
