@@ -764,7 +764,7 @@ function updateKmlPanelUI (map) {
                     <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
                       <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
                         <span class="kml-feature-icon">${iconSvg}</span>
-                        <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
+                        <span class="kml-feature-name" title="${escapeHtml(feat.name || '未命名点位')}">${escapeHtml(feat.name || '未命名点位')}</span>
                       </div>
                       <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
                     </div>
@@ -862,7 +862,7 @@ function updateKmlPanelUI (map) {
                     <div class="kml-feature-item" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
                       <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}">
                         <span class="kml-feature-icon">${iconSvg}</span>
-                        <span class="kml-feature-name" title="${escapeHtml(feat.name)}">${escapeHtml(feat.name)}</span>
+                        <span class="kml-feature-name" title="${escapeHtml(feat.name || '未命名点位')}">${escapeHtml(feat.name || '未命名点位')}</span>
                       </div>
                       ${isEditingThis ? `
                         <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${kmlFile.id}" data-feature-id="${feat.id}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>

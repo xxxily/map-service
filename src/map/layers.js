@@ -343,34 +343,105 @@ export function triggerMapScreenshot (map) {
       })
     }
 
-    // foreignObjectRendering 让浏览器原生渲染 DOM 快照：修复地图旋转
-    // (bearing ≠ 0) 时 Leaflet SVG 线段在默认计算渲染模式下丢失的问题。
-    // 不支持 foreignObject 的浏览器回退到默认渲染模式重试一次。
-    const captureOptions = {
-      useCORS: true,
-      foreignObjectRendering: true,
-      logging: false,
-      backgroundColor: null,
-      ignoreElements: (element) => {
-        if (element.classList.contains('leaflet-control-container') ||
-            element.id === 'map-menu' ||
-            element.id === 'guideline-toolbar' ||
-            element.id === 'kml-panel') {
-          return true
-        }
-        return false
-      }
-    }
+    // html2canvas 默认计算渲染模式下，祖先容器的旋转 transform 只通过
+    // bounds 近似处理，地图旋转（bearing ≠ 0）后 Leaflet 的矢量 SVG 会
+    // 错位丢失；foreignObject 模式虽能修复线段，但跨域瓦片无法内联导致
+    // 底图空白。因此旋转时用 getScreenCTM 把 SVG 内容预渲染为旋转后的
+    // 位图并替换为 canvas，瓦片保持默认渲染，线段与屏幕一致。
+    const rotatedPane = mapContainer.querySelector('.leaflet-rotate-pane')
+    const rotated = rotatedPane && !new DOMMatrixReadOnly(rotatedPane.style.transform).isIdentity
 
-    const renderCanvas = (options) => new Promise((resolve, reject) => {
-      window.requestAnimationFrame(() => {
-        html2canvas(mapContainer, options).then(resolve, reject)
-      })
+    const svgs = rotated ? [...mapContainer.querySelectorAll('svg')] : []
+    const svgToImage = (svg) => new Promise(resolve => {
+      const clone = svg.cloneNode(true)
+      const viewBox = clone.viewBox && clone.viewBox.baseVal
+      if (viewBox && viewBox.width) {
+        clone.setAttribute('width', viewBox.width)
+        clone.setAttribute('height', viewBox.height)
+        clone.setAttribute('viewBox', `0 0 ${viewBox.width} ${viewBox.height}`)
+      }
+      clone.style.transform = 'none'
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => resolve(null)
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(clone))
     })
 
-    hideElements()
-    renderCanvas(captureOptions)
-      .catch(() => renderCanvas({ ...captureOptions, foreignObjectRendering: false }))
+    Promise.all(svgs.map(svgToImage)).then(svgImages => {
+      const svgPrep = svgs.map((svg, i) => {
+        const img = svgImages[i]
+        let bbox = null
+        try {
+          const b = svg.getBBox()
+          if (b && b.width > 0 && b.height > 0) bbox = b
+        } catch (e) {
+          return null
+        }
+        if (!bbox) return null
+        const firstPath = svg.querySelector('path')
+        const ctm = firstPath ? firstPath.getScreenCTM() : null
+        if (!ctm) return null
+        const width = bbox.width
+        const height = bbox.height
+        const corners = [
+          [bbox.x, bbox.y],
+          [bbox.x + width, bbox.y],
+          [bbox.x, bbox.y + height],
+          [bbox.x + width, bbox.y + height],
+        ]
+        const points = corners.map(([x, y]) => new DOMPoint(x, y).matrixTransform(ctm))
+        const left = Math.min(...points.map(p => p.x))
+        const top = Math.min(...points.map(p => p.y))
+        const right = Math.max(...points.map(p => p.x))
+        const bottom = Math.max(...points.map(p => p.y))
+        const anchor = new DOMPoint(bbox.x, bbox.y).matrixTransform(ctm)
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.ceil(right - left)
+        canvas.height = Math.ceil(bottom - top)
+        const ctx = canvas.getContext('2d')
+        ctx.setTransform(ctm.a, ctm.b, ctm.c, ctm.d, anchor.x - left, anchor.y - top)
+        ctx.drawImage(img, bbox.x, bbox.y, width, height, 0, 0, width, height)
+        return { canvas, left, top }
+      })
+
+      const captureOptions = {
+        useCORS: true,
+        logging: false,
+        backgroundColor: null,
+        ignoreElements: (element) => {
+          if (element.classList.contains('leaflet-control-container') ||
+              element.id === 'map-menu' ||
+              element.id === 'guideline-toolbar' ||
+              element.id === 'kml-panel') {
+            return true
+          }
+          return false
+        },
+        onclone: (clonedDoc) => {
+          if (svgPrep.length === 0) return
+          const clonedSvgs = [...clonedDoc.querySelectorAll('#map svg')]
+          clonedSvgs.forEach((svg, i) => {
+            const prep = svgPrep[i]
+            if (!prep || !svg.parentNode) return
+            const canvas = prep.canvas
+            canvas.style.position = 'absolute'
+            canvas.style.left = `${prep.left}px`
+            canvas.style.top = `${prep.top}px`
+            svg.parentNode.replaceChild(canvas, svg)
+          })
+          const clonedRotatePane = clonedDoc.querySelector('#map .leaflet-rotate-pane')
+          if (clonedRotatePane) clonedRotatePane.style.transform = 'none'
+        }
+      }
+
+      const renderCanvas = (options) => new Promise((resolve, reject) => {
+        window.requestAnimationFrame(() => {
+          html2canvas(mapContainer, options).then(resolve, reject)
+        })
+      })
+
+      hideElements()
+      renderCanvas(captureOptions)
       .then(canvas => {
         restoreElements()
         toast.remove()
@@ -425,6 +496,7 @@ export function triggerMapScreenshot (map) {
         document.body.appendChild(errorToast)
         setTimeout(() => errorToast.remove(), 3000)
       })
+    })
   }).catch(err => {
     toast.remove()
     console.error('加载 html2canvas 失败:', err)
