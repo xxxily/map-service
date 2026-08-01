@@ -347,11 +347,42 @@ export function triggerMapScreenshot (map) {
     // bounds 近似处理，地图旋转（bearing ≠ 0）后 Leaflet 的矢量 SVG 会
     // 错位丢失；foreignObject 模式虽能修复线段，但跨域瓦片无法内联导致
     // 底图空白。因此旋转时用 getScreenCTM 把 SVG 内容预渲染为旋转后的
-    // 位图并替换为 canvas，瓦片保持默认渲染，线段与屏幕一致。
+    // 位图并替换为 canvas，同时把旋转 transform 下放到瓦片/点位/tooltip
+    // 自身（html2canvas 对元素自身 transform 精确旋转），保证截图与屏幕
+    // 一致的旋转效果。
     const rotatedPane = mapContainer.querySelector('.leaflet-rotate-pane')
     const rotated = rotatedPane && !new DOMMatrixReadOnly(rotatedPane.style.transform).isIdentity
 
     const svgs = rotated ? [...mapContainer.querySelectorAll('svg')] : []
+    const rotatedTargets = rotated
+      ? [...rotatedPane.querySelectorAll('.leaflet-tile, .leaflet-marker-icon, .leaflet-tooltip')]
+      : []
+    const rotatedTargetInfo = rotatedTargets.map(el => {
+      let tx = 0
+      let ty = 0
+      const ownTransform = el.style.transform
+      if (ownTransform && ownTransform !== 'none') {
+        try {
+          const matrix = new DOMMatrixReadOnly(ownTransform)
+          tx = matrix.e
+          ty = matrix.f
+        } catch (e) {
+          console.warn('截图旋转处理：无法解析元素 transform', ownTransform)
+        }
+      }
+      const origin = getComputedStyle(el).transformOrigin || '0px 0px'
+      const parts = origin.split(' ')
+      return {
+        left: parseFloat(el.style.left) || 0,
+        top: parseFloat(el.style.top) || 0,
+        marginLeft: parseFloat(el.style.marginLeft) || 0,
+        marginTop: parseFloat(el.style.marginTop) || 0,
+        tx,
+        ty,
+        originX: parseFloat(parts[0]) || 0,
+        originY: parseFloat(parts[1]) || 0,
+      }
+    })
     const svgToImage = (svg) => new Promise(resolve => {
       const clone = svg.cloneNode(true)
       const viewBox = clone.viewBox && clone.viewBox.baseVal
@@ -418,7 +449,7 @@ export function triggerMapScreenshot (map) {
           return false
         },
         onclone: (clonedDoc) => {
-          if (svgPrep.length === 0) return
+          if (svgPrep.length === 0 && rotatedTargetInfo.length === 0) return
           const clonedSvgs = [...clonedDoc.querySelectorAll('#map svg')]
           clonedSvgs.forEach((svg, i) => {
             const prep = svgPrep[i]
@@ -430,7 +461,32 @@ export function triggerMapScreenshot (map) {
             svg.parentNode.replaceChild(canvas, svg)
           })
           const clonedRotatePane = clonedDoc.querySelector('#map .leaflet-rotate-pane')
-          if (clonedRotatePane) clonedRotatePane.style.transform = 'none'
+          if (!clonedRotatePane) return
+          let rotationMatrix = null
+          try {
+            rotationMatrix = new DOMMatrixReadOnly(clonedRotatePane.style.transform)
+          } catch (e) {
+            return
+          }
+          if (!rotationMatrix || rotationMatrix.isIdentity) return
+          const angle = Math.atan2(rotationMatrix.b, rotationMatrix.a)
+          clonedRotatePane.style.transform = 'none'
+          if (rotatedTargetInfo.length === 0) return
+          const clonedTargets = [...clonedRotatePane.querySelectorAll('.leaflet-tile, .leaflet-marker-icon, .leaflet-tooltip')]
+          clonedTargets.forEach((el, i) => {
+            const info = rotatedTargetInfo[i]
+            if (!info) return
+            const ax = info.left + info.marginLeft + info.tx
+            const ay = info.top + info.marginTop + info.ty
+            const rotatedAnchor = new DOMPoint(ax, ay).matrixTransform(rotationMatrix)
+            const rotatedOrigin = new DOMPoint(
+              info.originX * rotationMatrix.a + info.originY * rotationMatrix.c,
+              info.originX * rotationMatrix.b + info.originY * rotationMatrix.d
+            )
+            const dx = rotatedAnchor.x - ax + rotatedOrigin.x - info.originX
+            const dy = rotatedAnchor.y - ay + rotatedOrigin.y - info.originY
+            el.style.transform = `translate(${dx}px, ${dy}px) rotate(${angle}rad)`
+          })
         }
       }
 
