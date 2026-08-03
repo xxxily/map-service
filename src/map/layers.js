@@ -3,6 +3,11 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import '@maplibre/maplibre-gl-leaflet'
 import { writeMapViewToUrl } from './url-state.js'
 import { triggerMapScreenshot } from './screenshot.js'
+import {
+  DEFAULT_TILE_EDGE_OVERSCAN_PX,
+  drawTileWithEdgeOverscan,
+  getOverscannedTileSize,
+} from './tile-overscan.js'
 
 const DEFAULT_LAYER_NAME = '高德/卫星'
 const VECTOR_STYLE_KIND = 'vector-style'
@@ -57,8 +62,78 @@ L.GridLayer.prototype._getTiledPixelBounds = function (center) {
   return pixelBounds
 }
 
+const SeamlessTileLayer = L.TileLayer.extend({
+  createTile (coords, done) {
+    const tileSize = this.getTileSize()
+    const edge = DEFAULT_TILE_EDGE_OVERSCAN_PX
+    const overscannedSize = getOverscannedTileSize(tileSize, edge)
+    const canvas = document.createElement('canvas')
+    canvas.width = overscannedSize.canvasWidth
+    canvas.height = overscannedSize.canvasHeight
+    canvas.setAttribute('aria-hidden', 'true')
+
+    const image = new Image()
+    canvas._sourceImage = image
+    if (this.options.crossOrigin || this.options.crossOrigin === '') {
+      image.crossOrigin = this.options.crossOrigin === true ? '' : this.options.crossOrigin
+    }
+    if (typeof this.options.referrerPolicy === 'string') {
+      image.referrerPolicy = this.options.referrerPolicy
+    }
+
+    const finish = (error) => {
+      if (canvas.dataset.tileCancelled === 'true') return
+      image.onload = null
+      image.onerror = null
+      canvas._sourceImage = null
+      canvas.dataset.tileReady = error ? 'error' : 'true'
+      canvas.dispatchEvent(new Event(error ? 'error' : 'load'))
+      done?.(error || null, canvas)
+    }
+    image.onload = () => {
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (!context) {
+        finish(new Error('地图瓦片画布初始化失败'))
+        return
+      }
+
+      drawTileWithEdgeOverscan(context, image, tileSize, edge)
+      finish()
+    }
+    image.onerror = () => finish(new Error('地图瓦片加载失败'))
+    image.alt = ''
+    image.src = this.getTileUrl(coords)
+    return canvas
+  },
+
+  _removeTile (key) {
+    const canvas = this._tiles[key]?.el
+    const sourceImage = canvas?._sourceImage
+    if (sourceImage) {
+      canvas.dataset.tileCancelled = 'true'
+      sourceImage.onload = null
+      sourceImage.onerror = null
+      sourceImage.src = L.Util.emptyImageUrl
+      canvas._sourceImage = null
+    }
+    return L.GridLayer.prototype._removeTile.call(this, key)
+  },
+
+  _initTile (tile) {
+    L.TileLayer.prototype._initTile.call(this, tile)
+
+    // Leaflet positions tiles on a 256px grid.  Keep the canvas origin one
+    // pixel outside that grid and use copied edge pixels as a guard band.
+    const tileSize = this.getTileSize()
+    const size = getOverscannedTileSize(tileSize)
+    tile.style.width = `${size.canvasWidth}px`
+    tile.style.height = `${size.canvasHeight}px`
+    tile.style.margin = `${-size.edge}px`
+  },
+})
+
 function createTileLayer (url, options) {
-  return L.tileLayer(url, {
+  return new SeamlessTileLayer(url, {
     minZoom: 3,
     keepBuffer: 10,
     preloadBuffer: 256, // 预先向四周多加载 1 圈瓦片

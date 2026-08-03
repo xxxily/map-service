@@ -107,3 +107,15 @@ test('同一地图的并发截图请求会复用正在执行的任务', () => {
   assert.match(source, /const currentTask = screenshotTasks\.get\(map\)/)
   assert.match(source, /if \(currentTask\) return currentTask/)
 })
+
+test('截图矩阵包含瓦片的实际 CSS margin，避免离屏瓦片与页面错开', () => {
+  assert.match(source, /const marginLeft = Number\.parseFloat\(styles\.marginLeft\)/)
+  assert.match(source, /const marginTop = Number\.parseFloat\(styles\.marginTop\)/)
+  assert.match(source, /translate\(offsetLeft \+ marginLeft, offsetTop \+ marginTop\)/)
+})
+
+test('截图可以绘制 canvas 瓦片，并等待图片瓦片而不阻塞 canvas', () => {
+  assert.match(source, /const isCanvas = image\?\.tagName === 'CANVAS'/)
+  assert.match(source, /isCanvas && image\.dataset\?\.tileReady/)
+  assert.match(source, /image\.offsetWidth \|\| image\.width \|\| image\.naturalWidth/)
+})

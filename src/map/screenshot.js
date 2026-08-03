@@ -31,7 +31,9 @@ function nextFrame () {
 }
 
 function waitForImage (image, timeoutMs = 5000) {
-  if (image.complete && image.naturalWidth > 0) return Promise.resolve()
+  const isCanvas = image?.tagName === 'CANVAS'
+  if (isCanvas && image.dataset?.tileReady) return Promise.resolve()
+  if (!isCanvas && image.complete && image.naturalWidth > 0) return Promise.resolve()
   return new Promise(resolve => {
     let settled = false
     const finish = () => {
@@ -78,17 +80,17 @@ export function getElementVisualMatrix (element, stopElement) {
     const styles = window.getComputedStyle(currentElement)
     // SVGGraphicsElement 没有 HTMLElement 的 offsetLeft/offsetTop；这里必须
     // 显式回退为 0，否则矩阵会被 NaN 污染，KML 矢量层会整层消失。
-    // HTMLElement.offsetLeft/offsetTop 已包含布局阶段的 margin，不能重复相加，
-    // 否则 Leaflet 瓦片默认的 -1px margin 会再次偏移并与 KML 产生细微错位。
     const offsetLeft = Number.isFinite(currentElement.offsetLeft) ? currentElement.offsetLeft : 0
     const offsetTop = Number.isFinite(currentElement.offsetTop) ? currentElement.offsetTop : 0
+    const marginLeft = Number.parseFloat(styles.marginLeft) || 0
+    const marginTop = Number.parseFloat(styles.marginTop) || 0
     const transform = getElementTransformMatrix(currentElement)
     const transformOriginParts = styles.transformOrigin.split(/\s+/)
     const originX = Number.parseFloat(transformOriginParts[0]) || 0
     const originY = Number.parseFloat(transformOriginParts[1]) || 0
 
     matrix = matrix
-      .translate(offsetLeft, offsetTop)
+      .translate(offsetLeft + marginLeft, offsetTop + marginTop)
       .translate(originX, originY)
       .multiply(transform)
       .translate(-originX, -originY)
@@ -110,12 +112,14 @@ function getElementVisualOpacity (element, stopElement) {
 }
 
 function drawTransformedImage (context, image, mapContainer) {
-  if (!image.complete || image.naturalWidth <= 0) return false
+  const isCanvas = image?.tagName === 'CANVAS'
+  if (isCanvas && image.dataset?.tileReady === 'error') return false
+  if (!isCanvas && (!image.complete || image.naturalWidth <= 0)) return false
   const opacity = getElementVisualOpacity(image, mapContainer)
   if (opacity <= 0) return false
 
-  const width = image.offsetWidth || image.naturalWidth
-  const height = image.offsetHeight || image.naturalHeight
+  const width = image.offsetWidth || image.width || image.naturalWidth
+  const height = image.offsetHeight || image.height || image.naturalHeight
   const matrix = getElementVisualMatrix(image, mapContainer)
   context.save()
   context.globalAlpha = opacity
@@ -129,7 +133,7 @@ function createRasterLayerCanvas (mapContainer, images) {
   const canvas = document.createElement('canvas')
   canvas.width = mapContainer.clientWidth
   canvas.height = mapContainer.clientHeight
-  const context = canvas.getContext('2d')
+  const context = canvas.getContext('2d', { willReadFrequently: true })
   let drawn = 0
   for (const image of images) {
     if (drawTransformedImage(context, image, mapContainer)) drawn++
@@ -166,7 +170,7 @@ async function createVectorLayerCanvas (mapContainer, svgs) {
   const canvas = document.createElement('canvas')
   canvas.width = mapContainer.clientWidth
   canvas.height = mapContainer.clientHeight
-  const context = canvas.getContext('2d')
+  const context = canvas.getContext('2d', { willReadFrequently: true })
   let drawn = 0
 
   svgs.forEach((svg, index) => {
