@@ -218,10 +218,12 @@ function collectTagReferences (description) {
     } else if (tagName === 'source') {
       const parentType = mediaStack.at(-1)?.type || ''
       add(attributes.src || getFirstSrcsetUrl(attributes.srcset), parentType || typeFromMime(attributes.type), tagName, attributes, match.index)
-    } else if (tagName === 'iframe' || tagName === 'embed') {
+    } else if (tagName === 'iframe') {
       add(attributes.src, 'iframe', tagName, attributes, match.index)
+    } else if (tagName === 'embed') {
+      add(attributes.src, typeFromMime(attributes.type), tagName, attributes, match.index)
     } else if (tagName === 'object') {
-      add(attributes.data, 'iframe', tagName, attributes, match.index)
+      add(attributes.data, typeFromMime(attributes.type), tagName, attributes, match.index)
     } else if (tagName === 'a') {
       add(attributes.href, '', tagName, attributes, match.index)
     }
@@ -313,6 +315,7 @@ function createContentItem (parsed, index, options = {}) {
     displayUrl: maskedUrl,
     thumbnailUrl: type === 'image' ? renderUrl : '',
     sourceType: 'description-link',
+    autoplay: type === 'video' && ['embed', 'object'].includes(String(options.tagName || '').toLowerCase()),
     embedPolicy: type === 'iframe'
       ? {
           sandbox: 'allow-scripts allow-forms allow-popups',
@@ -341,6 +344,7 @@ export function classifyContentUrl (value, options = {}) {
 
 export function buildFeatureContentView (feature, options = {}) {
   const { references, truncated } = extractContentReferences(feature?.description || '', options)
+  const styleType = inferKmlStyleContentType(feature?.styleUrl)
   const rejected = []
   const groups = CONTENT_GROUP_ORDER.map(type => ({
     type,
@@ -350,11 +354,15 @@ export function buildFeatureContentView (feature, options = {}) {
   const groupMap = new Map(groups.map(group => [group.type, group]))
 
   references.forEach((reference, index) => {
+    const typeHint = ['embed', 'object'].includes(reference.tagName) && !reference.typeHint && styleType === 'video'
+      ? 'video'
+      : reference.typeHint
     const classified = classifyContentUrl(reference.url.toString(), {
       ...options,
       index,
-      typeHint: reference.typeHint,
+      typeHint,
       title: reference.title,
+      tagName: reference.tagName,
     })
     if (!classified.accepted) {
       rejected.push({

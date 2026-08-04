@@ -52,11 +52,21 @@ test('KML gallery flattens media across points and keeps the selected point inde
 test('KML popup renders a first-click media preview and keeps details as a separate action', () => {
   const feature = createFeature('feature-a', '入口', '<img src="https://cdn.example.com/a.jpg" alt="入口照片"><video src="https://cdn.example.com/a.mp4"></video>')
   const html = renderKmlFeaturePopupContent({ id: 'kml-1', name: '徒步图层' }, feature, false)
+  const unnamedImageHtml = renderKmlFeaturePopupContent({ id: 'kml-1', name: '徒步图层' }, createFeature('unnamed', '', '<img src="https://cdn.example.com/unnamed.jpg">'), false)
+  const unnamedVideoHtml = renderKmlFeaturePopupContent({ id: 'kml-1', name: '徒步图层' }, createFeature('unnamed-video', '', '<embed type="video/mp4" src="https://cdn.example.com/unnamed.mp4">'), false)
 
   assert.match(html, /kml-popup-media/)
   assert.match(html, /data-kml-popup-media/)
+  assert.match(html, /class="kml-popup-title">入口<\/div>/)
   assert.match(html, /查看详情/)
-  assert.match(html, /可浏览整个 KML/)
+  assert.doesNotMatch(html, /可浏览整个 KML/)
+  assert.doesNotMatch(unnamedImageHtml, /kml-popup-title/)
+  assert.doesNotMatch(unnamedImageHtml, /未命名点位/)
+  assert.doesNotMatch(unnamedVideoHtml, /未命名点位/)
+  assert.match(unnamedVideoHtml, /<small>点击查看<\/small>/)
+  assert.doesNotMatch(renderKmlFeaturePopupContent({ id: 'kml-1', name: '徒步图层' }, createFeature('legacy-unnamed', '未命名要素 8', '<img src="https://cdn.example.com/legacy.jpg">'), false), /kml-popup-title/)
+  assert.doesNotMatch(renderKmlFeaturePopupContent({ id: 'kml-1', name: '徒步图层' }, createFeature('desc-only', '', '<img src="https://cdn.example.com/desc.jpg">'), false), /此点位包含可预览媒体/)
+  assert.doesNotMatch(html, /可浏览整个 KML/)
   assert.doesNotMatch(html, /<video[^>]*>/)
   assert.doesNotMatch(html, /<iframe[^>]*>/)
 
@@ -80,15 +90,20 @@ test('popup media reserves the last cell for an accurate remaining count', () =>
 test('archived KML fixtures cover small and large media galleries', async () => {
   const manager = new SharedKmlManager({ store: new MockStore() })
   const fixtures = [
-    ['tests/fixtures/kml/kmltest1.kml', 11, false],
-    ['tests/fixtures/kml/kmltest2.kml', 143, true],
+    ['tests/fixtures/kml/kmltest1.kml', { image: 11 }, false],
+    ['tests/fixtures/kml/kmltest2.kml', { image: 143, video: 7 }, true],
   ]
 
-  for (const [file, expectedMediaCount, large] of fixtures) {
+  for (const [file, expectedCounts, large] of fixtures) {
     const imported = await manager.import(readFileSync(file), file)
     const gallery = buildKmlMediaGallery(imported)
+    const counts = gallery.reduce((result, item) => {
+      result[item.type] = (result[item.type] || 0) + 1
+      return result
+    }, {})
+    assert.deepEqual(counts, expectedCounts, file)
+    const expectedMediaCount = Object.values(expectedCounts).reduce((total, count) => total + count, 0)
     assert.equal(gallery.length, expectedMediaCount, file)
-    assert.ok(gallery.every(item => item.type === 'image'), file)
     assert.equal(gallery.at(0).kmlName, imported.name)
     assert.equal(gallery.at(-1).galleryIndex, expectedMediaCount - 1)
     if (large) assert.ok(imported.features.length > 100)
@@ -115,4 +130,5 @@ test('2D popup binds media actions through the central popupopen lifecycle', () 
   const source = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
   assert.match(source, /map\.on\('popupopen',[\s\S]*bindKmlFeaturePopupMediaActions\(container, kmlFile, feature\)/)
   assert.doesNotMatch(source, /layer\.on\('popupopen',[\s\S]*bindKmlFeaturePopupMediaActions/)
+  assert.match(source, /window\.activateKmlFeatureForMedia/)
 })

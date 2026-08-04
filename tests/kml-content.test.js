@@ -107,6 +107,43 @@ test('HTML media tags classify extensionless sources and support audio', () => {
   assert.equal(getFeatureDescriptionText(description), '现场记录')
 })
 
+test('embed video uses the KML video style hint instead of a page iframe', () => {
+  const view = buildFeatureContentView({
+    styleUrl: '#MarkerStyleVideo',
+    description: '<embed src="https://cdn.example.com/movie?id=embed" type="video/mp4">',
+  })
+  assert.equal(view.contentSummary.videoCount, 1)
+  assert.equal(view.contentSummary.iframeCount, 0)
+  assert.equal(view.groups.find(group => group.type === 'video').items[0].autoplay, true)
+})
+
+test('embed video without a MIME type inherits a video style hint', () => {
+  const view = buildFeatureContentView({
+    styleUrl: '#MarkerStyleVideo',
+    description: '<embed src="https://cdn.example.com/movie?id=embed">',
+  })
+  assert.equal(view.groups.find(group => group.type === 'video').items.length, 1)
+})
+
+test('embed and object video URLs use their media extension when no MIME is present', () => {
+  const view = buildFeatureContentView({
+    description: '<embed src="https://cdn.example.com/movie.mp4"><object data="https://cdn.example.com/clip.webm"></object>',
+  })
+  assert.equal(view.contentSummary.videoCount, 2)
+  assert.equal(view.contentSummary.iframeCount, 0)
+  assert.equal(view.groups.find(group => group.type === 'video').items.every(item => item.autoplay), true)
+})
+
+test('ordinary video tags remain manual while embed videos opt into autoplay', () => {
+  const view = buildFeatureContentView({
+    description: '<video src="https://cdn.example.com/manual.mp4"></video><embed src="https://cdn.example.com/embed.mp4" type="video/mp4">',
+  })
+  const videos = view.groups.find(group => group.type === 'video').items
+  assert.equal(videos.length, 2)
+  assert.equal(videos[0].autoplay, false)
+  assert.equal(videos[1].autoplay, true)
+})
+
 test('HTML media tags retain URL security boundaries', () => {
   const description = [
     '<img src="http://cdn.example.com/insecure">',

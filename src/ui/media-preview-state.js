@@ -3,6 +3,12 @@ export const MEDIA_PREVIEW_MAX_SCALE = 6
 
 const PREVIEWABLE_TYPES = new Set(['image', 'video', 'audio', 'iframe'])
 
+export function getMediaPreviewPointKey (item) {
+  const kmlId = String(item?.kmlId || '')
+  const featureId = String(item?.featureId || '')
+  return kmlId && featureId ? `${kmlId}:${featureId}` : ''
+}
+
 export function getWrappedMediaIndex (index, total) {
   const count = Math.max(0, Number.parseInt(total, 10) || 0)
   if (!count) return 0

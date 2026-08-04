@@ -26,6 +26,7 @@ let hlsInstance = null
 let isMinimized = false
 let activeCollectionTitle = ''
 let trackObserver = null
+let activeItemChangeHandler = null
 
 function prefersReducedMotion () {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
@@ -263,6 +264,7 @@ function renderVideo (item, generation) {
   const video = document.createElement('video')
   video.className = 'media-preview-video'
   video.controls = true
+  video.autoplay = Boolean(item.autoplay)
   video.playsInline = true
   video.preload = 'metadata'
   video.referrerPolicy = 'no-referrer'
@@ -274,6 +276,21 @@ function renderVideo (item, generation) {
     video.src = sourceUrl
   }
   content.appendChild(video)
+  if (item.autoplay) {
+    const playVideo = () => {
+      if (generation !== renderGeneration || !video.isConnected) return
+      const playAttempt = video.play()
+      if (playAttempt?.catch) {
+        playAttempt.catch(() => {
+          if (generation !== renderGeneration || !video.isConnected) return
+          video.muted = true
+          video.play().catch(() => {})
+        })
+      }
+    }
+    playVideo()
+    video.addEventListener('loadedmetadata', playVideo, { once: true })
+  }
 }
 
 function renderAudio (item, generation) {
@@ -405,7 +422,7 @@ function renderActiveItem () {
   setText('[data-media-preview-title]', title)
   setText('[data-media-preview-position]', activeItems.length > 1 ? `${activeIndex + 1} / ${activeItems.length}` : '单项')
   setText('[data-media-preview-caption]', title)
-  setText('[data-media-preview-url]', [item.featureName, getDisplayUrl(item)].filter(Boolean).join(' · '))
+  setText('[data-media-preview-url]', getDisplayUrl(item))
   setText('[data-media-preview-restore-title]', title)
   setText('[data-media-preview-restore-position]', `${activeIndex + 1} / ${activeItems.length}`)
   if (source) {
@@ -427,6 +444,7 @@ function renderActiveItem () {
     iframe: renderIframe,
   }[item.type]
   renderer?.(item, generation)
+  activeItemChangeHandler?.(item)
   if (!isMinimized) {
     getPreviewElement('.media-preview-stage')?.focus({ preventScroll: true })
   }
@@ -573,12 +591,13 @@ export function closeMediaPreview () {
   activeItems = []
   activeIndex = 0
   activeCollectionTitle = ''
+  activeItemChangeHandler = null
   isMinimized = false
   if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
   previousFocus = null
 }
 
-export function openMediaPreview ({ items, index = 0, type = '', trigger = null, collectionTitle = '' } = {}) {
+export function openMediaPreview ({ items, index = 0, type = '', trigger = null, collectionTitle = '', onActiveItemChange = null } = {}) {
   const normalizedItems = normalizeMediaPreviewItems(items, type)
   if (!normalizedItems.length) return false
   const root = ensurePreviewRoot()
@@ -586,6 +605,7 @@ export function openMediaPreview ({ items, index = 0, type = '', trigger = null,
   activeItems = normalizedItems
   activeIndex = getWrappedMediaIndex(index, activeItems.length)
   activeCollectionTitle = String(collectionTitle || normalizedItems[activeIndex]?.kmlName || '').trim()
+  activeItemChangeHandler = typeof onActiveItemChange === 'function' ? onActiveItemChange : null
   isMinimized = false
   root.classList.remove('is-minimized')
   getPreviewElement('.media-preview-dialog')?.setAttribute('aria-modal', 'true')

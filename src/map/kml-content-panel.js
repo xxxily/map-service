@@ -66,21 +66,33 @@ function getMediaTypeIcon (type) {
   }[type] || '◫'
 }
 
+function getPopupFeatureName (feature) {
+  const name = String(feature?.name || '').trim()
+  return /^未命名(?:点位|要素(?:\s*\d+)?)$/.test(name) ? '' : name
+}
+
+function getPopupMediaTitle (item) {
+  const title = getPopupFeatureName({ name: item?.title })
+  if (title) return title
+  return getPopupFeatureName({ name: item?.featureName })
+}
+
 function renderPopupMediaItem (item) {
   const label = getMediaTypeLabel(item.type)
+  const mediaTitle = getPopupMediaTitle(item)
   if (item.type === 'image') {
     return `
-      <button type="button" class="kml-popup-media-item kml-popup-media-image" data-kml-popup-media data-media-id="${escapeHtml(item.id)}" data-media-url="${escapeHtml(item.url)}" data-media-type="image" aria-label="预览${escapeHtml(label)}：${escapeHtml(item.title || label)}">
-        <img src="${escapeHtml(item.thumbnailUrl || item.renderUrl || item.url)}" alt="${escapeHtml(item.title || '点位图片')}" loading="lazy" referrerpolicy="no-referrer">
+      <button type="button" class="kml-popup-media-item kml-popup-media-image" data-kml-popup-media data-media-id="${escapeHtml(item.id)}" data-media-url="${escapeHtml(item.url)}" data-media-type="image" aria-label="预览${escapeHtml(label)}${mediaTitle ? `：${escapeHtml(mediaTitle)}` : ''}">
+        <img src="${escapeHtml(item.thumbnailUrl || item.renderUrl || item.url)}" alt="${escapeHtml(mediaTitle || '点位图片')}" loading="lazy" referrerpolicy="no-referrer">
         <span class="kml-popup-media-badge">${escapeHtml(label)}</span>
         <span class="kml-popup-media-error">图片加载失败</span>
       </button>
     `
   }
   return `
-    <button type="button" class="kml-popup-media-item kml-popup-media-type kml-popup-media-${escapeHtml(item.type)}" data-kml-popup-media data-media-id="${escapeHtml(item.id)}" data-media-url="${escapeHtml(item.url)}" data-media-type="${escapeHtml(item.type)}" aria-label="预览${escapeHtml(label)}：${escapeHtml(item.title || item.featureName || label)}">
+    <button type="button" class="kml-popup-media-item kml-popup-media-type kml-popup-media-${escapeHtml(item.type)}" data-kml-popup-media data-media-id="${escapeHtml(item.id)}" data-media-url="${escapeHtml(item.url)}" data-media-type="${escapeHtml(item.type)}" aria-label="预览${escapeHtml(label)}${mediaTitle ? `：${escapeHtml(mediaTitle)}` : ''}">
       <span class="kml-popup-media-icon" aria-hidden="true">${escapeHtml(getMediaTypeIcon(item.type))}</span>
-      <span class="kml-popup-media-copy"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(item.title || item.featureName || '点击查看')}</small></span>
+      <span class="kml-popup-media-copy"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(mediaTitle || '点击查看')}</small></span>
     </button>
   `
 }
@@ -105,10 +117,7 @@ export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
   const previewHtml = preview.items.length
     ? `
       <section class="kml-popup-media" aria-label="点位媒体预览">
-        <div class="kml-popup-media-heading">
-          <span>媒体速览</span>
-          <small>${escapeHtml(preview.total)} 项 · 可浏览整个 KML</small>
-        </div>
+        <div class="kml-popup-media-heading"><span>媒体速览</span><small>${escapeHtml(preview.total)} 项</small></div>
         <div class="kml-popup-media-grid">
           ${preview.items.map(renderPopupMediaItem).join('')}
           ${preview.remaining && preview.overflowItem
@@ -119,11 +128,15 @@ export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
     `
     : ''
 
+  const featureName = getPopupFeatureName(feature)
+  const popupTitle = featureName ? `<div class="kml-popup-title">${escapeHtml(featureName)}</div>` : ''
+  const popupDescription = description ? `<div class="kml-popup-desc">${escapeHtml(description)}</div>` : ''
+
   return `
     <div class="kml-popup-content">
       <div class="kml-popup-eyebrow">${escapeHtml(kmlFile?.name || 'KML 点位')}</div>
-      <div class="kml-popup-title">${escapeHtml(feature?.name || '未命名点位')}</div>
-      <div class="kml-popup-desc">${escapeHtml(description || (contentSummary ? '此点位包含可预览媒体' : '暂无描述'))}</div>
+      ${popupTitle}
+      ${popupDescription}
       ${contentSummary ? `<div class="kml-popup-content-summary">${escapeHtml(contentSummary)}</div>` : ''}
       ${previewHtml}
       ${actionsHtml}
@@ -157,6 +170,7 @@ function openKmlMediaFromSelection (kmlFile, feature, selection, trigger, view =
     }),
     trigger,
     collectionTitle: String(kmlFile?.name || '').trim() || '未命名 KML',
+    onActiveItemChange: item => window.activateKmlFeatureForMedia?.(item),
   })
 }
 

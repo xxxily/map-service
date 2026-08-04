@@ -84,6 +84,7 @@ let activeKmlIdForAdd = null
 let pickupToastElement = null
 let featurePopupElement = null
 let handler = null
+let mediaFeatureActivationTimer = null
 
 const renderedKmlEntities = new Map()
 const featureEntities = new Map()
@@ -650,6 +651,27 @@ function focusFeature (kmlId, featureId) {
       showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
     }).catch(() => {})
   }
+}
+
+function activateFeatureForMedia (item, options = {}) {
+  const kmlId = String(item?.kmlId || '')
+  const featureId = String(item?.featureId || '')
+  if (!kmlId || !featureId) return
+  const { kmlFile, feature } = getFeatureById(kmlId, featureId)
+  const rendered = featureEntities.get(featureId)
+  if (!viewerRef || !kmlFile || !feature || !rendered || !isKmlEnabled(kmlFile)) return
+  window.clearTimeout(mediaFeatureActivationTimer)
+  viewerRef.camera.cancelFlight?.()
+  const duration = options.closePreview ? 0 : 0.28
+  if (feature.type === 'Point') {
+    const point = getPointLatLng(kmlFile, feature)
+    flyToLngLat(viewerRef, point.lng, point.lat, { height: 1500, duration })
+  } else {
+    viewerRef.flyTo(rendered.entities, { duration }).catch(() => {})
+  }
+  mediaFeatureActivationTimer = window.setTimeout(() => {
+    showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
+  }, options.closePreview ? 0 : 300)
 }
 
 async function handleEditFeature (kmlId, featureId) {
@@ -1668,6 +1690,7 @@ function scheduleKmlViewportRerender3d () {
 
 export function initKmlSupport3d (viewer) {
   viewerRef = viewer
+  window.activateKmlFeatureForMedia = (item, options) => activateFeatureForMedia(item, options)
   window.getIsKmlPickupModeActive = () => isAddingPoint
   initCustomControlsListeners()
 

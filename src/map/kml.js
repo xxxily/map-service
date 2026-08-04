@@ -38,6 +38,7 @@ const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
 let kmlList = []
 let kmlViewportRerenderTimer = null // KML 图层视口变化重渲染的 debounce timer
+let mediaFeatureActivationTimer = null
 let lastRenderedViewportBounds = null // 上次渲染时使用的视口边界（用于缓存跳过）
 let lastRenderedZoom = null // 上次渲染时的缩放级别
 
@@ -888,6 +889,26 @@ function focusFeature (map, kmlId, featureId) {
   }, 850)
 }
 
+function activateFeatureForMedia (map, item, options = {}) {
+  const kmlId = String(item?.kmlId || '')
+  const featureId = String(item?.featureId || '')
+  if (!kmlId || !featureId) return
+  const { kmlFile, feature } = getFeatureById(kmlId, featureId)
+  const layer = featureLayers.get(featureId)
+  if (!kmlFile || !feature || !layer || !isKmlEnabled(kmlFile)) return
+  window.clearTimeout(mediaFeatureActivationTimer)
+  map.stop?.()
+  if (feature.type === 'Point') {
+    const point = getMapPoint(kmlFile, feature)
+    if (options.closePreview) map.setView(point, map.getZoom(), { animate: false })
+    else map.panTo(point, { animate: true, duration: 0.28 })
+  } else if (typeof layer.getBounds === 'function') {
+    map.fitBounds(layer.getBounds(), { maxZoom: 15, animate: !options.closePreview, duration: 0.28 })
+  }
+  const delay = options.closePreview ? 0 : 300
+  mediaFeatureActivationTimer = window.setTimeout(() => layer.openPopup(), delay)
+}
+
 async function handleEditFeature (map, kmlId, featureId) {
   const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
   if (!kmlFile) return
@@ -1235,6 +1256,7 @@ function scheduleKmlViewportRerender (map) {
 
 export function initKmlSupport (map) {
   window.getActiveKmlMarkers = getActiveKmlMarkers
+  window.activateKmlFeatureForMedia = (item, options) => activateFeatureForMedia(map, item, options)
   loadFromStorage()
   initCustomControlsListeners()
 

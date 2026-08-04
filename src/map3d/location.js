@@ -338,7 +338,7 @@ export function flyToLngLat (viewer, lng, lat, options = {}) {
       pitch: CesiumMath.toRadians(Number(options.pitch || -90)),
       roll: 0,
     },
-    duration: Number(options.duration || 1.1),
+    duration: Number(options.duration ?? 1.1),
   })
 }
 

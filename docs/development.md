@@ -71,9 +71,16 @@ KML 图片、视频、音频和白名单 iframe 的预览统一由 `src/ui/media
 
 当前点位交互由 `src/map/kml-media-gallery.js` 统一聚合：popup 首击展示当前点位缩略图/媒体卡片，
 点击后按当前 KML 的全部点位聚合可预览媒体，并把点位名称、KML 名称和稳定内容 ID 保存在集合元数据中。
+预览器通过 `onActiveItemChange` 将活动媒体的 `kmlId` / `featureId` 回传给当前地图实现；2D 使用 Leaflet
+打开对应 layer popup，3D 使用 Cesium 实体定位并打开自定义 popup。切换时必须取消上一次短飞行动画和延迟任务，
+避免快速连续切换后弹出旧点位。预览器不提供额外点位跳转按钮；关闭预览后由最后一次活动媒体已经触发的激活状态保留对应 popup。
 `media-preview.js` 的媒体轨道只懒加载缩略图；全屏预览可切换为浮动小窗，小窗解除页面滚动锁但仍保留
 当前媒体 DOM，因此视频播放进度和 iframe 页面状态不会因收缩/展开而重置。`.m3u8` 资源仅在真正打开
 视频时动态加载 `hls.js`，普通图片和链接浏览不引入该执行路径。
+旧 KML 的 `embed` / `object` 视频优先读取 `type="video/*"`，其次使用 URL 扩展名；无扩展名资源只在
+`styleUrl` 明确包含 `video` 时提升为视频，不能把普通 embed 页面无条件当视频。桌面头尾控制层默认减弱到
+0.3 透明度并支持 hover/focus 恢复；移动端顶部仅保留浮动关闭/小窗按钮，底部信息层隐藏。
+`embed` / `object` 识别为视频的媒体项带有 `autoplay` 元数据，进入统一预览器后立即尝试播放；离开、切换或关闭时由统一清理链路暂停并释放媒体。若浏览器阻止带声音的自动播放，则降级为静音播放。
 个人 KML 如需允许 iframe，构建时使用 `VITE_MAP_SERVICE_KML_IFRAME_ALLOWLIST`，规则格式与服务端
 `MAP_SERVICE_KML_IFRAME_ALLOWLIST` 保持一致；生产部署应同时配置两者，未配置时个人 KML 页面仍降级为普通链接。
 
@@ -90,6 +97,10 @@ KML 图片、视频、音频和白名单 iframe 的预览统一由 `src/ui/media
 - 图片在桌面、移动竖屏和移动横屏中以 `1x` 完整居中，标题和控件没有溢出或遮挡。
 - 按钮、滑杆、滚轮、双指、拖拽、双击、复位和多图循环切换正常，缩放保持在 `1x` 到 `6x`。
 - 视频默认不自动播放并保持 `16:9`，音频控件不溢出；切换或关闭后音视频停止且 DOM 资源清空。
+- `kmltest2.kml` 的 7 个 `MarkerStyleVideo + embed` 资源均进入视频组，并能创建原生 video 控件。
+- `embed` / `object` 视频进入预览后自动播放；普通 `<video>` 资源仍保持手动播放。
+- 切换图片/视频后地图激活正确点位 popup；关闭预览后保留最后一项媒体对应的 popup。
+- 桌面头尾区域默认 opacity 为 0.3、hover/focus 为 1；390px 移动视口不显示完整 header/footer。
 - iframe 延续内容项 sandbox/referrer policy，加载失败时仍可通过原始页面入口兜底。
 - `野兰谷.kml` 的兼容缩略图和预览图均从 `/api/v1/kml/media` 成功加载，原始文件链接不被替换。
 - `Escape`、关闭按钮和桌面遮罩均可退出，页面滚动锁和焦点在退出后恢复，控制台无脚本错误。
