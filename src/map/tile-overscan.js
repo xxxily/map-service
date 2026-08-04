@@ -1,4 +1,6 @@
 export const DEFAULT_TILE_EDGE_OVERSCAN_PX = 1
+export const DEFAULT_TILE_KEEP_BUFFER = 2
+export const DEFAULT_TILE_PRELOAD_BUFFER_PX = 256
 
 function positiveInteger (value, fallback) {
   const number = Number(value)

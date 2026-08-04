@@ -5,6 +5,8 @@ import { writeMapViewToUrl } from './url-state.js'
 import { triggerMapScreenshot } from './screenshot.js'
 import {
   DEFAULT_TILE_EDGE_OVERSCAN_PX,
+  DEFAULT_TILE_KEEP_BUFFER,
+  DEFAULT_TILE_PRELOAD_BUFFER_PX,
   drawTileWithEdgeOverscan,
   getOverscannedTileSize,
 } from './tile-overscan.js'
@@ -91,7 +93,9 @@ const SeamlessTileLayer = L.TileLayer.extend({
       done?.(error || null, canvas)
     }
     image.onload = () => {
-      const context = canvas.getContext('2d', { willReadFrequently: true })
+      // 这里只向 canvas 写入一次且不会回读像素。不要启用 willReadFrequently，
+      // 否则 Chromium 可能优先使用软件画布，缩放时上传大量瓦片纹理会明显卡顿。
+      const context = canvas.getContext('2d')
       if (!context) {
         finish(new Error('地图瓦片画布初始化失败'))
         return
@@ -119,6 +123,29 @@ const SeamlessTileLayer = L.TileLayer.extend({
     return L.GridLayer.prototype._removeTile.call(this, key)
   },
 
+  _updateOpacity () {
+    if (!this._map) return
+
+    L.DomUtil.setOpacity(this._container, this.options.opacity)
+    for (const tile of Object.values(this._tiles || {})) {
+      if (!tile.current || !tile.loaded) continue
+
+      // Leaflet 默认会在 200ms 内逐瓦片从 0 淡入。混合地图的两个栅格
+      // 图层加载时序不同，缩放后这种亮度差会形成深色网格。瓦片本身已有
+      // 真实像素保护带，可以直接显示，但仍保留 _noPrune 机制，使旧层级在
+      // 缩放动画结束前继续兜底，避免快速跨级缩放时地图外围露出背景。
+      L.DomUtil.setOpacity(tile.el, 1)
+      if (!tile.active) {
+        this._onOpaqueTile(tile)
+        tile.active = true
+      }
+    }
+
+    // 不在逐瓦片加载期间主动裁剪。Leaflet 的 `_tileReady` 会在当前层级
+    // 的可视瓦片全部完成后再延迟调用 `_pruneTiles`；若这里按首张瓦片
+    // 立即裁剪，跨级缩放时旧层级会在新层尚未覆盖外围前被移除，露出地图背景。
+  },
+
   _initTile (tile) {
     L.TileLayer.prototype._initTile.call(this, tile)
 
@@ -135,8 +162,10 @@ const SeamlessTileLayer = L.TileLayer.extend({
 function createTileLayer (url, options) {
   return new SeamlessTileLayer(url, {
     minZoom: 3,
-    keepBuffer: 10,
-    preloadBuffer: 256, // 预先向四周多加载 1 圈瓦片
+    // canvas 瓦片比普通 img 更占 GPU/内存。保留邻近 2 圈并额外预载 1 圈
+    // 已足以覆盖快速平移，同时避免 keepBuffer: 10 长时间累积上百张瓦片。
+    keepBuffer: DEFAULT_TILE_KEEP_BUFFER,
+    preloadBuffer: DEFAULT_TILE_PRELOAD_BUFFER_PX,
     ...options,
   })
 }
