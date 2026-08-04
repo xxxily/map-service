@@ -134,13 +134,13 @@ test('embed and object video URLs use their media extension when no MIME is pres
   assert.equal(view.groups.find(group => group.type === 'video').items.every(item => item.autoplay), true)
 })
 
-test('ordinary video tags remain manual while embed videos opt into autoplay', () => {
+test('ordinary and embedded video tags all opt into autoplay', () => {
   const view = buildFeatureContentView({
     description: '<video src="https://cdn.example.com/manual.mp4"></video><embed src="https://cdn.example.com/embed.mp4" type="video/mp4">',
   })
   const videos = view.groups.find(group => group.type === 'video').items
   assert.equal(videos.length, 2)
-  assert.equal(videos[0].autoplay, false)
+  assert.equal(videos[0].autoplay, true)
   assert.equal(videos[1].autoplay, true)
 })
 

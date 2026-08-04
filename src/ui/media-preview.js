@@ -264,7 +264,7 @@ function renderVideo (item, generation) {
   const video = document.createElement('video')
   video.className = 'media-preview-video'
   video.controls = true
-  video.autoplay = Boolean(item.autoplay)
+  video.autoplay = true
   video.playsInline = true
   video.preload = 'metadata'
   video.referrerPolicy = 'no-referrer'
@@ -276,21 +276,20 @@ function renderVideo (item, generation) {
     video.src = sourceUrl
   }
   content.appendChild(video)
-  if (item.autoplay) {
-    const playVideo = () => {
-      if (generation !== renderGeneration || !video.isConnected) return
-      const playAttempt = video.play()
-      if (playAttempt?.catch) {
-        playAttempt.catch(() => {
-          if (generation !== renderGeneration || !video.isConnected) return
-          video.muted = true
-          video.play().catch(() => {})
-        })
-      }
+  const playVideo = () => {
+    if (generation !== renderGeneration || !video.isConnected) return
+    video.muted = false
+    const playAttempt = video.play()
+    if (playAttempt?.catch) {
+      playAttempt.catch(() => {
+        if (generation !== renderGeneration || !video.isConnected) return
+        video.muted = true
+        video.play().catch(() => {})
+      })
     }
-    playVideo()
-    video.addEventListener('loadedmetadata', playVideo, { once: true })
   }
+  playVideo()
+  video.addEventListener('loadedmetadata', playVideo, { once: true })
 }
 
 function renderAudio (item, generation) {

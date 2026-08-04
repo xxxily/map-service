@@ -315,7 +315,7 @@ function createContentItem (parsed, index, options = {}) {
     displayUrl: maskedUrl,
     thumbnailUrl: type === 'image' ? renderUrl : '',
     sourceType: 'description-link',
-    autoplay: type === 'video' && ['embed', 'object'].includes(String(options.tagName || '').toLowerCase()),
+    autoplay: type === 'video',
     embedPolicy: type === 'iframe'
       ? {
           sandbox: 'allow-scripts allow-forms allow-popups',

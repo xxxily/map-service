@@ -1290,7 +1290,7 @@ GET /api/v1/kml/media?url=https%3A%2F%2Fdown-files.2bulu.com%2Ff%2Fdn1%3FdownPar
 | `groups[].items[].url` | 已脱敏后的 HTTPS URL；敏感查询参数会替换为 `****` |
 | `groups[].items[].renderUrl` | 前端实际媒体加载地址；通常与 `url` 相同，固定旧图片地址会使用 `/api/v1/kml/media` |
 | `groups[].items[].embedPolicy` | iframe 内容的 sandbox 和 referrer policy；非 iframe 为 `null` |
-| `groups[].items[].autoplay` | 仅 `embed` / `object` 识别得到的视频为 `true`，进入统一预览器时自动播放 |
+| `groups[].items[].autoplay` | 视频类型固定为 `true`，进入统一预览器时优先带声音自动播放，浏览器阻止时静音重试 |
 | `contentSummary` | 点位内容数量摘要，包括 `imageCount`、`videoCount`、`audioCount`、`iframeCount`、`linkCount` 和 `hasRichContent` |
 | `sourceSummary.truncated` | 描述中 URL 超过解析上限时为 `true` |
 | `rejected` | 因协议、主机安全策略等被拒绝的 URL 摘要 |

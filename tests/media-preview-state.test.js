@@ -32,6 +32,7 @@ test('media preview only accepts supported HTTPS media items', () => {
 test('KML media thumbnails open the in-app preview instead of a blank browser page', () => {
   const panelSource = readFileSync(new URL('../src/map/kml-content-panel.js', import.meta.url), 'utf8')
   const previewSource = readFileSync(new URL('../src/ui/media-preview.js', import.meta.url), 'utf8')
+  const stylesSource = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
 
   assert.match(panelSource, /data-kml-media-preview/)
   assert.match(panelSource, /openMediaPreview/)
@@ -42,9 +43,10 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.match(previewSource, /data-media-preview-action="minimize"/)
   assert.match(previewSource, /data-media-preview-action="restore"/)
   assert.match(previewSource, /import\('hls\.js'\)/)
-  assert.match(previewSource, /video\.autoplay = Boolean\(item\.autoplay\)/)
+  assert.match(previewSource, /video\.autoplay = true/)
   assert.match(previewSource, /video\.muted = true/)
   assert.match(previewSource, /onActiveItemChange/)
   assert.match(previewSource, /activeItemChangeHandler\?\.\(item\)/)
   assert.doesNotMatch(previewSource, /media-preview-feature-jump|data-media-preview-feature|open-feature/)
+  assert.match(stylesSource, /\.media-preview-image\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*object-fit:\s*contain;/s)
 })
