@@ -27,6 +27,14 @@ test('无缝瓦片立即变为不透明，同时保留缩放期间的旧层级�
   assert.doesNotMatch(mainSource, /zoomAnimation:\s*false/)
 })
 
+test('canvas 瓦片缩放时只中止未完成请求并保留已绘制旧层级', () => {
+  assert.match(layersSource, /_abortLoading\s*\(\)/)
+  assert.match(layersSource, /const sourceImage = canvas\?\._sourceImage/)
+  assert.match(layersSource, /if \(!sourceImage\) continue/)
+  assert.match(layersSource, /this\.fire\('tileabort'/)
+  assert.doesNotMatch(layersSource, /if \(!tile\.complete\)/)
+})
+
 test('只写入的瓦片 canvas 不请求高频像素回读优化', () => {
   assert.match(layersSource, /canvas\.getContext\('2d'\)/)
   assert.doesNotMatch(layersSource, /canvas\.getContext\('2d',\s*\{\s*willReadFrequently:\s*true\s*\}\)/)

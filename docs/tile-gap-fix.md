@@ -86,6 +86,7 @@ Leaflet 作为轻量级地图引擎，为了在平移和层级缩放（Zoom Tran
 
 当前优化保持 258×258 canvas、1px 四边/四角像素复制和 `margin: -1px` 完全不变，只调整过渡与资源调度：
 
+- `SeamlessTileLayer` 覆盖 Leaflet 面向 `<img>` 的 `_abortLoading`：旧层级中仍在下载的源图片会被取消，但已经绘制完成、`_sourceImage` 已释放的 canvas 必须继续保留。否则 Leaflet 会把 canvas 缺少 `complete` 属性误判成未完成图片，在缩放开始时删除全部旧层级瓦片并暴露 `#ddd` 地图底色。
 - `SeamlessTileLayer` 覆盖 Leaflet 的瓦片透明度更新：已加载瓦片直接设为不透明，不再执行 200ms 插值；不在首张瓦片到达时主动裁剪，交由 Leaflet 在当前层级可视瓦片完成后按原有时序执行 prune，缩放动画期间保留旧层级作为完整画面兜底。
 - 不直接关闭全局 `fadeAnimation`，也不禁用整数层级更新。前者会让无淡入分支过早裁剪父瓦片，后者会在快速缩小时让旧层覆盖范围随 transform 收缩，二者都可能使地图外围短暂露出背景。
 - `keepBuffer` 从 10 收紧为 2，继续保留 `preloadBuffer: 256` 的一圈预加载，在平移容错和资源占用之间取得平衡。

@@ -110,6 +110,29 @@ const SeamlessTileLayer = L.TileLayer.extend({
     return canvas
   },
 
+  _abortLoading () {
+    for (const [key, tile] of Object.entries(this._tiles || {})) {
+      if (tile.coords.z === this._tileZoom) continue
+
+      const canvas = tile.el
+      const sourceImage = canvas?._sourceImage
+      // 已完成绘制的 canvas 没有 sourceImage，必须保留为缩放期间的旧层级兜底。
+      if (!sourceImage) continue
+
+      canvas.dataset.tileCancelled = 'true'
+      sourceImage.onload = null
+      sourceImage.onerror = null
+      sourceImage.src = L.Util.emptyImageUrl
+      canvas._sourceImage = null
+      L.DomUtil.remove(canvas)
+      delete this._tiles[key]
+      this.fire('tileabort', {
+        tile: canvas,
+        coords: tile.coords,
+      })
+    }
+  },
+
   _removeTile (key) {
     const canvas = this._tiles[key]?.el
     const sourceImage = canvas?._sourceImage
