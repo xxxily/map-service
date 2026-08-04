@@ -8,10 +8,10 @@ import {
 } from './media-preview-state.js'
 
 const TYPE_LABELS = {
-  image: '图片预览',
-  video: '视频预览',
-  audio: '音频预览',
-  iframe: '页面预览',
+  image: '图片',
+  video: '视频',
+  audio: '音频',
+  iframe: '页面',
 }
 
 let activeItems = []
@@ -22,6 +22,10 @@ let panzoomWheelTarget = null
 let panzoomWheelHandler = null
 let previewRoot = null
 let renderGeneration = 0
+let hlsInstance = null
+let isMinimized = false
+let activeCollectionTitle = ''
+let trackObserver = null
 
 function prefersReducedMotion () {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
@@ -44,6 +48,18 @@ function getMediaSourceUrl (item) {
   return String(item?.renderUrl || item?.url || '')
 }
 
+function getItemTypeIcon (type) {
+  return {
+    video: '▶',
+    audio: '♪',
+    iframe: '▣',
+  }[type] || '◫'
+}
+
+function isHlsUrl (url) {
+  return /\.m3u8(?:$|[?#])/i.test(String(url || ''))
+}
+
 function createPreviewRoot () {
   const root = document.createElement('div')
   root.id = 'app-media-preview'
@@ -54,22 +70,25 @@ function createPreviewRoot () {
     <section class="media-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="media-preview-title">
       <header class="media-preview-header">
         <div class="media-preview-heading">
+          <span class="media-preview-collection" data-media-preview-collection></span>
           <span class="media-preview-kind" data-media-preview-kind></span>
           <h2 id="media-preview-title" data-media-preview-title></h2>
           <span class="media-preview-position" data-media-preview-position aria-live="polite"></span>
         </div>
         <div class="media-preview-header-actions">
+          <button type="button" class="media-preview-icon-button media-preview-minimize" data-media-preview-action="minimize" aria-label="收缩为小窗" title="收缩为小窗">⌟</button>
           <a class="media-preview-source" data-media-preview-source target="_blank" rel="noopener noreferrer" title="打开原始文件">
             <span class="media-preview-source-label">原始文件</span><span aria-hidden="true">↗</span>
           </a>
           <button type="button" class="media-preview-icon-button media-preview-close" data-media-preview-action="close" aria-label="关闭预览" title="关闭预览">×</button>
         </div>
       </header>
-      <div class="media-preview-stage" data-media-preview-stage>
+      <div class="media-preview-stage" data-media-preview-stage tabindex="0" aria-label="媒体查看区域，使用方向键切换">
         <button type="button" class="media-preview-nav media-preview-nav-previous" data-media-preview-action="previous" aria-label="上一项" title="上一项">‹</button>
         <div class="media-preview-content" data-media-preview-content></div>
         <button type="button" class="media-preview-nav media-preview-nav-next" data-media-preview-action="next" aria-label="下一项" title="下一项">›</button>
       </div>
+      <nav class="media-preview-track" data-media-preview-track aria-label="KML 媒体浏览轨道"></nav>
       <footer class="media-preview-footer">
         <div class="media-preview-zoom-controls" data-media-preview-zoom-controls hidden>
           <button type="button" class="media-preview-icon-button" data-media-preview-action="zoom-out" aria-label="缩小" title="缩小">−</button>
@@ -83,6 +102,11 @@ function createPreviewRoot () {
           <span data-media-preview-url></span>
         </div>
       </footer>
+      <button type="button" class="media-preview-restore" data-media-preview-action="restore" aria-label="展开媒体预览" title="展开媒体预览">
+        <span class="media-preview-restore-icon" aria-hidden="true">▣</span>
+        <span class="media-preview-restore-copy"><strong data-media-preview-restore-title>媒体预览</strong><small data-media-preview-restore-position></small></span>
+        <span aria-hidden="true">↗</span>
+      </button>
     </section>
   `
   root.addEventListener('click', onRootClick)
@@ -117,6 +141,8 @@ function cleanupPanzoom () {
 
 function cleanupCurrentMedia () {
   cleanupPanzoom()
+  hlsInstance?.destroy()
+  hlsInstance = null
   const content = getPreviewElement('[data-media-preview-content]')
   content?.querySelectorAll('video, audio').forEach(media => {
     media.pause()
@@ -125,6 +151,11 @@ function cleanupCurrentMedia () {
   })
   content?.querySelectorAll('iframe').forEach(frame => frame.removeAttribute('src'))
   content?.replaceChildren()
+}
+
+function cleanupTrackObserver () {
+  trackObserver?.disconnect()
+  trackObserver = null
 }
 
 function renderLoadError (message, generation) {
@@ -203,6 +234,29 @@ function renderImage (item, generation) {
   content.appendChild(canvas)
 }
 
+async function attachHlsVideo (video, sourceUrl, generation) {
+  try {
+    const { default: Hls } = await import('hls.js')
+    if (generation !== renderGeneration || !video.isConnected) return
+    if (!Hls.isSupported()) {
+      video.src = sourceUrl
+      return
+    }
+    hlsInstance = new Hls({ enableWorker: true })
+    hlsInstance.on(Hls.Events.ERROR, (_event, data) => {
+      if (data?.fatal) {
+        hlsInstance?.destroy()
+        hlsInstance = null
+        renderLoadError('HLS 视频加载失败', generation)
+      }
+    })
+    hlsInstance.loadSource(sourceUrl)
+    hlsInstance.attachMedia(video)
+  } catch {
+    if (generation === renderGeneration && video.isConnected) video.src = sourceUrl
+  }
+}
+
 function renderVideo (item, generation) {
   const content = getPreviewElement('[data-media-preview-content]')
   if (!content) return
@@ -213,7 +267,12 @@ function renderVideo (item, generation) {
   video.preload = 'metadata'
   video.referrerPolicy = 'no-referrer'
   video.addEventListener('error', () => renderLoadError('视频加载失败', generation), { once: true })
-  video.src = getMediaSourceUrl(item)
+  const sourceUrl = getMediaSourceUrl(item)
+  if (isHlsUrl(sourceUrl) && !video.canPlayType('application/vnd.apple.mpegurl')) {
+    attachHlsVideo(video, sourceUrl, generation)
+  } else {
+    video.src = sourceUrl
+  }
   content.appendChild(video)
 }
 
@@ -249,6 +308,82 @@ function renderIframe (item) {
   content.appendChild(frame)
 }
 
+function renderMediaTrack () {
+  const track = getPreviewElement('[data-media-preview-track]')
+  if (!track) return
+  cleanupTrackObserver()
+  const signature = activeItems.map(item => item.galleryId || `${item.type}:${item.url}`).join('|')
+  const needsBuild = track.children.length !== activeItems.length || track.dataset.signature !== signature
+  if (needsBuild) {
+    track.replaceChildren()
+    track.dataset.signature = signature
+  }
+  activeItems.forEach((item, index) => {
+    if (!needsBuild) {
+      const existing = track.children[index]
+      if (existing) {
+        existing.classList.toggle('is-active', index === activeIndex)
+        existing.tabIndex = index === activeIndex ? 0 : -1
+        existing.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')
+        return
+      }
+    }
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'media-preview-track-item'
+    button.dataset.mediaPreviewAction = 'select'
+    button.dataset.mediaPreviewIndex = String(index)
+    button.tabIndex = index === activeIndex ? 0 : -1
+    button.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')
+    button.setAttribute('aria-label', `查看第 ${index + 1} 项，${TYPE_LABELS[item.type] || '媒体'}：${getItemTitle(item)}`)
+    button.title = `${getItemTitle(item)} · ${item.featureName || ''}`
+    if (item.type === 'image') {
+      const image = document.createElement('img')
+      const imageUrl = String(item.thumbnailUrl || item.renderUrl || item.url || '')
+      image.alt = ''
+      image.loading = 'lazy'
+      image.referrerPolicy = 'no-referrer'
+      image.addEventListener('error', () => button.classList.add('is-load-error'), { once: true })
+      if ('IntersectionObserver' in window) {
+        image.dataset.src = imageUrl
+      } else {
+        image.src = imageUrl
+      }
+      button.appendChild(image)
+    } else {
+      const icon = document.createElement('span')
+      icon.className = `media-preview-track-icon media-preview-track-icon-${item.type}`
+      icon.setAttribute('aria-hidden', 'true')
+      icon.textContent = getItemTypeIcon(item.type)
+      button.appendChild(icon)
+    }
+    const marker = document.createElement('span')
+    marker.className = 'media-preview-track-marker'
+    marker.textContent = String(index + 1).padStart(2, '0')
+    button.appendChild(marker)
+    track.appendChild(button)
+  })
+  if ('IntersectionObserver' in window) {
+    trackObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return
+        const image = entry.target
+        image.src = image.dataset.src || ''
+        image.removeAttribute('data-src')
+        trackObserver?.unobserve(image)
+      })
+    }, { root: track, rootMargin: '0px 160px' })
+    track.querySelectorAll('img[data-src]').forEach(image => trackObserver.observe(image))
+  }
+  track.querySelectorAll('.media-preview-track-item').forEach((button, index) => {
+    button.classList.toggle('is-active', index === activeIndex)
+    button.tabIndex = index === activeIndex ? 0 : -1
+    button.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')
+  })
+  const activeButton = track.querySelector('.media-preview-track-item.is-active')
+  activeButton?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
+}
+
 function renderActiveItem () {
   const generation = ++renderGeneration
   cleanupCurrentMedia()
@@ -260,15 +395,19 @@ function renderActiveItem () {
   const previousButton = getPreviewElement('[data-media-preview-action="previous"]')
   const nextButton = getPreviewElement('[data-media-preview-action="next"]')
   const zoomControls = getPreviewElement('[data-media-preview-zoom-controls]')
-  const typeLabel = TYPE_LABELS[item.type] || '媒体预览'
+  const typeLabel = TYPE_LABELS[item.type] || '媒体'
   const title = getItemTitle(item)
 
   root.dataset.mediaType = item.type
+  root.dataset.mediaIndex = String(activeIndex)
   setText('[data-media-preview-kind]', typeLabel)
+  setText('[data-media-preview-collection]', activeCollectionTitle || item.kmlName || '媒体预览')
   setText('[data-media-preview-title]', title)
-  setText('[data-media-preview-position]', activeItems.length > 1 ? `${activeIndex + 1} / ${activeItems.length}` : '')
+  setText('[data-media-preview-position]', activeItems.length > 1 ? `${activeIndex + 1} / ${activeItems.length}` : '单项')
   setText('[data-media-preview-caption]', title)
-  setText('[data-media-preview-url]', getDisplayUrl(item))
+  setText('[data-media-preview-url]', [item.featureName, getDisplayUrl(item)].filter(Boolean).join(' · '))
+  setText('[data-media-preview-restore-title]', title)
+  setText('[data-media-preview-restore-position]', `${activeIndex + 1} / ${activeItems.length}`)
   if (source) {
     source.href = item.url
     source.title = item.type === 'iframe' ? '打开原始页面' : '打开原始文件'
@@ -279,6 +418,7 @@ function renderActiveItem () {
   if (nextButton) nextButton.hidden = !hasMultipleItems
   if (zoomControls) zoomControls.hidden = item.type !== 'image'
   syncZoomControls(MEDIA_PREVIEW_MIN_SCALE)
+  renderMediaTrack()
 
   const renderer = {
     image: renderImage,
@@ -287,6 +427,9 @@ function renderActiveItem () {
     iframe: renderIframe,
   }[item.type]
   renderer?.(item, generation)
+  if (!isMinimized) {
+    getPreviewElement('.media-preview-stage')?.focus({ preventScroll: true })
+  }
 }
 
 function navigatePreview (offset) {
@@ -306,6 +449,12 @@ function onRootClick (event) {
   if (action === 'close') closeMediaPreview()
   if (action === 'previous') navigatePreview(-1)
   if (action === 'next') navigatePreview(1)
+  if (action === 'select') {
+    activeIndex = getWrappedMediaIndex(event.target.closest('[data-media-preview-action]')?.dataset.mediaPreviewIndex, activeItems.length)
+    renderActiveItem()
+  }
+  if (action === 'minimize') setPreviewMinimized(true)
+  if (action === 'restore') setPreviewMinimized(false)
   if (action === 'zoom-in') setImageScale((panzoom?.getScale() || 1) + 0.5)
   if (action === 'zoom-out') setImageScale((panzoom?.getScale() || 1) - 0.5)
   if (action === 'reset') resetImage()
@@ -317,8 +466,9 @@ function onRootInput (event) {
 }
 
 function trapFocus (event) {
+  if (isMinimized) return
   const root = ensurePreviewRoot()
-  const focusable = [...root.querySelectorAll('a[href], button:not([hidden]), input:not([hidden]), video[controls], audio[controls]')]
+  const focusable = [...root.querySelectorAll('a[href], button:not([hidden]):not([tabindex="-1"]), input:not([hidden]), video[controls], audio[controls]')]
     .filter(element => !element.disabled && element.getClientRects().length)
   if (!focusable.length) return
   const first = focusable[0]
@@ -342,16 +492,29 @@ function onDocumentKeydown (event) {
     closeMediaPreview()
     return
   }
-  if (event.key === 'Tab') {
+  // 小窗状态只在焦点位于小窗内部时接管左右键；其余快捷键继续交给地图。
+  if (isMinimized) {
+    const root = ensurePreviewRoot()
+    if (root.contains(event.target) && event.key === 'ArrowLeft') {
+      event.preventDefault()
+      navigatePreview(-1)
+    }
+    if (root.contains(event.target) && event.key === 'ArrowRight') {
+      event.preventDefault()
+      navigatePreview(1)
+    }
+    return
+  }
+  if (event.key === 'Tab' && !isMinimized) {
     trapFocus(event)
     return
   }
   const interactiveMedia = event.target.matches?.('input, video, audio')
-  if (!interactiveMedia && event.key === 'ArrowLeft') {
+  if (!interactiveMedia && (event.key === 'ArrowLeft' || event.key === 'ArrowUp')) {
     event.preventDefault()
     navigatePreview(-1)
   }
-  if (!interactiveMedia && event.key === 'ArrowRight') {
+  if (!interactiveMedia && (event.key === 'ArrowRight' || event.key === 'ArrowDown')) {
     event.preventDefault()
     navigatePreview(1)
   }
@@ -372,7 +535,26 @@ function onDocumentKeydown (event) {
 }
 
 function onWindowResize () {
-  if (!ensurePreviewRoot().hidden && activeItems[activeIndex]?.type === 'image') resetImage(false)
+  if (!ensurePreviewRoot().hidden && !isMinimized && activeItems[activeIndex]?.type === 'image') resetImage(false)
+}
+
+function setPreviewMinimized (minimized) {
+  const root = ensurePreviewRoot()
+  if (root.hidden) return
+  isMinimized = Boolean(minimized)
+  root.classList.toggle('is-minimized', isMinimized)
+  getPreviewElement('.media-preview-dialog')?.setAttribute('aria-modal', isMinimized ? 'false' : 'true')
+  document.body.classList.toggle('media-preview-open', !isMinimized)
+  const minimizeButton = getPreviewElement('[data-media-preview-action="minimize"]')
+  if (minimizeButton) {
+    minimizeButton.hidden = isMinimized
+    minimizeButton.setAttribute('aria-label', isMinimized ? '预览已收缩' : '收缩为小窗')
+  }
+  if (isMinimized) {
+    requestAnimationFrame(() => getPreviewElement('[data-media-preview-action="restore"]')?.focus())
+  } else {
+    requestAnimationFrame(() => getPreviewElement('.media-preview-stage')?.focus({ preventScroll: true }))
+  }
 }
 
 export function closeMediaPreview () {
@@ -380,25 +562,35 @@ export function closeMediaPreview () {
   if (!root || root.hidden) return
   renderGeneration += 1
   cleanupCurrentMedia()
+  cleanupTrackObserver()
   root.hidden = true
   root.setAttribute('aria-hidden', 'true')
   root.removeAttribute('data-media-type')
+  root.classList.remove('is-minimized')
   document.body.classList.remove('media-preview-open')
   document.removeEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', onWindowResize)
   activeItems = []
   activeIndex = 0
+  activeCollectionTitle = ''
+  isMinimized = false
   if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
   previousFocus = null
 }
 
-export function openMediaPreview ({ items, index = 0, type = '', trigger = null } = {}) {
+export function openMediaPreview ({ items, index = 0, type = '', trigger = null, collectionTitle = '' } = {}) {
   const normalizedItems = normalizeMediaPreviewItems(items, type)
   if (!normalizedItems.length) return false
   const root = ensurePreviewRoot()
-  if (root.hidden) previousFocus = trigger || document.activeElement
+  if (root.hidden || isMinimized) previousFocus = trigger || document.activeElement
   activeItems = normalizedItems
   activeIndex = getWrappedMediaIndex(index, activeItems.length)
+  activeCollectionTitle = String(collectionTitle || normalizedItems[activeIndex]?.kmlName || '').trim()
+  isMinimized = false
+  root.classList.remove('is-minimized')
+  getPreviewElement('.media-preview-dialog')?.setAttribute('aria-modal', 'true')
+  const minimizeButton = getPreviewElement('[data-media-preview-action="minimize"]')
+  if (minimizeButton) minimizeButton.hidden = false
   root.hidden = false
   root.setAttribute('aria-hidden', 'false')
   document.body.classList.add('media-preview-open')
@@ -407,6 +599,6 @@ export function openMediaPreview ({ items, index = 0, type = '', trigger = null 
   window.removeEventListener('resize', onWindowResize)
   window.addEventListener('resize', onWindowResize)
   renderActiveItem()
-  requestAnimationFrame(() => getPreviewElement('[data-media-preview-action="close"]')?.focus())
+  requestAnimationFrame(() => getPreviewElement('.media-preview-stage')?.focus({ preventScroll: true }))
   return true
 }

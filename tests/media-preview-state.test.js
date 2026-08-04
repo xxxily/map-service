@@ -38,4 +38,8 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.doesNotMatch(panelSource, /<a class="kml-content-image-item"/)
   assert.match(previewSource, /item\?\.renderUrl \|\| item\?\.url/)
   assert.match(previewSource, /source\.href = item\.url/)
+  assert.match(previewSource, /data-media-preview-track/)
+  assert.match(previewSource, /data-media-preview-action="minimize"/)
+  assert.match(previewSource, /data-media-preview-action="restore"/)
+  assert.match(previewSource, /import\('hls\.js'\)/)
 })

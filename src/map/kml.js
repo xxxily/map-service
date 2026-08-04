@@ -3,8 +3,11 @@ import { showConfirm, showEditDialog, showAlert } from '../ui/dialog.js'
 import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListeners } from '../ui/controls.js'
 import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from './coord-transform.js'
 import { generateKmlText, parseKML } from './kml-format.js'
-import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from './kml-content-panel.js'
-import { getFeatureDescriptionText } from '../../shared/kml-content.js'
+import {
+  bindKmlFeaturePopupMediaActions,
+  openKmlFeatureContentPanel,
+  renderKmlFeaturePopupContent,
+} from './kml-content-panel.js'
 import { getKmlMediaListIcon, getKmlMediaMarkerDescriptor } from './kml-media-marker.js'
 import {
   buildTrackSegments,
@@ -478,32 +481,6 @@ function getFeatureLabel (feature) {
   return `${name.slice(0, KML_POINT_LABEL_MAX_LENGTH)}...`
 }
 
-function renderFeaturePopup (kmlId, feature, isEditable) {
-  const contentSummary = getFeatureContentSummaryText(feature)
-  const description = getFeatureDescriptionText(feature)
-  const actionsHtml = isEditable
-    ? `
-      <div class="kml-popup-actions">
-        <button type="button" class="kml-popup-btn kml-detail-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">详情</button>
-        <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">编辑</button>
-        <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">删除</button>
-      </div>
-    `
-    : `
-      <div class="kml-popup-actions">
-        <button type="button" class="kml-popup-btn primary kml-detail-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">详情</button>
-      </div>
-    `
-  return `
-    <div class="kml-popup-content">
-      <div class="kml-popup-title">${escapeHtml(feature.name || '未命名点位')}</div>
-      <div class="kml-popup-desc">${escapeHtml(description || (contentSummary ? '包含富媒体内容' : '暂无描述'))}</div>
-      ${contentSummary ? `<div class="kml-popup-content-summary">${escapeHtml(contentSummary)}</div>` : ''}
-      ${actionsHtml}
-    </div>
-  `
-}
-
 function renderFeature (map, kmlFile, feature) {
   const kmlId = kmlFile.id
   let layer
@@ -590,7 +567,12 @@ function renderFeature (map, kmlFile, feature) {
   }
   
   if (layer) {
-    layer.bindPopup(renderFeaturePopup(kmlId, feature, editable), { closeButton: false })
+    layer.bindPopup(renderKmlFeaturePopupContent(kmlFile, feature, editable), {
+      closeButton: false,
+      className: 'kml-rich-popup',
+      maxWidth: 360,
+      minWidth: 270,
+    })
     featureLayers.set(feature.id, layer)
   }
   
@@ -931,7 +913,7 @@ async function handleEditFeature (map, kmlId, featureId) {
     
     const layer = featureLayers.get(featureId)
     if (layer) {
-      layer.setPopupContent(renderFeaturePopup(kmlId, feature, isKmlEditable(kmlFile)))
+      layer.setPopupContent(renderKmlFeaturePopupContent(kmlFile, feature, isKmlEditable(kmlFile)))
       if (feature.type === 'Point') {
         const label = getFeatureLabel(feature)
         if (label) {
@@ -1650,11 +1632,16 @@ export function initKmlSupport (map) {
 
     // 彻底切断 KML 气泡外壳上一切鼠标、触摸、指针事件的向上传播，阻止穿透至地图
     preventAllKmlPropagation(container)
+    const detailBtn = container.querySelector('.kml-detail-btn')
+    const popupFeatureId = detailBtn?.getAttribute('data-feature-id')
+    const popupKmlId = detailBtn?.getAttribute('data-kml-id')
+    if (popupKmlId && popupFeatureId) {
+      const { kmlFile, feature } = getFeatureById(popupKmlId, popupFeatureId)
+      if (kmlFile && feature) bindKmlFeaturePopupMediaActions(container, kmlFile, feature)
+    }
     
     const editBtn = container.querySelector('.kml-edit-btn')
     const deleteBtn = container.querySelector('.kml-delete-btn')
-    const detailBtn = container.querySelector('.kml-detail-btn')
-
     if (detailBtn) {
       const kId = detailBtn.getAttribute('data-kml-id')
       const fId = detailBtn.getAttribute('data-feature-id')

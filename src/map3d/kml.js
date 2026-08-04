@@ -11,10 +11,13 @@ import {
   Math as CesiumMath,
 } from 'cesium'
 import { escapeHtml } from '../admin/utils.js'
-import { getFeatureDescriptionText } from '../../shared/kml-content.js'
 import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from '../map/coord-transform.js'
 import { generateKmlText, parseKML } from '../map/kml-format.js'
-import { getFeatureContentSummaryText, openKmlFeatureContentPanel } from '../map/kml-content-panel.js'
+import {
+  bindKmlFeaturePopupMediaActions,
+  openKmlFeatureContentPanel,
+  renderKmlFeaturePopupContent,
+} from '../map/kml-content-panel.js'
 import { getKmlMediaBillboard, getKmlMediaListIcon } from '../map/kml-media-marker.js'
 import {
   buildTrackSegments,
@@ -536,32 +539,6 @@ function renderAllKmls () {
   publicKmlList.forEach(kmlFile => renderKmlLayers(kmlFile))
 }
 
-function renderFeaturePopup (kmlId, feature, editable) {
-  const contentSummary = getFeatureContentSummaryText(feature)
-  const description = getFeatureDescriptionText(feature)
-  const actionsHtml = editable
-    ? `
-      <div class="kml-popup-actions">
-        <button type="button" class="kml-popup-btn kml-detail-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">详情</button>
-        <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">编辑</button>
-        <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">删除</button>
-      </div>
-    `
-    : `
-      <div class="kml-popup-actions">
-        <button type="button" class="kml-popup-btn primary kml-detail-btn" data-kml-id="${kmlId}" data-feature-id="${feature.id}">详情</button>
-      </div>
-    `
-  return `
-    <div class="kml-popup-content">
-      <div class="kml-popup-title">${escapeHtml(feature.name)}</div>
-      <div class="kml-popup-desc">${escapeHtml(description || (contentSummary ? '包含富媒体内容' : '暂无描述'))}</div>
-      ${contentSummary ? `<div class="kml-popup-content-summary">${escapeHtml(contentSummary)}</div>` : ''}
-      ${actionsHtml}
-    </div>
-  `
-}
-
 function closeFeaturePopup () {
   featurePopupElement?.remove()
   featurePopupElement = null
@@ -576,11 +553,13 @@ function showFeaturePopup (kmlId, featureId, windowPosition) {
   popup.className = 'map3d-feature-popup'
   popup.innerHTML = `
     <button type="button" class="map3d-popup-close" aria-label="关闭">×</button>
-    ${renderFeaturePopup(kmlId, feature, isKmlEditable(kmlFile))}
+    ${renderKmlFeaturePopupContent(kmlFile, feature, isKmlEditable(kmlFile))}
   `
 
-  const x = Math.min(Math.max(Number(windowPosition?.x || window.innerWidth / 2), 12), window.innerWidth - 280)
-  const y = Math.min(Math.max(Number(windowPosition?.y || window.innerHeight / 2), 12), window.innerHeight - 180)
+  const popupWidth = Math.min(354, Math.max(280, window.innerWidth - 24))
+  const popupHeight = feature.description ? 350 : 300
+  const x = Math.min(Math.max(Number(windowPosition?.x || window.innerWidth / 2), popupWidth / 2 + 12), window.innerWidth - popupWidth / 2 - 12)
+  const y = Math.min(Math.max(Number(windowPosition?.y || window.innerHeight / 2), popupHeight + 12), window.innerHeight - 12)
   popup.style.left = `${x}px`
   popup.style.top = `${y}px`
 
@@ -589,6 +568,7 @@ function showFeaturePopup (kmlId, featureId, windowPosition) {
   })
 
   popup.querySelector('.map3d-popup-close')?.addEventListener('click', closeFeaturePopup)
+  bindKmlFeaturePopupMediaActions(popup, kmlFile, feature)
   popup.querySelector('.kml-detail-btn')?.addEventListener('click', () => {
     openKmlFeatureContentPanel(kmlFile, feature)
   })

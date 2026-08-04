@@ -69,6 +69,17 @@ KML 图片、视频、音频和白名单 iframe 的预览统一由 `src/ui/media
 外链。图片平移缩放复用 `@panzoom/panzoom`；新增手势时不能覆盖它的 Pointer Events，也不能把
 媒体 URL 重新拼成未转义 HTML。
 
+当前点位交互由 `src/map/kml-media-gallery.js` 统一聚合：popup 首击展示当前点位缩略图/媒体卡片，
+点击后按当前 KML 的全部点位聚合可预览媒体，并把点位名称、KML 名称和稳定内容 ID 保存在集合元数据中。
+`media-preview.js` 的媒体轨道只懒加载缩略图；全屏预览可切换为浮动小窗，小窗解除页面滚动锁但仍保留
+当前媒体 DOM，因此视频播放进度和 iframe 页面状态不会因收缩/展开而重置。`.m3u8` 资源仅在真正打开
+视频时动态加载 `hls.js`，普通图片和链接浏览不引入该执行路径。
+个人 KML 如需允许 iframe，构建时使用 `VITE_MAP_SERVICE_KML_IFRAME_ALLOWLIST`，规则格式与服务端
+`MAP_SERVICE_KML_IFRAME_ALLOWLIST` 保持一致；生产部署应同时配置两者，未配置时个人 KML 页面仍降级为普通链接。
+
+真实 KML 回归样例位于 `tests/fixtures/kml/`。新增样例必须由至少一项 `node:test` 读取，并覆盖媒体
+数量、点位归属或截断/懒加载边界；不要把只用于手工验收的文件留在仓库根目录 `temp/`。
+
 旧 KML 图片兼容规则只允许在 `shared/kml-content.js` 与 `service/bin/admin/kmlMedia.js` 的共同
 约束下扩展。不得只在前端增加 relay URL；新增主机或路径前必须同步补充 DNS 私网拦截、MIME、
 文件大小、访问控制和日志脱敏测试，并更新 `docs/api.md`。原始文件入口始终使用内容项 `url`，
