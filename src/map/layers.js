@@ -278,14 +278,18 @@ function createLayerFromCatalog (layer, sourceById) {
   return group
 }
 
-export async function initLayerControl (map, initialLayerName = '') {
+export async function initLayerControl (map, initialLayerName = '', options = {}) {
+  const persistSelection = options.persist !== false
+  const catalogUrl = options.catalogUrl || '/api/v1/map/catalog'
   let savedLayerId = ''
   let savedLayerName = ''
-  try {
-    savedLayerId = localStorage.getItem('last_map_layer_id') || ''
-    savedLayerName = localStorage.getItem('last_map_layer') || ''
-  } catch (e) {
-    console.error('Failed to read layer from localStorage', e)
+  if (persistSelection) {
+    try {
+      savedLayerId = localStorage.getItem('last_map_layer_id') || ''
+      savedLayerName = localStorage.getItem('last_map_layer') || ''
+    } catch (e) {
+      console.error('Failed to read layer from localStorage', e)
+    }
   }
 
   let mapLayers = {}
@@ -294,7 +298,7 @@ export async function initLayerControl (map, initialLayerName = '') {
   let defaultLayer = null
 
   try {
-    const res = await fetch('/api/v1/map/catalog')
+    const res = await fetch(catalogUrl, { credentials: 'same-origin', cache: 'no-store' })
     const payload = await res.json()
     if (!res.ok) {
       throw new Error(payload?.error?.message || res.statusText || '地图图层目录加载失败')
@@ -376,13 +380,15 @@ export async function initLayerControl (map, initialLayerName = '') {
     const matchedLayer = layerByControlName.get(event.name)
     const layerId = matchedLayer ? matchedLayer.id : (event.layer?._layerId || '')
     map._activeLayerId = layerId
-    try {
-      localStorage.setItem('last_map_layer_id', layerId)
-      localStorage.setItem('last_map_layer', matchedLayer?.name || event.name)
-    } catch (e) {
-      console.error('Failed to save last_map_layer to localStorage', e)
+    if (persistSelection) {
+      try {
+        localStorage.setItem('last_map_layer_id', layerId)
+        localStorage.setItem('last_map_layer', matchedLayer?.name || event.name)
+      } catch (e) {
+        console.error('Failed to save last_map_layer to localStorage', e)
+      }
     }
-    writeMapViewToUrl(map, { layerName: layerId })
+    writeMapViewToUrl(map, { layerName: layerId, persist: persistSelection })
   })
 
   layerControl._container.style.display = 'none'

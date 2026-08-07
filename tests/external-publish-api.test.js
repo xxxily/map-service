@@ -138,7 +138,10 @@ test('GET /api/v1/external/:publishId/sources/:sourceId/:z/:x/:y relays layer so
 
 test('GET /api/v1/admin/external-publish-logs returns all logs for diagnostics', async () => {
   const restore = withMockedService({
-    verifyAdminToken: () => ({ username: 'operator' }),
+    verifyUserSession: token => token === 'test-session'
+      ? { user: { permissions: ['system.super_admin'] } }
+      : null,
+    assertUserPermission: () => true,
     listExternalPublishLogs: async (id = '') => [
       { publishId: id || 'hybrid-public', sourceId: 'amap-road' },
     ],
@@ -150,7 +153,7 @@ test('GET /api/v1/admin/external-publish-logs returns all logs for diagnostics',
   try {
     const response = await fetch(`${baseUrl}/api/v1/admin/external-publish-logs`, {
       headers: {
-        Authorization: 'Bearer test-token',
+        Cookie: 'map_user_session=test-session',
       },
     })
     assert.equal(response.status, 200)
@@ -164,7 +167,10 @@ test('GET /api/v1/admin/external-publish-logs returns all logs for diagnostics',
 
 test('GET /api/v1/admin/source-access-logs returns source access diagnostics separately', async () => {
   const restore = withMockedService({
-    verifyAdminToken: () => ({ username: 'operator' }),
+    verifyUserSession: token => token === 'test-session'
+      ? { user: { permissions: ['system.super_admin'] } }
+      : null,
+    assertUserPermission: () => true,
     listSourceAccessLogs: async (id = '') => [
       { sourceId: id || 'google-satellite', proxyOutboundId: 'proxy-a', cacheStatus: 'HIT' },
     ],
@@ -176,7 +182,7 @@ test('GET /api/v1/admin/source-access-logs returns source access diagnostics sep
   try {
     const response = await fetch(`${baseUrl}/api/v1/admin/source-access-logs`, {
       headers: {
-        Authorization: 'Bearer test-token',
+        Cookie: 'map_user_session=test-session',
       },
     })
     assert.equal(response.status, 200)

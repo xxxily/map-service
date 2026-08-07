@@ -34,6 +34,28 @@ export function escapeHtml (value) {
     .replaceAll("'", '&#39;')
 }
 
+export function hasPermission (state, permission) {
+  const permissions = state?.session?.user?.permissions || state?.session?.permissions || []
+  return Array.isArray(permissions) && (
+    permissions.includes('system.super_admin') || permissions.includes(permission)
+  )
+}
+
+export function renderPagination (collection = {}, actionPrefix) {
+  const page = Number(collection.page || 1)
+  const limit = Number(collection.limit || 20)
+  const total = Number(collection.total || 0)
+  const totalPages = Math.max(1, Math.ceil(total / limit))
+  if (total <= limit && page <= 1) return ''
+  return `
+    <nav class="admin-pagination" aria-label="分页">
+      <button type="button" data-admin-action="${escapeHtml(actionPrefix)}-page" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>上一页</button>
+      <span>第 ${page} / ${totalPages} 页，共 ${total} 条</span>
+      <button type="button" data-admin-action="${escapeHtml(actionPrefix)}-page" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>下一页</button>
+    </nav>
+  `
+}
+
 export function relayTileUrl (tileRelayEndpoint, targetUrl) {
   return `${tileRelayEndpoint}?url=${encodeURIComponent(targetUrl)
     .replace(/%7B/g, '{')

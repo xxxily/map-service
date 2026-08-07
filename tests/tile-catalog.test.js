@@ -83,6 +83,31 @@ test('tile catalog initializes default sources, layers and proxy pool', async ()
   }
 })
 
+test('tile catalog coalesces concurrent initialization', async () => {
+  const values = new Map()
+  const calls = { read: 0, write: 0 }
+  const store = {
+    async read (name, fallback) {
+      calls.read += 1
+      await new Promise(resolve => setTimeout(resolve, 1))
+      return values.has(name) ? structuredClone(values.get(name)) : structuredClone(fallback)
+    },
+    async write (name, value) {
+      calls.write += 1
+      await new Promise(resolve => setTimeout(resolve, 1))
+      values.set(name, structuredClone(value))
+      return value
+    },
+  }
+  const manager = new TileCatalogManager({ store })
+
+  const catalogs = await Promise.all(Array.from({ length: 12 }, () => manager.getPublicCatalog()))
+
+  assert.equal(calls.read, 9)
+  assert.equal(calls.write, 7)
+  assert.equal(catalogs.every(catalog => catalog.defaultLayerId === 'amap-hybrid'), true)
+})
+
 test('tile catalog creates proxy pool and resolves source tile request through it', async () => {
   const dataDir = tempDir('tile-catalog-proxy')
   const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })
@@ -125,6 +150,63 @@ test('tile catalog creates proxy pool and resolves source tile request through i
     assert.equal(request.proxy.username, 'user')
     assert.equal(request.url.includes('x=4'), true)
     assert.equal(request.cacheMeta.sourceId, 'google-satellite')
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('tile catalog proxy diagnostics pin validated target IPs for outbound and source tests', async () => {
+  const dataDir = tempDir('tile-catalog-proxy-pinning')
+  const calls = []
+  const resolvedUrls = []
+  const manager = new TileCatalogManager({
+    store: new AdminStore({ dataDir }),
+    targetResolver: async (url) => {
+      resolvedUrls.push(url)
+      return {
+        url,
+        hostname: new URL(url).hostname,
+        addresses: [{ address: '203.12.34.56', family: 4 }],
+      }
+    },
+    httpClient: async (config) => {
+      calls.push(config)
+      return { status: 204, data: Buffer.alloc(0) }
+    },
+  })
+
+  try {
+    await manager.createProxyOutbound({
+      id: 'proxy-pinned',
+      name: 'Pinned proxy',
+      protocol: 'http',
+      host: 'proxy.example.com',
+      port: 8080,
+      testUrl: 'https://probe.example.com/status',
+    })
+    await manager.createProxyPool({
+      id: 'pinned-pool',
+      name: 'Pinned pool',
+      strategy: 'priority',
+      members: [{ outboundId: 'proxy-pinned', priority: 1 }],
+    })
+    await manager.updateTileSource('google-satellite', {
+      proxy: { mode: 'pool', poolId: 'pinned-pool' },
+    })
+
+    assert.equal((await manager.testProxyOutbound('proxy-pinned')).success, true)
+    assert.equal((await manager.testTileSource('google-satellite')).success, true)
+    assert.equal(calls.length, 2)
+
+    calls.forEach((config, index) => {
+      const original = new URL(resolvedUrls[index])
+      assert.equal(new URL(config.url).hostname, '203.12.34.56')
+      assert.equal(config.url.includes(original.hostname), false)
+      assert.equal(config.headers.Host, original.host)
+      assert.equal(config.proxy, false)
+      assert.equal(config.httpsAgent.proxy.host, 'proxy.example.com')
+      assert.equal(config.maxRedirects, 0)
+    })
   } finally {
     await fs.remove(dataDir)
   }
@@ -203,6 +285,39 @@ test('tile catalog normalizes legacy proxy inherit to direct and rejects arbitra
       },
     })
     assert.equal(modeOnlySource.retina.normalValue, '3')
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('tile catalog rejects private and reserved source templates and proxy test targets', async () => {
+  const dataDir = tempDir('tile-catalog-network-boundary')
+  const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })
+
+  try {
+    for (const [id, template] of [
+      ['blocked-zero', 'http://0.0.0.0/{z}/{x}/{y}'],
+      ['blocked-mapped', 'http://[::ffff:127.0.0.1]/{z}/{x}/{y}'],
+      ['blocked-ula', 'http://[fd00::1]/{z}/{x}/{y}'],
+      ['blocked-link-local', 'http://[fe80::1]/{z}/{x}/{y}'],
+      ['blocked-internal-dns', 'http://tiles.internal/{z}/{x}/{y}'],
+    ]) {
+      await assert.rejects(manager.createTileSource({
+        id,
+        name: id,
+        enabled: true,
+        kind: 'xyz-raster',
+        entry: { template },
+      }), /不能指向 localhost、内网或保留地址/)
+    }
+
+    await assert.rejects(manager.createProxyOutbound({
+      id: 'blocked-proxy-test',
+      name: 'Blocked proxy test',
+      host: '127.0.0.1',
+      port: 7890,
+      testUrl: 'http://169.254.169.254/latest/meta-data/',
+    }), /不能指向 localhost、内网或保留地址/)
   } finally {
     await fs.remove(dataDir)
   }

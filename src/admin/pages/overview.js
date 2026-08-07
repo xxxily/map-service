@@ -1,8 +1,10 @@
-import { escapeHtml, formatDuration, formatTime } from '../utils.js'
+import { escapeHtml, formatBytes, formatDuration, formatTime } from '../utils.js'
 
 export function renderOverviewPage (state) {
   const system = state.system
   const visits = state.visits || {}
+  const userSystem = system?.userSystem || {}
+  const userCounts = userSystem.counts || {}
   const version = system?.package?.version || '-'
   const visitStatus = state.visitsError || (state.visitsLoading ? '统计中' : '')
 
@@ -20,6 +22,23 @@ export function renderOverviewPage (state) {
           <div><dt>运行</dt><dd>${formatDuration(system?.uptime || 0)}</dd></div>
           <div><dt>环境</dt><dd>${escapeHtml(system?.env || '-')}</dd></div>
           <div><dt>时间</dt><dd>${formatTime(system?.serverTime)}</dd></div>
+        </dl>
+      </section>
+      <section class="admin-panel">
+        <div class="admin-panel-head">
+          <h2>用户体系</h2>
+          <span class="admin-badge">${escapeHtml(userSystem.database?.status === 'ok' ? '正常' : '未知')}</span>
+        </div>
+        <dl class="admin-metrics">
+          <div><dt>迁移版本</dt><dd>${escapeHtml(userSystem.database?.schemaVersion || '-')}</dd></div>
+          <div><dt>数据库占用</dt><dd>${formatBytes(userSystem.database?.allocatedBytes || 0)}</dd></div>
+          <div><dt>用户</dt><dd>${escapeHtml(userCounts.users || 0)}</dd></div>
+          <div><dt>活跃会话</dt><dd>${escapeHtml(userCounts.activeSessions || 0)}</dd></div>
+          <div><dt>KML</dt><dd>${escapeHtml(userCounts.kmlFiles || 0)}</dd></div>
+          <div><dt>收藏</dt><dd>${escapeHtml(userCounts.favorites || 0)}</dd></div>
+          <div><dt>分享</dt><dd>${escapeHtml(userCounts.shares || 0)}</dd></div>
+          <div><dt>有效分享</dt><dd>${escapeHtml(userCounts.activeShares || 0)}</dd></div>
+          <div><dt>KML 逻辑用量</dt><dd>${formatBytes(userSystem.storage?.kmlBytes || 0)}</dd></div>
         </dl>
       </section>
       <section class="admin-panel admin-panel-wide">

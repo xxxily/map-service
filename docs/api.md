@@ -16,25 +16,38 @@
 }
 ```
 
-错误响应使用 `code: -1`，错误详情放在 `error.message`。二进制瓦片接口成功时直接返回图片流，不包 JSON。
+错误响应使用 `code: -1`，稳定错误码和中文消息分别放在 `error.code`、`error.message`。二进制瓦片接口成功时直接返回图片流，不包 JSON。
 
 ## 鉴权
 
-管理接口统一位于 `/api/v1/admin`。除登录接口外，管理接口都需要：
+用户和管理后台统一使用服务端可撤销会话。登录成功后服务端写入：
 
 ```text
-Authorization: Bearer <admin-token>
+map_user_session=<opaque-token>; HttpOnly
+map_csrf_token=<csrf-token>
 ```
 
-前台地图访问控制由 `/api/v1/access/*` 维护；如果后台启用了访问密码，前台公开 catalog 和图源瓦片接口需要浏览器携带 `map_access_token` HttpOnly Cookie。
+浏览器调用时应启用同源 Cookie。`POST`、`PUT`、`PATCH`、`DELETE` 等写请求除携带会话 Cookie 外，还必须把 `map_csrf_token` Cookie 的值放入请求头：
 
-管理员账号通过环境变量配置：
+```text
+X-CSRF-Token: <csrf-token>
+```
+
+登录、管理后台登录和自助注册没有预登录 CSRF Cookie，因此浏览器请求改为校验同源 `Origin` / `Referer` / `Sec-Fetch-Site`；跨站来源返回 `403 CSRF_INVALID`。
+
+管理接口统一位于 `/api/v1/admin`，服务端按权限码鉴权；角色显示名或角色代码本身不替代权限判定。`system.super_admin` 拥有全部业务权限。旧管理 Bearer Token 已统一失效，管理员必须重新登录并使用 Cookie 会话；前端不得在 `localStorage` 保存管理 Token。
+
+前台地图访问控制由 `/api/v1/access/*` 维护；如果后台启用了访问密码，前台公开 catalog 和图源瓦片接口需要浏览器携带 `map_access_token` HttpOnly Cookie。站点访问 Cookie、用户会话 Cookie和分享授权 Cookie互不替代。
+
+首次初始化用户数据库且尚无有效超级管理员时，可使用以下环境变量引导创建首个超级管理员：
 
 - `MAP_SERVICE_ADMIN_USERNAME`
 - `MAP_SERVICE_ADMIN_PASSWORD`
-- `MAP_SERVICE_ADMIN_TOKEN_SECRET`
+- `MAP_SERVICE_USER_DATABASE`：可选，用户 SQLite 数据库路径。
 
-本地开发默认账号密码为 `admin` / `admin`。上线前必须覆盖默认值。
+本地开发默认账号密码为 `admin` / `admin`。弱密码账号会被标记为首次登录必须修改；生产或共享环境必须在首次启动前覆盖默认密码。数据库已有有效超级管理员后，环境变量不会覆盖其密码。若数据库没有有效超级管理员且显式引导用户名命中已有账号，服务会先替换为引导凭据、递增权限版本并撤销该账号全部旧会话，再授予超级管理员，避免旧会话继承提权。
+
+用户、个人 KML、收藏、多 KML 分享和 RBAC 的完整契约见 [用户体系与多 KML 分享 API](./api-user-system.md)，部署、初始化、备份与恢复见 [用户体系部署与运维](./user-system-deployment.md)。
 
 ## 系统接口
 
@@ -282,16 +295,16 @@ If-Range: <etag-or-date>
 
 ```json
 {
-  "username": "admin",
-  "password": "admin"
+  "username": "map-root",
+  "password": "replace-with-a-long-unique-password"
 }
 ```
 
-返回 Bearer Token、过期时间和用户信息。
+登录成功后写入统一用户会话 Cookie和 CSRF Cookie，响应只返回用户摘要与过期时间，不返回会话 Token 或 CSRF Token。
 
 ### `POST /api/v1/admin/auth/logout`
 
-校验当前 Token 并返回 `status: ok`。前端负责删除本地 Token。
+校验 Cookie 会话和 `X-CSRF-Token`，撤销当前会话并清除 Cookie。
 
 ### `POST /api/v1/admin/auth/password`
 
@@ -306,11 +319,17 @@ If-Range: <etag-or-date>
 
 ### `GET /api/v1/admin/session`
 
-校验当前 Token，返回用户名和 Token 时间信息。
+校验当前 Cookie 会话。任意拥有 `admin.*` 权限或 `system.super_admin` 的角色均可进入后台；返回用户、角色、权限和会话摘要。`GET /api/v1/admin/auth/session` 提供相同的新用户体系会话视图。
 
 ### `GET /api/v1/admin/system`
 
-返回应用版本、Node.js 版本、进程号、运行时间、环境、服务器时间和 API 基础路径。
+返回应用版本、Node.js 版本、进程号、运行时间、环境、服务器时间和 API 基础路径，并包含用户系统健康摘要：
+
+- `userSystem.database.status`：数据库可用状态。
+- `userSystem.database.schemaVersion`：最近迁移版本。
+- `userSystem.database.allocatedBytes`：SQLite 已分配空间。
+- `userSystem.counts`：用户、活跃会话、KML、收藏、分享和有效分享数量。
+- `userSystem.storage.kmlBytes`：KML 内容逻辑用量。
 
 ### `GET /api/v1/admin/settings`
 
@@ -385,7 +404,7 @@ If-Range: <etag-or-date>
 - `permissions.externalApiAllowed`：是否允许对外发布
 - `visibility.scope`：`system`、`external_only`
 
-URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-local 或保留地址。支持占位符：`{s}`、`{x}`、`{y}`、`{z}`、`{scale}`、`{yTms}`、`{key}`、`{token}`、`{tk}`、`{appid}`、`{quadkey}`、`{fontstack}`、`{range}` 等。
+URL 模板只允许不含账号密码的 `http/https`，且不允许指向 localhost、单标签/内部域名、内网、link-local、云 metadata、IPv4-mapped IPv6 或其他保留地址。配置保存时先校验协议、主机名和字面地址；每次实际回源前会解析全部 DNS 地址，任一结果落入禁止网段即拒绝。直连请求只使用本次已验证地址；代理请求也只把已验证 IP 交给代理连接，同时保留原 HTTP `Host` 与 HTTPS SNI/证书主机名，不允许代理重新解析原目标域名。所有回源均不跟随 3xx 重定向，避免 DNS 重绑定或跳转绕过。支持占位符：`{s}`、`{x}`、`{y}`、`{z}`、`{scale}`、`{yTms}`、`{key}`、`{token}`、`{tk}`、`{appid}`、`{quadkey}`、`{fontstack}`、`{range}` 等。
 
 ### `GET /api/v1/admin/source-presets`
 
@@ -746,6 +765,8 @@ URL 模板只允许 `http/https`，且不允许指向 localhost、内网、link-
 代理出口表示一个具体代理连接；代理池是一组出口和选择策略。图源通过 `proxy.mode=fixed/pool` 关联代理；不再提供“继承系统默认代理”模式，默认策略应使用 `proxy.mode=never` 始终直连。
 
 当前支持 HTTP/HTTPS 代理出口。复杂最优路由、地理位置优选、动态代理采购不在本系统内实现，可由外部代理工具暴露为普通代理出口后接入。
+
+代理出口的 `testUrl` 与图源回源共用同一安全边界：只允许公开 `http/https` 目标，不得包含账号密码，不得解析到内网、link-local、metadata 或保留地址，也不会跟随重定向。服务端把已验证目标 IP 交给代理，同时为 HTTP 保留原 `Host`、为 HTTPS 保留原 SNI 和证书主机名，代理不会再次解析测试目标域名。代理连接本身可按部署需要指向受控的本地或内网代理进程，但不能借测试地址访问内部目标。
 
 ### `GET /api/v1/admin/proxy-outbounds`
 

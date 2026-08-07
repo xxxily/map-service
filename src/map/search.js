@@ -1,6 +1,7 @@
 import L from 'leaflet'
 import { getBestPosition, positionToGcj02 } from './geolocation.js'
 import { showAlert } from '../ui/dialog.js'
+import { setFavoriteCandidate } from './favorite-actions.js'
 
 let currentSearchMarker = null
 
@@ -13,6 +14,27 @@ let startPoi = null
 let endPoi = null
 let startPickMarker = null
 let endPickMarker = null
+
+function setSearchResultFavorite (poi, marker = null) {
+  if (!poi?.location) return
+  const candidate = {
+    name: poi.name || '搜索结果',
+    address: poi.address || poi.district || '',
+    longitude: poi.location.lng,
+    latitude: poi.location.lat,
+    coordType: 'gcj02',
+    sourceType: 'search',
+  }
+  setFavoriteCandidate(candidate)
+  marker?.on('dragend', event => {
+    const latlng = event.target.getLatLng()
+    setFavoriteCandidate({
+      ...candidate,
+      longitude: latlng.lng,
+      latitude: latlng.lat,
+    })
+  })
+}
 
 // 获取 localStorage 中的历史记录
 function getHistory (key) {
@@ -388,6 +410,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       draggable: true,
       title: event.poi.name,
     }).addTo(map)
+    setSearchResultFavorite(event.poi, currentSearchMarker)
   })
 
   // 绑定普通位置搜索框历史记录下拉
@@ -406,6 +429,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           draggable: true,
           title: item.name,
         }).addTo(map)
+        setSearchResultFavorite(item, currentSearchMarker)
       }
     })
   }

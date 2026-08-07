@@ -24,8 +24,11 @@ import './map3d-styles.css'
 
 import { initAdminApp } from './admin/dashboard.js'
 import { isAdminLocation } from './admin/routes.js'
+import { initIdentityEntry } from './auth/identity.js'
 import { amapConfig, map3dCameraInteractionConfig, terrainConfig } from './config.js'
 import { initAfterAccessCheck } from './map/access-control.js'
+import { getActiveShare, isShareLocation, prepareShareView } from './map/share-view.js'
+import { initFavoriteActions } from './map/favorite-actions.js'
 import { initAmapGeolocation } from './map/geolocation.js'
 import { registerServiceWorker } from './pwa.js'
 import { initGuidelines3d, toggleGuidelineMode3d } from './map3d/guidelines.js'
@@ -217,6 +220,22 @@ function isMapToolInteractionActive () {
 
 function getCameraHeight () {
   return viewer?.camera?.positionCartographic?.height || 8000000.0
+}
+
+function getMap3dCenterFavoriteCandidate () {
+  if (!viewer?.camera || !viewer.scene) return null
+  const canvas = viewer.canvas
+  const centerScreenPosition = new Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2)
+  const centerCartesian = pickSceneWorldPosition(viewer.camera, viewer.scene, centerScreenPosition) || viewer.camera.position
+  const cartographic = viewer.scene.globe?.ellipsoid?.cartesianToCartographic?.(centerCartesian)
+  if (!cartographic) return null
+  return {
+    name: '当前地图中心',
+    longitude: CesiumMath.toDegrees(cartographic.longitude),
+    latitude: CesiumMath.toDegrees(cartographic.latitude),
+    coordType: 'gcj02',
+    sourceType: 'map',
+  }
 }
 
 function getCameraAnimationDuration (duration) {
@@ -829,6 +848,9 @@ function flyToTerrainDemoView () {
 
 // 初始化 Cesium 地球
 async function init3dEarth () {
+  const shareMode = isShareLocation(window.location)
+  const activeShare = getActiveShare()
+  const shareViewConfig = activeShare?.manifest?.viewConfig || {}
   // 1. 初始化 Viewer 并移除大部分内置控件，打造极简前卫外观
   viewer = new Viewer('cesiumContainer', {
     animation: false,
@@ -907,7 +929,10 @@ async function init3dEarth () {
   // 2. 动态加载底图（自适应读取 URL 或本地图层缓存，从 `/api/v1/map/catalog` 异步获取图层列表）
   let defaultLayerId = 'amap-hybrid'
   try {
-    const res = await fetch('/api/v1/map/catalog')
+    const catalogUrl = shareMode && activeShare?.publicId
+      ? `/api/v1/public/kml-shares/${encodeURIComponent(activeShare.publicId)}/map/catalog`
+      : '/api/v1/map/catalog'
+    const res = await fetch(catalogUrl, { credentials: 'same-origin', cache: 'no-store' })
     const payload = await res.json()
     if (!res.ok || payload?.code !== 0 || !payload?.result || !Array.isArray(payload.result.layers)) {
       throw new Error(payload?.error?.message || res.statusText || '地图图层目录加载失败')
@@ -941,10 +966,15 @@ async function init3dEarth () {
 
   const urlParams = new URLSearchParams(window.location.search)
   const queryLayer = urlParams.get('layer') || ''
-  const cachedLayerId = localStorage.getItem('last_map_layer_id') || ''
-  const cachedLayerName = localStorage.getItem('last_map_layer') || ''
+  let cachedLayerId = ''
+  let cachedLayerName = ''
+  if (!shareMode) {
+    cachedLayerId = localStorage.getItem('last_map_layer_id') || ''
+    cachedLayerName = localStorage.getItem('last_map_layer') || ''
+  }
   
-  let initialLayer = queryLayer || cachedLayerId || cachedLayerName || defaultLayerId
+  const requestedLayer = shareViewConfig.layerId || queryLayer
+  let initialLayer = requestedLayer || cachedLayerId || cachedLayerName || defaultLayerId
   let needFallbackAlert = false
 
   // 匹配 id 或 name
@@ -952,7 +982,7 @@ async function init3dEarth () {
   if (matchedByIdOrName) {
     initialLayer = matchedByIdOrName.id
   } else {
-    if (queryLayer) {
+    if (requestedLayer) {
       needFallbackAlert = true
     }
     initialLayer = defaultLayerId
@@ -974,7 +1004,11 @@ async function init3dEarth () {
   }
 
   // 3. 从 URL 或者缓存初始化相机视角（对齐 2D）
-  initCameraView()
+  initCameraView(shareViewConfig)
+  initFavoriteActions({
+    readOnly: shareMode,
+    getCenterCandidate: getMap3dCenterFavoriteCandidate,
+  })
 
   // 4. 初始化地球自转动画逻辑
   lastTime = Date.now()
@@ -1031,9 +1065,11 @@ async function init3dEarth () {
     initAmapSearch3d(viewer, AMap)
     amapGeolocation = initAmapGeolocation(AMap)
   }
-  initKmlSupport3d(viewer)
-  initGuidelines3d(viewer)
-  initLocationHistoryPanel3d()
+  await initKmlSupport3d(viewer)
+  if (!shareMode) {
+    initGuidelines3d(viewer)
+    initLocationHistoryPanel3d()
+  }
 
   // 8. 绑定界面交互事件
   bindUiEvents()
@@ -1084,18 +1120,23 @@ function resetCameraView () {
 }
 
 // 从 URL 或者 localStorage 恢复上一次停留的位置，高度对齐 2D 地图
-function initCameraView () {
+function initCameraView (viewConfig = {}) {
   if (!viewer) return
 
+  const shareMode = isShareLocation(window.location)
   const urlParams = new URLSearchParams(window.location.search)
   const coordsParam = urlParams.get('coords')
 
-  let lat = NaN
-  let lng = NaN
-  let zoom = NaN
-  let bearing = NaN
+  const configuredCenter = Array.isArray(viewConfig.center) && viewConfig.center.length === 2
+    ? viewConfig.center.map(Number)
+    : []
+  let lat = Number.isFinite(configuredCenter[0]) ? configuredCenter[0] : NaN
+  let lng = Number.isFinite(configuredCenter[1]) ? configuredCenter[1] : NaN
+  let zoom = Number.isFinite(Number(viewConfig.zoom)) ? Number(viewConfig.zoom) : NaN
+  let bearing = Number.isFinite(Number(viewConfig.bearing)) ? Number(viewConfig.bearing) : NaN
+  const pitch = Number.isFinite(Number(viewConfig.pitch)) ? Number(viewConfig.pitch) : 0
 
-  if (coordsParam) {
+  if (!shareMode && coordsParam) {
     const rawCoords = coordsParam.split(',')
     lat = Number(rawCoords[0])
     lng = Number(rawCoords[1])
@@ -1103,7 +1144,7 @@ function initCameraView () {
     bearing = Number(rawCoords[3] || 0)
   }
 
-  if (Number.isNaN(lat) || Number.isNaN(lng)) {
+  if (!shareMode && (Number.isNaN(lat) || Number.isNaN(lng))) {
     // 尝试从 localStorage 中恢复
     try {
       const rawLocal = localStorage.getItem('last_map_view')
@@ -1134,10 +1175,11 @@ function initCameraView () {
     destination: Cartesian3.fromDegrees(lng, lat, height),
     orientation: {
       heading: CesiumMath.toRadians(bearing),
-      pitch: CesiumMath.toRadians(-90.0), // 3D 初始化时保持为 2D 正视视角，跟手后可自由倾斜
+      pitch: CesiumMath.toRadians(Math.max(-90, Math.min(-5, -90 + pitch))),
       roll: 0.0
     }
   })
+  if (pitch > 0) setInteractionMode('3d', { tilt: false })
 }
 
 // 实时将相机位置和图层同步写入 URL 及 localStorage，高度对齐 2D 地图（添加防抖限制防止高频卡顿）
@@ -1188,6 +1230,8 @@ const syncCameraStateToUrl = debounce(() => {
   const query = urlParams.toString()
   window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`)
 
+  if (isShareLocation(window.location)) return
+
   // 7. 写入 localStorage 缓存
   try {
     localStorage.setItem('last_map_view', JSON.stringify({
@@ -1224,6 +1268,12 @@ function bindUiEvents () {
   const menu = document.getElementById('map-menu')
   const layerControlPanel = document.getElementById('map3d-layer-control')
   if (!menu) return
+  const shareMode = isShareLocation(window.location)
+
+  initIdentityEntry({
+    button: menu.querySelector('[data-action="openAccount"]'),
+    adminItem: menu.querySelector('[data-admin-identity-item]'),
+  })
 
   ensureTerrainQualityControls()
   configureMapCanvasAccessibility()
@@ -1253,13 +1303,15 @@ function bindUiEvents () {
         const layerId = radioInput.getAttribute('data-layer')
         if (layerId) {
           switchLayer(layerId)
-          try {
-            const matchedLayer = globalCatalogLayers.find(l => l.id === layerId)
-            const layerName = matchedLayer ? matchedLayer.name : layerId
-            localStorage.setItem('last_map_layer_id', layerId)
-            localStorage.setItem('last_map_layer', layerName)
-          } catch (err) {
-            console.error('Failed to save last_map_layer in localStorage', err)
+          if (!shareMode) {
+            try {
+              const matchedLayer = globalCatalogLayers.find(l => l.id === layerId)
+              const layerName = matchedLayer ? matchedLayer.name : layerId
+              localStorage.setItem('last_map_layer_id', layerId)
+              localStorage.setItem('last_map_layer', layerName)
+            } catch (err) {
+              console.error('Failed to save last_map_layer in localStorage', err)
+            }
           }
           syncCameraStateToUrl()
         }
@@ -1288,18 +1340,22 @@ function bindUiEvents () {
   if (layerControlBtn && layerControlPanel) {
     // 读取 localStorage 中保存的菜单展开状态
     let expanded = false
-    try {
-      expanded = localStorage.getItem('3d_menu_expanded') === 'true'
-    } catch (err) {
-      console.error(err)
+    if (!shareMode) {
+      try {
+        expanded = localStorage.getItem('3d_menu_expanded') === 'true'
+      } catch (err) {
+        console.error(err)
+      }
     }
 
     const updateExpandedState = (state) => {
       expanded = state
-      try {
-        localStorage.setItem('3d_menu_expanded', state)
-      } catch (err) {
-        console.error(err)
+      if (!shareMode) {
+        try {
+          localStorage.setItem('3d_menu_expanded', state)
+        } catch (err) {
+          console.error(err)
+        }
       }
 
       if (expanded) {
@@ -1350,7 +1406,8 @@ function bindUiEvents () {
   }
 
   const guidelineBtn = menu.querySelector('[data-action="toggleGuidelineMode"]')
-  if (guidelineBtn) {
+  if (shareMode) guidelineBtn?.closest('li')?.setAttribute('hidden', '')
+  if (guidelineBtn && !shareMode) {
     guidelineBtn.addEventListener('click', () => {
       toggleGuidelineMode3d()
     })
@@ -1364,8 +1421,9 @@ function bindUiEvents () {
   }
 
   const positionBtn = menu.querySelector('[data-action="updatePosition"]')
+  if (shareMode) positionBtn?.closest('li')?.setAttribute('hidden', '')
   let skipNextClick = false
-  if (positionBtn) {
+  if (positionBtn && !shareMode) {
     let longPressTimer = null
     let isLongPressTriggered = false
     let startX = 0
@@ -1619,6 +1677,14 @@ function bindUiEvents () {
     })
   }
 
+  const accountBtn = menu.querySelector('[data-action="openAccount"]')
+  if (accountBtn) {
+    accountBtn.addEventListener('click', () => {
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
+      window.location.href = `/account?returnTo=${encodeURIComponent(returnTo)}`
+    })
+  }
+
   const adminBtn = menu.querySelector('[data-action="openAdmin"]')
   if (adminBtn) {
     adminBtn.addEventListener('click', () => {
@@ -1630,12 +1696,18 @@ function bindUiEvents () {
   const backBtn = menu.querySelector('[data-action="back2d"]')
   if (backBtn) {
     backBtn.addEventListener('click', () => {
-      window.location.href = '/' + window.location.search
+      const publicId = getActiveShare()?.publicId
+      window.location.href = shareMode && publicId
+        ? `/share/${encodeURIComponent(publicId)}`
+        : '/' + window.location.search
     })
   }
 }
 
-if (isAdminLocation(window.location)) {
+if (isShareLocation(window.location)) {
+  renderAppVersion()
+  prepareShareView(init3dEarth)
+} else if (isAdminLocation(window.location)) {
   initAdminApp({ amapLoader: AMapLoader })
 } else {
   renderAppVersion()

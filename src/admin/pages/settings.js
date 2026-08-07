@@ -4,8 +4,6 @@ const ACCESS_PASSWORD_MIN_LENGTH = 4
 
 export function renderSettingsPage (state) {
   const access = state.settings?.access || {}
-  const auth = state.settings?.auth || {}
-  const tokenTtlDays = auth.tokenTtl ? Math.round(auth.tokenTtl / (1000 * 60 * 60 * 24)) : 15
 
   return `
     <div class="admin-grid">
@@ -35,20 +33,7 @@ export function renderSettingsPage (state) {
 
       <section class="admin-panel">
         <div class="admin-panel-head">
-          <h2>登录态设置</h2>
-        </div>
-        <form class="admin-form" data-auth-settings-form autocomplete="off">
-          <label>
-            <span>登录态有效时长 (天)</span>
-            <input name="tokenTtlDays" type="number" min="1" max="365" required value="${tokenTtlDays}" placeholder="请输入天数，默认 15">
-          </label>
-          <button type="submit">保存登录设置</button>
-        </form>
-      </section>
-
-      <section class="admin-panel">
-        <div class="admin-panel-head">
-          <h2>修改管理密码</h2>
+          <h2>修改当前账号密码</h2>
         </div>
         <form class="admin-form" data-admin-password-form autocomplete="off">
           <label>
@@ -57,7 +42,7 @@ export function renderSettingsPage (state) {
           </label>
           <label>
             <span>新密码</span>
-            <input name="newPassword" type="password" required autocomplete="new-password" placeholder="请输入新密码（至少4位）">
+            <input name="newPassword" type="password" minlength="12" required autocomplete="new-password" placeholder="至少 12 位，包含多类字符">
           </label>
           <label>
             <span>确认新密码</span>
@@ -73,7 +58,6 @@ export function renderSettingsPage (state) {
 export async function handleSettingsSubmit ({ api, event, renderDashboard, setNotice, state }) {
   const accessForm = event.target.closest('[data-access-form]')
   const adminPasswordForm = event.target.closest('[data-admin-password-form]')
-  const authSettingsForm = event.target.closest('[data-auth-settings-form]')
 
   if (accessForm) {
     event.preventDefault()
@@ -119,41 +103,14 @@ export async function handleSettingsSubmit ({ api, event, renderDashboard, setNo
     return true
   }
 
-  if (authSettingsForm) {
-    event.preventDefault()
-    try {
-      const tokenTtlDays = Number(authSettingsForm.elements.tokenTtlDays.value)
-      if (isNaN(tokenTtlDays) || tokenTtlDays <= 0) {
-        setNotice('', '有效时长必须是大于 0 的数字')
-        renderDashboard()
-        return true
-      }
-
-      const tokenTtl = Math.round(tokenTtlDays * 24 * 60 * 60 * 1000)
-      const payload = {
-        auth: {
-          tokenTtl,
-        },
-      }
-
-      state.settings = await api.updateSettings(payload)
-      setNotice('登录态设置已保存')
-      renderDashboard()
-    } catch (err) {
-      setNotice('', err.message)
-      renderDashboard()
-    }
-    return true
-  }
-
   if (adminPasswordForm) {
     event.preventDefault()
     const currentPassword = adminPasswordForm.elements.currentPassword.value
     const newPassword = adminPasswordForm.elements.newPassword.value
     const confirmPassword = adminPasswordForm.elements.confirmPassword.value
 
-    if (newPassword.length < 4) {
-      setNotice('', '新密码长度至少为 4 位')
+    if (newPassword.length < 12) {
+      setNotice('', '新密码长度至少为 12 位')
       renderDashboard()
       return true
     }
@@ -169,7 +126,7 @@ export async function handleSettingsSubmit ({ api, event, renderDashboard, setNo
         currentPassword,
         newPassword,
       })
-      setNotice('管理密码修改成功！')
+      setNotice('当前账号密码修改成功')
       adminPasswordForm.reset()
       renderDashboard()
     } catch (err) {

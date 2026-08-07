@@ -9,9 +9,9 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/pwa-icon.svg">
     <title>三维地球 - 混合地图</title>
-    <script type="module" crossorigin src="/assets/map3d-Cf6RtU64.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/access-control-Cwecwkj3.js">
-    <link rel="stylesheet" crossorigin href="/assets/access-control-DtMna4xH.css">
+    <script type="module" crossorigin src="/assets/map3d-CBshJJXe.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/access-control-edq49gCO.js">
+    <link rel="stylesheet" crossorigin href="/assets/access-control-DBeNJgqh.css">
     <link rel="stylesheet" crossorigin href="/assets/map3d-NqJt-09Q.css">
   </head>
   <body>
@@ -121,6 +121,13 @@
         </button>
       </li>
       <li data-more-item>
+        <button type="button" data-action="saveFavorite" aria-label="收藏地图中心" title="收藏当前地图中心">
+          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M12 21s-7-4.35-9.33-8.28C.9 9.73 2.04 6 5.4 5.1A5.35 5.35 0 0 1 12 8a5.35 5.35 0 0 1 6.6-2.9c3.36.9 4.5 4.63 2.73 7.62C19 16.65 12 21 12 21Z"/>
+          </svg>
+        </button>
+      </li>
+      <li data-more-item>
         <button type="button" data-action="toggleGuidelineMode" aria-label="辅助线管理" title="地图辅助线">
           <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
             <path d="M2 22V2l20 20H2Z"/>
@@ -170,6 +177,14 @@
         </button>
       </li>
       <li data-more-item>
+        <button type="button" data-action="openAccount" aria-label="登录或注册" title="登录 / 注册">
+          <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <circle cx="12" cy="8" r="4"/>
+            <path d="M4 21a8 8 0 0 1 16 0"/>
+          </svg>
+        </button>
+      </li>
+      <li data-more-item data-admin-identity-item hidden>
         <button type="button" data-action="openAdmin" aria-label="管理后台" title="管理后台">
           <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
             <circle cx="12" cy="12" r="3"/>
@@ -191,7 +206,10 @@
     <!-- KML 控制面板 -->
     <aside id="kml-panel" class="kml-panel" hidden>
       <div class="kml-panel-header">
-        <h2>KML 数据管理</h2>
+        <div class="kml-panel-heading">
+          <h2>KML 数据管理</h2>
+          <button type="button" id="kml-sync-status" class="kml-sync-status" aria-live="polite" hidden disabled></button>
+        </div>
         <button type="button" class="kml-close-btn" data-action="closeKmlPanel" aria-label="关闭"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
       </div>
       <div class="kml-panel-body">

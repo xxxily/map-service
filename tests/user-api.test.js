@@ -1,0 +1,566 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import express from 'express'
+import commonMethods from '../service/bin/middleware/commonMethods/index.js'
+import service from '../service/bin/service.js'
+import simpleApi from '../service/bin/simpleApi.js'
+
+function createTestApp (options = {}) {
+  Object.keys(simpleApi.routeSet).forEach(key => delete simpleApi.routeSet[key])
+  const app = express()
+  if (options.trustProxy) app.set('trust proxy', options.trustProxy)
+  app.use(commonMethods)
+  app.use(express.urlencoded({ extended: false }))
+  app.use(express.json({ limit: '2mb' }))
+  simpleApi.routeController(app, simpleApi.configList, simpleApi.basePath)
+  return app
+}
+
+function listen (app) {
+  return new Promise(resolve => {
+    const server = app.listen(0, '127.0.0.1', () => {
+      resolve({
+        server,
+        baseUrl: `http://127.0.0.1:${server.address().port}`,
+      })
+    })
+  })
+}
+
+function withMockedService (methods) {
+  const originals = {}
+  Object.entries(methods).forEach(([name, method]) => {
+    originals[name] = service[name]
+    service[name] = method
+  })
+  return () => {
+    Object.entries(originals).forEach(([name, method]) => {
+      service[name] = method
+    })
+  }
+}
+
+async function requestJson (baseUrl, path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: {
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
+    },
+  })
+  return {
+    response,
+    payload: await response.json().catch(() => null),
+  }
+}
+
+function cookieHeaders (response) {
+  if (response.headers.getSetCookie instanceof Function) return response.headers.getSetCookie()
+  const value = response.headers.get('set-cookie')
+  return value ? [value] : []
+}
+
+function cookiePair (headers, name) {
+  const source = headers.find(value => value.includes(`${name}=`)) || ''
+  const matched = source.match(new RegExp(`(?:^|,\\s*)${name}=([^;]+)`))
+  return matched ? `${name}=${matched[1]}` : ''
+}
+
+function testSession () {
+  return {
+    id: 'ses_test',
+    csrfHash: 'csrf-hash',
+    user: {
+      id: 'usr_test',
+      username: 'map-user',
+      displayName: '地图用户',
+      roles: ['user'],
+      permissions: [
+        'account.self.read',
+        'kml.own.read',
+        'kml.own.write',
+        'share.own.manage',
+      ],
+    },
+  }
+}
+
+test('user login uses HttpOnly session cookie and readable CSRF cookie without returning tokens', async () => {
+  const session = testSession()
+  let loginContext = null
+  const restore = withMockedService({
+    loginUser: async (input, context) => {
+      loginContext = context
+      return {
+        sessionToken: 'session-token',
+        csrfToken: 'csrf-token',
+        maxAge: 3600000,
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        user: session.user,
+      }
+    },
+    verifyUserSession: token => token === 'session-token' ? session : null,
+    getUserSessionView: current => ({ authenticated: Boolean(current), user: current?.user || null }),
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const login = await requestJson(baseUrl, '/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'X-Forwarded-For': '198.51.100.200' },
+      body: JSON.stringify({ username: 'map-user', password: 'long-passphrase' }),
+    })
+    assert.equal(login.response.status, 200)
+    assert.equal(login.payload.result.user.id, 'usr_test')
+    assert.equal(Object.hasOwn(login.payload.result, 'sessionToken'), false)
+    assert.equal(Object.hasOwn(login.payload.result, 'csrfToken'), false)
+    assert.notEqual(loginContext.ip, '198.51.100.200')
+
+    const cookies = cookieHeaders(login.response)
+    const sessionCookie = cookiePair(cookies, 'map_user_session')
+    assert.ok(sessionCookie)
+    assert.ok(cookies.some(value => /map_user_session=.*HttpOnly/i.test(value)))
+    assert.ok(cookies.some(value => /map_csrf_token=csrf-token/i.test(value)))
+    assert.ok(cookies.some(value => /map_csrf_token=csrf-token/i.test(value) && !/map_csrf_token=[^,]*HttpOnly/i.test(value)))
+
+    const current = await requestJson(baseUrl, '/api/v1/auth/session', {
+      headers: { Cookie: sessionCookie },
+    })
+    assert.equal(current.payload.result.authenticated, true)
+    assert.equal(current.response.headers.get('cache-control'), 'no-store')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('browser login and registration reject cross-site credential requests', async () => {
+  let loginCalls = 0
+  let registerCalls = 0
+  const restore = withMockedService({
+    loginUser: async () => {
+      loginCalls += 1
+      throw new Error('不应调用登录服务')
+    },
+    registerUser: async () => {
+      registerCalls += 1
+      throw new Error('不应调用注册服务')
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    for (const path of ['/api/v1/auth/login', '/api/v1/admin/auth/login', '/api/v1/auth/register']) {
+      for (const headers of [
+        { Origin: 'https://attacker.example', 'Sec-Fetch-Site': 'cross-site' },
+        { 'Sec-Fetch-Site': 'same-site' },
+      ]) {
+        const result = await requestJson(baseUrl, path, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ username: 'map-user', password: 'long-passphrase' }),
+        })
+        assert.equal(result.response.status, 403)
+        assert.equal(result.payload.error.code, 'CSRF_INVALID')
+      }
+    }
+    assert.equal(loginCalls, 0)
+    assert.equal(registerCalls, 0)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('same-origin Fetch Metadata accepts credential requests when Chrome rewrites loopback Origin without its port', async () => {
+  const session = testSession()
+  const adminUser = {
+    ...session.user,
+    permissions: [...session.user.permissions, 'admin.user.read'],
+  }
+  let loginCalls = 0
+  const restore = withMockedService({
+    loginUser: async () => {
+      loginCalls += 1
+      return {
+        sessionToken: 'same-origin-session',
+        csrfToken: 'same-origin-csrf',
+        maxAge: 3600000,
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        user: adminUser,
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const login = await requestJson(baseUrl, '/api/v1/admin/auth/login', {
+      method: 'POST',
+      headers: {
+        Origin: 'http://127.0.0.1',
+        Referer: `${baseUrl}/admin`,
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      body: JSON.stringify({ username: 'map-user', password: 'long-passphrase' }),
+    })
+    assert.equal(login.response.status, 200)
+    assert.equal(login.payload.result.user.id, 'usr_test')
+    assert.equal(loginCalls, 1)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('trusted proxy configuration controls forwarded client IP and Secure cookies', async () => {
+  const session = testSession()
+  let loginContext = null
+  const restore = withMockedService({
+    loginUser: async (input, context) => {
+      loginContext = context
+      return {
+        sessionToken: 'proxy-session',
+        csrfToken: 'proxy-csrf',
+        maxAge: 3600000,
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        user: session.user,
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp({ trustProxy: 1 }))
+
+  try {
+    const login = await requestJson(baseUrl, '/api/v1/auth/login', {
+      method: 'POST',
+      headers: {
+        'X-Forwarded-For': '198.51.100.201',
+        'X-Forwarded-Proto': 'https',
+      },
+      body: JSON.stringify({ username: 'map-user', password: 'long-passphrase' }),
+    })
+    assert.equal(login.response.status, 200)
+    assert.equal(loginContext.ip, '198.51.100.201')
+    assert.ok(cookieHeaders(login.response).every(value => /;\s*Secure/i.test(value)))
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('private writes require both a valid session and matching CSRF header', async () => {
+  const session = testSession()
+  let created = 0
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? session : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'csrf-token') {
+        const err = new Error('请求安全校验失败')
+        err.statusCode = 403
+        err.code = 'CSRF_INVALID'
+        throw err
+      }
+    },
+    assertUserPermission: () => true,
+    createUserKml: () => {
+      created += 1
+      return { id: 'kml_created', revision: 1 }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    let result = await requestJson(baseUrl, '/api/v1/kml/files', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token' },
+      body: JSON.stringify({ name: '测试 KML' }),
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'CSRF_INVALID')
+    assert.equal(created, 0)
+
+    result = await requestJson(baseUrl, '/api/v1/kml/files', {
+      method: 'POST',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+      },
+      body: JSON.stringify({ name: '测试 KML' }),
+    })
+    assert.equal(result.response.status, 201)
+    assert.equal(result.payload.result.id, 'kml_created')
+    assert.equal(created, 1)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('kml.any.manage implies read access at the API permission guard', async () => {
+  const session = {
+    id: 'ses_auditor',
+    user: {
+      id: 'usr_auditor',
+      username: 'kml-auditor',
+      displayName: 'KML 审核员',
+      roles: ['kml_auditor'],
+      permissions: ['kml.any.manage'],
+    },
+  }
+  let receivedSession = null
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'auditor-session' ? session : null,
+    hasUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      return permission === 'kml.any.read' && current.user.permissions.includes('kml.any.manage')
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'kml.any.read')
+    },
+    getUserKml: current => {
+      receivedSession = current
+      return { id: 'kml_other_user', name: '受审 KML', features: [] }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/kml/files/kml_other_user', {
+      headers: { Cookie: 'map_user_session=auditor-session' },
+    })
+    assert.equal(result.response.status, 200)
+    assert.equal(result.payload.result.id, 'kml_other_user')
+    assert.equal(receivedSession, session)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('admin compatibility login, session and logout use the unified cookie session', async () => {
+  const session = {
+    ...testSession(),
+    user: {
+      ...testSession().user,
+      roles: ['operations_observer'],
+      permissions: ['admin.user.read'],
+    },
+  }
+  let loggedOut = false
+  const restore = withMockedService({
+    loginUser: async () => ({
+      sessionToken: 'admin-session',
+      csrfToken: 'admin-csrf',
+      maxAge: 3600000,
+      expiresAt: '2030-01-01T00:00:00.000Z',
+      user: session.user,
+    }),
+    verifyUserSession: token => token === 'admin-session' ? session : null,
+    getUserSessionView: current => ({ authenticated: true, user: current.user }),
+    verifyUserCsrf: (current, token) => {
+      assert.equal(current, session)
+      assert.equal(token, 'admin-csrf')
+    },
+    logoutUser: () => {
+      loggedOut = true
+      return { status: 'ok' }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const login = await requestJson(baseUrl, '/api/v1/admin/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'operator', password: 'long-passphrase' }),
+    })
+    const cookies = cookieHeaders(login.response)
+    const sessionCookie = cookiePair(cookies, 'map_user_session')
+    assert.ok(sessionCookie)
+    assert.equal(Object.hasOwn(login.payload.result, 'token'), false)
+
+    const current = await requestJson(baseUrl, '/api/v1/admin/auth/session', {
+      headers: { Cookie: sessionCookie },
+    })
+    assert.equal(current.response.status, 200)
+    assert.deepEqual(current.payload.result.user.roles, ['operations_observer'])
+    assert.deepEqual(current.payload.result.user.permissions, ['admin.user.read'])
+
+    const compatibilitySession = await requestJson(baseUrl, '/api/v1/admin/session', {
+      headers: { Cookie: sessionCookie },
+    })
+    assert.equal(compatibilitySession.response.status, 200)
+    assert.deepEqual(compatibilitySession.payload.result.user.roles, ['operations_observer'])
+    assert.deepEqual(compatibilitySession.payload.result.user.permissions, ['admin.user.read'])
+
+    const logout = await requestJson(baseUrl, '/api/v1/admin/auth/logout', {
+      method: 'POST',
+      headers: {
+        Cookie: sessionCookie,
+        'X-CSRF-Token': 'admin-csrf',
+      },
+      body: JSON.stringify({}),
+    })
+    assert.equal(logout.response.status, 200)
+    assert.equal(loggedOut, true)
+    assert.ok(cookieHeaders(logout.response).some(value => /map_user_session=;/i.test(value)))
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('admin endpoints reject legacy Bearer tokens after the user-system migration', async () => {
+  let legacyVerifierCalled = false
+  const restore = withMockedService({
+    verifyUserSession: () => null,
+    verifyAdminToken: () => {
+      legacyVerifierCalled = true
+      return { username: 'legacy-admin' }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/admin/session', {
+      headers: { Authorization: 'Bearer legacy-token' },
+    })
+    assert.equal(result.response.status, 401)
+    assert.equal(result.payload.error.code, 'AUTH_REQUIRED')
+    assert.equal(legacyVerifierCalled, false)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('public share password creates a share-scoped HttpOnly cookie and never returns the token', async () => {
+  let receivedAccessToken = ''
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    verifyAccess: async () => false,
+    authorizePublicKmlShare: async () => ({
+      passwordRequired: true,
+      accessToken: 'share-secret-token',
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+    }),
+    getPublicKmlShareManifest: (publicId, context) => {
+      receivedAccessToken = context.accessToken
+      return { publicId, title: '路线合集', items: [] }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const authorization = await requestJson(baseUrl, '/api/v1/public/kml-shares/public-123/access', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'share-password' }),
+    })
+    assert.equal(authorization.response.status, 200)
+    assert.equal(Object.hasOwn(authorization.payload.result, 'accessToken'), false)
+    const cookies = cookieHeaders(authorization.response)
+    const cookie = cookiePair(cookies, 'map_share_access_public-123')
+    assert.ok(cookie)
+    assert.ok(cookies.some(value => /HttpOnly/i.test(value)))
+    assert.ok(cookies.some(value => /Path=\/api\/v1\/public\/kml-shares\/public-123/i.test(value)))
+
+    const manifest = await requestJson(baseUrl, '/api/v1/public/kml-shares/public-123', {
+      headers: { Cookie: cookie },
+    })
+    assert.equal(manifest.response.status, 200)
+    assert.equal(receivedAccessToken, 'share-secret-token')
+    assert.equal(manifest.payload.result.title, '路线合集')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('public share map catalog reuses share-scoped authorization without requiring a user session', async () => {
+  let receivedContext = null
+  const restore = withMockedService({
+    isAccessEnabled: async () => true,
+    verifyAccess: async token => token === 'site-token',
+    getPublicKmlShareMapCatalog: async (publicId, context) => {
+      receivedContext = context
+      return {
+        sources: [{
+          id: 'road',
+          tileUrl: `/api/v1/public/kml-shares/${publicId}/tiles/road/{z}/{x}/{y}`,
+        }],
+        layers: [{ id: 'road-layer', items: [{ sourceId: 'road' }] }],
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/public/kml-shares/public-123/map/catalog', {
+      headers: {
+        Cookie: 'map_access_token=site-token; map_share_access_public-123=share-token',
+      },
+    })
+    assert.equal(result.response.status, 200)
+    assert.equal(result.payload.result.sources[0].id, 'road')
+    assert.equal(receivedContext.siteAccessGranted, true)
+    assert.equal(receivedContext.accessToken, 'share-token')
+    assert.equal(result.response.headers.get('cache-control'), 'no-store')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('public share tile route rejects sources outside the scoped public catalog before relay', async () => {
+  let relayCalled = false
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    assertPublicKmlShareMapSource: async (publicId, sourceId, context) => {
+      assert.equal(publicId, 'public-123')
+      assert.equal(sourceId, 'private-source')
+      assert.equal(context.siteAccessGranted, true)
+      const error = new Error('分享底图不存在')
+      error.statusCode = 404
+      error.code = 'RESOURCE_NOT_FOUND'
+      throw error
+    },
+    fetchTileSource: async () => {
+      relayCalled = true
+      throw new Error('不应发起图源请求')
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(
+      baseUrl,
+      '/api/v1/public/kml-shares/public-123/tiles/private-source/1/0/0'
+    )
+    assert.equal(result.response.status, 404)
+    assert.equal(result.payload.error.code, 'RESOURCE_NOT_FOUND')
+    assert.equal(relayCalled, false)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('unexpected server errors do not expose internal exception details', async () => {
+  const restore = withMockedService({
+    getAuthConfig: () => {
+      throw new Error('SQLITE_ERROR: no such table users; path=/private/map-service.sqlite')
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/auth/config')
+    assert.equal(result.response.status, 500)
+    assert.equal(result.payload.error.code, 'INTERNAL_ERROR')
+    assert.equal(result.payload.error.message, '服务器处理请求失败')
+    assert.doesNotMatch(JSON.stringify(result.payload), /SQLITE_ERROR|private\/map-service/)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})

@@ -23,23 +23,55 @@ import {
   handleProxyChange,
   handleProxyEnter
 } from './pages/proxy.js'
+import {
+  handleUsersClick,
+  handleUsersSubmit,
+  renderUsersPage,
+} from './pages/users.js'
+import {
+  handleRolesClick,
+  handleRolesSubmit,
+  renderRolesPage,
+} from './pages/roles.js'
+import {
+  handleUserSystemSettingsSubmit,
+  renderUserSystemSettingsPage,
+} from './pages/userSystemSettings.js'
+import {
+  handleShareModerationClick,
+  handleShareModerationSubmit,
+  renderShareModerationPage,
+} from './pages/shareModeration.js'
+import {
+  handleAuditLogsClick,
+  handleAuditLogsSubmit,
+  renderAuditLogsPage,
+} from './pages/auditLogs.js'
+import {
+  canAccessAdminPage,
+  filterAdminPages,
+  hasAdminPermission,
+} from './access.js'
 
 
 export const ADMIN_PAGES = [
   {
     id: 'overview',
     label: '概览',
+    permission: 'admin.overview.read',
     render: renderOverviewPage,
   },
   {
     id: 'cache',
     label: '缓存',
+    permission: 'admin.cache.manage',
     render: renderCachePage,
     handleClick: handleCacheClick,
   },
   {
     id: 'kml',
-    label: 'KML管理',
+    label: '公共 KML',
+    permission: 'admin.public_kml.manage',
     render: renderKmlPage,
     handleClick: handleKmlClick,
     handleChange: handleKmlChange,
@@ -47,6 +79,7 @@ export const ADMIN_PAGES = [
   {
     id: 'precache',
     label: '预缓存',
+    permission: 'admin.precache.manage',
     render: renderPrecachePage,
     afterRender: initPrecacheMap,
     afterEnter: schedulePrecacheEstimate,
@@ -58,6 +91,7 @@ export const ADMIN_PAGES = [
   {
     id: 'tile-sources',
     label: '图源管理',
+    permission: 'admin.layer.manage',
     render: renderTileSourcesPage,
     afterEnter: handleTileSourcesEnter,
     afterLoad: handleTileSourcesEnter,
@@ -68,6 +102,7 @@ export const ADMIN_PAGES = [
   {
     id: 'proxy',
     label: '代理配置',
+    permission: 'admin.layer.manage',
     render: renderProxyPage,
     afterEnter: handleProxyEnter,
     afterLoad: handleProxyEnter,
@@ -77,11 +112,57 @@ export const ADMIN_PAGES = [
   },
   {
     id: 'settings',
-    label: '设置',
+    label: '站点设置',
+    permission: 'admin.security.manage',
     render: renderSettingsPage,
     handleSubmit: handleSettingsSubmit,
   },
+  {
+    id: 'users',
+    label: '用户管理',
+    permission: 'admin.user.read',
+    render: renderUsersPage,
+    handleClick: handleUsersClick,
+    handleSubmit: handleUsersSubmit,
+  },
+  {
+    id: 'roles',
+    label: '角色权限',
+    permission: 'admin.role.manage',
+    render: renderRolesPage,
+    handleClick: handleRolesClick,
+    handleSubmit: handleRolesSubmit,
+  },
+  {
+    id: 'user-system',
+    label: '用户体系设置',
+    permissions: ['admin.registration.manage', 'admin.security.manage'],
+    render: renderUserSystemSettingsPage,
+    handleSubmit: handleUserSystemSettingsSubmit,
+  },
+  {
+    id: 'shares',
+    label: '分享治理',
+    permission: 'admin.share.moderate',
+    render: renderShareModerationPage,
+    handleClick: handleShareModerationClick,
+    handleSubmit: handleShareModerationSubmit,
+  },
+  {
+    id: 'audit',
+    label: '审计日志',
+    permission: 'admin.audit.read',
+    render: renderAuditLogsPage,
+    handleClick: handleAuditLogsClick,
+    handleSubmit: handleAuditLogsSubmit,
+  },
 ]
+
+export function getVisibleAdminPages (session) {
+  return filterAdminPages(ADMIN_PAGES, session)
+}
+
+export { canAccessAdminPage, hasAdminPermission }
 
 export function buildAdminPageUrl (tabId) {
   const page = getAdminPage(tabId)
@@ -90,6 +171,11 @@ export function buildAdminPageUrl (tabId) {
 
 export function getAdminPage (tabId) {
   return ADMIN_PAGES.find(page => page.id === tabId) || ADMIN_PAGES[0]
+}
+
+export function getAuthorizedAdminPage (tabId, session) {
+  const pages = getVisibleAdminPages(session)
+  return pages.find(page => page.id === tabId) || pages[0] || null
 }
 
 export function isAdminTab (tabId) {

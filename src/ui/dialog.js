@@ -251,6 +251,7 @@ export function showChoiceDialog (options = {}) {
   const message = options.message || ''
   const choices = options.choices || [] // [{ text: '编辑', value: 'edit', class: 'primary' }]
   const cancelText = options.cancelText || '取消'
+  const dismissible = options.dismissible !== false
 
   root.hidden = false
   root.innerHTML = `
@@ -262,7 +263,7 @@ export function showChoiceDialog (options = {}) {
           ${choices.map(choice => `
             <button type="button" class="${choice.class || 'app-dialog-secondary'}" data-choice-action="${escapeHtml(choice.value)}">${escapeHtml(choice.text)}</button>
           `).join('')}
-          <button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${escapeHtml(cancelText)}</button>
+          ${dismissible ? `<button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${escapeHtml(cancelText)}</button>` : ''}
         </div>
       </section>
     </div>
@@ -286,12 +287,12 @@ export function showChoiceDialog (options = {}) {
       const actionTarget = event.target.closest('[data-dialog-action]')
       if (actionTarget && actionTarget.dataset.dialogAction === 'cancel') {
         if (dialog?.contains(event.target) && actionTarget.classList.contains('app-dialog-backdrop')) return
-        closeDialog(root, cleanup, resolve, 'cancel')
+        if (dismissible) closeDialog(root, cleanup, resolve, 'cancel')
       }
     }
 
     const onKeydown = (event) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && dismissible) {
         event.preventDefault()
         closeDialog(root, cleanup, resolve, 'cancel')
       }
@@ -301,4 +302,3 @@ export function showChoiceDialog (options = {}) {
     document.addEventListener('keydown', onKeydown)
   })
 }
-

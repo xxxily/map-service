@@ -15,7 +15,7 @@ async function main () {
     }
 
     console.log(`Copying Cesium assets from ${src} to ${dest}...`)
-    await fs.ensureDir(dest)
+    await fs.remove(dest)
     await fs.copy(src, dest)
     console.log('Cesium assets successfully copied.')
   } catch (err) {

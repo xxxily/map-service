@@ -27,10 +27,14 @@ import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
 import { isAdminLocation } from './admin/routes.js'
+import { initAccountApp, isAccountLocation } from './account/app.js'
+import { initIdentityEntry } from './auth/identity.js'
 import { registerServiceWorker } from './pwa.js'
 import { initKmlSupport } from './map/kml.js'
 import { initGuidelines, toggleGuidelineMode } from './map/guidelines.js'
 import { initAfterAccessCheck } from './map/access-control.js'
+import { getActiveShare, isShareLocation, prepareShareView } from './map/share-view.js'
+import { initFavoriteActions } from './map/favorite-actions.js'
 import {
   MAX_LOCATION_HISTORY_POINTS,
   MAX_LOCATION_INTERVAL_SECONDS,
@@ -212,13 +216,22 @@ function initDesktopShiftDragRotate (map) {
 }
 
 async function initLeafletMap () {
+  const shareMode = isShareLocation(window.location)
+  const activeShare = getActiveShare()
+  const shareViewConfig = activeShare?.manifest?.viewConfig || {}
   const defaultView = parseDefaultView()
+  const shareCenter = Array.isArray(shareViewConfig.center) && shareViewConfig.center.length === 2 &&
+    shareViewConfig.center.every(value => Number.isFinite(Number(value)))
+    ? shareViewConfig.center.map(Number)
+    : null
+  const shareZoom = Number(shareViewConfig.zoom)
+  const shareBearing = Number(shareViewConfig.bearing)
   const AMap = await loadAmap()
 
   const map = L.map('map', {
-    center: defaultView.center,
-    zoom: defaultView.zoom,
-    bearing: defaultView.bearing || 0,
+    center: shareCenter || defaultView.center,
+    zoom: Number.isFinite(shareZoom) ? shareZoom : defaultView.zoom,
+    bearing: Number.isFinite(shareBearing) ? shareBearing : (defaultView.bearing || 0),
     rotate: true,
     touchRotate: true,
     shiftKeyRotate: true,
@@ -229,6 +242,19 @@ async function initLeafletMap () {
 
   window.map = map
   initDesktopShiftDragRotate(map)
+  initFavoriteActions({
+    readOnly: shareMode,
+    getCenterCandidate: () => {
+      const center = map.getCenter()
+      return {
+        name: '当前地图中心',
+        longitude: center.lng,
+        latitude: center.lat,
+        coordType: 'gcj02',
+        sourceType: 'map',
+      }
+    },
+  })
 
   let amapGeolocation = null
   if (AMap) {
@@ -236,18 +262,29 @@ async function initLeafletMap () {
     initAmapSearch(map, AMap, amapGeolocation)
   }
 
-  addTargetMarker(map, defaultView.center)
+  if (!shareMode) addTargetMarker(map, defaultView.center)
 
-  const layerControl = await initLayerControl(map, defaultView.layerName)
+  const layerControl = await initLayerControl(
+    map,
+    shareViewConfig.layerId || defaultView.layerName,
+    {
+      persist: !shareMode,
+      catalogUrl: shareMode && activeShare?.publicId
+        ? `/api/v1/public/kml-shares/${encodeURIComponent(activeShare.publicId)}/map/catalog`
+        : '/api/v1/map/catalog',
+    }
+  )
 
-  initKmlSupport(map)
-  initGuidelines(map)
-  initLocationHistoryPanel2d()
+  await initKmlSupport(map)
+  if (!shareMode) {
+    initGuidelines(map)
+    initLocationHistoryPanel2d()
+  }
 
-  map.on('moveend', () => writeMapViewToUrl(map))
-  map.on('zoomend', () => writeMapViewToUrl(map))
+  map.on('moveend', () => writeMapViewToUrl(map, { persist: !shareMode }))
+  map.on('zoomend', () => writeMapViewToUrl(map, { persist: !shareMode }))
   map.on('rotate', () => {
-    writeMapViewToUrl(map)
+    writeMapViewToUrl(map, { persist: !shareMode })
     const bearing = map.getBearing ? map.getBearing() : 0
     const btn = document.getElementById('reset-bearing-btn')
     if (btn) {
@@ -283,9 +320,12 @@ async function initLeafletMap () {
         window.toggleKmlPanel()
       }
     },
-    toggleGuidelineMode,
+    toggleGuidelineMode: () => {
+      if (!shareMode) toggleGuidelineMode()
+    },
     toggleSearchMode,
     updatePosition: () => {
+      if (shareMode) return
       if (skipNextClick) {
         skipNextClick = false
         return
@@ -300,15 +340,32 @@ async function initLeafletMap () {
     openAdmin: () => {
       window.location.href = '/admin/overview'
     },
+    openAccount: () => {
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
+      window.location.href = `/account?returnTo=${encodeURIComponent(returnTo)}`
+    },
     open3d: () => {
-      window.location.href = '/3d' + window.location.search
+      const publicId = getActiveShare()?.publicId
+      window.location.href = shareMode && publicId
+        ? `/3d?share=${encodeURIComponent(publicId)}`
+        : '/3d' + window.location.search
     },
   }
 
+  initIdentityEntry({
+    button: mapMenu.querySelector('[data-action="openAccount"]'),
+    adminItem: mapMenu.querySelector('[data-admin-identity-item]'),
+  })
+
   // 绑定定位按钮 3s 长按事件
   const positionBtn = mapMenu.querySelector('[data-action="updatePosition"]')
+  const guidelineBtn = mapMenu.querySelector('[data-action="toggleGuidelineMode"]')
+  if (shareMode) {
+    positionBtn?.closest('li')?.setAttribute('hidden', '')
+    guidelineBtn?.closest('li')?.setAttribute('hidden', '')
+  }
   let skipNextClick = false
-  if (positionBtn) {
+  if (positionBtn && !shareMode) {
     let longPressTimer = null
     let isLongPressTriggered = false
     let startX = 0
@@ -534,7 +591,12 @@ async function initLeafletMap () {
 
 }
 
-if (isAdminLocation(window.location)) {
+if (isShareLocation(window.location)) {
+  renderAppVersion()
+  prepareShareView(initLeafletMap)
+} else if (isAccountLocation(window.location)) {
+  initAccountApp()
+} else if (isAdminLocation(window.location)) {
   initAdminApp({ amapLoader: AMapLoader })
 } else {
   renderAppVersion()

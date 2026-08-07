@@ -1,5 +1,6 @@
 import { Cartesian3, Color, HeightReference, LabelStyle, VerticalOrigin, Cartesian2 } from 'cesium'
 import { flyToLngLat } from './location.js'
+import { setFavoriteCandidate } from '../map/favorite-actions.js'
 
 let currentSearchEntity = null
 
@@ -50,6 +51,15 @@ export function initAmapSearch3d (viewer, AMap) {
         show: Boolean(event.poi.name),
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
+    })
+
+    setFavoriteCandidate({
+      name: event.poi.name || '搜索结果',
+      address: event.poi.address || event.poi.district || '',
+      longitude: lng,
+      latitude: lat,
+      coordType: 'gcj02',
+      sourceType: 'search',
     })
 
     flyToLngLat(viewer, lng, lat, { height: 1500 })

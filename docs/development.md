@@ -21,15 +21,22 @@ npm run exec
 npm start
 ```
 
-管理后台账号通过环境变量配置：
+用户数据库首次初始化且尚无有效超级管理员时，可通过环境变量引导创建首个超级管理员：
 
 ```bash
-MAP_SERVICE_ADMIN_USERNAME=admin
-MAP_SERVICE_ADMIN_PASSWORD=change-me
-MAP_SERVICE_ADMIN_TOKEN_SECRET=change-me-too
+MAP_SERVICE_ADMIN_USERNAME=map-root
+MAP_SERVICE_ADMIN_PASSWORD=replace-with-a-long-unique-password
+MAP_SERVICE_USER_DATABASE=/absolute/path/map-service.sqlite
 ```
 
-本地开发默认账号密码是 `admin` / `admin`，方便快速启动。上线或共享环境必须覆盖默认值。
+`MAP_SERVICE_USER_DATABASE` 可省略，默认使用 `.db/map-service.sqlite`。本地开发默认账号密码是
+`admin` / `admin`，该弱密码账号会被要求首次登录改密；上线或共享环境必须在首次启动前覆盖。
+数据库已有有效超级管理员后，环境变量不会覆盖其密码。新管理登录使用 Cookie 会话和 CSRF，
+不再签发或在 localStorage 保存 Bearer Token。
+
+反向代理部署使用 `MAP_SERVICE_TRUST_PROXY` 显式声明可信跳数或网段；默认关闭。认证限流和 Secure Cookie 只使用 Express 经过该配置解析的 `req.ip` / `req.secure`，业务代码不得直接读取转发头决定信任边界。
+
+初始化、备份和恢复流程见 [用户体系部署与运维](./user-system-deployment.md)。
 
 常用脚本：
 
@@ -54,6 +61,18 @@ npm run build
 生产服务在 `/` 提供构建后的 `service/app/index.html`。管理后台也是同一个 Vite
 应用，通过 `/admin/<tab>` 打开。三维地图源码入口为根目录 `3d.html` 与 `src/3d.js`；
 生产服务通过 `/3d` 提供构建后的 `service/app/3d.html`。
+
+### 用户体系与账号 KML 开发
+
+- 用户、角色、会话、个人 KML、收藏和分享的业务规则放在 `service/bin/user/` 服务层；`simpleApi.js` 只负责鉴权、参数读取、服务调用和统一响应。
+- 权限判断以服务端返回的权限码为准。`account.self.update` 蕴含资料读取，`kml.own.write` 蕴含个人 KML 读取，`kml.any.manage` 蕴含任意 KML 读取。
+- 账号 KML 的读取权限和写入权限必须分开处理。只读账号仍可加载、查看、聚焦和导出授权数据，但不得通过隐藏控件、事件伪造、轨迹记录或撤销重做修改内存数据和服务端数据。
+- 2D 与 3D 共用 `src/map/kml-account-sync.js`、`kml-account-draft-store.js` 和 `kml-account-recovery-ui.js`。任何新写入口都必须先更新工作文件并立即保存用户隔离草稿，再进入防抖同步。
+- `/kml/sync` 的 `create.clientId` 是用户范围内的幂等键；同一创建意图在重试和恢复时必须复用。服务端同时保留 `(owner_id, sync_client_id)` 唯一约束和 `kml_sync_create_keys` 持久账本；永久删除内容行不得释放旧键。
+- 同步成功只能在确认没有后续修改时清理草稿。`409 KML_REVISION_CONFLICT` 后必须暂停自动同步，通过统一 Dialog 选择加载服务器版本、另存冲突副本或稍后处理。
+- 完整草稿只写 IndexedDB；`localStorage` 仅允许保存轻量代次元数据和删除墓碑，禁止在高频编辑路径同步序列化完整 KML。新元数据而完整写入未完成时必须回退到最近完整草稿，并以元数据的更高代次继续写入；初始化时即使记录已删除，也要读取墓碑代次，避免页面重载后的低代次写入复活旧草稿。
+- 会话失效监听必须在初始账号加载和恢复之前绑定；事件处理先调用 `suspendKmlAccountSync({ preserveDraft: true })`，随后才允许清理账号 KML 并加载访客本地数据。
+- 修改这些模块至少运行 `tests/kml-account-sync.test.js`、`tests/account-ui.test.js`、`tests/user-system.test.js`，并继续执行全量门禁。
 
 后台前端模块约定：
 

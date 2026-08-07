@@ -22,6 +22,7 @@ yarn-error.log*
 
 
 .omx/
+.omo/
 
 # 生产环境 PM2 配置文件
 pm2.prod.config.cjs

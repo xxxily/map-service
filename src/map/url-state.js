@@ -71,6 +71,9 @@ export function writeMapViewToUrl (map, options = {}) {
   const query = urlParams.toString()
   window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`)
   
+  // 分享页是只读访客视图，不应覆盖访问者自己的地图偏好。
+  if (options.persist === false) return
+
   // 写入 localStorage
   try {
     localStorage.setItem('last_map_view', JSON.stringify({

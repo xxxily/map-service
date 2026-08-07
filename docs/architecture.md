@@ -110,8 +110,18 @@ KML 点位详情由 `src/map/kml-content-panel.js` 统一渲染，图片、视�
 
 ## 管理后台
 
-管理后台在同一个 Vite 应用内实现，调用 `/api/v1/admin/*` 接口。前端将
-Bearer Token 保存在浏览器 localStorage。
+管理后台在同一个 Vite 应用内实现，调用 `/api/v1/admin/*` 接口。管理员与普通用户
+共用 SQLite 用户体系和服务端可撤销会话：`map_user_session` 使用 HttpOnly Cookie，
+写请求同时携带 `X-CSRF-Token`。前端不再把管理 Token 保存在 localStorage，页面可见性
+按权限码过滤，服务端仍对每个接口执行最终授权。
+
+用户、角色、会话、个人 KML、收藏、分享和审计默认存放在：
+
+```text
+.db/map-service.sqlite
+```
+
+个人 KML 同步以 `(ownerId, clientId)` 记录持久创建幂等键，并以独立删除墓碑处理“删除先于创建”的请求乱序。客户端快照同时记录服务端 ID、revision、内容指纹和 `active/trashed` 状态：文件消失且快照为 active 时发送 `trash`，文件重新出现且快照为 trashed 时发送 `restore`，恢复后内容仍不一致才继续发送 `update`。若 trashed 快照尚无服务端 ID，则先按 `clientId` 取消删除墓碑，再根据响应到达时的工作文件续发原 create 或重做后的 `trash(clientId)`。每个新批次在网络发送前会以 `pendingOperations` 精确克隆到用户恢复草稿并等待 IndexedDB 落盘；网络响应未知时优先重放，明确 HTTP 失败时清除，成功后再归并快照并自动处理剩余操作。页面恢复 pending trash/restore 时以草稿 `files` 的最新存在性为准，并保留原快照映射响应，服务器 active 清单不会覆盖请求在途期间的撤销或重做。因此 2D/3D 的删除、撤销和重做不会把已回收文件误判成新建，也不会出现刷新后丢失的假恢复。
 
 后台运行时状态存放在 `.db/admin/`：
 
@@ -138,6 +148,10 @@ Bearer Token 保存在浏览器 localStorage。
 - 发布项可以通过 `overrides.proxy` 覆盖图源代理策略。
 - 发布项不配置覆盖时使用 `overrides.proxy=null` 表示沿用目标图源自身策略；系统不再提供“继承系统默认代理”模式。
 - 历史 `/tiles/relay?url=` 接口只做白名单 relay，不再支持 `useProxy` 隐式代理。
+
+所有图源、派生矢量资源和代理测试目标统一经过 `service/bin/security/networkTarget.js`：配置阶段拒绝非 HTTP 协议、凭据 URL、内部域名和字面保留地址；回源阶段解析全部 DNS 结果，并统一关闭重定向。直连使用固定 lookup 连接已验证地址；代理模式把请求目标改写为已验证 IP，同时保留原 HTTP `Host`、HTTPS SNI 和证书校验主机名，使代理不再重新解析原域名。这样公开瓦片接口只能按受控图源 ID 回源，不能通过 IPv4/IPv6 表示差异、DNS 混合结果、代理侧 DNS 重绑定或 3xx 跳转访问内网。
+
+`.db/admin` JSON 运行态存储对同一文件使用串行写队列和唯一临时文件，图源目录初始化也会合并并发加载，避免地图并发请求导致原子重命名冲突或初始化覆盖。
 
 ## PWA
 

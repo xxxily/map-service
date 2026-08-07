@@ -16,6 +16,11 @@ import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
 import SharedKmlManager from './admin/sharedKml.js'
 import TileCatalogManager from './admin/tileCatalog.js'
+import UserDatabase from './user/database.js'
+import { UserSystemService } from './user/userSystem.js'
+import { UserContentService } from './user/userContent.js'
+import { createHttpError } from './user/security.js'
+import { buildShareMapCatalog, hasShareMapSource } from './user/shareMapCatalog.js'
 import {
   assertKmlMediaPublicAddress,
   validateKmlMediaResponse,
@@ -33,6 +38,19 @@ const adminAuth = createAdminAuth(adminConfig.auth, adminStore)
 const adminSettings = new AdminSettings(adminStore, {
   ...(adminConfig.settings || {}),
   accessTokenSecret: adminConfig.auth?.tokenSecret,
+})
+const userSystemConfig = serviceConfig.userSystem || {}
+const userDatabase = new UserDatabase({
+  filePath: userSystemConfig.databasePath,
+})
+const userSystem = new UserSystemService({
+  database: userDatabase,
+  requireSecureBootstrap: userSystemConfig.requireSecureBootstrap,
+  bootstrapAdmin: {
+    username: adminConfig.auth?.username,
+    password: adminConfig.auth?.password,
+    configured: adminConfig.auth?.bootstrapConfigured,
+  },
 })
 const tileCatalogManager = new TileCatalogManager({
   store: adminStore,
@@ -59,6 +77,12 @@ const precacheManager = new PrecacheManager({
 const sharedKmlManager = new SharedKmlManager({
   store: adminStore,
   contentOptions: baseConfig.staticService.kmlContent || {},
+})
+const userContent = new UserContentService({
+  database: userDatabase,
+  userSystem,
+  // 公开分享路由会异步计算站点访问状态并通过 context.siteAccessGranted 传入。
+  isSiteAccessEnabled: () => true,
 })
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
@@ -162,6 +186,284 @@ function writeSourceAccessLog (entry, source) {
 }
 
 const service = {
+  getUserSystemConfig () {
+    return {
+      sessionCookieName: userSystemConfig.sessionCookieName || 'map_user_session',
+      csrfCookieName: userSystemConfig.csrfCookieName || 'map_csrf_token',
+      shareCookiePrefix: userSystemConfig.shareCookiePrefix || 'map_share_access_',
+    }
+  },
+
+  getAuthConfig () {
+    return userSystem.getPublicConfig()
+  },
+
+  registerUser (input, context) {
+    return userSystem.register(input, context)
+  },
+
+  loginUser (input, context, options) {
+    return userSystem.login(input, context, options)
+  },
+
+  verifyUserSession (token) {
+    return userSystem.verifySession(token)
+  },
+
+  getUserSessionView (session) {
+    return userSystem.sessionView(session)
+  },
+
+  verifyUserCsrf (session, token) {
+    return userSystem.verifyCsrf(session, token)
+  },
+
+  assertUserPermission (session, permission) {
+    return userSystem.assertPermission(session, permission)
+  },
+
+  hasUserPermission (session, permission) {
+    return userSystem.hasPermission(session, permission)
+  },
+
+  assertUserRecentReauth (session) {
+    return userSystem.assertRecentReauth(session)
+  },
+
+  logoutUser (session, context) {
+    return userSystem.logout(session, context)
+  },
+
+  listUserSessions (session) {
+    return userSystem.listSessions(session)
+  },
+
+  revokeUserSession (session, sessionId) {
+    return userSystem.revokeOwnSession(session, sessionId)
+  },
+
+  logoutAllUserSessions (session, options) {
+    return userSystem.logoutAll(session, options)
+  },
+
+  reauthenticateUser (session, password, context) {
+    return userSystem.reauthenticate(session, password, context)
+  },
+
+  changeUserPassword (session, input, context) {
+    return userSystem.changePassword(session, input, context)
+  },
+
+  getCurrentUserProfile (session) {
+    return userSystem.getMyProfile(session)
+  },
+
+  updateCurrentUserProfile (session, input, context) {
+    return userSystem.updateMyProfile(session, input, context)
+  },
+
+  getUserSystemSettings () {
+    return userSystem.getSettings()
+  },
+
+  updateUserSystemSettings (actor, input, context) {
+    return userSystem.updateSettings(actor, input, context)
+  },
+
+  createManagedUser (actor, input, context) {
+    return userSystem.createUser(actor, input, context)
+  },
+
+  listManagedUsers (actor, input) {
+    return userSystem.listUsers(actor, input)
+  },
+
+  getManagedUser (actor, userId) {
+    return userSystem.getAdminUser(actor, userId)
+  },
+
+  updateManagedUser (actor, userId, input, context) {
+    return userSystem.updateUser(actor, userId, input, context)
+  },
+
+  resetManagedUserPassword (actor, userId, input, context) {
+    return userSystem.resetUserPassword(actor, userId, input, context)
+  },
+
+  revokeManagedUserSessions (actor, userId, context) {
+    return userSystem.revokeUserSessions(actor, userId, context)
+  },
+
+  setManagedUserRoles (actor, userId, roleCodes, context) {
+    return userSystem.setUserRoles(actor, userId, roleCodes, context)
+  },
+
+  listManagedRoles (actor) {
+    return userSystem.listRoles(actor)
+  },
+
+  createManagedRole (actor, input, context) {
+    return userSystem.createRole(actor, input, context)
+  },
+
+  updateManagedRole (actor, roleId, input, context) {
+    return userSystem.updateRole(actor, roleId, input, context)
+  },
+
+  deleteManagedRole (actor, roleId, context) {
+    return userSystem.deleteRole(actor, roleId, context)
+  },
+
+  listUserAuditLogs (actor, input) {
+    return userSystem.listAuditLogs(actor, input)
+  },
+
+  ensureDefaultUserKml (actor) {
+    return userContent.ensureDefaultKml(actor)
+  },
+
+  listUserKmlFiles (actor, input) {
+    return userContent.listKmlFiles(actor, input)
+  },
+
+  createUserKml (actor, input, context) {
+    return userContent.createKml(actor, input, context)
+  },
+
+  getUserKml (actor, id) {
+    return userContent.getKml(actor, id)
+  },
+
+  updateUserKml (actor, id, input, context) {
+    return userContent.updateKml(actor, id, input, context)
+  },
+
+  trashUserKml (actor, id, context) {
+    return userContent.trashKml(actor, id, context)
+  },
+
+  restoreUserKml (actor, id, context) {
+    return userContent.restoreKml(actor, id, context)
+  },
+
+  permanentlyDeleteUserKml (actor, id, context) {
+    return userContent.deleteKmlPermanently(actor, id, context)
+  },
+
+  importUserKml (actor, input, context) {
+    return userContent.importKml(actor, input, context)
+  },
+
+  exportUserKml (actor, id) {
+    return userContent.exportKml(actor, id)
+  },
+
+  syncUserKmlFiles (actor, input, context) {
+    return userContent.syncKmlFiles(actor, input, context)
+  },
+
+  migrateLocalUserKml (actor, input, context) {
+    return userContent.migrateLocalKml(actor, input, context)
+  },
+
+  listUserFavorites (actor, input) {
+    return userContent.listFavorites(actor, input)
+  },
+
+  createUserFavorite (actor, input, context) {
+    return userContent.createFavorite(actor, input, context)
+  },
+
+  getUserFavorite (actor, id) {
+    return userContent.getFavorite(actor, id)
+  },
+
+  updateUserFavorite (actor, id, input, context) {
+    return userContent.updateFavorite(actor, id, input, context)
+  },
+
+  deleteUserFavorite (actor, id, context) {
+    return userContent.deleteFavorite(actor, id, context)
+  },
+
+  listUserKmlShares (actor, input) {
+    return userContent.listShares(actor, input)
+  },
+
+  createUserKmlShare (actor, input, context) {
+    return userContent.createShare(actor, input, context)
+  },
+
+  getUserKmlShare (actor, id) {
+    return userContent.getShare(actor, id)
+  },
+
+  updateUserKmlShare (actor, id, input, context) {
+    return userContent.updateShare(actor, id, input, context)
+  },
+
+  pauseUserKmlShare (actor, id, context) {
+    return userContent.pauseShare(actor, id, context)
+  },
+
+  resumeUserKmlShare (actor, id, context) {
+    return userContent.resumeShare(actor, id, context)
+  },
+
+  revokeUserKmlShare (actor, id, context) {
+    return userContent.revokeShare(actor, id, context)
+  },
+
+  rotateUserKmlShareLink (actor, id, context) {
+    return userContent.rotateShareLink(actor, id, context)
+  },
+
+  authorizePublicKmlShare (publicId, input, context) {
+    return userContent.authorizePublicShare(publicId, input, context)
+  },
+
+  getPublicKmlShareManifest (publicId, options) {
+    return userContent.getPublicShareManifest(publicId, options)
+  },
+
+  assertPublicKmlShareRequest (publicId, options) {
+    return userContent.assertPublicShareRequest(publicId, options)
+  },
+
+  async getPublicKmlShareMapCatalog (publicId, options) {
+    userContent.assertPublicShareRequest(publicId, options)
+    return buildShareMapCatalog(await tileCatalogManager.getPublicCatalog(), publicId)
+  },
+
+  async assertPublicKmlShareMapSource (publicId, sourceId, options) {
+    userContent.assertPublicShareRequest(publicId, options)
+    const catalog = buildShareMapCatalog(await tileCatalogManager.getPublicCatalog(), publicId)
+    if (!hasShareMapSource(catalog, sourceId)) {
+      throw createHttpError('分享底图不存在', 404, 'RESOURCE_NOT_FOUND')
+    }
+    return true
+  },
+
+  getPublicKmlShareFile (publicId, shareItemId, options) {
+    return userContent.getPublicShareFile(publicId, shareItemId, options)
+  },
+
+  exportPublicKmlShareFile (publicId, shareItemId, options) {
+    return userContent.exportPublicShareFile(publicId, shareItemId, options)
+  },
+
+  listAllUserKmlShares (actor, input) {
+    return userContent.listAllShares(actor, input)
+  },
+
+  blockUserKmlShare (actor, id, input, context) {
+    return userContent.blockShare(actor, id, input, context)
+  },
+
+  unblockUserKmlShare (actor, id, context) {
+    return userContent.unblockShare(actor, id, context)
+  },
+
   async fetchRelay (url, options = {}) {
     return fetchRelay.fetch(url, {
       ...options,
@@ -426,7 +728,7 @@ const service = {
     return adminAuth.verifyToken(token)
   },
 
-  async getAdminSystemInfo () {
+  async getAdminSystemInfo (actor) {
     const packageInfo = await readPackageInfo()
     return {
       package: packageInfo,
@@ -437,6 +739,7 @@ const service = {
       serverTime: Date.now(),
       basePath: '/api/v1',
       admin: await adminAuth.getPublicInfo(),
+      userSystem: userSystem.getHealthSummary(actor),
     }
   },
 

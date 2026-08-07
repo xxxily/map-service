@@ -15,8 +15,41 @@ export const adminState = {
   visitsLoading: false,
   visitsError: '',
   settings: null,
+  userSystemSettings: null,
   tasks: [],
   kmls: [],
+  adminUsers: {
+    items: [],
+    page: 1,
+    limit: 20,
+    total: 0,
+  },
+  adminUserFilters: {
+    search: '',
+    status: '',
+    role: '',
+  },
+  roles: [],
+  moderatedShares: {
+    items: [],
+    page: 1,
+    limit: 20,
+    total: 0,
+  },
+  shareFilters: {
+    search: '',
+    status: '',
+  },
+  auditLogs: {
+    items: [],
+    page: 1,
+    limit: 20,
+    total: 0,
+  },
+  auditFilters: {
+    action: '',
+    targetType: '',
+  },
   precacheForm: {
     providerId: '',
     bounds: {

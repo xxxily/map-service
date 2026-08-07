@@ -1,173 +1,150 @@
-const API_BASE = '/api/v1'
-const TOKEN_KEY = 'mapServiceAdminToken'
+import { apiRequest, getCsrfToken } from '../auth/api.js'
 
-export function getAdminToken () {
-  return window.localStorage.getItem(TOKEN_KEY) || ''
+export { getCsrfToken }
+
+export function clearAdminSessionState () {
+  // 会话与 CSRF 均由服务端 Cookie 管理，后台没有需要清理的本地令牌。
 }
 
-export function setAdminToken (token) {
-  if (token) {
-    window.localStorage.setItem(TOKEN_KEY, token)
-  } else {
-    window.localStorage.removeItem(TOKEN_KEY)
-  }
+export async function requestAdminApi (path, options = {}) {
+  return apiRequest(path, options)
 }
 
-async function request (path, options = {}) {
-  const headers = {
-    Accept: 'application/json',
-    ...(options.headers || {}),
-  }
-
-  if (options.body !== undefined) {
-    if (typeof window !== 'undefined' && options.body instanceof window.FormData) {
-      // Browser automatically sets boundary, do not set Content-Type
-    } else {
-      headers['Content-Type'] = 'application/json'
+function queryString (params = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      query.set(key, String(value))
     }
-  }
-
-  if (options.auth !== false) {
-    const token = getAdminToken()
-    if (token) {
-      headers.Authorization = `Bearer ${token}`
-    }
-  }
-
-  const response = await window.fetch(`${API_BASE}${path}`, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body === undefined ? undefined : (typeof window !== 'undefined' && options.body instanceof window.FormData ? options.body : JSON.stringify(options.body)),
   })
-
-  const payload = await response.json().catch(() => null)
-  if (!response.ok || payload?.code !== 0) {
-    const message = payload?.error?.message || response.statusText || '请求失败'
-    const err = new Error(message)
-    err.status = response.status
-    throw err
-  }
-
-  return payload.result
+  const value = query.toString()
+  return value ? `?${value}` : ''
 }
 
 export async function loginAdmin (credentials) {
-  const result = await request('/admin/auth/login', {
+  clearAdminSessionState()
+  return requestAdminApi('/admin/auth/login', {
     method: 'POST',
-    auth: false,
+    csrf: false,
     body: credentials,
   })
-  setAdminToken(result.token)
-  return result
 }
 
-export function logoutAdmin () {
-  setAdminToken('')
+export async function logoutAdmin () {
+  try {
+    return await requestAdminApi('/admin/auth/logout', { method: 'POST' })
+  } finally {
+    clearAdminSessionState()
+  }
 }
 
 export const adminApi = {
-  session: () => request('/admin/session'),
-  system: () => request('/admin/system'),
-  cache: () => request('/admin/cache'),
-  clearCache: (params = {}) => {
-    const qs = new URLSearchParams(params).toString()
-    return request(`/admin/cache${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
-  },
-  visits: () => request('/admin/visits'),
-  settings: () => request('/admin/settings'),
-  updateSettings: (body) => request('/admin/settings', { method: 'PUT', body }),
-  updatePassword: (body) => request('/admin/auth/password', { method: 'POST', body }),
-  precacheCatalog: () => request('/admin/precache/catalog'),
-  tasks: () => request('/admin/precache/tasks'),
-  estimateTask: (body) => request('/admin/precache/estimate', { method: 'POST', body }),
-  createTask: (body) => request('/admin/precache/tasks', { method: 'POST', body }),
-  pauseTask: (taskId) => request(`/admin/precache/tasks/${encodeURIComponent(taskId)}/pause`, { method: 'POST' }),
-  resumeTask: (taskId) => request(`/admin/precache/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' }),
-  deleteTask: (taskId, options = {}) => {
-    const params = new URLSearchParams()
-    if (options.deleteCache) {
-      params.set('deleteCache', 'true')
-    }
-    const query = params.toString()
-    return request(`/admin/precache/tasks/${encodeURIComponent(taskId)}${query ? `?${query}` : ''}`, { method: 'DELETE' })
-  },
-  kmls: () => request('/admin/kml'),
-  getKml: (id) => request(`/admin/kml/${encodeURIComponent(id)}`),
-  createKml: (body) => request('/admin/kml', { method: 'POST', body }),
-  updateKml: (id, body) => request(`/admin/kml/${encodeURIComponent(id)}`, { method: 'PUT', body }),
-  deleteKml: (id) => request(`/admin/kml/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  importKml: (formData) => request('/admin/kml/import', { method: 'POST', body: formData }),
-  // 图源管理 API
-  listTileSources: () => request('/admin/tile-sources'),
-  createTileSource: (body) => request('/admin/tile-sources', { method: 'POST', body }),
-  getTileSource: (id) => request(`/admin/tile-sources/${encodeURIComponent(id)}`),
-  updateTileSource: (id, body) => request(`/admin/tile-sources/${encodeURIComponent(id)}`, { method: 'PUT', body }),
-  deleteTileSource: (id) => request(`/admin/tile-sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  testTileSource: (id) => request(`/admin/tile-sources/${encodeURIComponent(id)}/test`, { method: 'POST' }),
-  listSourcePresets: () => request('/admin/source-presets'),
-  createSourceFromPreset: (presetId, body) => request(`/admin/source-presets/${encodeURIComponent(presetId)}/create-source`, { method: 'POST', body }),
+  session: () => requestAdminApi('/admin/auth/session'),
+  system: () => requestAdminApi('/admin/system'),
+  cache: () => requestAdminApi('/admin/cache'),
+  clearCache: (params = {}) => requestAdminApi(`/admin/cache${queryString(params)}`, { method: 'DELETE' }),
+  visits: () => requestAdminApi('/admin/visits'),
+  settings: () => requestAdminApi('/admin/settings'),
+  updateSettings: (body) => requestAdminApi('/admin/settings', { method: 'PUT', body }),
+  updatePassword: (body) => requestAdminApi('/auth/password', { method: 'POST', body }),
+  reauthenticate: (password) => requestAdminApi('/auth/reauth', { method: 'POST', body: { password } }),
+  precacheCatalog: () => requestAdminApi('/admin/precache/catalog'),
+  tasks: () => requestAdminApi('/admin/precache/tasks'),
+  estimateTask: (body) => requestAdminApi('/admin/precache/estimate', { method: 'POST', body }),
+  createTask: (body) => requestAdminApi('/admin/precache/tasks', { method: 'POST', body }),
+  pauseTask: (taskId) => requestAdminApi(`/admin/precache/tasks/${encodeURIComponent(taskId)}/pause`, { method: 'POST' }),
+  resumeTask: (taskId) => requestAdminApi(`/admin/precache/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' }),
+  deleteTask: (taskId, options = {}) => requestAdminApi(`/admin/precache/tasks/${encodeURIComponent(taskId)}${queryString({ deleteCache: options.deleteCache ? 'true' : '' })}`, { method: 'DELETE' }),
+  kmls: () => requestAdminApi('/admin/kml'),
+  getKml: (id) => requestAdminApi(`/admin/kml/${encodeURIComponent(id)}`),
+  createKml: (body) => requestAdminApi('/admin/kml', { method: 'POST', body }),
+  updateKml: (id, body) => requestAdminApi(`/admin/kml/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteKml: (id) => requestAdminApi(`/admin/kml/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  importKml: (formData) => requestAdminApi('/admin/kml/import', { method: 'POST', body: formData }),
 
-  // 密钥池 API
-  listKeyPools: () => request('/admin/key-pools'),
-  getKeyPool: (id) => request(`/admin/key-pools/${encodeURIComponent(id)}`),
-  createKeyPool: (body) => request('/admin/key-pools', { method: 'POST', body }),
-  updateKeyPool: (id, body) => request(`/admin/key-pools/${encodeURIComponent(id)}`, { method: 'PUT', body }),
-  deleteKeyPool: (id) => request(`/admin/key-pools/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  testKeyPool: (id) => request(`/admin/key-pools/${encodeURIComponent(id)}/test`, { method: 'POST' }),
-  testKeyPoolKey: (poolId, keyId) => request(`/admin/key-pools/${encodeURIComponent(poolId)}/keys/${encodeURIComponent(keyId)}/test`, { method: 'POST' }),
+  listTileSources: () => requestAdminApi('/admin/tile-sources'),
+  createTileSource: (body) => requestAdminApi('/admin/tile-sources', { method: 'POST', body }),
+  getTileSource: (id) => requestAdminApi(`/admin/tile-sources/${encodeURIComponent(id)}`),
+  updateTileSource: (id, body) => requestAdminApi(`/admin/tile-sources/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteTileSource: (id) => requestAdminApi(`/admin/tile-sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testTileSource: (id) => requestAdminApi(`/admin/tile-sources/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  listSourcePresets: () => requestAdminApi('/admin/source-presets'),
+  createSourceFromPreset: (presetId, body) => requestAdminApi(`/admin/source-presets/${encodeURIComponent(presetId)}/create-source`, { method: 'POST', body }),
 
-  // 图层组合 API
-  listMapLayers: () => request('/admin/map-layers'),
-  createMapLayer: (body) => request('/admin/map-layers', { method: 'POST', body }),
-  updateMapLayer: (id, body) => request(`/admin/map-layers/${encodeURIComponent(id)}`, { method: 'PUT', body }),
-  deleteMapLayer: (id) => request(`/admin/map-layers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  setDefaultMapLayer: (id) => request('/admin/map-layers-default', { method: 'PUT', body: { id } }),
+  listKeyPools: () => requestAdminApi('/admin/key-pools'),
+  getKeyPool: (id) => requestAdminApi(`/admin/key-pools/${encodeURIComponent(id)}`),
+  createKeyPool: (body) => requestAdminApi('/admin/key-pools', { method: 'POST', body }),
+  updateKeyPool: (id, body) => requestAdminApi(`/admin/key-pools/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteKeyPool: (id) => requestAdminApi(`/admin/key-pools/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testKeyPool: (id) => requestAdminApi(`/admin/key-pools/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  testKeyPoolKey: (poolId, keyId) => requestAdminApi(`/admin/key-pools/${encodeURIComponent(poolId)}/keys/${encodeURIComponent(keyId)}/test`, { method: 'POST' }),
 
-  // 代理出口 API
-  listProxyOutbounds: () => request('/admin/proxy-outbounds'),
-  createProxyOutbound: (body) => request('/admin/proxy-outbounds', { method: 'POST', body }),
-  updateProxyOutbound: (id, body) => request(`/admin/proxy-outbounds/${encodeURIComponent(id)}`, { method: 'PUT', body }),
-  deleteProxyOutbound: (id) => request(`/admin/proxy-outbounds/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  testProxyOutbound: (id) => request(`/admin/proxy-outbounds/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  listMapLayers: () => requestAdminApi('/admin/map-layers'),
+  createMapLayer: (body) => requestAdminApi('/admin/map-layers', { method: 'POST', body }),
+  updateMapLayer: (id, body) => requestAdminApi(`/admin/map-layers/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteMapLayer: (id) => requestAdminApi(`/admin/map-layers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  setDefaultMapLayer: (id) => requestAdminApi('/admin/map-layers-default', { method: 'PUT', body: { id } }),
 
-  // 代理池 API
-  listProxyPools: () => request('/admin/proxy-pools'),
-  createProxyPool: (body) => request('/admin/proxy-pools', { method: 'POST', body }),
-  updateProxyPool: (id, body) => request(`/admin/proxy-pools/${encodeURIComponent(id)}`, { method: 'PUT', body }),
-  deleteProxyPool: (id) => request(`/admin/proxy-pools/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  testProxyPool: (id) => request(`/admin/proxy-pools/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  listProxyOutbounds: () => requestAdminApi('/admin/proxy-outbounds'),
+  createProxyOutbound: (body) => requestAdminApi('/admin/proxy-outbounds', { method: 'POST', body }),
+  updateProxyOutbound: (id, body) => requestAdminApi(`/admin/proxy-outbounds/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteProxyOutbound: (id) => requestAdminApi(`/admin/proxy-outbounds/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testProxyOutbound: (id) => requestAdminApi(`/admin/proxy-outbounds/${encodeURIComponent(id)}/test`, { method: 'POST' }),
 
-  // 对外发布 API
-  listExternalPublishes: () => request('/admin/external-publishes'),
-  createExternalPublish: (body) => request('/admin/external-publishes', { method: 'POST', body }),
-  updateExternalPublish: (id, body) => request(`/admin/external-publishes/${encodeURIComponent(id)}`, { method: 'PUT', body }),
-  deleteExternalPublish: (id) => request(`/admin/external-publishes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  resetExternalPublishToken: (id) => request(`/admin/external-publishes/${encodeURIComponent(id)}/token`, { method: 'POST' }),
-  testExternalPublish: (id) => request(`/admin/external-publishes/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  listProxyPools: () => requestAdminApi('/admin/proxy-pools'),
+  createProxyPool: (body) => requestAdminApi('/admin/proxy-pools', { method: 'POST', body }),
+  updateProxyPool: (id, body) => requestAdminApi(`/admin/proxy-pools/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteProxyPool: (id) => requestAdminApi(`/admin/proxy-pools/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testProxyPool: (id) => requestAdminApi(`/admin/proxy-pools/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+
+  listExternalPublishes: () => requestAdminApi('/admin/external-publishes'),
+  createExternalPublish: (body) => requestAdminApi('/admin/external-publishes', { method: 'POST', body }),
+  updateExternalPublish: (id, body) => requestAdminApi(`/admin/external-publishes/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteExternalPublish: (id) => requestAdminApi(`/admin/external-publishes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  resetExternalPublishToken: (id) => requestAdminApi(`/admin/external-publishes/${encodeURIComponent(id)}/token`, { method: 'POST' }),
+  testExternalPublish: (id) => requestAdminApi(`/admin/external-publishes/${encodeURIComponent(id)}/test`, { method: 'POST' }),
   listExternalPublishLogs: (id = '') => id
-    ? request(`/admin/external-publishes/${encodeURIComponent(id)}/logs`)
-    : request('/admin/external-publish-logs'),
+    ? requestAdminApi(`/admin/external-publishes/${encodeURIComponent(id)}/logs`)
+    : requestAdminApi('/admin/external-publish-logs'),
   listSourceAccessLogs: (id = '') => id
-    ? request(`/admin/tile-sources/${encodeURIComponent(id)}/access-logs`)
-    : request('/admin/source-access-logs'),
+    ? requestAdminApi(`/admin/tile-sources/${encodeURIComponent(id)}/access-logs`)
+    : requestAdminApi('/admin/source-access-logs'),
+
+  listUsers: (params = {}) => requestAdminApi(`/admin/users${queryString(params)}`),
+  createUser: (body) => requestAdminApi('/admin/users', { method: 'POST', body }),
+  getUser: (id) => requestAdminApi(`/admin/users/${encodeURIComponent(id)}`),
+  updateUser: (id, body) => requestAdminApi(`/admin/users/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  updateUserRoles: (id, roles) => requestAdminApi(`/admin/users/${encodeURIComponent(id)}/roles`, { method: 'PUT', body: { roles } }),
+  resetUserPassword: (id, body = {}) => requestAdminApi(`/admin/users/${encodeURIComponent(id)}/reset-password`, { method: 'POST', body }),
+  revokeUserSessions: (id) => requestAdminApi(`/admin/users/${encodeURIComponent(id)}/revoke-sessions`, { method: 'POST' }),
+  listRoles: () => requestAdminApi('/admin/roles'),
+  createRole: (body) => requestAdminApi('/admin/roles', { method: 'POST', body }),
+  updateRole: (id, body) => requestAdminApi(`/admin/roles/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+  deleteRole: (id) => requestAdminApi(`/admin/roles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getUserSystemSettings: () => requestAdminApi('/admin/user-system/settings'),
+  updateUserSystemSettings: (body) => requestAdminApi('/admin/user-system/settings', { method: 'PUT', body }),
+  listUserShares: (params = {}) => requestAdminApi(`/admin/kml/shares${queryString(params)}`),
+  blockUserShare: (id, reason) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/block`, { method: 'POST', body: { reason } }),
+  unblockUserShare: (id) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/unblock`, { method: 'POST' }),
+  listAuditLogs: (params = {}) => requestAdminApi(`/admin/audit-logs${queryString(params)}`),
 }
 
 export async function getSharedKmlList () {
-  return request('/kml/shared', { auth: false })
+  return requestAdminApi('/kml/shared')
 }
 
 export async function getSharedKml (id) {
-  return request(`/kml/shared/${encodeURIComponent(id)}`, { auth: false })
+  return requestAdminApi(`/kml/shared/${encodeURIComponent(id)}`)
 }
 
 export async function getAccessStatus () {
-  return request('/access/status', { auth: false })
+  return requestAdminApi('/access/status')
 }
 
 export async function verifyAccessPassword (password) {
-  return request('/access/verify', {
+  return requestAdminApi('/access/verify', {
     method: 'POST',
-    auth: false,
+    csrf: false,
     body: { password },
   })
 }

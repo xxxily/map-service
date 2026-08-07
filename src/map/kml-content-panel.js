@@ -10,6 +10,10 @@ import {
   getKmlFeaturePopupMedia,
 } from './kml-media-gallery.js'
 import { openMediaPreview } from '../ui/media-preview.js'
+import {
+  bindFavoriteActionButtons,
+  renderFavoriteActionButton,
+} from './favorite-actions.js'
 
 const BUILD_IFRAME_ALLOWLIST = String(typeof import.meta.env === 'object' ? (import.meta.env.VITE_MAP_SERVICE_KML_IFRAME_ALLOWLIST || '') : '')
   .split(',')
@@ -101,9 +105,11 @@ export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
   const preview = getKmlFeaturePopupMedia(feature, { contentOptions: getKmlContentOptions() })
   const contentSummary = formatContentSummary(preview.contentSummary)
   const description = getFeatureDescriptionText(feature)
+  const favoriteAction = renderFavoriteActionButton(kmlFile, feature)
   const actionsHtml = isEditable
     ? `
       <div class="kml-popup-actions">
+        ${favoriteAction}
         <button type="button" class="kml-popup-btn kml-detail-btn" data-kml-id="${escapeHtml(kmlFile?.id)}" data-feature-id="${escapeHtml(feature?.id)}">查看详情</button>
         <button type="button" class="kml-popup-btn primary kml-edit-btn" data-kml-id="${escapeHtml(kmlFile?.id)}" data-feature-id="${escapeHtml(feature?.id)}">编辑</button>
         <button type="button" class="kml-popup-btn danger kml-delete-btn" data-kml-id="${escapeHtml(kmlFile?.id)}" data-feature-id="${escapeHtml(feature?.id)}">删除</button>
@@ -111,6 +117,7 @@ export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
     `
     : `
       <div class="kml-popup-actions">
+        ${favoriteAction}
         <button type="button" class="kml-popup-btn primary kml-detail-btn" data-kml-id="${escapeHtml(kmlFile?.id)}" data-feature-id="${escapeHtml(feature?.id)}">查看详情</button>
       </div>
     `
@@ -176,6 +183,7 @@ function openKmlMediaFromSelection (kmlFile, feature, selection, trigger, view =
 
 export function bindKmlFeaturePopupMediaActions (container, kmlFile, feature) {
   if (!container) return
+  bindFavoriteActionButtons(container, kmlFile, feature)
   container.querySelectorAll('.kml-popup-media-image img').forEach(image => {
     if (image.dataset.kmlPopupMediaFallbackBound === 'true') return
     image.dataset.kmlPopupMediaFallbackBound = 'true'
@@ -221,7 +229,7 @@ function closePanel () {
 }
 
 async function loadFeatureContentView (kmlFile, feature) {
-  if (kmlFile?.isPublic && kmlFile.id && feature?.id) {
+  if (kmlFile?.isPublic && !kmlFile?.isShare && kmlFile.id && feature?.id) {
     activeContentRequest?.abort()
     activeContentRequest = new AbortController()
     try {
@@ -365,7 +373,10 @@ function renderPanelContent (panel, kmlFile, feature, view, errorMessage = '') {
         <h2>${escapeHtml(feature?.name || '未命名点位')}</h2>
         ${summaryText ? `<p>${escapeHtml(summaryText)}</p>` : ''}
       </div>
-      <button type="button" class="kml-content-close" data-kml-content-close aria-label="关闭">×</button>
+      <div class="kml-content-header-actions">
+        ${renderFavoriteActionButton(kmlFile, feature)}
+        <button type="button" class="kml-content-close" data-kml-content-close aria-label="关闭">×</button>
+      </div>
     </header>
     <div class="kml-content-body">
       ${renderOverview(kmlFile, feature)}
@@ -375,6 +386,7 @@ function renderPanelContent (panel, kmlFile, feature, view, errorMessage = '') {
     </div>
   `
   panel.querySelector('[data-kml-content-close]')?.addEventListener('click', closePanel)
+  bindFavoriteActionButtons(panel, kmlFile, feature)
   bindMediaLoadFallbacks(panel)
   bindMediaPreviewActions(panel, kmlFile, feature, view)
 }
@@ -388,13 +400,17 @@ export async function openKmlFeatureContentPanel (kmlFile, feature) {
         <span class="kml-content-kicker">${escapeHtml(kmlFile?.isPublic ? '公共点位' : '个人点位')}</span>
         <h2>${escapeHtml(feature?.name || '未命名点位')}</h2>
       </div>
-      <button type="button" class="kml-content-close" data-kml-content-close aria-label="关闭">×</button>
+      <div class="kml-content-header-actions">
+        ${renderFavoriteActionButton(kmlFile, feature)}
+        <button type="button" class="kml-content-close" data-kml-content-close aria-label="关闭">×</button>
+      </div>
     </header>
     <div class="kml-content-body">
       <div class="kml-content-loading">正在加载点位内容...</div>
     </div>
   `
   panel.querySelector('[data-kml-content-close]')?.addEventListener('click', closePanel)
+  bindFavoriteActionButtons(panel, kmlFile, feature)
 
   try {
     const view = await loadFeatureContentView(kmlFile, feature)

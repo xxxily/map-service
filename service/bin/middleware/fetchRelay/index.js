@@ -4,6 +4,12 @@ import { pipeline } from 'stream/promises'
 import rootPath from '../../rootPath.js'
 import utils from '../../utils/index.js'
 import axios from 'axios'
+import {
+  createPinnedHttpAgents,
+  createPinnedProxyRequestConfig,
+  resolvePublicHttpTarget,
+  validatePublicHttpUrl,
+} from '../../security/networkTarget.js'
 
 const CACHEABLE_STATUS_MIN = 200
 const CACHEABLE_STATUS_MAX = 299
@@ -114,6 +120,7 @@ class FetchRelay {
     }
     this.config = utils.merge(defConf, conf || {})
     this.httpClient = this.config.httpClient || axios
+    this.targetResolver = this.config.targetResolver || resolvePublicHttpTarget
     this.statsStatePath = path.join(this.config.cacheDir, STATS_STATE_FILE)
     this.statsStateLoaded = false
     this.statsStateLoadPromise = null
@@ -223,6 +230,7 @@ class FetchRelay {
       timeout: this.config.timeout,
       responseType: 'stream',
       validateStatus: () => true,
+      maxRedirects: 0,
       headers: {},
     }
 
@@ -243,14 +251,18 @@ class FetchRelay {
       })
     }
 
-    if (Number.isInteger(options.maxRedirects)) {
-      axiosConf.maxRedirects = Math.max(0, options.maxRedirects)
-    }
-
     const proxySource = Object.hasOwn(options, 'proxy') ? options.proxy : null
     const proxy = normalizeProxyConfig(proxySource)
     if (proxy) {
-      axiosConf.proxy = proxy
+      const pinnedTarget = createPinnedProxyRequestConfig(options.targetResolution, proxy)
+      const { headers: pinnedHeaders, ...pinnedTransport } = pinnedTarget
+      Object.assign(axiosConf, pinnedTransport)
+      Object.keys(axiosConf.headers).forEach((name) => {
+        if (name.toLowerCase() === 'host') delete axiosConf.headers[name]
+      })
+      Object.assign(axiosConf.headers, pinnedHeaders)
+    } else if (options.targetResolution?.addresses?.length) {
+      Object.assign(axiosConf, createPinnedHttpAgents(options.targetResolution.addresses))
     }
 
     return axiosConf
@@ -335,7 +347,11 @@ class FetchRelay {
 
   async fetchUpstream (url, options = {}, entry) {
     const paths = this.getCachePaths(url, options)
-    const response = await this.httpClient(this.createAxiosConfig(url, options, entry))
+    const targetResolution = await this.targetResolver(url)
+    const response = await this.httpClient(this.createAxiosConfig(url, {
+      ...options,
+      targetResolution,
+    }, entry))
 
     if (response.status === 304 && entry && entry.exists) {
       const refreshedEntry = await this.updateMetaFromNotModified(entry, options)
@@ -351,7 +367,7 @@ class FetchRelay {
       throw new Error('url is required')
     }
 
-    const urlInfo = new URL(url)
+    const urlInfo = validatePublicHttpUrl(url, { label: '回源 URL' })
     if (!urlInfo.hostname) {
       throw new Error('url hostname is required')
     }
@@ -363,8 +379,12 @@ class FetchRelay {
     }
 
     if (!normalizedOptions.cache) {
+      const targetResolution = await this.targetResolver(url)
       const response = await this.httpClient({
-        ...this.createAxiosConfig(url, normalizedOptions),
+        ...this.createAxiosConfig(url, {
+          ...normalizedOptions,
+          targetResolution,
+        }),
         validateStatus: status => status >= CACHEABLE_STATUS_MIN && status <= CACHEABLE_STATUS_MAX,
       })
 

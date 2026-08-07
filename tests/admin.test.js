@@ -16,6 +16,25 @@ function tempDir (name) {
   return path.join(tmpdir(), `map-service-${name}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 }
 
+test('admin store serializes concurrent writes even when timestamps collide', async () => {
+  const dataDir = tempDir('admin-store-concurrent-write')
+  const store = new AdminStore({ dataDir })
+  const originalNow = Date.now
+
+  try {
+    Date.now = () => 1700000000000
+    await Promise.all(Array.from({ length: 12 }, (_, index) => (
+      store.write('concurrent', { index })
+    )))
+
+    const saved = await store.read('concurrent', null)
+    assert.equal(saved.index, 11)
+  } finally {
+    Date.now = originalNow
+    await fs.remove(dataDir)
+  }
+})
+
 test('admin auth creates expiring bearer tokens and rejects bad credentials', async () => {
   const auth = createAdminAuth({
     username: 'operator',
@@ -175,6 +194,11 @@ test('fetch relay forwards configured proxy to upstream request', async () => {
   const relay = new FetchRelay({
     cacheDir,
     minCacheBytes: 1,
+    targetResolver: async url => ({
+      url,
+      hostname: new URL(url).hostname,
+      addresses: [{ address: '203.12.34.56', family: 4 }],
+    }),
     httpClient: async (config) => {
       calls.push(config)
       return {
@@ -202,15 +226,12 @@ test('fetch relay forwards configured proxy to upstream request', async () => {
       void chunk
     }
 
-    assert.deepEqual(calls[0].proxy, {
-      host: '127.0.0.1',
-      port: 7890,
-      protocol: 'http',
-      auth: {
-        username: 'u',
-        password: 'p',
-      },
-    })
+    assert.equal(calls[0].proxy, false)
+    assert.equal(calls[0].url.includes('www.google.com'), false)
+    assert.equal(calls[0].headers.Host, 'www.google.com')
+    assert.equal(calls[0].httpsAgent.proxy.host, '127.0.0.1')
+    assert.equal(calls[0].httpsAgent.proxy.port, 7890)
+    assert.equal(calls[0].httpsAgent.proxy.auth, 'u:p')
   } finally {
     await fs.remove(cacheDir)
   }

@@ -1,4 +1,10 @@
 import crypto from 'node:crypto'
+import {
+  createPinnedHttpAgents,
+  createPinnedProxyRequestConfig,
+  resolvePublicHttpTarget,
+  validatePublicHttpUrl,
+} from '../security/networkTarget.js'
 
 const STORE_SOURCES = 'tile-sources'
 const STORE_LAYERS = 'map-layers'
@@ -161,15 +167,14 @@ function sampleTemplateUrl (template, subdomains = []) {
     .replaceAll('{range}', '0-255')
 }
 
-function isBlockedHostname (hostname) {
-  const value = String(hostname || '').toLowerCase()
-  if (!value || value === 'localhost' || value.endsWith('.localhost')) return true
-  if (value === '::1' || value === '[::1]') return true
-  if (/^127\./.test(value) || /^10\./.test(value) || /^192\.168\./.test(value)) return true
-  if (/^169\.254\./.test(value)) return true
-  const private172 = /^172\.(1[6-9]|2[0-9]|3[0-1])\./
-  if (private172.test(value)) return true
-  return false
+function normalizePublicHttpUrl (value, name, defaultValue = '') {
+  const normalized = normalizeString(value, defaultValue)
+  try {
+    validatePublicHttpUrl(normalized, { label: name })
+  } catch (err) {
+    throw createHttpError(err.message)
+  }
+  return normalized
 }
 
 function validateHttpTemplate (template, subdomains = []) {
@@ -184,18 +189,10 @@ function validateHttpTemplate (template, subdomains = []) {
     throw createHttpError(`URL 模板包含不支持的占位符：${[...new Set(invalidPlaceholders)].join(', ')}`)
   }
 
-  let parsed
   try {
-    parsed = new URL(sampleTemplateUrl(normalized, subdomains))
+    validatePublicHttpUrl(sampleTemplateUrl(normalized, subdomains), { label: 'URL 模板' })
   } catch (err) {
-    throw createHttpError('URL 模板不是有效 URL')
-  }
-
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw createHttpError('URL 模板仅支持 http 或 https')
-  }
-  if (isBlockedHostname(parsed.hostname)) {
-    throw createHttpError('URL 模板不能指向 localhost、内网或保留地址')
+    throw createHttpError(err.message)
   }
   return normalized
 }
@@ -781,7 +778,7 @@ function normalizeProxyOutbound (input = {}, current = null) {
     port: normalizeInteger(input.port ?? current?.port, '代理端口', { min: 1, max: 65535 }),
     username: normalizeString(input.username ?? current?.username),
     password: hasOwn(input, 'password') ? String(input.password || '') : String(current?.password || ''),
-    testUrl: normalizeString(input.testUrl ?? current?.testUrl, 'https://www.google.com/generate_204'),
+    testUrl: normalizePublicHttpUrl(input.testUrl ?? current?.testUrl, '代理测试 URL', 'https://www.google.com/generate_204'),
     timeoutMs: normalizeInteger(input.timeoutMs ?? current?.timeoutMs, '代理超时', { min: 1000, max: 60000, defaultValue: 8000 }),
     tags: normalizeStringList(input.tags ?? current?.tags),
     description: normalizeString(input.description ?? current?.description),
@@ -1254,10 +1251,13 @@ function normalizeExternalPublish (input = {}, current = null, tokenValue = null
 }
 
 export class TileCatalogManager {
-  constructor ({ store, defaults = {} }) {
+  constructor ({ store, defaults = {}, httpClient = null, targetResolver = resolvePublicHttpTarget }) {
     this.store = store
     this.defaults = defaults
+    this.httpClient = httpClient
+    this.targetResolver = targetResolver
     this.loaded = false
+    this.loadingPromise = null
     this.sources = []
     this.layers = []
     this.proxyOutbounds = []
@@ -1274,32 +1274,50 @@ export class TileCatalogManager {
     this.rateLimits = new Map()
   }
 
+  async requestHttp (config) {
+    if (this.httpClient) return this.httpClient(config)
+    const { default: axios } = await import('axios')
+    return axios(config)
+  }
+
   async ensureLoaded () {
     if (this.loaded) return
+    if (this.loadingPromise) return this.loadingPromise
 
-    const stores = await Promise.all([
-      this.loadOrInit(STORE_PROXY_OUTBOUNDS, defaultProxyOutbounds()),
-      this.loadOrInit(STORE_PROXY_POOLS, defaultProxyPools()),
-      this.loadOrInit(STORE_SOURCES, defaultSources()),
-      this.loadOrInit(STORE_LAYERS, defaultLayers()),
-      this.loadOrInit(STORE_EXTERNAL_PUBLISHES, defaultExternalPublishes()),
-      this.loadOrMergeSourcePresets(),
-      this.loadOrMergeKeyPools(),
-      this.store.read(STORE_EXTERNAL_LOGS, []),
-      this.store.read(STORE_SOURCE_ACCESS_LOGS, []),
-    ])
+    const loadingPromise = (async () => {
+      const stores = await Promise.all([
+        this.loadOrInit(STORE_PROXY_OUTBOUNDS, defaultProxyOutbounds()),
+        this.loadOrInit(STORE_PROXY_POOLS, defaultProxyPools()),
+        this.loadOrInit(STORE_SOURCES, defaultSources()),
+        this.loadOrInit(STORE_LAYERS, defaultLayers()),
+        this.loadOrInit(STORE_EXTERNAL_PUBLISHES, defaultExternalPublishes()),
+        this.loadOrMergeSourcePresets(),
+        this.loadOrMergeKeyPools(),
+        this.store.read(STORE_EXTERNAL_LOGS, []),
+        this.store.read(STORE_SOURCE_ACCESS_LOGS, []),
+      ])
 
-    this.proxyOutbounds = stores[0].map(item => normalizeProxyOutbound(item))
-    this.proxyPools = stores[1].map(item => normalizeProxyPool(item))
-    this.sources = stores[2].map(item => normalizeSource(item))
-    this.layers = stores[3].map(item => normalizeLayer(item))
-    this.externalPublishes = stores[4].map(item => normalizeExternalPublish(item))
-    this.sourcePresets = stores[5].map(item => normalizeSourcePreset(item))
-    this.keyPools = stores[6].map(item => normalizeKeyPool(item))
-    this.externalLogs = Array.isArray(stores[7]) ? stores[7] : []
-    this.sourceAccessLogs = Array.isArray(stores[8]) ? stores[8] : []
-    this.validateAll()
-    this.loaded = true
+      this.proxyOutbounds = stores[0].map(item => normalizeProxyOutbound(item))
+      this.proxyPools = stores[1].map(item => normalizeProxyPool(item))
+      this.sources = stores[2].map(item => normalizeSource(item))
+      this.layers = stores[3].map(item => normalizeLayer(item))
+      this.externalPublishes = stores[4].map(item => normalizeExternalPublish(item))
+      this.sourcePresets = stores[5].map(item => normalizeSourcePreset(item))
+      this.keyPools = stores[6].map(item => normalizeKeyPool(item))
+      this.externalLogs = Array.isArray(stores[7]) ? stores[7] : []
+      this.sourceAccessLogs = Array.isArray(stores[8]) ? stores[8] : []
+      this.validateAll()
+      this.loaded = true
+    })()
+
+    this.loadingPromise = loadingPromise
+    try {
+      await loadingPromise
+    } finally {
+      if (this.loadingPromise === loadingPromise) {
+        this.loadingPromise = null
+      }
+    }
   }
 
   async loadOrInit (name, fallback) {
@@ -2581,13 +2599,6 @@ export class TileCatalogManager {
     const timeout = outbound.timeoutMs || 8000
     const startTime = Date.now()
 
-    const axiosConfig = {
-      url: testUrl,
-      method: 'GET',
-      timeout,
-      validateStatus: () => true,
-    }
-
     const proxyConfig = {
       protocol: outbound.protocol || 'http',
       host: outbound.host,
@@ -2599,11 +2610,17 @@ export class TileCatalogManager {
         password: outbound.password || '',
       }
     }
-    axiosConfig.proxy = proxyConfig
+    const targetResolution = await this.targetResolver(testUrl, { label: '代理测试 URL' })
+    const axiosConfig = {
+      ...createPinnedProxyRequestConfig(targetResolution, proxyConfig),
+      method: 'GET',
+      timeout,
+      maxRedirects: 0,
+      validateStatus: () => true,
+    }
 
     try {
-      const { default: axios } = await import('axios')
-      const response = await axios(axiosConfig)
+      const response = await this.requestHttp(axiosConfig)
       const duration = Date.now() - startTime
       return {
         success: response.status >= 200 && response.status < 400,
@@ -2667,28 +2684,32 @@ export class TileCatalogManager {
     const startTime = Date.now()
     try {
       const request = await this.createSourceTileRequest(source.id, { z: zoom, x, y })
-      const { default: axios } = await import('axios')
+      const targetResolution = await this.targetResolver(request.url, { label: '图源 URL' })
       const axiosConfig = {
         url: request.url,
         method: 'GET',
         timeout: 10000,
         responseType: 'arraybuffer',
+        maxRedirects: 0,
         validateStatus: () => true,
       }
       if (request.proxy && request.proxy.enabled) {
-        axiosConfig.proxy = {
+        const proxyConfig = {
           protocol: request.proxy.protocol || 'http',
           host: request.proxy.host,
           port: Number(request.proxy.port),
         }
         if (request.proxy.username) {
-          axiosConfig.proxy.auth = {
+          proxyConfig.auth = {
             username: request.proxy.username,
             password: request.proxy.password || '',
           }
         }
+        Object.assign(axiosConfig, createPinnedProxyRequestConfig(targetResolution, proxyConfig))
+      } else {
+        Object.assign(axiosConfig, createPinnedHttpAgents(targetResolution.addresses))
       }
-      const response = await axios(axiosConfig)
+      const response = await this.requestHttp(axiosConfig)
       const duration = Date.now() - startTime
       const success = response.status >= 200 && response.status < 300
       return {

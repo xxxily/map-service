@@ -1,0 +1,291 @@
+const ACCOUNT_TABS = new Set(['profile', 'kml', 'favorites', 'shares', 'security'])
+const KML_SORT_FIELDS = new Set(['updatedAt', 'createdAt', 'name', 'featureCount'])
+
+export function isAccountLocation (locationLike) {
+  const pathname = typeof locationLike === 'string'
+    ? locationLike
+    : locationLike?.pathname
+  return pathname === '/account' || String(pathname || '').startsWith('/account/')
+}
+
+function userHasPermission (user, permission) {
+  const permissions = user?.permissions || []
+  if (permissions.includes('system.super_admin') || permissions.includes(permission)) return true
+  if (permission === 'account.self.read' && permissions.includes('account.self.update')) return true
+  if (permission === 'kml.own.read' && permissions.includes('kml.own.write')) return true
+  return false
+}
+
+export function getAccountCapabilities (user) {
+  return {
+    canReadProfile: userHasPermission(user, 'account.self.read'),
+    canUpdateProfile: userHasPermission(user, 'account.self.update'),
+    canReadKml: userHasPermission(user, 'kml.own.read'),
+    canWriteKml: userHasPermission(user, 'kml.own.write'),
+    canManageShares: userHasPermission(user, 'share.own.manage'),
+    canManageFavorites: userHasPermission(user, 'favorite.own.manage'),
+    canManageSessions: userHasPermission(user, 'session.self.manage'),
+    canAccessSecurity: Boolean(user),
+  }
+}
+
+export function getAvailableAccountTabs (user) {
+  const capabilities = getAccountCapabilities(user)
+  return [
+    capabilities.canReadProfile && 'profile',
+    capabilities.canReadKml && 'kml',
+    capabilities.canManageFavorites && 'favorites',
+    capabilities.canManageShares && 'shares',
+    capabilities.canAccessSecurity && 'security',
+  ].filter(Boolean)
+}
+
+export function normalizeAccountTab (value, user = null) {
+  const tab = String(value || '').replace(/^#/, '')
+  const normalized = ACCOUNT_TABS.has(tab) ? tab : 'profile'
+  if (!user) return normalized
+  const available = getAvailableAccountTabs(user)
+  return available.includes(normalized) ? normalized : (available[0] || 'security')
+}
+
+export function sanitizeReturnTo (value, fallback = '/') {
+  const target = String(value || '')
+  if (!target.startsWith('/') || target.startsWith('//') || target.includes('\\')) return fallback
+  try {
+    const parsed = new URL(target, 'https://map.local')
+    if (parsed.origin !== 'https://map.local') return fallback
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`
+  } catch {
+    return fallback
+  }
+}
+
+export function escapeHtml (value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+export function formatDateTime (value) {
+  const date = new Date(value || '')
+  if (!Number.isFinite(date.getTime())) return '未知'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
+export function formatBytes (value) {
+  const bytes = Math.max(0, Number(value || 0))
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+export function normalizePagedResult (result) {
+  if (Array.isArray(result)) {
+    return { items: result, page: 1, limit: result.length || 20, total: result.length }
+  }
+  return {
+    ...(result || {}),
+    items: Array.isArray(result?.items) ? result.items : [],
+    page: Number(result?.page || 1),
+    limit: Number(result?.limit || 20),
+    total: Number(result?.total || 0),
+  }
+}
+
+export function registrationEnabled (config) {
+  return config?.registration?.enabled === true || config?.registration?.mode === 'open'
+}
+
+export function buildShareItems (selectedIds, documents) {
+  const selected = new Set(Array.from(selectedIds || [], String))
+  return (documents || [])
+    .filter(document => selected.has(String(document.id)) && document.status === 'active')
+    .slice(0, 20)
+    .map((document, position) => ({
+      kmlId: document.id,
+      position,
+      visibleByDefault: true,
+    }))
+}
+
+export function normalizeKmlSort (sort, order) {
+  return {
+    sort: KML_SORT_FIELDS.has(String(sort || '')) ? String(sort) : 'updatedAt',
+    order: String(order || '').toLowerCase() === 'asc' ? 'asc' : 'desc',
+  }
+}
+
+export function partitionKmlTrashSelection (selectedIds, documents) {
+  const selected = new Set(Array.from(selectedIds || [], String))
+  const eligible = []
+  const skippedDefault = []
+  const skippedInactive = []
+  const seen = new Set()
+
+  Array.from(documents || []).forEach(document => {
+    const id = String(document?.id || '')
+    if (!id || !selected.has(id)) return
+    seen.add(id)
+    if (document.isDefault) skippedDefault.push(document)
+    else if (document.status !== 'active') skippedInactive.push(document)
+    else eligible.push(document)
+  })
+
+  return {
+    eligible,
+    skippedDefault,
+    skippedInactive,
+    skippedMissing: Array.from(selected).filter(id => !seen.has(id)),
+  }
+}
+
+export function buildShareUpdateItems (items) {
+  const seen = new Set()
+  return (items || []).flatMap(item => {
+    const kmlId = String(item?.kmlId || '')
+    if (!kmlId || seen.has(kmlId)) return []
+    seen.add(kmlId)
+    return [{
+      kmlId,
+      visibleByDefault: item.visibleByDefault !== false,
+      displayName: String(item.displayName || '').slice(0, 200),
+    }]
+  }).slice(0, 20).map((item, position) => ({ ...item, position }))
+}
+
+export function buildShareViewConfig (input = {}, fallback = {}) {
+  const current = fallback && typeof fallback === 'object' && !Array.isArray(fallback) ? fallback : {}
+  const result = {}
+  const mapMode = String(input.mapMode ?? current.mapMode ?? '2d')
+  if (!['2d', '3d'].includes(mapMode)) throw new Error('地图模式只支持 2D 或 3D')
+  result.mapMode = mapMode
+
+  const center = input.center === undefined ? current.center : input.center
+  if (center !== undefined && center !== null && center !== '') {
+    if (!Array.isArray(center) || center.length !== 2) throw new Error('地图中心需同时填写纬度和经度')
+    const latitude = Number(center[0])
+    const longitude = Number(center[1])
+    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      throw new Error('地图中心必须是有效的纬度和经度')
+    }
+    result.center = [latitude, longitude]
+  }
+
+  const numberFields = [
+    ['zoom', 0, 24, '缩放级别需在 0～24 之间'],
+    ['bearing', -360, 360, '旋转角度需在 -360～360 之间'],
+    ['pitch', 0, 85, '俯仰角需在 0～85 之间'],
+  ]
+  numberFields.forEach(([name, minimum, maximum, message]) => {
+    const rawValue = input[name] === undefined ? current[name] : input[name]
+    if (rawValue === undefined || rawValue === null || rawValue === '') return
+    const value = Number(rawValue)
+    if (!Number.isFinite(value) || value < minimum || value > maximum) throw new Error(message)
+    result[name] = value
+  })
+
+  if (typeof current.layerId === 'string' && current.layerId) result.layerId = current.layerId
+  if (typeof current.showOwnerDisplayName === 'boolean') result.showOwnerDisplayName = current.showOwnerDisplayName
+  return result
+}
+
+export function parseLocalKmlFiles (rawValue) {
+  let source
+  try {
+    source = JSON.parse(String(rawValue || '[]'))
+  } catch {
+    return { files: [], invalidCount: 1 }
+  }
+  if (!Array.isArray(source)) return { files: [], invalidCount: 1 }
+
+  let invalidCount = 0
+  const files = source.slice(0, 100).flatMap((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      invalidCount += 1
+      return []
+    }
+    const features = Array.isArray(item.features) ? item.features : []
+    return [{
+      id: String(item.id || `local-${index + 1}`),
+      name: String(item.name || '本地 KML').slice(0, 200),
+      description: String(item.description || '').slice(0, 5000),
+      isDefault: item.isDefault === true || item.id === 'default-kml',
+      theme: String(item.theme || 'default'),
+      color: String(item.color || '#0f766e'),
+      coordCorrection: String(item.coordCorrection || 'wgs84-to-gcj02'),
+      lockDrag: item.lockDrag === true,
+      enabled: item.enabled !== false,
+      isLiveTrack: item.isLiveTrack === true,
+      features,
+    }]
+  })
+  invalidCount += Math.max(0, source.length - 100)
+  return { files, invalidCount }
+}
+
+export function parseTags (value) {
+  return Array.from(new Set(String(value || '')
+    .split(/[,，]/)
+    .map(item => item.trim())
+    .filter(Boolean)))
+    .slice(0, 20)
+}
+
+export function shareStatusLabel (status) {
+  return {
+    active: '分享中',
+    paused: '已暂停',
+    expired: '已过期',
+    revoked: '已撤销',
+    blocked: '已封禁',
+  }[status] || String(status || '未知')
+}
+
+export function shareAccessPolicyLabel (share) {
+  const accessMode = {
+    public_link: '公开链接',
+    inherit_site_access: '继承站点访问',
+  }[share?.accessMode] || String(share?.accessMode || '公开链接')
+  return share?.passwordProtected ? `${accessMode}（密码保护）` : `${accessMode}（无需密码）`
+}
+
+export function revisionConflictPrompt (code) {
+  if (code === 'KML_REVISION_CONFLICT') {
+    return {
+      title: 'KML 版本冲突',
+      message: '该 KML 已被其他客户端更新，系统没有覆盖服务器内容。是否立即重新加载 KML 列表？',
+      success: 'KML 列表已重新加载，请重新编辑',
+      resource: 'kml',
+    }
+  }
+  if (code === 'SHARE_REVISION_CONFLICT') {
+    return {
+      title: '分享版本冲突',
+      message: '该分享已被其他客户端更新，系统没有覆盖服务器内容。是否立即重新加载分享列表？',
+      success: '分享列表已重新加载，请重新编辑',
+      resource: 'shares',
+    }
+  }
+  return null
+}
+
+export function kmlStatusLabel (status) {
+  return status === 'trashed' ? '回收站' : '使用中'
+}
+
+export function hasAdminAccess (user) {
+  const permissions = user?.permissions || []
+  return permissions.includes('system.super_admin') || permissions.some(permission => permission.startsWith('admin.'))
+}
+
+export { ACCOUNT_TABS }

@@ -6,6 +6,14 @@ import path from 'path'
 import { tmpdir } from 'node:os'
 import FetchRelay from '../service/bin/middleware/fetchRelay/index.js'
 
+async function resolveTestTarget (url) {
+  return {
+    url,
+    hostname: new URL(url).hostname,
+    addresses: [{ address: '203.12.34.56', family: 4 }],
+  }
+}
+
 function streamFrom (value) {
   return Readable.from([Buffer.from(value)])
 }
@@ -32,6 +40,7 @@ function createRelay (responses, options = {}) {
     ttl: options.ttl ?? 1000 * 60,
     staleTtl: options.staleTtl ?? 1000 * 60 * 60,
     minCacheBytes: options.minCacheBytes ?? 1,
+    targetResolver: resolveTestTarget,
     httpClient: async (config) => {
       calls.push(config)
       const nextResponse = responses.shift()
@@ -100,9 +109,59 @@ test('fetch relay forwards a bounded redirect policy without writing cache', asy
     assert.equal(await readStream(result.stream), 'tile-data')
     assert.equal(result.cacheStatus, 'BYPASS')
     assert.equal(calls[0].maxRedirects, 0)
+    assert.ok(calls[0].httpAgent)
+    assert.ok(calls[0].httpsAgent)
     assert.equal(await fs.pathExists(relay.getCachePaths(targetUrl).cachePath), false)
   } finally {
     await cleanup()
+  }
+})
+
+test('fetch relay proxy mode pins the validated origin address and preserves TLS identity', async () => {
+  const targetUrl = 'https://tiles.example.com/3/1/2.png'
+  const { relay, calls, cleanup } = createRelay([{}])
+
+  try {
+    const result = await relay.fetch(targetUrl, {
+      cache: false,
+      proxy: {
+        enabled: true,
+        protocol: 'http',
+        host: 'proxy.example.net',
+        port: 8080,
+      },
+    })
+    assert.equal(await readStream(result.stream), 'tile-data')
+    assert.equal(calls[0].url, 'https://203.12.34.56/3/1/2.png')
+    assert.equal(calls[0].url.includes('tiles.example.com'), false)
+    assert.equal(calls[0].headers.Host, 'tiles.example.com')
+    assert.equal(calls[0].proxy, false)
+    assert.equal(calls[0].httpsAgent.proxy.host, 'proxy.example.net')
+    assert.equal(calls[0].httpsAgent.proxy.protocol, 'http:')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('fetch relay rejects a target that fails runtime address validation before the HTTP client runs', async () => {
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-ssrf-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  let requestCount = 0
+  const denied = new Error('回源 URL 解析到了不允许的地址')
+  denied.statusCode = 403
+  const relay = new FetchRelay({
+    cacheDir,
+    targetResolver: async () => { throw denied },
+    httpClient: async () => {
+      requestCount += 1
+      throw new Error('不应发起请求')
+    },
+  })
+
+  try {
+    await assert.rejects(relay.fetch('https://tiles.example.com/0/0/0.png', { cache: false }), { statusCode: 403 })
+    assert.equal(requestCount, 0)
+  } finally {
+    await removeDir(cacheDir)
   }
 })
 
@@ -282,6 +341,7 @@ test('fetch relay forwards custom headers and caches vector tile content type', 
   const relay = new FetchRelay({
     cacheDir,
     minCacheBytes: 1,
+    targetResolver: resolveTestTarget,
     httpClient: async (config) => {
       calls.push(config)
       return {
@@ -319,6 +379,7 @@ test('fetch relay uses range-aware cache keys and masks sensitive cache metadata
   const relay = new FetchRelay({
     cacheDir,
     minCacheBytes: 1,
+    targetResolver: resolveTestTarget,
     httpClient: async (config) => {
       calls.push(config)
       return {
@@ -381,6 +442,7 @@ test('fetch relay persists cache stats and reuses snapshot without cache changes
     const reusedRelay = new FetchRelay({
       cacheDir,
       minCacheBytes: 1,
+      targetResolver: resolveTestTarget,
       httpClient: async () => {
         throw new Error('stats snapshot should not fetch upstream')
       },

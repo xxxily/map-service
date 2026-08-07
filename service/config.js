@@ -1,12 +1,21 @@
 import path from 'path'
 import rootPath from './bin/rootPath.js'
 
+function parseTrustProxy (value) {
+  const normalized = String(value || '').trim()
+  if (!normalized || normalized.toLowerCase() === 'false') return false
+  if (normalized.toLowerCase() === 'true') return true
+  if (/^\d+$/.test(normalized)) return Number(normalized)
+  return normalized.split(',').map(item => item.trim()).filter(Boolean)
+}
+
 /* 基本配置项 */
 const config = {
   /* 静态服务器配置 */
   staticService: {
     host: '::',
     port: parseInt(process.env.MAP_SERVICE_PORT) || 3088,
+    trustProxy: parseTrustProxy(process.env.MAP_SERVICE_TRUST_PROXY),
     // port: 80,
     appDir: path.resolve(import.meta.dirname, './app'),
     staticDir: path.resolve(rootPath, './dist'),
@@ -40,11 +49,23 @@ const config = {
         .filter(Boolean),
     },
 
+    userSystem: {
+      databasePath: process.env.MAP_SERVICE_USER_DATABASE || path.resolve(rootPath, './.db/map-service.sqlite'),
+      sessionCookieName: 'map_user_session',
+      csrfCookieName: 'map_csrf_token',
+      shareCookiePrefix: 'map_share_access_',
+      requireSecureBootstrap: process.env.NODE_ENV === 'production' ||
+        String(process.env.MAP_SERVICE_REQUIRE_SECURE_BOOTSTRAP || '').toLowerCase() === 'true',
+    },
+
     admin: {
       dataDir: path.resolve(rootPath, './.db/admin'),
       auth: {
         username: process.env.MAP_SERVICE_ADMIN_USERNAME || 'admin',
         password: process.env.MAP_SERVICE_ADMIN_PASSWORD || 'admin',
+        bootstrapConfigured: Boolean(
+          process.env.MAP_SERVICE_ADMIN_USERNAME && process.env.MAP_SERVICE_ADMIN_PASSWORD
+        ),
         tokenSecret: process.env.MAP_SERVICE_ADMIN_TOKEN_SECRET || 'map-service-dev-admin-secret',
         tokenTtl: 1000 * 60 * 60 * 8,
       },

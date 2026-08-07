@@ -22,6 +22,10 @@ import commonMethods from './bin/middleware/commonMethods/index.js'
 const serviceConfig = baseConfig.staticService
 const app = express()
 
+if (serviceConfig.trustProxy) {
+  app.set('trust proxy', serviceConfig.trustProxy)
+}
+
 if (serviceConfig.enableCors) {
   app.use(cors(corsOpts))
 }
@@ -65,10 +69,10 @@ const index = {
     app.use(commonMethods)
 
     /* parse application/x-www-form-urlencoded */
-    app.use(express.urlencoded({ extended: false, }))
+    app.use(express.urlencoded({ extended: false, limit: '1mb' }))
 
     /* parse application/json */
-    app.use(express.json())
+    app.use(express.json({ limit: '12mb' }))
 
     /* 初始化静态资源的目录地址 */
     fs.ensureDirSync(serviceConfig.staticDir)
@@ -80,6 +84,12 @@ const index = {
     // 不发送完整路径，避免坐标参数通过 Referer 泄露，同时允许高德等第三方 API 完成域名校验。
     app.use((req, res, next) => {
       res.set('Referrer-Policy', 'strict-origin')
+      next()
+    })
+
+    app.use('/api', (req, res, next) => {
+      res.set('Cache-Control', 'no-store')
+      res.set('X-Content-Type-Options', 'nosniff')
       next()
     })
 
@@ -120,6 +130,10 @@ const index = {
         res.sendFile(path.join(serviceConfig.appDir, '3d.html'))
       })
       app.get(['/admin', '/admin/:tab'], (req, res) => {
+        res.set('Cache-Control', 'no-cache')
+        res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
+      })
+      app.get(['/account', '/account/:tab', '/share/:publicId'], (req, res) => {
         res.set('Cache-Control', 'no-cache')
         res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
       })

@@ -1,10 +1,32 @@
-import { adminApi, getAdminToken, loginAdmin, logoutAdmin } from './api.js'
-import { renderLogin, renderShell } from './layout.js'
+import './admin-user-system.css'
+import {
+  adminApi,
+  clearAdminSessionState,
+  loginAdmin,
+  logoutAdmin,
+} from './api.js'
+import { renderLogin, renderRequiredPasswordChange, renderShell } from './layout.js'
 import { adminState, setActiveTab, setNotice, registerNoticeListener } from './state.js'
-import { buildAdminPageUrl, getAdminPage, getAdminTabFromLocation } from './routes.js'
+import {
+  buildAdminPageUrl,
+  getAdminTabFromLocation,
+  getAuthorizedAdminPage,
+  hasAdminPermission,
+} from './routes.js'
 import { showCheckboxConfirm, showConfirm } from '../ui/dialog.js'
 
 let noticeTimeoutId = null
+
+function renderCurrentView () {
+  if (!adminState.session) {
+    renderLogin(adminState)
+  } else if (adminState.session.user?.mustChangePassword) {
+    renderRequiredPasswordChange(adminState)
+  } else {
+    renderDashboard()
+  }
+}
+
 registerNoticeListener((message, error) => {
   if (noticeTimeoutId) {
     clearTimeout(noticeTimeoutId)
@@ -14,11 +36,7 @@ registerNoticeListener((message, error) => {
   if (text && text !== '正在加载' && text !== '正在登录') {
     noticeTimeoutId = setTimeout(() => {
       setNotice('')
-      if (document.querySelector('[data-admin-login]')) {
-        renderLogin(adminState)
-      } else {
-        renderDashboard()
-      }
+      renderCurrentView()
     }, 4000)
   }
 })
@@ -31,13 +49,36 @@ function writeAdminTabToUrl (tabId) {
   window.history.replaceState(null, '', `${buildAdminPageUrl(tabId)}${window.location.hash}`)
 }
 
+function activePage () {
+  return getAuthorizedAdminPage(adminState.activeTab, adminState.session)
+}
+
+function ensureAuthorizedTab () {
+  const page = activePage()
+  if (!page) return null
+  if (page.id !== adminState.activeTab) {
+    setActiveTab(page.id)
+    writeAdminTabToUrl(page.id)
+  }
+  return page
+}
+
 function renderActivePanel () {
-  return getAdminPage(adminState.activeTab).render(adminState)
+  const page = ensureAuthorizedTab()
+  if (!page) {
+    return `
+      <section class="admin-panel">
+        <h2>无后台访问权限</h2>
+        <p class="admin-panel-description">当前账号没有可用的管理权限，请联系超级管理员。</p>
+      </section>
+    `
+  }
+  return page.render(adminState)
 }
 
 function renderDashboard () {
   renderShell(adminState, renderActivePanel())
-  getAdminPage(adminState.activeTab).afterRender?.(adminState, adminApi)
+  activePage()?.afterRender?.(adminState, adminApi)
 }
 window.renderDashboard = renderDashboard
 
@@ -54,45 +95,59 @@ function getPageContext (event) {
 }
 
 function renderDashboardIfActive (...tabIds) {
-  if (!tabIds.length || tabIds.includes(adminState.activeTab)) {
+  if (adminState.session && (!tabIds.length || tabIds.includes(adminState.activeTab))) {
     renderDashboard()
   }
 }
 
 async function dispatchPageHandler (handlerName, event) {
-  const handler = getAdminPage(adminState.activeTab)[handlerName]
+  const handler = activePage()?.[handlerName]
   return handler instanceof Function
     ? Boolean(await handler(getPageContext(event)))
     : false
 }
 
+function normalizedSession (result) {
+  if (result?.authenticated === false || !result?.user) {
+    const err = new Error('请先登录管理后台')
+    err.status = 401
+    err.code = 'AUTH_REQUIRED'
+    throw err
+  }
+  return result
+}
+
 async function loadDashboardStats (options = {}) {
   const cacheOnly = Boolean(options.cacheOnly)
+  const canLoadCache = hasAdminPermission(adminState.session, 'admin.cache.manage')
+  const canLoadVisits = hasAdminPermission(adminState.session, 'admin.overview.read')
   Object.assign(adminState, {
-    cacheLoading: true,
+    cacheLoading: canLoadCache,
     cacheError: '',
-    visitsLoading: cacheOnly ? adminState.visitsLoading : true,
+    visitsLoading: cacheOnly ? adminState.visitsLoading : canLoadVisits,
     visitsError: cacheOnly ? adminState.visitsError : '',
   })
   renderDashboardIfActive('overview', 'cache')
 
-  adminApi.cache()
-    .then((cache) => {
-      adminState.cache = cache
-      adminState.cacheError = ''
-      if (cache.refreshing) {
-        window.setTimeout(() => loadDashboardStats({ cacheOnly: true }), 1500)
-      }
-    })
-    .catch((err) => {
-      adminState.cacheError = err.message
-    })
-    .finally(() => {
-      adminState.cacheLoading = false
-      renderDashboardIfActive('cache')
-    })
+  if (canLoadCache) {
+    adminApi.cache()
+      .then((cache) => {
+        adminState.cache = cache
+        adminState.cacheError = ''
+        if (cache.refreshing) {
+          window.setTimeout(() => loadDashboardStats({ cacheOnly: true }), 1500)
+        }
+      })
+      .catch((err) => {
+        adminState.cacheError = err.message
+      })
+      .finally(() => {
+        adminState.cacheLoading = false
+        renderDashboardIfActive('cache')
+      })
+  }
 
-  if (cacheOnly) return
+  if (cacheOnly || !canLoadVisits) return
 
   adminApi.visits()
     .then((visits) => {
@@ -108,71 +163,99 @@ async function loadDashboardStats (options = {}) {
     })
 }
 
+function addAuthorizedLoaders (loaders) {
+  const can = permission => hasAdminPermission(adminState.session, permission)
+
+  if (can('admin.overview.read')) {
+    loaders.push(['system', () => adminApi.system()])
+  }
+  if (can('admin.security.manage')) {
+    loaders.push(['settings', () => adminApi.settings()])
+  }
+  if (can('admin.precache.manage')) {
+    loaders.push(['tasks', () => adminApi.tasks()])
+    loaders.push(['precacheCatalog', () => adminApi.precacheCatalog()])
+  }
+  if (can('admin.public_kml.manage')) {
+    loaders.push(['kmls', () => adminApi.kmls()])
+  }
+  if (can('admin.layer.manage')) {
+    loaders.push(
+      ['tileSources', () => adminApi.listTileSources()],
+      ['sourcePresets', () => adminApi.listSourcePresets()],
+      ['keyPools', () => adminApi.listKeyPools()],
+      ['mapLayers', () => adminApi.listMapLayers()],
+      ['proxyOutbounds', () => adminApi.listProxyOutbounds()],
+      ['proxyPools', () => adminApi.listProxyPools()],
+      ['externalPublishes', () => adminApi.listExternalPublishes()],
+    )
+  }
+  if (can('admin.user.read')) {
+    loaders.push(['adminUsers', () => adminApi.listUsers({
+      ...adminState.adminUserFilters,
+      page: 1,
+      limit: adminState.adminUsers.limit,
+    })])
+  }
+  if (can('admin.role.manage')) {
+    loaders.push(['roles', () => adminApi.listRoles()])
+  }
+  if (can('admin.registration.manage') || can('admin.security.manage')) {
+    loaders.push(['userSystemSettings', () => adminApi.getUserSystemSettings()])
+  }
+  if (can('admin.share.moderate')) {
+    loaders.push(['moderatedShares', () => adminApi.listUserShares({
+      ...adminState.shareFilters,
+      page: 1,
+      limit: adminState.moderatedShares.limit,
+    })])
+  }
+  if (can('admin.audit.read')) {
+    loaders.push(['auditLogs', () => adminApi.listAuditLogs({
+      ...adminState.auditFilters,
+      page: 1,
+      limit: adminState.auditLogs.limit,
+    })])
+  }
+}
+
 async function loadDashboard () {
   adminState.loading = true
   setNotice('正在加载')
-  renderDashboard()
+  if (!adminState.session) renderLogin(adminState)
 
   try {
-    const [
-      session,
-      system,
-      settings,
-      tasks,
-      kmls,
-      tileSources,
-      sourcePresets,
-      keyPools,
-      mapLayers,
-      proxyOutbounds,
-      proxyPools,
-      externalPublishes,
-      precacheCatalog
-    ] = await Promise.all([
-      adminApi.session(),
-      adminApi.system(),
-      adminApi.settings(),
-      adminApi.tasks(),
-      adminApi.kmls(),
-      adminApi.listTileSources(),
-      adminApi.listSourcePresets(),
-      adminApi.listKeyPools(),
-      adminApi.listMapLayers(),
-      adminApi.listProxyOutbounds(),
-      adminApi.listProxyPools(),
-      adminApi.listExternalPublishes(),
-      adminApi.precacheCatalog(),
-    ])
+    adminState.session = normalizedSession(await adminApi.session())
+    if (adminState.session.user.mustChangePassword) {
+      adminState.loading = false
+      setNotice('')
+      renderRequiredPasswordChange(adminState)
+      return
+    }
 
-    Object.assign(adminState, {
-      session,
-      system,
-      settings,
-      tasks,
-      kmls,
-      tileSources,
-      sourcePresets,
-      keyPools,
-      mapLayers,
-      proxyOutbounds,
-      proxyPools,
-      externalPublishes,
-      precacheCatalog,
-      loading: false,
+    ensureAuthorizedTab()
+    const loaders = []
+    addAuthorizedLoaders(loaders)
+    const values = await Promise.all(loaders.map(async ([key, loader]) => [key, await loader()]))
+    values.forEach(([key, value]) => {
+      adminState[key] = value
     })
+
+    adminState.loading = false
     setNotice('')
     renderDashboard()
-    getAdminPage(adminState.activeTab).afterLoad?.(adminState, adminApi)
+    activePage()?.afterLoad?.(adminState, adminApi)
     loadDashboardStats()
   } catch (err) {
     adminState.loading = false
     if (err.status === 401) {
-      logoutAdmin()
+      adminState.session = null
+      clearAdminSessionState()
       setNotice('', err.message)
       renderLogin(adminState)
     } else {
       setNotice('', err.message)
-      renderDashboard()
+      renderCurrentView()
     }
   }
 }
@@ -182,18 +265,45 @@ async function handleSubmit (event) {
 
   if (loginForm) {
     event.preventDefault()
+    const credentials = {
+      username: loginForm.elements.username.value,
+      password: loginForm.elements.password.value,
+      remember: Boolean(loginForm.elements.remember.checked),
+    }
     setNotice('正在登录')
     renderLogin(adminState)
     try {
-      await loginAdmin({
-        username: loginForm.elements.username.value,
-        password: loginForm.elements.password.value,
-      })
+      await loginAdmin(credentials)
       setNotice('')
       await loadDashboard()
     } catch (err) {
+      adminState.session = null
       setNotice('', err.message)
       renderLogin(adminState)
+    }
+    return
+  }
+
+  const passwordForm = event.target.closest('[data-admin-required-password]')
+  if (passwordForm) {
+    event.preventDefault()
+    const currentPassword = passwordForm.elements.currentPassword.value
+    const newPassword = passwordForm.elements.newPassword.value
+    if (newPassword !== passwordForm.elements.confirmPassword.value) {
+      setNotice('', '两次输入的新密码不一致')
+      renderRequiredPasswordChange(adminState)
+      return
+    }
+    try {
+      setNotice('正在修改密码')
+      renderRequiredPasswordChange(adminState)
+      await adminApi.updatePassword({ currentPassword, newPassword })
+      adminState.session = null
+      setNotice('密码修改成功，正在加载后台')
+      await loadDashboard()
+    } catch (err) {
+      setNotice('', err.message)
+      renderRequiredPasswordChange(adminState)
     }
     return
   }
@@ -205,10 +315,12 @@ async function handleClick (event) {
   const tabTarget = event.target.closest('[data-admin-tab]')
   if (tabTarget) {
     event.preventDefault()
-    setActiveTab(tabTarget.getAttribute('data-admin-tab'))
-    writeAdminTabToUrl(adminState.activeTab)
+    const nextPage = getAuthorizedAdminPage(tabTarget.getAttribute('data-admin-tab'), adminState.session)
+    if (!nextPage) return
+    setActiveTab(nextPage.id)
+    writeAdminTabToUrl(nextPage.id)
     renderDashboard()
-    getAdminPage(adminState.activeTab).afterEnter?.(adminState, adminApi)
+    activePage()?.afterEnter?.(adminState, adminApi)
     return
   }
 
@@ -216,7 +328,16 @@ async function handleClick (event) {
   if (actionTarget) {
     const action = actionTarget.getAttribute('data-admin-action')
     if (action === 'logout') {
-      logoutAdmin()
+      try {
+        await logoutAdmin()
+      } catch (err) {
+        if (err.status !== 401) {
+          setNotice('', err.message)
+          renderCurrentView()
+          return
+        }
+      }
+      adminState.session = null
       setNotice('')
       renderLogin(adminState)
       return
@@ -229,11 +350,7 @@ async function handleClick (event) {
 
     if (action === 'close-notice') {
       setNotice('')
-      if (document.querySelector('[data-admin-login]')) {
-        renderLogin(adminState)
-      } else {
-        renderDashboard()
-      }
+      renderCurrentView()
       return
     }
   }
@@ -248,7 +365,6 @@ async function handleChange (event) {
 export async function initAdminApp (options = {}) {
   document.body.classList.add('admin-view')
   setActiveTab(getAdminTabFromUrl())
-  writeAdminTabToUrl(adminState.activeTab)
   adminState.amapLoader = options.amapLoader || null
   adminState.root = document.getElementById('admin-root')
   adminState.root.hidden = false
@@ -257,10 +373,6 @@ export async function initAdminApp (options = {}) {
   adminState.root.addEventListener('change', handleChange)
   adminState.root.addEventListener('input', handleChange)
 
-  if (!getAdminToken()) {
-    renderLogin(adminState)
-    return
-  }
-
+  renderLogin(adminState)
   await loadDashboard()
 }
