@@ -14,6 +14,7 @@ test('KML image feature receives an identifiable 2D marker icon', () => {
   assert.equal(descriptor.type, 'image')
   assert.equal(descriptor.label, '包含图片')
   assert.deepEqual(descriptor.iconSize, [32, 40])
+  assert.deepEqual(descriptor.tooltipAnchor, [16, -26])
   assert.match(descriptor.html, /kml-media-marker-image/)
   assert.match(descriptor.html, /aria-label="包含图片"/)
   assert.match(getKmlMediaListIcon({ description: '<img src="https://cdn.example.com/media?id=1">' }), /kml-media-list-icon-image/)

@@ -566,6 +566,7 @@ function renderFeature (map, kmlFile, feature) {
         iconSize: mediaMarker.iconSize,
         iconAnchor: mediaMarker.iconAnchor,
         popupAnchor: mediaMarker.popupAnchor,
+        tooltipAnchor: mediaMarker.tooltipAnchor,
       })
       layer = L.marker(latlng, {
         draggable: dragAllowed,

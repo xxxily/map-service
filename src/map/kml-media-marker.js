@@ -39,6 +39,8 @@ export function getKmlMediaMarkerDescriptor (feature) {
     iconSize: [32, 40],
     iconAnchor: [16, 39],
     popupAnchor: [0, -36],
+    // 与 KML 点位通用偏移 [-16, -18] 叠加后为 [0, -44]，留在图标正上方。
+    tooltipAnchor: [16, -26],
   }
 }
 
