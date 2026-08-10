@@ -23,12 +23,10 @@ const SOURCE_LABELS = Object.freeze({
 
 let favoriteConfig = {
   readOnly: false,
-  getCenterCandidate: null,
 }
 let activeCandidate = null
 let authUnsubscribe = null
 let favoriteSubmitting = false
-let centerFavoriteButton = null
 
 function escapeHtml (value) {
   return String(value ?? '')
@@ -190,10 +188,6 @@ function shouldOfferFavoriteAction () {
 
 function renderFavoriteAvailability () {
   const offered = shouldOfferFavoriteAction()
-  if (centerFavoriteButton) {
-    const item = centerFavoriteButton.closest('li')
-    if (item) item.hidden = !offered
-  }
   if (typeof document !== 'undefined') {
     document.querySelectorAll('[data-favorite-action]').forEach(button => {
       button.hidden = !offered
@@ -472,20 +466,6 @@ export function initFavoriteActions (options = {}) {
   favoriteConfig = {
     ...favoriteConfig,
     readOnly: Boolean(options.readOnly),
-    getCenterCandidate: options.getCenterCandidate instanceof Function ? options.getCenterCandidate : null,
-  }
-  const button = options.button || document.querySelector('[data-action="saveFavorite"]')
-  centerFavoriteButton = button || null
-  if (button) {
-    const item = button.closest('li')
-    if (item) item.hidden = !shouldOfferFavoriteAction()
-    if (!favoriteConfig.readOnly && button.dataset.favoriteCenterBound !== 'true') {
-      button.dataset.favoriteCenterBound = 'true'
-      button.addEventListener('click', () => {
-        const centerCandidate = favoriteConfig.getCenterCandidate?.()
-        openFavoriteDialog(centerCandidate)
-      })
-    }
   }
   if (!authUnsubscribe) authUnsubscribe = subscribeAuth(renderFavoriteAvailability)
   renderFavoriteAvailability()

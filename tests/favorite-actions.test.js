@@ -140,7 +140,7 @@ test('账号回跳只使用站内路径，会话必须保持同一有效登录�
   assert.equal(isFavoriteSessionUsable({ ...auth, user: { permissions: [] } }, 'ses_1'), false)
 })
 
-test('2D/3D 静态入口和四类位置来源均接入统一收藏动作', () => {
+test('2D/3D 移除地图中心收藏入口并保留点位等收藏动作', () => {
   const indexHtml = fs.readFileSync(path.join(projectRoot, 'index.html'), 'utf8')
   const map3dHtml = fs.readFileSync(path.join(projectRoot, '3d.html'), 'utf8')
   const mainSource = fs.readFileSync(path.join(projectRoot, 'src/main.js'), 'utf8')
@@ -151,10 +151,12 @@ test('2D/3D 静态入口和四类位置来源均接入统一收藏动作', () =>
   const location3d = fs.readFileSync(path.join(projectRoot, 'src/map3d/location.js'), 'utf8')
   const kmlPanel = fs.readFileSync(path.join(projectRoot, 'src/map/kml-content-panel.js'), 'utf8')
 
-  assert.match(indexHtml, /data-action="saveFavorite"/)
-  assert.match(map3dHtml, /data-action="saveFavorite"/)
-  assert.match(mainSource, /initFavoriteActions\([\s\S]*coordType: 'gcj02'/)
-  assert.match(map3dSource, /getMap3dCenterFavoriteCandidate/)
+  assert.doesNotMatch(indexHtml, /data-action="saveFavorite"/)
+  assert.doesNotMatch(map3dHtml, /data-action="saveFavorite"/)
+  assert.match(mainSource, /initFavoriteActions\(\{\s*readOnly: shareMode/)
+  assert.match(map3dSource, /initFavoriteActions\(\{\s*readOnly: shareMode/)
+  assert.doesNotMatch(mainSource, /当前地图中心|getCenterCandidate/)
+  assert.doesNotMatch(map3dSource, /当前地图中心|getMap3dCenterFavoriteCandidate/)
   for (const source of [search2d, search3d]) {
     assert.match(source, /setFavoriteCandidate/)
     assert.match(source, /sourceType: 'search'/)

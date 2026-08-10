@@ -222,22 +222,6 @@ function getCameraHeight () {
   return viewer?.camera?.positionCartographic?.height || 8000000.0
 }
 
-function getMap3dCenterFavoriteCandidate () {
-  if (!viewer?.camera || !viewer.scene) return null
-  const canvas = viewer.canvas
-  const centerScreenPosition = new Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2)
-  const centerCartesian = pickSceneWorldPosition(viewer.camera, viewer.scene, centerScreenPosition) || viewer.camera.position
-  const cartographic = viewer.scene.globe?.ellipsoid?.cartesianToCartographic?.(centerCartesian)
-  if (!cartographic) return null
-  return {
-    name: '当前地图中心',
-    longitude: CesiumMath.toDegrees(cartographic.longitude),
-    latitude: CesiumMath.toDegrees(cartographic.latitude),
-    coordType: 'gcj02',
-    sourceType: 'map',
-  }
-}
-
 function getCameraAnimationDuration (duration) {
   try {
     return getMotionSafeDuration(
@@ -1007,7 +991,6 @@ async function init3dEarth () {
   initCameraView(shareViewConfig)
   initFavoriteActions({
     readOnly: shareMode,
-    getCenterCandidate: getMap3dCenterFavoriteCandidate,
   })
 
   // 4. 初始化地球自转动画逻辑

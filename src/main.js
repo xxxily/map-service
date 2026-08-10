@@ -244,16 +244,6 @@ async function initLeafletMap () {
   initDesktopShiftDragRotate(map)
   initFavoriteActions({
     readOnly: shareMode,
-    getCenterCandidate: () => {
-      const center = map.getCenter()
-      return {
-        name: '当前地图中心',
-        longitude: center.lng,
-        latitude: center.lat,
-        coordType: 'gcj02',
-        sourceType: 'map',
-      }
-    },
   })
 
   let amapGeolocation = null
