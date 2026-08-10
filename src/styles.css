@@ -1898,14 +1898,8 @@ body.admin-view #footer-bar {
     transform: none;
   }
 
-  .favorite-candidate-copy small,
-  .kml-content-header .favorite-inline-button span {
+  .favorite-candidate-copy small {
     display: none;
-  }
-
-  .kml-content-header .favorite-inline-button {
-    width: 30px;
-    padding: 0;
   }
 
   #app-version {
@@ -2880,9 +2874,10 @@ body.admin-view #footer-bar {
 }
 
 .kml-popup-actions .favorite-inline-button {
+  width: 25px;
+  min-width: 25px;
   min-height: 23px;
-  padding: 2px 8px;
-  font-size: 11px;
+  padding: 0;
 }
 
 .kml-content-panel {
@@ -2927,9 +2922,10 @@ body.admin-view #footer-bar {
 }
 
 .kml-content-header .favorite-inline-button {
-  min-height: 28px;
-  padding: 0 9px;
-  font-size: 11px;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
 }
 
 .kml-content-kicker {

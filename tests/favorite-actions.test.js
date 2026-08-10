@@ -11,6 +11,7 @@ import {
   isFavoriteSessionUsable,
   normalizeFavoriteCandidate,
   parseFavoriteTags,
+  renderFavoriteActionButton,
 } from '../src/map/favorite-actions.js'
 import { wgs84ToGcj02 } from '../src/map/coord-transform.js'
 
@@ -69,6 +70,24 @@ test('KML 点位按图层纠偏语义生成 WGS84 收藏候选且分享文件只
   assert.equal(directMapCandidate.sourceRef, '')
   assert.equal(createKmlFavoriteCandidate({ isShare: true }, wgs84Feature), null)
   assert.equal(createKmlFavoriteCandidate({}, { type: 'LineString', coordinates: [] }), null)
+})
+
+test('KML 点位收藏按钮只显示图标并保留无障碍名称', () => {
+  const button = renderFavoriteActionButton({
+    id: 'kml_owned123',
+    coordCorrection: 'wgs84-to-gcj02',
+  }, {
+    id: 'point-1',
+    type: 'Point',
+    name: '集合点',
+    coordinates: [113.2644, 23.1291],
+  })
+
+  assert.match(button, /class="favorite-inline-button"/)
+  assert.match(button, /aria-label="保存为位置收藏"/)
+  assert.match(button, /<svg[^>]+aria-hidden="true"/)
+  assert.doesNotMatch(button, />保存收藏</)
+  assert.doesNotMatch(button, /<span>/)
 })
 
 test('收藏表单规范化标签并生成后端约定字段', () => {

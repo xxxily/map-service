@@ -450,7 +450,6 @@ export function renderFavoriteActionButton (kmlFile, feature) {
   return `
     <button type="button" class="favorite-inline-button" data-favorite-action aria-label="保存为位置收藏" title="保存为位置收藏">
       <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-4.35-9.33-8.28C.9 9.73 2.04 6 5.4 5.1A5.35 5.35 0 0 1 12 8a5.35 5.35 0 0 1 6.6-2.9c3.36.9 4.5 4.63 2.73 7.62C19 16.65 12 21 12 21Z"/></svg>
-      <span>保存收藏</span>
     </button>
   `
 }
