@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import {
   createPinnedHttpAgents,
   createPinnedProxyRequestConfig,
+  isLocalProxyEndpoint,
   resolvePublicHttpTarget,
   validatePublicHttpUrl,
 } from '../security/networkTarget.js'
@@ -2610,7 +2611,10 @@ export class TileCatalogManager {
         password: outbound.password || '',
       }
     }
-    const targetResolution = await this.targetResolver(testUrl, { label: '代理测试 URL' })
+    const targetResolution = await this.targetResolver(testUrl, {
+      label: '代理测试 URL',
+      allowProxySyntheticAddresses: isLocalProxyEndpoint(proxyConfig),
+    })
     const axiosConfig = {
       ...createPinnedProxyRequestConfig(targetResolution, proxyConfig),
       method: 'GET',
@@ -2684,7 +2688,23 @@ export class TileCatalogManager {
     const startTime = Date.now()
     try {
       const request = await this.createSourceTileRequest(source.id, { z: zoom, x, y })
-      const targetResolution = await this.targetResolver(request.url, { label: '图源 URL' })
+      const proxyConfig = request.proxy && request.proxy.enabled
+        ? {
+            protocol: request.proxy.protocol || 'http',
+            host: request.proxy.host,
+            port: Number(request.proxy.port),
+          }
+        : null
+      if (proxyConfig && request.proxy.username) {
+        proxyConfig.auth = {
+          username: request.proxy.username,
+          password: request.proxy.password || '',
+        }
+      }
+      const targetResolution = await this.targetResolver(request.url, {
+        label: '图源 URL',
+        allowProxySyntheticAddresses: isLocalProxyEndpoint(proxyConfig),
+      })
       const axiosConfig = {
         url: request.url,
         method: 'GET',
@@ -2693,18 +2713,7 @@ export class TileCatalogManager {
         maxRedirects: 0,
         validateStatus: () => true,
       }
-      if (request.proxy && request.proxy.enabled) {
-        const proxyConfig = {
-          protocol: request.proxy.protocol || 'http',
-          host: request.proxy.host,
-          port: Number(request.proxy.port),
-        }
-        if (request.proxy.username) {
-          proxyConfig.auth = {
-            username: request.proxy.username,
-            password: request.proxy.password || '',
-          }
-        }
+      if (proxyConfig) {
         Object.assign(axiosConfig, createPinnedProxyRequestConfig(targetResolution, proxyConfig))
       } else {
         Object.assign(axiosConfig, createPinnedHttpAgents(targetResolution.addresses))

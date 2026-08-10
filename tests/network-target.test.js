@@ -76,6 +76,45 @@ test('network target DNS validation rejects any mixed private answer and keeps p
   }), { statusCode: 502 })
 })
 
+test('loopback HTTP proxy accepts Clash fake-IP answers without relaxing direct SSRF checks', async () => {
+  const fakeLookup = async () => [{ address: '198.18.0.44', family: 4 }]
+  const targetUrl = 'https://www.google.com/maps/vt?x=1&y=2&z=3'
+
+  await assert.rejects(resolvePublicHttpTarget(targetUrl, { lookup: fakeLookup }), { statusCode: 403 })
+
+  const resolution = await resolvePublicHttpTarget(targetUrl, {
+    lookup: fakeLookup,
+    allowProxySyntheticAddresses: true,
+  })
+  assert.deepEqual(resolution.addresses, [{ address: '198.18.0.44', family: 4 }])
+
+  const config = createPinnedProxyRequestConfig(resolution, {
+    protocol: 'http',
+    host: '127.0.0.1',
+    port: 7890,
+  })
+  assert.equal(config.url.includes('198.18.0.44'), true)
+  assert.equal(config.headers.Host, 'www.google.com')
+  assert.equal(config.httpsAgent.proxy.host, '127.0.0.1')
+
+  assert.throws(() => createPinnedProxyRequestConfig(resolution, {
+    protocol: 'http',
+    host: 'proxy.example.net',
+    port: 8080,
+  }), { statusCode: 403 })
+  await assert.rejects(resolvePublicHttpTarget(targetUrl, {
+    lookup: async () => [
+      { address: '198.18.0.44', family: 4 },
+      { address: '8.8.8.8', family: 4 },
+    ],
+    allowProxySyntheticAddresses: true,
+  }), { statusCode: 403 })
+  await assert.rejects(resolvePublicHttpTarget(targetUrl, {
+    lookup: async () => [{ address: '127.0.0.1', family: 4 }],
+    allowProxySyntheticAddresses: true,
+  }), { statusCode: 403 })
+})
+
 test('pinned DNS lookup only returns the prevalidated public addresses', async () => {
   const lookup = createPinnedLookup([
     { address: '203.12.34.56', family: 4 },

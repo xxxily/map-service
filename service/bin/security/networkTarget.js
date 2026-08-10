@@ -5,6 +5,13 @@ import { BlockList, isIP } from 'node:net'
 import HttpsProxyAgent from 'https-proxy-agent'
 
 const blockedAddresses = new BlockList()
+const proxySyntheticAddresses = new BlockList()
+const loopbackProxyAddresses = new BlockList()
+
+// Clash/Mihomo 默认 Fake-IP 网段。只允许由本机回环代理消费，直连仍视为保留地址。
+proxySyntheticAddresses.addSubnet('198.18.0.0', 15, 'ipv4')
+loopbackProxyAddresses.addSubnet('127.0.0.0', 8, 'ipv4')
+loopbackProxyAddresses.addAddress('::1', 'ipv6')
 
 ;[
   ['0.0.0.0', 8],
@@ -80,6 +87,23 @@ export function isBlockedNetworkAddress (address) {
   return blockedAddresses.check(normalized, family === 4 ? 'ipv4' : 'ipv6')
 }
 
+export function isProxySyntheticNetworkAddress (address) {
+  const normalized = normalizeHostname(address)
+  return isIP(normalized) === 4 && proxySyntheticAddresses.check(normalized, 'ipv4')
+}
+
+export function isLocalProxyEndpoint (proxy) {
+  const protocol = String(proxy?.protocol || 'http').replace(/:$/, '').toLowerCase()
+  const hostname = normalizeHostname(proxy?.hostname || proxy?.host)
+  const port = Number(proxy?.port)
+  if (!['http', 'https'].includes(protocol) || !hostname || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return false
+  }
+  if (hostname === 'localhost') return true
+  const family = isIP(hostname)
+  return Boolean(family && loopbackProxyAddresses.check(hostname, family === 4 ? 'ipv4' : 'ipv6'))
+}
+
 export function isBlockedNetworkHostname (hostname) {
   const normalized = normalizeHostname(hostname)
   if (!normalized) return true
@@ -144,7 +168,9 @@ export async function resolvePublicHttpTarget (value, options = {}) {
     }))
     .filter(item => item.address && item.family)
 
-  if (!addresses.length || addresses.some(item => isBlockedNetworkAddress(item.address))) {
+  const containsBlockedAddress = addresses.some(item => isBlockedNetworkAddress(item.address))
+  const allProxySynthetic = addresses.length > 0 && addresses.every(item => isProxySyntheticNetworkAddress(item.address))
+  if (!addresses.length || (containsBlockedAddress && !(options.allowProxySyntheticAddresses === true && allProxySynthetic))) {
     throw createHttpError(`${label}解析到了不允许的地址`, 403)
   }
 
@@ -248,7 +274,10 @@ export function createPinnedProxyRequestConfig (targetResolution, proxy = null) 
       family: Number(item?.family) || isIP(normalizeHostname(item?.address)),
     }))
     .filter(item => item.address && item.family)
-  if (!addresses.length || addresses.some(item => isBlockedNetworkAddress(item.address))) {
+  const containsBlockedAddress = addresses.some(item => isBlockedNetworkAddress(item.address))
+  const allowLocalProxySynthetic = Boolean(proxy) && isLocalProxyEndpoint(proxy) &&
+    addresses.length > 0 && addresses.every(item => isProxySyntheticNetworkAddress(item.address))
+  if (!addresses.length || (containsBlockedAddress && !allowLocalProxySynthetic)) {
     throw createHttpError('代理回源地址未通过公共网络校验', 403)
   }
 

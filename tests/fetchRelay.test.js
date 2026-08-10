@@ -5,6 +5,7 @@ import fs from 'fs-extra'
 import path from 'path'
 import { tmpdir } from 'node:os'
 import FetchRelay from '../service/bin/middleware/fetchRelay/index.js'
+import { resolvePublicHttpTarget } from '../service/bin/security/networkTarget.js'
 
 async function resolveTestTarget (url) {
   return {
@@ -140,6 +141,50 @@ test('fetch relay proxy mode pins the validated origin address and preserves TLS
     assert.equal(calls[0].httpsAgent.proxy.protocol, 'http:')
   } finally {
     await cleanup()
+  }
+})
+
+test('fetch relay permits fake-IP resolution only for a loopback proxy', async () => {
+  const calls = []
+  const resolverOptions = []
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-fake-ip-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const relay = new FetchRelay({
+    cacheDir,
+    minCacheBytes: 1,
+    targetResolver: async (url, options = {}) => {
+      resolverOptions.push(options)
+      return resolvePublicHttpTarget(url, {
+        ...options,
+        lookup: async () => [{ address: '198.18.0.44', family: 4 }],
+      })
+    },
+    httpClient: async (config) => {
+      calls.push(config)
+      return {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+        data: streamFrom('tile'),
+      }
+    },
+  })
+
+  try {
+    const result = await relay.fetch('https://www.google.com/maps/vt?x=1&y=2&z=3', {
+      cache: false,
+      proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: 7890 },
+    })
+    assert.equal(await readStream(result.stream), 'tile')
+    assert.equal(resolverOptions[0].allowProxySyntheticAddresses, true)
+    assert.equal(calls[0].url.includes('198.18.0.44'), true)
+    assert.equal(calls[0].httpsAgent.proxy.host, '127.0.0.1')
+
+    await assert.rejects(relay.fetch('https://www.google.com/maps/vt?x=4&y=5&z=6', {
+      cache: false,
+      proxy: { enabled: true, protocol: 'http', host: 'proxy.example.net', port: 8080 },
+    }), { statusCode: 403 })
+    assert.equal(resolverOptions[1].allowProxySyntheticAddresses, false)
+  } finally {
+    await removeDir(cacheDir)
   }
 })
 

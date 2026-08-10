@@ -7,6 +7,7 @@ import axios from 'axios'
 import {
   createPinnedHttpAgents,
   createPinnedProxyRequestConfig,
+  isLocalProxyEndpoint,
   resolvePublicHttpTarget,
   validatePublicHttpUrl,
 } from '../../security/networkTarget.js'
@@ -127,6 +128,15 @@ class FetchRelay {
     this.statsDirty = false
     this.statsSnapshot = null
     this.statsRefreshPromise = null
+  }
+
+  resolveTarget (url, options = {}) {
+    const proxySource = Object.hasOwn(options, 'proxy') ? options.proxy : null
+    const proxy = normalizeProxyConfig(proxySource)
+    return this.targetResolver(url, {
+      label: '回源 URL',
+      allowProxySyntheticAddresses: isLocalProxyEndpoint(proxy),
+    })
   }
 
   getCachePaths (url, options = {}) {
@@ -347,7 +357,7 @@ class FetchRelay {
 
   async fetchUpstream (url, options = {}, entry) {
     const paths = this.getCachePaths(url, options)
-    const targetResolution = await this.targetResolver(url)
+    const targetResolution = await this.resolveTarget(url, options)
     const response = await this.httpClient(this.createAxiosConfig(url, {
       ...options,
       targetResolution,
@@ -379,7 +389,7 @@ class FetchRelay {
     }
 
     if (!normalizedOptions.cache) {
-      const targetResolution = await this.targetResolver(url)
+      const targetResolution = await this.resolveTarget(url, normalizedOptions)
       const response = await this.httpClient({
         ...this.createAxiosConfig(url, {
           ...normalizedOptions,
