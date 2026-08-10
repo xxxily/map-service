@@ -213,17 +213,22 @@ test('tile catalog proxy diagnostics pin validated target IPs for outbound and s
   }
 })
 
-test('tile catalog proxy diagnostics support loopback proxy fake-IP DNS answers', async () => {
-  const dataDir = tempDir('tile-catalog-proxy-fake-ip')
+test('tile catalog proxy diagnostics delegate DNS through a loopback proxy', async () => {
+  const dataDir = tempDir('tile-catalog-proxy-dns')
   const calls = []
   const resolverOptions = []
+  const resolvedUrls = []
   const manager = new TileCatalogManager({
     store: new AdminStore({ dataDir }),
     targetResolver: async (url, options = {}) => {
+      resolvedUrls.push(url)
       resolverOptions.push(options)
       return resolvePublicHttpTarget(url, {
         ...options,
-        lookup: async () => [{ address: '198.18.0.44', family: 4 }],
+        lookup: async () => [
+          { address: '157.240.7.20', family: 4 },
+          { address: '2001::1', family: 6 },
+        ],
       })
     },
     httpClient: async (config) => {
@@ -234,27 +239,28 @@ test('tile catalog proxy diagnostics support loopback proxy fake-IP DNS answers'
 
   try {
     await manager.createProxyOutbound({
-      id: 'proxy-local-fake-ip',
-      name: 'Local fake-IP proxy',
+      id: 'proxy-local-dns',
+      name: 'Local DNS proxy',
       protocol: 'http',
       host: '127.0.0.1',
       port: 7890,
       testUrl: 'https://probe.example.com/status',
     })
     await manager.createProxyPool({
-      id: 'local-fake-ip-pool',
-      name: 'Local fake-IP pool',
+      id: 'local-dns-pool',
+      name: 'Local DNS pool',
       strategy: 'priority',
-      members: [{ outboundId: 'proxy-local-fake-ip', priority: 1 }],
+      members: [{ outboundId: 'proxy-local-dns', priority: 1 }],
     })
     await manager.updateTileSource('google-satellite', {
-      proxy: { mode: 'pool', poolId: 'local-fake-ip-pool' },
+      proxy: { mode: 'pool', poolId: 'local-dns-pool' },
     })
 
-    assert.equal((await manager.testProxyOutbound('proxy-local-fake-ip')).success, true)
+    assert.equal((await manager.testProxyOutbound('proxy-local-dns')).success, true)
     assert.equal((await manager.testTileSource('google-satellite')).success, true)
-    assert.equal(resolverOptions.every(options => options.allowProxySyntheticAddresses === true), true)
+    assert.equal(resolverOptions.every(options => options.delegateDnsToProxy === true), true)
     assert.equal(calls.every(config => config.httpsAgent.proxy.host === '127.0.0.1'), true)
+    assert.equal(calls.every((config, index) => new URL(config.url).hostname === new URL(resolvedUrls[index]).hostname), true)
   } finally {
     await fs.remove(dataDir)
   }

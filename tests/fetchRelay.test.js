@@ -144,10 +144,10 @@ test('fetch relay proxy mode pins the validated origin address and preserves TLS
   }
 })
 
-test('fetch relay permits fake-IP resolution only for a loopback proxy', async () => {
+test('fetch relay delegates public hostname DNS only to a loopback proxy', async () => {
   const calls = []
   const resolverOptions = []
-  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-fake-ip-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-proxy-dns-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
   const relay = new FetchRelay({
     cacheDir,
     minCacheBytes: 1,
@@ -155,7 +155,10 @@ test('fetch relay permits fake-IP resolution only for a loopback proxy', async (
       resolverOptions.push(options)
       return resolvePublicHttpTarget(url, {
         ...options,
-        lookup: async () => [{ address: '198.18.0.44', family: 4 }],
+        lookup: async () => [
+          { address: '157.240.7.20', family: 4 },
+          { address: '2001::1', family: 6 },
+        ],
       })
     },
     httpClient: async (config) => {
@@ -174,15 +177,15 @@ test('fetch relay permits fake-IP resolution only for a loopback proxy', async (
       proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: 7890 },
     })
     assert.equal(await readStream(result.stream), 'tile')
-    assert.equal(resolverOptions[0].allowProxySyntheticAddresses, true)
-    assert.equal(calls[0].url.includes('198.18.0.44'), true)
+    assert.equal(resolverOptions[0].delegateDnsToProxy, true)
+    assert.equal(calls[0].url, 'https://www.google.com/maps/vt?x=1&y=2&z=3')
     assert.equal(calls[0].httpsAgent.proxy.host, '127.0.0.1')
 
     await assert.rejects(relay.fetch('https://www.google.com/maps/vt?x=4&y=5&z=6', {
       cache: false,
       proxy: { enabled: true, protocol: 'http', host: 'proxy.example.net', port: 8080 },
     }), { statusCode: 403 })
-    assert.equal(resolverOptions[1].allowProxySyntheticAddresses, false)
+    assert.equal(resolverOptions[1].delegateDnsToProxy, false)
   } finally {
     await removeDir(cacheDir)
   }

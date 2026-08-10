@@ -2613,7 +2613,7 @@ export class TileCatalogManager {
     }
     const targetResolution = await this.targetResolver(testUrl, {
       label: '代理测试 URL',
-      allowProxySyntheticAddresses: isLocalProxyEndpoint(proxyConfig),
+      delegateDnsToProxy: isLocalProxyEndpoint(proxyConfig),
     })
     const axiosConfig = {
       ...createPinnedProxyRequestConfig(targetResolution, proxyConfig),
@@ -2703,7 +2703,7 @@ export class TileCatalogManager {
       }
       const targetResolution = await this.targetResolver(request.url, {
         label: '图源 URL',
-        allowProxySyntheticAddresses: isLocalProxyEndpoint(proxyConfig),
+        delegateDnsToProxy: isLocalProxyEndpoint(proxyConfig),
       })
       const axiosConfig = {
         url: request.url,

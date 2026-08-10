@@ -76,24 +76,29 @@ test('network target DNS validation rejects any mixed private answer and keeps p
   }), { statusCode: 502 })
 })
 
-test('loopback HTTP proxy accepts Clash fake-IP answers without relaxing direct SSRF checks', async () => {
-  const fakeLookup = async () => [{ address: '198.18.0.44', family: 4 }]
+test('loopback HTTP proxy delegates public hostname DNS without relaxing direct SSRF checks', async () => {
   const targetUrl = 'https://www.google.com/maps/vt?x=1&y=2&z=3'
 
-  await assert.rejects(resolvePublicHttpTarget(targetUrl, { lookup: fakeLookup }), { statusCode: 403 })
+  await assert.rejects(resolvePublicHttpTarget(targetUrl, {
+    lookup: async () => [
+      { address: '157.240.7.20', family: 4 },
+      { address: '2001::1', family: 6 },
+    ],
+  }), { statusCode: 403 })
 
   const resolution = await resolvePublicHttpTarget(targetUrl, {
-    lookup: fakeLookup,
-    allowProxySyntheticAddresses: true,
+    lookup: async () => { throw new Error('本机 DNS 不应被调用') },
+    delegateDnsToProxy: true,
   })
-  assert.deepEqual(resolution.addresses, [{ address: '198.18.0.44', family: 4 }])
+  assert.equal(resolution.proxyResolvesHostname, true)
+  assert.deepEqual(resolution.addresses, [])
 
   const config = createPinnedProxyRequestConfig(resolution, {
     protocol: 'http',
     host: '127.0.0.1',
     port: 7890,
   })
-  assert.equal(config.url.includes('198.18.0.44'), true)
+  assert.equal(config.url, targetUrl)
   assert.equal(config.headers.Host, 'www.google.com')
   assert.equal(config.httpsAgent.proxy.host, '127.0.0.1')
 
@@ -102,16 +107,8 @@ test('loopback HTTP proxy accepts Clash fake-IP answers without relaxing direct 
     host: 'proxy.example.net',
     port: 8080,
   }), { statusCode: 403 })
-  await assert.rejects(resolvePublicHttpTarget(targetUrl, {
-    lookup: async () => [
-      { address: '198.18.0.44', family: 4 },
-      { address: '8.8.8.8', family: 4 },
-    ],
-    allowProxySyntheticAddresses: true,
-  }), { statusCode: 403 })
-  await assert.rejects(resolvePublicHttpTarget(targetUrl, {
-    lookup: async () => [{ address: '127.0.0.1', family: 4 }],
-    allowProxySyntheticAddresses: true,
+  await assert.rejects(resolvePublicHttpTarget('https://127.0.0.1/tiles', {
+    delegateDnsToProxy: true,
   }), { statusCode: 403 })
 })
 

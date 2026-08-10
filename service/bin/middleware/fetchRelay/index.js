@@ -135,7 +135,7 @@ class FetchRelay {
     const proxy = normalizeProxyConfig(proxySource)
     return this.targetResolver(url, {
       label: '回源 URL',
-      allowProxySyntheticAddresses: isLocalProxyEndpoint(proxy),
+      delegateDnsToProxy: isLocalProxyEndpoint(proxy),
     })
   }
 
