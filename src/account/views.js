@@ -171,6 +171,7 @@ function renderKml (state) {
   const quota = usage.quota || {}
   const capabilities = getAccountCapabilities(state.auth.user)
   const selectable = capabilities.canWriteKml || capabilities.canManageShares
+  const canImportTwoBulu = capabilities.canWriteKml && Boolean(state.twoBuluHelper?.available)
   return `
     <section class="account-panel-section">
       <div class="account-section-heading">
@@ -178,6 +179,7 @@ function renderKml (state) {
         ${capabilities.canWriteKml ? `<div class="account-heading-actions">
           <input type="file" id="account-kml-import" accept=".kml,application/vnd.google-earth.kml+xml" hidden>
           <button type="button" class="account-secondary-button" data-account-action="import-kml">导入 KML</button>
+          ${canImportTwoBulu ? '<button type="button" class="account-secondary-button" data-account-action="import-2bulu">从两步路导入</button>' : ''}
           <button type="button" class="account-secondary-button" data-account-action="migrate-local">迁移本地数据</button>
           <button type="button" class="account-primary-button" data-account-action="create-kml">新建 KML</button>
         </div>` : '<span class="account-badge is-muted">只读 KML</span>'}

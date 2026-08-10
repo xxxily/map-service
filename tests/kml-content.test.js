@@ -107,6 +107,56 @@ test('HTML media tags classify extensionless sources and support audio', () => {
   assert.equal(getFeatureDescriptionText(description), '现场记录')
 })
 
+test('linked image keeps the large image as the sole media and uses its child image as thumbnail', () => {
+  const original = 'https://down-files.2bulu.com/f/d1?downParams=original-media'
+  const thumbnail = 'https://down-files.2bulu.com/f/dn1?downParams=preview-media'
+  const description = `<a href="${original}" data-kml-media="image"><img src="${thumbnail}" alt="营地照片"></a>`
+
+  const references = extractContentReferences(description)
+  const view = buildFeatureContentView({ id: 'feat-linked-image', description })
+  const item = view.groups.find(group => group.type === 'image').items[0]
+
+  assert.equal(references.references.length, 1)
+  assert.equal(references.references[0].url.toString(), original)
+  assert.equal(references.references[0].thumbnailUrl.toString(), thumbnail)
+  assert.equal(view.contentSummary.imageCount, 1)
+  assert.equal(view.contentSummary.linkCount, 0)
+  assert.equal(item.url, original)
+  assert.equal(item.renderUrl, original)
+  assert.equal(item.thumbnailUrl, getKmlMediaRenderUrl(thumbnail))
+})
+
+test('ordinary linked images are merged but unrelated link cards remain independent', () => {
+  const view = buildFeatureContentView({
+    description: [
+      '<a href="https://cdn.example.com/photo-large.jpg"><img src="https://cdn.example.com/photo-thumb.jpg"></a>',
+      '<a href="https://docs.example.com/readme">查看说明</a>',
+    ].join(''),
+  })
+
+  assert.equal(view.contentSummary.imageCount, 1)
+  assert.equal(view.contentSummary.linkCount, 1)
+  const image = view.groups.find(group => group.type === 'image').items[0]
+  assert.equal(image.url, 'https://cdn.example.com/photo-large.jpg')
+  assert.equal(image.thumbnailUrl, 'https://cdn.example.com/photo-thumb.jpg')
+})
+
+test('linked image thumbnails keep URL security and masking boundaries', () => {
+  const view = buildFeatureContentView({
+    description: [
+      '<a href="https://cdn.example.com/photo-large.jpg"><img src="https://127.0.0.1/private.jpg"></a>',
+      '<a href="https://cdn.example.com/photo-two.jpg"><img src="https://cdn.example.com/photo-two-thumb.jpg?token=secret"></a>',
+    ].join(''),
+  })
+  const images = view.groups.find(group => group.type === 'image').items
+
+  assert.equal(images.length, 2)
+  assert.equal(images[0].url, 'https://cdn.example.com/photo-large.jpg')
+  assert.equal(images[0].thumbnailUrl, images[0].renderUrl)
+  assert.match(images[1].thumbnailUrl, /token=\*\*\*\*/)
+  assert.doesNotMatch(JSON.stringify(view), /secret|127\.0\.0\.1/)
+})
+
 test('embed video uses the KML video style hint instead of a page iframe', () => {
   const view = buildFeatureContentView({
     styleUrl: '#MarkerStyleVideo',

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>map-service 两步路导入助手</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">map-service 浏览器助手</p>
+      <h1>两步路导入授权</h1>
+      <p>只授权你信任的 map-service 站点。扩展不会读取或上传两步路 Cookie、账号、密码和验证码。</p>
+    </header>
+
+    <section class="card" aria-labelledby="add-title">
+      <h2 id="add-title">授权 map-service 站点</h2>
+      <form id="origin-form">
+        <label for="origin">完整 origin</label>
+        <div class="form-row">
+          <input id="origin" name="origin" type="url" required placeholder="https://map.example.com" autocomplete="url">
+          <button type="submit">授权此站点</button>
+        </div>
+        <p class="help">只能填写协议、域名和端口，例如 <code>http://127.0.0.1:3088</code>，不能包含路径。</p>
+      </form>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="card" aria-labelledby="origins-title">
+      <div class="section-heading">
+        <h2 id="origins-title">已授权站点</h2>
+        <span id="version" class="version"></span>
+      </div>
+      <div id="origins" class="origin-list"></div>
+    </section>
+
+    <section class="privacy">
+      <h2>权限说明</h2>
+      <ul>
+        <li>map-service 权限只用于响应安装探测和接收你主动发起的导入请求。</li>
+        <li>两步路权限只用于打开可见页面并读取已展示的轨迹、点位和公开媒体元数据，在浏览器本地组装 KML。</li>
+        <li>遇到登录、人机验证或 WAF 时必须由你在页面中自行完成，扩展不会自动绕过。</li>
+      </ul>
+    </section>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

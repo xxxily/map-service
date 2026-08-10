@@ -2,7 +2,7 @@
 
 > 状态：已实现，验收中  
 > 基础路径：`/api/v1`  
-> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)
+> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [两步路导入助手用户操作手册](./user-guides/two-bulu-import.md)
 
 本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。
 
@@ -214,6 +214,8 @@ system.super_admin
 | `POST` | `/kml/files/:id/restore` | `kml.own.write` | 从回收站恢复 |
 | `DELETE` | `/kml/files/:id/permanent` | `kml.own.write` | 永久删除回收站文件 |
 | `POST` | `/kml/import` | `kml.own.write` | `multipart/form-data` 导入 KML |
+| `POST` | `/kml/import/2bulu/browser-helper` | `kml.own.write` | 保存授权浏览器助手取得的标准 KML；网站使用此接口 |
+| `POST` | `/kml/import/2bulu` | `kml.own.write` | 服务端直连兼容接口，保留给未来官方 API provider |
 | `GET` | `/kml/files/:id/export` | `kml.own.read` | 下载标准 KML 文本 |
 | `POST` | `/kml/sync` | `kml.own.write` | 地图编辑器增量批量同步 |
 | `POST` | `/kml/migrations/local` | `kml.own.write` | 幂等迁移浏览器本地 KML |
@@ -333,6 +335,145 @@ KML 写入模型：
 ```
 
 导入当前支持标准 `.kml` 的 Point、LineString、Polygon，并拒绝 DOCTYPE/ENTITY。暂不支持 KMZ、MultiGeometry 和完整 KML 样式体系。
+
+### 3.2 从两步路公开分享链接导入（服务端直连兼容接口）
+
+`POST /api/v1/kml/import/2bulu` 使用当前用户会话、CSRF 和 `kml.own.write` 权限。接口只接受 `www.2bulu.com`、`2bulu.com`、`app.2bulu.com` 的 HTTPS 分享页，并在服务端重新校验 DNS、重定向、响应大小、超时和 KML/JSON 内容；不会接受调用方提供的 Cookie、代理、认证头或任意下载地址。公开标注媒体仅保留 `down-files.2bulu.com` 的固定 HTTPS 端点及唯一非空 `downParams` 定位参数，含额外 Token、签名、验证码参数或非标准端口的 URL 会被丢弃。
+
+该接口因两步路 SafeLine WAF 可能返回 `468`，当前网站不再直接调用；保留它用于兼容和未来可验证的官方 API provider。用户界面使用下一节浏览器助手接口。
+
+请求示例：
+
+```json
+{
+  "url": "https://www.2bulu.com/track/t-OavTTmw9VMzp%252FR2KBg5Tzw%253D%253D.htm",
+  "coordCorrection": "wgs84-to-gcj02",
+  "partialPolicy": "reject",
+  "requestId": "2bulu-6c2d6a2d-2fc5-4e55-a193-d93c6ef10bf5"
+}
+```
+
+字段规则：
+
+- `url` 必填，长度 1～2048；支持短链页、`track_detail.htm` 和 `share_track.htm`，分享标识最多执行两次 URL 解码。
+- `coordCorrection` 可选：`wgs84-to-gcj02`（默认）或 `none`。坐标仍以 WGS84 保存，纠偏只影响地图显示。
+- `partialPolicy` 可选：`reject`（默认）或 `allow-track-only`。后者只在用户明确接受无法确认标注点/媒体完整性时允许创建。
+- `requestId` 可选，为当前用户范围内 1～120 位 ASCII 稳定 ID；相同请求重放返回已创建文档，不重复占用配额或读取上游。官方前端会在当前浏览器会话内为相同 URL 与选项保留该 ID，只有确认成功后才释放，以覆盖响应丢失后的人工重试。幂等重放的 `importSummary.completeness` 为 `existing`，表示本次未重新解析上游。
+
+成功响应中的 `result` 是完整个人 KML 文档，并附带：
+
+```json
+{
+  "id": "kml_xxx",
+  "name": "两步路公开轨迹",
+  "featureCount": 3,
+  "revision": 1,
+  "features": [],
+  "importSummary": {
+    "provider": "2bulu",
+    "sourceUrl": "https://www.2bulu.com/track/track_detail.htm?trackId=xxx",
+    "completeness": "full",
+    "warnings": [],
+    "idempotent": false
+  }
+}
+```
+
+`completeness` 为 `full`、`track-only` 或幂等重放时的 `existing`。上游要求登录/验证码、返回 WAF/人机页面、签名或加密响应时，接口返回稳定错误并提示用户先在两步路导出 KML，再使用普通文件导入；系统不会保存两步路账号、Cookie 或验证码，也不会绕过上游保护。
+
+错误码：
+
+| HTTP | 错误码 | 说明 |
+| --- | --- | --- |
+| `400` | `TWO_BULU_URL_INVALID` | URL、主机、路径或分享标识不合法 |
+| `401` | `AUTH_REQUIRED` | 未登录 |
+| `403` | `PERMISSION_DENIED` | 没有个人 KML 写权限 |
+| `409` | `TWO_BULU_IMPORT_IN_PROGRESS` | 当前用户已有导入任务执行中 |
+| `413` | `FILE_TOO_LARGE` | 上游响应、坐标数量或生成内容超过限制 |
+| `422` | `TWO_BULU_PARTIAL_REJECTED` | 只能取得轨迹线且未显式允许部分导入 |
+| `422` | `TWO_BULU_LOGIN_REQUIRED` | 上游要求登录或验证码 |
+| `422` | `TWO_BULU_TRACK_EMPTY` | 未找到有效点、线或面 |
+| `429` | `TWO_BULU_RATE_LIMITED` | 用户触发导入频率限制 |
+| `502` | `TWO_BULU_UPSTREAM_BLOCKED` / `TWO_BULU_UPSTREAM_INVALID` | WAF、人机校验、加密响应或意外内容 |
+| `504` | `TWO_BULU_TIMEOUT` | 上游读取超时 |
+
+前端账号中心和 2D 地图 KML 面板都复用同一字段和 Dialog。未登录或只有 `kml.own.read` 的用户不显示入口；即使手工调用接口也不会触发两步路外部请求。地图端成功后会登记服务端文档同步快照并自动适配导入要素范围，避免增量同步再次创建副本。
+
+### 3.3 保存两步路授权浏览器助手取得的 KML
+
+```http
+POST /api/v1/kml/import/2bulu/browser-helper
+Content-Type: application/json
+```
+
+鉴权：当前用户 Cookie 会话、CSRF、`kml.own.write`。扩展只负责在用户浏览器中取得最终标准 KML；服务端不接收两步路 Cookie、账号密码、验证码、Authorization、代理或上游请求头，并对 URL 与 KML 正文重新校验。
+
+请求示例：
+
+```json
+{
+  "protocolVersion": 1,
+  "helperVersion": "0.3.4",
+  "url": "https://www.2bulu.com/track/t-OavTTmw9VMzp%252FR2KBg5Tzw%253D%253D.htm",
+  "kmlText": "<?xml version=\"1.0\"?><kml xmlns=\"http://www.opengis.net/kml/2.2\">...</kml>",
+  "sourceMode": "rendered-data",
+  "completeness": "full",
+  "warnings": [],
+  "coordCorrection": "wgs84-to-gcj02",
+  "partialPolicy": "reject",
+  "requestId": "2bulu-helper-6c2d6a2d-2fc5-4e55-a193-d93c6ef10bf5"
+}
+```
+
+字段规则：
+
+- `protocolVersion` 必填且当前只能为整数 `1`。
+- `helperVersion` 必填，为 1～32 位 ASCII 字母、数字、点、下划线或连字符。
+- `url` 必填，按 3.2 的两步路官方 HTTPS 分享 URL 规则重新规范化；不信任客户端声称的最终来源 URL。
+- `kmlText` 必填，UTF-8 最大 10 MiB；服务端复用标准 KML 解析、DOCTYPE/ENTITY 拒绝、富文本清洗、坐标、要素和用户配额校验。
+- `sourceMode` 为 `official-kml` 或 `rendered-data`；`completeness` 为 `full` 或 `track-only`；`warnings` 最多 10 项、每项最多 300 字符。0.3.x 助手会提交这些字段，服务端执行枚举和长度规范化；兼容旧版助手时省略字段分别按 `official-kml`、`full` 和空数组处理。
+- `coordCorrection`、`partialPolicy`、`requestId` 与 3.2 相同；当 `completeness=track-only` 时必须同时提交 `partialPolicy=allow-track-only`，否则返回 `422 TWO_BULU_PARTIAL_REJECTED`。浏览器助手在页面已展示轨迹但标注接口不可用时才会产生 `track-only`。
+
+浏览器助手 `0.3.4` 在扩展内部增加 `importSessionId` 和二阶段 `COMPLETE_2BULU_IMPORT` 标签页确认，但这两个字段不属于本 HTTP API，也不得提交给服务端。前端只在本接口明确保存成功后通知扩展：扩展校验原发起标签页后激活 map-service，并安全关闭自己管理的未固定两步路临时页；保存失败或无法自动关闭时由两步路页面结果卡片提供手动返回/关闭操作。
+- 相同用户、规范化轨迹和 `requestId` 重放时返回原文档，`importSummary.completeness=existing`，不会再次创建文件或占用配额。
+
+成功响应：
+
+```json
+{
+  "code": 0,
+  "result": {
+    "id": "kml_xxx",
+    "name": "两步路公开轨迹",
+    "featureCount": 3,
+    "revision": 1,
+    "features": [],
+    "importSummary": {
+      "provider": "2bulu",
+      "sourceUrl": "https://www.2bulu.com/track/track_detail.htm?trackId=xxx",
+      "completeness": "full",
+      "warnings": [],
+      "idempotent": false,
+      "helperVersion": "0.3.4",
+      "sourceMode": "rendered-data"
+    }
+  }
+}
+```
+
+错误码：
+
+| HTTP | 错误码 | 说明 |
+| --- | --- | --- |
+| `400` | `TWO_BULU_URL_INVALID` / `VALIDATION_FAILED` | URL、协议版本、助手版本、请求 ID 或选项非法 |
+| `400` | `KML_PARSE_FAILED` / `KML_UNSAFE_XML` | 正文不是标准 KML，或包含外部实体声明 |
+| `401` | `AUTH_REQUIRED` | 未登录 |
+| `403` | `CSRF_INVALID` / `PERMISSION_DENIED` | CSRF 或个人 KML 写权限失败 |
+| `409` | `KML_CREATE_REPLAY_DELETED` | 对应幂等创建已被永久删除 |
+| `413` | `FILE_TOO_LARGE` | KML 正文超过 10 MiB 或单文件配额 |
+| `422` | `TWO_BULU_TRACK_EMPTY` / `TWO_BULU_PARTIAL_REJECTED` / `QUOTA_EXCEEDED` | 没有有效点、线、面、未显式允许仅轨迹导入，或要素/用户配额不足 |
+
+账号中心和 2D 地图只有在登录写用户收到扩展协议 `PONG` 后才渲染入口。地图保存成功后先登记账号同步快照，再更新本地列表并适配全部导入要素范围。
 
 ## 4. 位置收藏
 

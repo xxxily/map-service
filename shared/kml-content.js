@@ -3,6 +3,8 @@ const KML_MEDIA_RELAY_ENDPOINT = '/api/v1/kml/media'
 const KML_MEDIA_COMPATIBILITY_RULES = new Map([
   ['down-files.2bulu.com', new Set(['/f/dn1'])],
 ])
+const TWO_BULU_MEDIA_HOST = 'down-files.2bulu.com'
+const TWO_BULU_MEDIA_PATHS = new Set(['/f/d1', '/f/dn1'])
 
 export const CONTENT_GROUP_ORDER = ['image', 'video', 'audio', 'iframe', 'link']
 export const CONTENT_GROUP_TITLES = {
@@ -174,6 +176,14 @@ function typeFromMime (value) {
   return ''
 }
 
+function normalizeThumbnailUrl (value) {
+  const parsed = normalizeUrl(value)
+  if (!parsed || parsed.protocol !== 'https:' || parsed.username || parsed.password || isBlockedHostname(parsed.hostname)) {
+    return null
+  }
+  return parsed
+}
+
 function getFirstSrcsetUrl (value) {
   return String(value || '').split(',')[0]?.trim().split(/\s+/)[0] || ''
 }
@@ -181,10 +191,11 @@ function getFirstSrcsetUrl (value) {
 function collectTagReferences (description) {
   const references = []
   const mediaStack = []
+  const anchorStack = []
   const tagPattern = /<\s*(\/?)\s*([a-z][\w:-]*)\b([^>]*)>/gi
   let match
 
-  const add = (url, typeHint, tagName, attributes, index) => {
+  const add = (url, typeHint, tagName, attributes, index, extra = {}) => {
     if (!url) return
     references.push({
       url,
@@ -192,13 +203,31 @@ function collectTagReferences (description) {
       tagName,
       title: attributes.alt || attributes.title || '',
       index,
+      ...extra,
     })
+  }
+
+  const closeAnchor = () => {
+    const stackIndex = anchorStack.map(item => item.tagName).lastIndexOf('a')
+    if (stackIndex === -1) return
+    const anchor = anchorStack.splice(stackIndex, 1)[0]
+    const imageUsesHref = anchor.imageUrl && (
+      anchor.href === anchor.imageUrl ||
+      canUseAnchorAsImageSource(anchor.href, anchor.imageUrl)
+    )
+    if (anchor.href && (!anchor.hasImage || !imageUsesHref)) {
+      add(anchor.href, '', 'a', anchor.attributes, anchor.index)
+    }
   }
 
   while ((match = tagPattern.exec(description)) !== null) {
     const closing = Boolean(match[1])
     const tagName = match[2].toLowerCase()
     if (closing) {
+      if (tagName === 'a') {
+        closeAnchor()
+        continue
+      }
       const stackIndex = mediaStack.map(item => item.tagName).lastIndexOf(tagName)
       if (stackIndex !== -1) mediaStack.splice(stackIndex)
       continue
@@ -207,9 +236,25 @@ function collectTagReferences (description) {
     const attributes = parseTagAttributes(match[3])
     const selfClosing = /\/\s*$/.test(match[3])
     if (tagName === 'img') {
-      add(attributes.src || getFirstSrcsetUrl(attributes.srcset), 'image', tagName, attributes, match.index)
+      const imageUrl = attributes.src || getFirstSrcsetUrl(attributes.srcset)
+      const anchor = anchorStack.at(-1)
+      if (anchor) {
+        anchor.hasImage = true
+        anchor.imageUrl ||= imageUrl
+      }
+      add(imageUrl, 'image', tagName, attributes, match.index, {
+        linkedUrl: anchor?.href || '',
+      })
     } else if (tagName === 'image') {
-      add(attributes.href || attributes['xlink:href'], 'image', tagName, attributes, match.index)
+      const imageUrl = attributes.href || attributes['xlink:href']
+      const anchor = anchorStack.at(-1)
+      if (anchor) {
+        anchor.hasImage = true
+        anchor.imageUrl ||= imageUrl
+      }
+      add(imageUrl, 'image', tagName, attributes, match.index, {
+        linkedUrl: anchor?.href || '',
+      })
     } else if (tagName === 'video' || tagName === 'audio') {
       add(attributes.src, tagName, tagName, attributes, match.index)
       if (!selfClosing) mediaStack.push({ tagName, type: tagName })
@@ -225,11 +270,52 @@ function collectTagReferences (description) {
     } else if (tagName === 'object') {
       add(attributes.data, typeFromMime(attributes.type), tagName, attributes, match.index)
     } else if (tagName === 'a') {
-      add(attributes.href, '', tagName, attributes, match.index)
+      anchorStack.push({
+        tagName,
+        href: attributes.href || '',
+        attributes,
+        index: match.index,
+        hasImage: false,
+      })
     }
   }
 
+  // 容错处理未闭合的锚点。正常情况下会在遇到 </a> 时完成；页面导入的
+  // 富文本偶尔会缺少闭合标签，不能因此丢掉普通链接。
+  while (anchorStack.length) {
+    const anchor = anchorStack.pop()
+    if (!anchor.hasImage && anchor.href) add(anchor.href, '', 'a', anchor.attributes, anchor.index)
+  }
+
   return references
+}
+
+function isLikelyImageUrl (value) {
+  const parsed = value instanceof URL ? value : normalizeUrl(value)
+  if (!parsed) return false
+  return IMAGE_EXTENSIONS.has((/\.([a-z0-9]+)$/i.exec(parsed.pathname)?.[1] || '').toLowerCase())
+}
+
+function canUseAnchorAsImageSource (anchorUrl, imageUrl) {
+  if (!anchorUrl || !imageUrl) return false
+  if (anchorUrl.toString() === imageUrl.toString()) return false
+  const anchor = anchorUrl instanceof URL ? anchorUrl : normalizeUrl(anchorUrl)
+  const image = imageUrl instanceof URL ? imageUrl : normalizeUrl(imageUrl)
+  if (!anchor || !image || anchor.protocol !== 'https:' || image.protocol !== 'https:') return false
+  // 两步路及多数图片 CDN 会用相同路径、不同 downParams/尺寸参数提供
+  // 原图和缩略图；这种结构应合并为一个媒体项。
+  if (anchor.hostname.toLowerCase() === image.hostname.toLowerCase() && anchor.pathname === image.pathname) return true
+  if (anchor.hostname.toLowerCase() === TWO_BULU_MEDIA_HOST &&
+      image.hostname.toLowerCase() === TWO_BULU_MEDIA_HOST &&
+      TWO_BULU_MEDIA_PATHS.has(anchor.pathname) && TWO_BULU_MEDIA_PATHS.has(image.pathname)) return true
+  // 也兼容常见的 /large.jpg 与 /thumb.jpg 链接包裹形式。
+  return isLikelyImageUrl(anchor) && isLikelyImageUrl(image)
+}
+
+function isUrlInsideMarkup (text, index) {
+  const opening = String(text || '').lastIndexOf('<', index)
+  const closing = String(text || '').lastIndexOf('>', index)
+  return opening > closing
 }
 
 export function extractContentReferences (text, options = {}) {
@@ -239,6 +325,9 @@ export function extractContentReferences (text, options = {}) {
   const plainUrlPattern = /https?:\/\/[^\s<>"'`]+/gi
   let match
   while ((match = plainUrlPattern.exec(description)) !== null) {
+    // 标签属性中的 href/src 会由结构化标签解析处理；跳过这里，避免
+    // `<a href="原图"><img src="缩略图"></a>` 被拆成额外的链接/图片媒体。
+    if (isUrlInsideMarkup(description, match.index)) continue
     candidates.push({
       url: match[0],
       typeHint: '',
@@ -253,8 +342,17 @@ export function extractContentReferences (text, options = {}) {
   const referencesByUrl = new Map()
   let truncated = false
   for (const candidate of candidates) {
-    const parsed = normalizeUrl(candidate.url)
+    let parsed = normalizeUrl(candidate.url)
     if (!parsed) continue
+
+    let thumbnailUrl = null
+    if (candidate.typeHint === 'image' && candidate.linkedUrl) {
+      const linked = normalizeUrl(candidate.linkedUrl)
+      if (canUseAnchorAsImageSource(linked, parsed)) {
+        thumbnailUrl = parsed
+        parsed = linked
+      }
+    }
     const key = parsed.toString()
     const existing = referencesByUrl.get(key)
     if (existing) {
@@ -263,6 +361,7 @@ export function extractContentReferences (text, options = {}) {
         existing.tagName = candidate.tagName
       }
       if (!existing.title && candidate.title) existing.title = candidate.title
+      if (!existing.thumbnailUrl && thumbnailUrl) existing.thumbnailUrl = thumbnailUrl
       continue
     }
     if (references.length >= limit) {
@@ -274,6 +373,7 @@ export function extractContentReferences (text, options = {}) {
       typeHint: candidate.typeHint,
       tagName: candidate.tagName,
       title: candidate.title,
+      thumbnailUrl,
     }
     references.push(reference)
     referencesByUrl.set(key, reference)
@@ -305,6 +405,9 @@ function createContentItem (parsed, index, options = {}) {
   const renderUrl = type === 'image'
     ? getKmlMediaRenderUrl(maskedUrl)
     : maskedUrl
+  const thumbnailParsed = type === 'image' ? normalizeThumbnailUrl(options.thumbnailUrl) : null
+  const maskedThumbnailUrl = thumbnailParsed ? maskSensitiveQueryParams(thumbnailParsed) : ''
+  const thumbnailRenderUrl = maskedThumbnailUrl ? getKmlMediaRenderUrl(maskedThumbnailUrl) : ''
   return {
     id: `description-link-${index + 1}`,
     type,
@@ -313,7 +416,7 @@ function createContentItem (parsed, index, options = {}) {
     url: maskedUrl,
     renderUrl,
     displayUrl: maskedUrl,
-    thumbnailUrl: type === 'image' ? renderUrl : '',
+    thumbnailUrl: type === 'image' ? (thumbnailRenderUrl || renderUrl) : '',
     sourceType: 'description-link',
     autoplay: type === 'video',
     embedPolicy: type === 'iframe'
@@ -363,6 +466,7 @@ export function buildFeatureContentView (feature, options = {}) {
       typeHint,
       title: reference.title,
       tagName: reference.tagName,
+      thumbnailUrl: reference.thumbnailUrl,
     })
     if (!classified.accepted) {
       rejected.push({

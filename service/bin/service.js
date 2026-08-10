@@ -19,6 +19,8 @@ import TileCatalogManager from './admin/tileCatalog.js'
 import UserDatabase from './user/database.js'
 import { UserSystemService } from './user/userSystem.js'
 import { UserContentService } from './user/userContent.js'
+import { TwoBuluImportService } from './user/twoBuluImport.js'
+import TwoBuluImportCoordinator from './user/twoBuluImportCoordinator.js'
 import { createHttpError } from './user/security.js'
 import { buildShareMapCatalog, hasShareMapSource } from './user/shareMapCatalog.js'
 import {
@@ -83,6 +85,11 @@ const userContent = new UserContentService({
   userSystem,
   // 公开分享路由会异步计算站点访问状态并通过 context.siteAccessGranted 传入。
   isSiteAccessEnabled: () => true,
+})
+const twoBuluImport = new TwoBuluImportService(userSystemConfig.twoBuluImport || {})
+const twoBuluImportCoordinator = new TwoBuluImportCoordinator({
+  userContent,
+  provider: twoBuluImport,
 })
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
@@ -352,6 +359,14 @@ const service = {
 
   importUserKml (actor, input, context) {
     return userContent.importKml(actor, input, context)
+  },
+
+  async importTwoBuluUserKml (actor, input = {}, context = {}) {
+    return twoBuluImportCoordinator.import(actor, input, context)
+  },
+
+  async importTwoBuluBrowserHelperKml (actor, input = {}, context = {}) {
+    return twoBuluImportCoordinator.importFromBrowserHelper(actor, input, context)
   },
 
   exportUserKml (actor, id) {

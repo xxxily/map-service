@@ -296,6 +296,200 @@ test('private writes require both a valid session and matching CSRF header', asy
   }
 })
 
+test('two-bulu KML import requires login, CSRF and personal KML write permission', async () => {
+  const session = testSession()
+  const readonlySession = {
+    ...session,
+    id: 'ses_readonly',
+    user: {
+      ...session.user,
+      id: 'usr_readonly',
+      permissions: ['kml.own.read'],
+    },
+  }
+  let currentSession = session
+  let imported = 0
+  let received = null
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? currentSession : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== currentSession || token !== 'csrf-token') {
+        const err = new Error('请求安全校验失败')
+        err.statusCode = 403
+        err.code = 'CSRF_INVALID'
+        throw err
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(permission, 'kml.own.write')
+      if (!current?.user?.permissions?.includes(permission)) {
+        const err = new Error('没有执行此操作的权限')
+        err.statusCode = 403
+        err.code = 'PERMISSION_DENIED'
+        throw err
+      }
+    },
+    importTwoBuluUserKml: async (current, input, context) => {
+      imported += 1
+      received = { current, input, context }
+      return {
+        id: 'kml_2bulu',
+        name: '两步路轨迹',
+        featureCount: 1,
+        importSummary: { provider: '2bulu', completeness: 'full', warnings: [] },
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    let result = await requestJson(baseUrl, '/api/v1/kml/import/2bulu', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://www.2bulu.com/track/t-abc.htm' }),
+    })
+    assert.equal(result.response.status, 401)
+    assert.equal(result.payload.error.code, 'AUTH_REQUIRED')
+    assert.equal(imported, 0)
+
+    result = await requestJson(baseUrl, '/api/v1/kml/import/2bulu', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token' },
+      body: JSON.stringify({ url: 'https://www.2bulu.com/track/t-abc.htm' }),
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'CSRF_INVALID')
+    assert.equal(imported, 0)
+
+    currentSession = readonlySession
+    result = await requestJson(baseUrl, '/api/v1/kml/import/2bulu', {
+      method: 'POST',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+      },
+      body: JSON.stringify({ url: 'https://www.2bulu.com/track/t-abc.htm' }),
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'PERMISSION_DENIED')
+    assert.equal(imported, 0)
+
+    currentSession = session
+    result = await requestJson(baseUrl, '/api/v1/kml/import/2bulu', {
+      method: 'POST',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+      },
+      body: JSON.stringify({
+        url: 'https://www.2bulu.com/track/t-abc.htm',
+        partialPolicy: 'reject',
+        requestId: '2bulu-request-one',
+      }),
+    })
+    assert.equal(result.response.status, 201)
+    assert.equal(result.payload.result.id, 'kml_2bulu')
+    assert.equal(imported, 1)
+    assert.equal(received.current, session)
+    assert.equal(received.input.partialPolicy, 'reject')
+    assert.ok(received.context.ip)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('browser-helper KML import requires login, CSRF and write permission and never forwards credentials', async () => {
+  const session = testSession()
+  const readonlySession = {
+    ...session,
+    id: 'ses_browser_helper_readonly',
+    user: { ...session.user, id: 'usr_browser_helper_readonly', permissions: ['kml.own.read'] },
+  }
+  let currentSession = session
+  let imported = 0
+  let received = null
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? currentSession : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== currentSession || token !== 'csrf-token') {
+        const error = new Error('请求安全校验失败')
+        error.statusCode = 403
+        error.code = 'CSRF_INVALID'
+        throw error
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      if (permission !== 'kml.own.write' || !current?.user?.permissions?.includes(permission)) {
+        const error = new Error('没有执行此操作的权限')
+        error.statusCode = 403
+        error.code = 'PERMISSION_DENIED'
+        throw error
+      }
+    },
+    importTwoBuluBrowserHelperKml: async (current, input, context) => {
+      imported += 1
+      received = { current, input, context }
+      return {
+        id: 'kml_browser_helper',
+        name: '浏览器路线',
+        featureCount: 2,
+        importSummary: { provider: '2bulu', completeness: 'full', helperVersion: '0.1.0' },
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+  try {
+    let result = await requestJson(baseUrl, '/api/v1/kml/import/2bulu/browser-helper', {
+      method: 'POST',
+      body: JSON.stringify({ protocolVersion: 1, helperVersion: '0.1.0', url: 'https://www.2bulu.com/track/t-abc.htm', kmlText: '<kml/>' }),
+    })
+    assert.equal(result.response.status, 401)
+    assert.equal(result.payload.error.code, 'AUTH_REQUIRED')
+    assert.equal(imported, 0)
+
+    result = await requestJson(baseUrl, '/api/v1/kml/import/2bulu/browser-helper', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token' },
+      body: JSON.stringify({ protocolVersion: 1, helperVersion: '0.1.0', url: 'https://www.2bulu.com/track/t-abc.htm', kmlText: '<kml/>' }),
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'CSRF_INVALID')
+    assert.equal(imported, 0)
+
+    currentSession = readonlySession
+    result = await requestJson(baseUrl, '/api/v1/kml/import/2bulu/browser-helper', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token', 'X-CSRF-Token': 'csrf-token' },
+      body: JSON.stringify({ protocolVersion: 1, helperVersion: '0.1.0', url: 'https://www.2bulu.com/track/t-abc.htm', kmlText: '<kml/>' }),
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'PERMISSION_DENIED')
+
+    currentSession = session
+    result = await requestJson(baseUrl, '/api/v1/kml/import/2bulu/browser-helper', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token', 'X-CSRF-Token': 'csrf-token' },
+      body: JSON.stringify({
+        protocolVersion: 1,
+        helperVersion: '0.1.0',
+        url: 'https://www.2bulu.com/track/t-abc.htm',
+        kmlText: '<kml><Document><Placemark><Point><coordinates>113,23</coordinates></Point></Placemark></Document></kml>',
+        requestId: 'helper-request-one',
+      }),
+    })
+    assert.equal(result.response.status, 201)
+    assert.equal(result.payload.result.id, 'kml_browser_helper')
+    assert.equal(imported, 1)
+    assert.equal(received.input.kmlText.includes('kml'), true)
+    assert.equal(Object.hasOwn(received.input, 'cookie'), false)
+    assert.equal(Object.hasOwn(received.input, 'authorization'), false)
+    assert.ok(received.context.ip)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('kml.any.manage implies read access at the API permission guard', async () => {
   const session = {
     id: 'ses_auditor',

@@ -141,6 +141,10 @@ function normalizeEnum (value, allowed, fallback, message) {
   return normalized
 }
 
+export function normalizeKmlCoordCorrection (value, fallback = 'wgs84-to-gcj02') {
+  return normalizeEnum(value, KML_COORD_CORRECTIONS, fallback, '坐标纠偏模式不正确')
+}
+
 function normalizeRevision (value, options = {}) {
   if (value === undefined && options.optional) return null
   const revision = Number(value)
@@ -353,11 +357,9 @@ function normalizeKmlInput (input = {}, current = {}) {
       message: 'KML 名称长度需为 1～200 个字符',
     }),
     description: sanitizeRichText(input.description ?? current.description ?? '', 10000),
-    coordCorrection: normalizeEnum(
+    coordCorrection: normalizeKmlCoordCorrection(
       input.coordCorrection,
-      KML_COORD_CORRECTIONS,
-      current.coordCorrection || 'wgs84-to-gcj02',
-      '坐标纠偏模式不正确'
+      current.coordCorrection || 'wgs84-to-gcj02'
     ),
     theme: normalizeEnum(input.theme, KML_THEMES, current.theme || 'default', 'KML 主题不正确'),
     color: normalizeColor(input.color, current.color || '#0f766e'),
@@ -815,6 +817,27 @@ export class UserContentService {
     return this.createKmlForOwner(ownerId, input, options)
   }
 
+  getKmlBySyncClientId (actor, clientId) {
+    this.assertPermission(actor, 'kml.own.write')
+    const ownerId = this.actorUser(actor).id
+    const normalizedClientId = normalizeSyncClientId(clientId)
+    const row = this.database.prepare(`
+      SELECT d.*, k.deleted_at AS sync_deleted_at
+      FROM kml_sync_create_keys k
+      LEFT JOIN kml_documents d ON d.id = k.kml_id AND d.owner_id = k.owner_id
+      WHERE k.owner_id = ? AND k.client_id = ?
+    `).get(ownerId, normalizedClientId)
+    if (!row) return null
+    if (row.sync_deleted_at || !row.id) {
+      throw createHttpError(
+        '该同步创建操作对应的 KML 已永久删除，请使用新的 clientId 明确创建副本',
+        409,
+        'KML_CREATE_REPLAY_DELETED'
+      )
+    }
+    return this.kmlViewFromRow(row, { includeFeatures: true })
+  }
+
   listKml (actor, input = {}) {
     this.assertPermission(actor, 'kml.own.read')
     const ownerId = this.actorUser(actor).id
@@ -1075,7 +1098,7 @@ export class UserContentService {
     return this.permanentDeleteKml(actor, kmlId)
   }
 
-  importKml (actor, input = {}) {
+  importKml (actor, input = {}, options = {}) {
     this.assertPermission(actor, 'kml.own.write')
     requireObject(input)
     const text = String(input.kmlText || '')
@@ -1093,7 +1116,11 @@ export class UserContentService {
       coordCorrection: input.coordCorrection,
       theme: input.theme,
       color: input.color,
-    }, { sourceType: 'imported', sourceByteSize })
+    }, {
+      sourceType: 'imported',
+      sourceByteSize,
+      ...(options.syncClientId ? { syncClientId: options.syncClientId } : {}),
+    })
   }
 
   exportKml (actor, kmlId) {

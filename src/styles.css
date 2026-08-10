@@ -2346,6 +2346,11 @@ body.admin-view #footer-bar {
   background: rgba(15, 118, 110, 0.06);
 }
 
+.kml-create-file-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .kml-import-option,
 .kml-correction-switch {
   display: inline-flex;

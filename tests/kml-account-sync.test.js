@@ -7,6 +7,7 @@ import {
   buildKmlSyncOperations,
   getKmlSyncStatusView,
   kmlFingerprint,
+  registerKmlAccountDocumentSnapshot,
   reduceKmlSyncResult,
 } from '../src/map/kml-account-sync.js'
 import {
@@ -70,6 +71,32 @@ test('KML account sync builds create, update and trash operations from snapshots
   assert.equal(operations.find(item => item.action === 'update').data.revision, 3)
   assert.equal(operations.find(item => item.action === 'create').clientId, 'local-new')
   assert.equal(operations.find(item => item.action === 'trash').kmlId, 'server-2')
+})
+
+test('服务端直接创建的 KML 可登记同步快照且不会再次生成 create', () => {
+  const imported = {
+    id: 'kml_two_bulu',
+    name: '两步路轨迹',
+    revision: 1,
+    status: 'active',
+    coordCorrection: 'wgs84-to-gcj02',
+    theme: 'default',
+    color: '#0f766e',
+    lockDrag: false,
+    enabled: true,
+    features: [{
+      id: 'track-1',
+      type: 'LineString',
+      name: '公开轨迹',
+      description: '',
+      coordinates: [[113.2, 23.1], [113.3, 23.2]],
+    }],
+  }
+  const snapshots = registerKmlAccountDocumentSnapshot(new Map(), imported)
+
+  assert.equal(snapshots.get(imported.id).serverId, imported.id)
+  assert.equal(snapshots.get(imported.id).revision, 1)
+  assert.deepEqual(buildKmlSyncOperations([imported], snapshots), [])
 })
 
 test('KML account sync preserves delete state so undo restores and redo trashes again', () => {

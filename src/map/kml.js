@@ -19,10 +19,24 @@ import {
 import { apiRequest } from '../auth/api.js'
 import { getAuthSnapshot, hasPermission } from '../auth/session.js'
 import {
+  clearTwoBuluImportRequest,
+  showTwoBuluImportDialog,
+  twoBuluImportResultMessage,
+} from '../ui/two-bulu-import-dialog.js'
+import {
+  finalizeTwoBuluImport,
+  getTwoBuluHelperState,
+  probeTwoBuluHelper,
+  requestTwoBuluKml,
+  subscribeTwoBuluHelper,
+  TWO_BULU_HELPER_PROTOCOL_VERSION,
+} from '../integrations/two-bulu-helper-bridge.js'
+import {
   bindKmlAccountSyncStatus,
   initializeKmlAccountMode,
   isAccountKmlMode,
   isAccountKmlWritable,
+  registerKmlAccountDocument,
   scheduleKmlAccountSync,
   suspendKmlAccountSync,
 } from './kml-account-sync.js'
@@ -117,6 +131,16 @@ function isAdminLoggedIn () {
 
 function canWritePersonalKml () {
   return !isAccountKmlMode() || isAccountKmlWritable()
+}
+
+function canImportTwoBuluKml () {
+  const auth = getAuthSnapshot()
+  return Boolean(
+    auth.authenticated &&
+    isAccountKmlWritable() &&
+    hasPermission('kml.own.write', auth) &&
+    getTwoBuluHelperState().available
+  )
 }
 
 function canManagePersonalShares () {
@@ -706,6 +730,8 @@ function bindAccountSessionExpiry (map) {
 }
 
 function updateKmlPanelUI (map) {
+  const twoBuluImportButton = document.getElementById('kml-import-2bulu')
+  if (twoBuluImportButton) twoBuluImportButton.hidden = !canImportTwoBuluKml()
   if (canWritePersonalKml()) ensureDefaultKmlFile()
   const container = document.getElementById('kml-files-list')
   if (!container) return
@@ -1399,6 +1425,91 @@ function fitKmlFilesBounds (map, files, options = {}) {
   return true
 }
 
+async function handleTwoBuluImport (map, button, correctionInput) {
+  if (!canImportTwoBuluKml()) {
+    await showAlert('请先登录具备个人 KML 写权限的账号后再从两步路导入。')
+    return
+  }
+
+  const input = await showTwoBuluImportDialog({
+    coordCorrection: correctionInput?.checked === false ? 'none' : KML_COORD_CORRECTION,
+  })
+  if (!input) return
+
+  const originalText = button?.textContent || '从两步路公开链接导入'
+  if (button) {
+    button.disabled = true
+    button.textContent = '正在读取并导入…'
+  }
+
+  let helperResult = null
+  let savedResult = null
+  try {
+    helperResult = await requestTwoBuluKml(input)
+    const result = await apiRequest('/kml/import/2bulu/browser-helper', {
+      method: 'POST',
+      body: {
+        ...input,
+        protocolVersion: TWO_BULU_HELPER_PROTOCOL_VERSION,
+        helperVersion: helperResult.helperVersion,
+        name: helperResult.name,
+        kmlText: helperResult.kmlText,
+        sourceMode: helperResult.sourceMode,
+        completeness: helperResult.completeness,
+        warnings: helperResult.warnings,
+      },
+    })
+    if (!result?.id || !Array.isArray(result.features)) {
+      throw new Error('两步路导入响应缺少有效 KML 数据，请刷新后重试。')
+    }
+    savedResult = result
+
+    const importedKml = normalizeKmlFile(result)
+    if (!registerKmlAccountDocument(importedKml)) {
+      clearTwoBuluImportRequest(input)
+      await finalizeTwoBuluImport(helperResult, {
+        status: 'success',
+        message: '轨迹已保存到账号；当前地图登录状态已变化，请刷新页面后查看。',
+      })
+      await showAlert('轨迹已保存到账号，但当前页面登录状态已变化。请重新登录或刷新页面后查看。')
+      return
+    }
+
+    const existingIndex = kmlList.findIndex(item => item.id === importedKml.id)
+    if (existingIndex >= 0) kmlList.splice(existingIndex, 1, importedKml)
+    else kmlList.splice(1, 0, importedKml)
+    expandedKmlIds.add(importedKml.id)
+    rememberTargetKmlId(importedKml.id)
+    saveToStorage()
+
+    renderKmlLayers(map, importedKml)
+    updateKmlPanelUI(map)
+    fitKmlFilesBounds(map, [importedKml])
+    clearTwoBuluImportRequest(input)
+    await finalizeTwoBuluImport(helperResult, {
+      status: 'success',
+      message: twoBuluImportResultMessage(result),
+    })
+    await showAlert(twoBuluImportResultMessage(result), { title: '导入完成' })
+  } catch (error) {
+    if (helperResult) {
+      await finalizeTwoBuluImport(helperResult, {
+        status: savedResult ? 'success' : 'failed',
+        message: savedResult
+          ? `轨迹已保存到账号，但当前地图加载失败：${error?.message || '请刷新页面后查看。'}`
+          : `map-service 保存失败：${error?.message || '请返回地图页面查看原因后重试。'}`,
+      })
+      if (savedResult) clearTwoBuluImportRequest(input)
+    }
+    await showAlert(error?.message || '读取两步路公开轨迹失败，请稍后重试或改用本地 KML 导入。')
+  } finally {
+    if (button) {
+      button.disabled = false
+      button.textContent = originalText
+    }
+  }
+}
+
 function bindKmlPopupActions (map) {
   map.on('popupopen', (event) => {
     const popup = event.popup
@@ -1531,9 +1642,11 @@ async function initShareKmlSupport (map) {
   const panel = document.getElementById('kml-panel')
   const dropzone = document.getElementById('kml-import-dropzone')
   const createButton = panel?.querySelector('[data-kml-action="create-file"]')
+  const twoBuluImportButton = panel?.querySelector('[data-kml-action="import-2bulu"]')
   const correctionOption = panel?.querySelector('.kml-import-option')
   if (dropzone) dropzone.hidden = true
   if (createButton) createButton.hidden = true
+  if (twoBuluImportButton) twoBuluImportButton.hidden = true
   if (correctionOption) correctionOption.hidden = true
   if (!panel) return
 
@@ -1609,7 +1722,16 @@ export async function initKmlSupport (map) {
   const correctionInput = document.getElementById('kml-coordinate-correction')
   const dropzone = document.getElementById('kml-import-dropzone')
   const createButton = panel?.querySelector('[data-kml-action="create-file"]')
+  const twoBuluImportButton = panel?.querySelector('[data-kml-action="import-2bulu"]')
   const correctionOption = panel?.querySelector('.kml-import-option')
+
+  if (twoBuluImportButton) {
+    twoBuluImportButton.hidden = !canImportTwoBuluKml()
+    subscribeTwoBuluHelper(() => {
+      twoBuluImportButton.hidden = !canImportTwoBuluKml()
+    })
+    probeTwoBuluHelper().catch(() => {})
+  }
 
   if (!canWritePersonalKml()) {
     if (dropzone) dropzone.hidden = true
@@ -1702,6 +1824,12 @@ export async function initKmlSupport (map) {
     const action = actionTarget.getAttribute('data-kml-action')
     const kmlId = actionTarget.getAttribute('data-kml-id')
     const featureId = actionTarget.getAttribute('data-feature-id')
+
+    if (action === 'import-2bulu') {
+      event.stopPropagation()
+      await handleTwoBuluImport(map, actionTarget, correctionInput)
+      return
+    }
 
     if (action === 'create-file') {
       event.stopPropagation()

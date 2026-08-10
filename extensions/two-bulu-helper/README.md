@@ -1,0 +1,49 @@
+# map-service 两步路导入助手
+
+这是 Chrome Manifest V3 浏览器助手。它以两步路分享页已经展示的轨迹运行态为主要数据源：读取页面中的轨迹数组、地图图层和标注元数据，在浏览器内还原标准 KML；如果页面另有官方 KML 链接也兼容读取。扩展不会复制或上传两步路 Cookie、账号、密码、Token 和验证码。
+
+## 本地安装
+
+1. 打开 Chrome `chrome://extensions/`。
+2. 开启右上角“开发者模式”。
+3. 点击“加载已解压的扩展程序”。
+4. 选择本目录 `extensions/two-bulu-helper/`。
+5. 打开扩展详情页，进入“扩展程序选项”。
+6. 本地 `http://127.0.0.1:3088`、`http://localhost:3088`、`http://127.0.0.1:5174` 和 `http://localhost:5174` 已默认允许；其他开发端口或生产域名需在选项页填写完整 origin 并由 Chrome 授权。
+7. 刷新 map-service 页面。只有已登录、具备 `kml.own.write` 且扩展在当前 origin 响应时，账号中心和 2D 地图才显示“两步路导入”。
+
+扩展加载后，两步路页面主世界会提供 `MapServiceTwoBuluPageExport`。需要先单独验证页面提取时，可在该页面执行 `await MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })`；它会直接下载当前页面整理出的 KML，不经过 map-service。
+
+## 使用
+
+1. 在 map-service 的“我的 KML”或地图 KML 面板点击“两步路导入”。
+2. 粘贴两步路公开分享 URL。
+3. 扩展会打开或复用一个可见的两步路标签页。
+4. 页面已经完整显示轨迹时无需手工切换，扩展会直接还原 KML 并等待网站保存。若出现登录、人机验证或 SafeLine 提示，请自行完成；扩展不会自动处理。
+5. 只有第 4 步要求人工操作时，才需要通过结果卡片返回 map-service 后重新点击导入。扩展会把页面已经展示的轨迹、标注和公开媒体元数据还原为 KML；个别页面若存在官方 KML 链接也可直接兼容。网站再通过当前登录会话、CSRF 和 `kml.own.write` 权限保存。
+6. 如果页面只能读取到轨迹线而无法确认标注点和媒体，需要在导入框中显式选择“允许仅导入公开轨迹线”。
+7. 保存成功后，扩展会自动激活最初发起导入的 map-service 标签页，并关闭扩展自己创建或登记管理的未固定两步路临时页。保存失败、原标签页已关闭、临时页被固定或 Chrome 拒绝操作时，两步路页面会保留结果卡片，可选择“返回 map-service”“关闭此页”或“收起提示”。
+
+助手优先使用页面 `trackLngs` 中的 GPS/WGS84 原始轨迹；地图折线仅作为回退，并在生成 KML 前反算为 GPS 坐标。图片标注以 `commnFileUrl` 作为唯一大图媒体，`centerUrl`/`fileUrl` 只作为该媒体的缩略图；大图不可用时才将缩略图提升为主资源，因此媒体列表不会再出现大小图两个项目。
+
+## 当前版本限制
+
+- 只支持 Chrome/Chromium MV3。
+- 只接受两步路官方分享页、官方标准 KML，以及页面自身用于展示的固定轨迹/标注数据；不会调用任意接口或逆向私有坐标、签名、加密协议。
+- 不支持 KMZ、GPX、私有轨迹批量同步、验证码自动化或绕过 WAF。
+- 若页面已经显示轨迹但提取器仍返回 `TWO_BULU_PAGE_DATA_NOT_RECOGNIZED`，请先等待轨迹和点位完全显示，再执行上述页面脚本；扩展会在页面运行态、地图图层和固定资源回退之间重试。只有页面本身未完成展示时，才需要改用两步路官方导出或本地 KML。
+- 扩展不会搜索、接管或关闭用户自行打开的两步路标签页；只复用扩展自己登记的受管页面。固定标签页不会被自动关闭。
+
+## 安全检查
+
+- 扩展源码无远程脚本、无第三方依赖。
+- map-service origin 必须在选项页精确保存；即便 Chrome host pattern 覆盖同主机其他端口，桥接脚本仍会比较完整 `location.origin`。
+- 读取 URL 仅允许 `2bulu.com`、`www.2bulu.com`、`app.2bulu.com`、`down-files.2bulu.com` 的 HTTPS 地址。
+- 页面数据读取只允许固定的轨迹坐标和标注点路径，响应在扩展内完成坐标、数量、媒体 URL 和 KML 大小校验；原始 JSON 不会发送给 map-service。
+- 扩展消息和日志不包含 Cookie、Authorization、验证码、代理配置或完整响应头。
+
+## 更新已加载的开发版扩展
+
+扩展目录有代码更新时，打开 `chrome://extensions/`，在“map-service 两步路导入助手”卡片上点击“重新加载”，随后刷新 map-service 和已打开的两步路页面。当前版本为 `0.3.4`。
+
+完整操作和故障处理见 [两步路导入助手用户操作手册](../../docs/user-guides/two-bulu-import.md)。

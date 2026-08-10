@@ -12,6 +12,11 @@ import {
 } from '../src/auth/api.js'
 import { normalizeSessionResult } from '../src/auth/session.js'
 import {
+  clearTwoBuluImportRequest,
+  prepareTwoBuluImportRequest,
+  twoBuluImportResultMessage,
+} from '../src/ui/two-bulu-import-dialog.js'
+import {
   buildShareUpdateItems,
   buildShareViewConfig,
   buildShareItems,
@@ -239,4 +244,72 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.doesNotMatch(appSource, /state\.auth = await refreshAuthSession\(\)\s*await loadSessions\(\)/)
   assert.doesNotMatch(sessionSource, /export async function logout \(\) \{[\s\S]*?\} finally \{/)
   assert.doesNotMatch(accountSource, /(?:window\.)?(?:alert|confirm|prompt)\s*\(/)
+})
+
+test('两步路公开轨迹导入仅对登录写用户展示并复用同一弹窗契约', () => {
+  const indexHtml = fs.readFileSync(path.join(projectRoot, 'index.html'), 'utf8')
+  const accountViewSource = fs.readFileSync(path.join(projectRoot, 'src/account/views.js'), 'utf8')
+  const accountAppSource = fs.readFileSync(path.join(projectRoot, 'src/account/app.js'), 'utf8')
+  const mapSource = fs.readFileSync(path.join(projectRoot, 'src/map/kml.js'), 'utf8')
+  const syncSource = fs.readFileSync(path.join(projectRoot, 'src/map/kml-account-sync.js'), 'utf8')
+  const dialogSource = fs.readFileSync(path.join(projectRoot, 'src/ui/two-bulu-import-dialog.js'), 'utf8')
+  const allSources = `${accountAppSource}\n${mapSource}\n${dialogSource}`
+  const mapImportHandler = mapSource.slice(
+    mapSource.indexOf('async function handleTwoBuluImport'),
+    mapSource.indexOf('function bindKmlPopupActions'),
+  )
+
+  assert.match(indexHtml, /id="kml-import-2bulu"[^>]*hidden/)
+  assert.match(indexHtml, /data-kml-action="import-2bulu"/)
+  assert.match(accountViewSource, /data-account-action="import-2bulu"/)
+  assert.match(accountViewSource, /canImportTwoBulu[\s\S]*data-account-action="import-2bulu"/)
+  assert.match(accountAppSource, /showTwoBuluImportDialog\(\)/)
+  assert.match(accountAppSource, /requestTwoBuluKml\(values\)/)
+  assert.match(accountAppSource, /finalizeTwoBuluImport\(helperResult,[\s\S]*status: 'success'/)
+  assert.match(accountAppSource, /finalizeTwoBuluImport\(helperResult,[\s\S]*status: 'failed'/)
+  assert.match(accountAppSource, /importTwoBuluBrowserHelperKml/)
+  assert.match(accountAppSource, /sourceMode: helperResult\.sourceMode/)
+  assert.match(accountAppSource, /completeness: helperResult\.completeness/)
+  assert.match(accountAppSource, /warnings: helperResult\.warnings/)
+  assert.match(mapSource, /twoBuluImportButton\.hidden = !canImportTwoBuluKml\(\)/)
+  assert.match(mapSource, /auth\.authenticated[\s\S]*isAccountKmlWritable\(\)[\s\S]*hasPermission\('kml\.own\.write'/)
+  assert.match(mapSource, /requestTwoBuluKml\(input\)/)
+  assert.match(mapImportHandler, /finalizeTwoBuluImport\(helperResult/)
+  assert.match(mapImportHandler, /status: savedResult \? 'success' : 'failed'/)
+  assert.match(mapSource, /apiRequest\('\/kml\/import\/2bulu\/browser-helper'/)
+  assert.match(mapImportHandler, /sourceMode: helperResult\.sourceMode/)
+  assert.match(mapImportHandler, /completeness: helperResult\.completeness/)
+  assert.match(mapImportHandler, /warnings: helperResult\.warnings/)
+  assert.match(mapSource, /getTwoBuluHelperState\(\)\.available/)
+  assert.ok(mapImportHandler.indexOf('registerKmlAccountDocument(importedKml)') < mapImportHandler.indexOf('saveToStorage()'))
+  assert.match(mapSource, /fitKmlFilesBounds\(map, \[importedKml\]\)/)
+  assert.match(syncSource, /export function registerKmlAccountDocument \(document, options = \{\}\)/)
+  assert.match(dialogSource, /partialPolicy/)
+  assert.match(dialogSource, /allow-track-only/)
+  assert.doesNotMatch(allSources, /(?:window\.)?(?:alert|confirm|prompt)\s*\(/)
+  assert.equal(twoBuluImportResultMessage({
+    name: '测试轨迹',
+    importSummary: { warnings: ['仅导入轨迹线'] },
+  }), '测试轨迹 已导入；仅导入轨迹线')
+})
+
+test('两步路导入在响应未知时复用请求 ID，成功确认后才释放', () => {
+  const values = new Map()
+  const storage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  }
+  const intent = {
+    url: 'https://www.2bulu.com/track/t-abc.htm',
+    coordCorrection: 'wgs84-to-gcj02',
+    partialPolicy: 'reject',
+  }
+  const first = prepareTwoBuluImportRequest(intent, { storage })
+  const retry = prepareTwoBuluImportRequest(intent, { storage })
+  const partial = prepareTwoBuluImportRequest({ ...intent, partialPolicy: 'allow-track-only' }, { storage })
+
+  assert.equal(retry.requestId, first.requestId)
+  assert.notEqual(partial.requestId, first.requestId)
+  assert.equal(clearTwoBuluImportRequest(first, { storage }), true)
+  assert.notEqual(prepareTwoBuluImportRequest(intent, { storage }).requestId, first.requestId)
 })

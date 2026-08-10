@@ -28,6 +28,8 @@
 - [持续定位长期运行可靠性需求](./continuous-location-reliability.md)
 - [管理后台 MVP](./admin-console-mvp.md)
 - [KML 导入导出](./kml-import-export.md)
+- [两步路授权浏览器助手与浏览器内导入](./2bulu-authorized-browser-helper.md)（第四版已实现，待手工验收）
+- [两步路公开分享轨迹导入](./2bulu-public-track-import.md)（服务端直连兼容方案，网站入口由浏览器助手替代）
 - [KML 点位富媒体内容展示](./kml-feature-rich-content.md)
 - [KML 点位富媒体第二阶段：外部内容库与资产库集成规划](./kml-rich-content-phase2-content-library.md)
 - [动态 Feature Layer 视口加载与服务端聚合](./dynamic-feature-layer-loading.md)

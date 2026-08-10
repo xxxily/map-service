@@ -350,6 +350,34 @@ test('KML import rejects entity declarations and export keeps normalized WGS84 d
   }
 })
 
+test('KML import supports stable sync client id for response-loss recovery', () => {
+  const harness = createHarness()
+  try {
+    const source = `<?xml version="1.0"?><kml><Document><name>两步路导入</name>
+      <Placemark><LineString><coordinates>113.1,23.1,0 113.2,23.2,0</coordinates></LineString></Placemark>
+    </Document></kml>`
+    const first = harness.service.importKml(harness.one, { kmlText: source }, {
+      syncClientId: '2bulu:request-one:source-hash',
+    })
+    const recovered = harness.service.getKmlBySyncClientId(
+      harness.one,
+      '2bulu:request-one:source-hash'
+    )
+    const repeated = harness.service.importKml(harness.one, {
+      kmlText: source.replace('两步路导入', '不应覆盖原文档'),
+    }, {
+      syncClientId: '2bulu:request-one:source-hash',
+    })
+
+    assert.equal(recovered.id, first.id)
+    assert.equal(repeated.id, first.id)
+    assert.equal(repeated.name, '两步路导入')
+    assert.equal(harness.service.getKmlBySyncClientId(harness.two, '2bulu:request-one:source-hash'), null)
+  } finally {
+    harness.close()
+  }
+})
+
 test('favorites validate coordinates, filter private data and mark deleted KML sources unavailable', () => {
   const harness = createHarness()
   try {

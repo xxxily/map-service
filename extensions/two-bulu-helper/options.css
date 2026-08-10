@@ -1,0 +1,74 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #173c3b;
+  background: #eef5f2;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; min-width: 560px; }
+
+.shell {
+  width: min(760px, calc(100% - 40px));
+  margin: 40px auto;
+}
+
+header { margin-bottom: 24px; }
+header h1 { margin: 4px 0 10px; font-size: 30px; }
+header p { max-width: 680px; line-height: 1.7; color: #4d6c69; }
+.eyebrow { margin: 0; color: #0f766e; font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+
+.card {
+  margin-top: 18px;
+  padding: 22px;
+  border: 1px solid rgba(15, 118, 110, .18);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 12px 36px rgba(28, 75, 69, .08);
+}
+
+.card h2, .privacy h2 { margin: 0 0 16px; font-size: 18px; }
+.form-row, .section-heading, .origin-row { display: flex; align-items: center; gap: 10px; }
+.section-heading { justify-content: space-between; }
+label { display: block; margin-bottom: 8px; font-weight: 650; }
+input {
+  flex: 1;
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid #b9cfca;
+  border-radius: 9px;
+  font: inherit;
+}
+input:focus { outline: 3px solid rgba(15, 118, 110, .15); border-color: #0f766e; }
+button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 9px;
+  background: #0f766e;
+  color: #fff;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+button.secondary { background: #e8f2ef; color: #20554f; }
+button:disabled { cursor: wait; opacity: .6; }
+.help, .status, .version { color: #667e7a; font-size: 13px; }
+.status { min-height: 20px; margin: 12px 0 0; }
+.status.error { color: #b42318; }
+.status.success { color: #087443; }
+.origin-list { display: grid; gap: 10px; }
+.origin-row { justify-content: space-between; padding: 12px; border-radius: 10px; background: #f3f8f6; }
+.origin-row code { overflow-wrap: anywhere; color: #234c48; }
+.empty { padding: 16px; border: 1px dashed #b9cfca; border-radius: 10px; color: #667e7a; text-align: center; }
+.privacy { padding: 22px 4px; color: #4d6c69; }
+.privacy ul { margin: 0; padding-left: 20px; line-height: 1.8; }
+
+@media (max-width: 620px) {
+  body { min-width: 0; }
+  .shell { width: min(100% - 24px, 760px); margin: 18px auto; }
+  .form-row { align-items: stretch; flex-direction: column; }
+  .form-row button { width: 100%; }
+}

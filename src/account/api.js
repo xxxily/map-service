@@ -20,6 +20,7 @@ export const accountApi = {
     if (options.coordCorrection) formData.set('coordCorrection', options.coordCorrection)
     return apiRequest('/kml/import', { method: 'POST', body: formData })
   },
+  importTwoBuluBrowserHelperKml: body => apiRequest('/kml/import/2bulu/browser-helper', { method: 'POST', body }),
   exportKml: id => apiDownload(`/kml/files/${pathId(id)}/export`, {
     accept: 'application/vnd.google-earth.kml+xml',
   }),

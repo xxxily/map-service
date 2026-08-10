@@ -26,11 +26,24 @@ import {
   subscribeAuth,
 } from '../auth/session.js'
 import { showAlert, showConfirm, showEditDialog } from '../ui/dialog.js'
+import {
+  clearTwoBuluImportRequest,
+  showTwoBuluImportDialog,
+  twoBuluImportResultMessage,
+} from '../ui/two-bulu-import-dialog.js'
+import {
+  finalizeTwoBuluImport,
+  getTwoBuluHelperState,
+  probeTwoBuluHelper,
+  requestTwoBuluKml,
+  subscribeTwoBuluHelper,
+  TWO_BULU_HELPER_PROTOCOL_VERSION,
+} from '../integrations/two-bulu-helper-bridge.js'
 
 const LOCAL_KML_KEY = 'map_kml_list'
 const LOCAL_MIGRATION_STATE_KEY = 'map_account_local_migration'
 const KML_WRITE_ACTIONS = new Set([
-  'create-kml', 'edit-kml', 'import-kml', 'migrate-local', 'trash-selected-kml',
+  'create-kml', 'edit-kml', 'import-kml', 'import-2bulu', 'migrate-local', 'trash-selected-kml',
   'trash-kml', 'restore-kml', 'delete-kml',
 ])
 const SHARE_ACTIONS = new Set([
@@ -63,6 +76,7 @@ const state = {
   favoriteDraft: null,
   shares: { items: [], search: '', status: '' },
   sessions: [],
+  twoBuluHelper: getTwoBuluHelperState(),
 }
 
 function render () {
@@ -444,6 +458,52 @@ async function importKmlFile (file) {
   render()
 }
 
+async function importTwoBuluKml () {
+  if (!requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  if (!state.twoBuluHelper.available) {
+    setMessage('', '未检测到已安装并授权当前站点的两步路浏览器助手，请安装或授权后刷新页面。')
+    render()
+    return
+  }
+  const values = await showTwoBuluImportDialog()
+  if (!values) return
+  const result = await runAction(async () => {
+    const helperResult = await requestTwoBuluKml(values)
+    try {
+      const saved = await accountApi.importTwoBuluBrowserHelperKml({
+        ...values,
+        protocolVersion: TWO_BULU_HELPER_PROTOCOL_VERSION,
+        helperVersion: helperResult.helperVersion,
+        name: helperResult.name,
+        kmlText: helperResult.kmlText,
+        sourceMode: helperResult.sourceMode,
+        completeness: helperResult.completeness,
+        warnings: helperResult.warnings,
+      })
+      await finalizeTwoBuluImport(helperResult, {
+        status: 'success',
+        message: twoBuluImportResultMessage(saved),
+      })
+      return saved
+    } catch (error) {
+      await finalizeTwoBuluImport(helperResult, {
+        status: 'failed',
+        message: `map-service 保存失败：${error?.message || '请返回原页面查看原因后重试。'}`,
+      })
+      throw error
+    }
+  }, {
+    progress: '正在通过浏览器助手读取并导入两步路轨迹…',
+    success: '两步路轨迹已导入',
+  })
+  if (result) {
+    await loadKml()
+    clearTwoBuluImportRequest(values)
+    setMessage(twoBuluImportResultMessage(result), '')
+  }
+  render()
+}
+
 function getMigrationBatchId (rawValue, fileCount) {
   const fingerprint = `${rawValue.length}:${fileCount}:${rawValue.slice(0, 64)}`
   try {
@@ -720,6 +780,8 @@ async function handleClick (event) {
     await editKml(id)
   } else if (action === 'import-kml') {
     document.getElementById('account-kml-import')?.click()
+  } else if (action === 'import-2bulu') {
+    await importTwoBuluKml()
   } else if (action === 'migrate-local') {
     await migrateLocalKml()
   } else if (action === 'select-all-kml') {
@@ -826,7 +888,12 @@ export async function initAccountApp () {
     else state.activeTab = normalizeAccountTab(state.activeTab, auth.user)
     render()
   })
+  subscribeTwoBuluHelper(helper => {
+    state.twoBuluHelper = helper
+    render()
+  })
   render()
+  probeTwoBuluHelper().catch(() => {})
   try {
     state.auth = await initializeAuth()
   } catch (error) {

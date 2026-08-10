@@ -727,6 +727,36 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/kml/import/2bulu',
+    method: 'post',
+    describe: '从两步路公开分享链接导入个人 KML',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      const session = requireUser(req, 'kml.own.write')
+      res.status(201).jsonSuc(await service.importTwoBuluUserKml(
+        session,
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/kml/import/2bulu/browser-helper',
+    method: 'post',
+    describe: '保存授权浏览器助手取得的两步路 KML',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      const session = requireUser(req, 'kml.own.write')
+      res.status(201).jsonSuc(await service.importTwoBuluBrowserHelperKml(
+        session,
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
     path: '/kml/files/:id/export',
     method: 'get',
     describe: '导出个人 KML 文件',

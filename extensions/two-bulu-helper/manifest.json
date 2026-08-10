@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "map-service 两步路导入助手",
+  "version": "0.3.4",
+  "description": "在用户浏览器内读取已授权的两步路公开轨迹数据并还原为 KML，安全交给 map-service 导入。",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://2bulu.com/*",
+    "https://www.2bulu.com/*",
+    "https://app.2bulu.com/*",
+    "https://down-files.2bulu.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "map-service 两步路导入助手"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": ["map-service-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://2bulu.com/*",
+        "https://www.2bulu.com/*",
+        "https://app.2bulu.com/*"
+      ],
+      "js": ["two-bulu-page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://2bulu.com/*",
+        "https://www.2bulu.com/*",
+        "https://app.2bulu.com/*"
+      ],
+      "js": ["two-bulu-data.js", "two-bulu-page-export.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://2bulu.com/*",
+        "https://www.2bulu.com/*",
+        "https://app.2bulu.com/*"
+      ],
+      "js": ["two-bulu-feedback.js", "two-bulu-data.js", "two-bulu-content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

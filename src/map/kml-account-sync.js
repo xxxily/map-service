@@ -143,6 +143,15 @@ function snapshotMap (values = []) {
   }))
 }
 
+export function registerKmlAccountDocumentSnapshot (currentSnapshots, document, localId = document?.id) {
+  const next = snapshotMap(currentSnapshots)
+  const normalizedLocalId = String(localId || '')
+  const serverId = String(document?.id || document?.serverId || '')
+  if (!normalizedLocalId || !serverId || !document || typeof document !== 'object') return next
+  next.set(normalizedLocalId, snapshotForDocument({ ...document, id: serverId }, normalizedLocalId))
+  return next
+}
+
 function normalizePendingSyncOperations (values = []) {
   if (!Array.isArray(values)) return []
   return values.slice(0, 100).flatMap((value) => {
@@ -744,6 +753,25 @@ export function isAccountKmlMode () {
 
 export function isAccountKmlWritable () {
   return accountMode && accountCanWrite
+}
+
+export function registerKmlAccountDocument (document, options = {}) {
+  if (!accountMode || !accountCanWrite || !document || typeof document !== 'object') return false
+  const localId = String(options.localId || document.id || '')
+  const serverId = String(document.id || document.serverId || '')
+  if (!localId || !serverId) return false
+
+  snapshots = registerKmlAccountDocumentSnapshot(snapshots, { ...document, id: serverId }, localId)
+  unconfirmedCreateIds.delete(localId)
+  pendingCreateDeletes.delete(localId)
+  pendingSyncOperations = pendingSyncOperations.filter(operation => (
+    operation.action !== 'create' || String(operation.clientId || '') !== localId
+  ))
+
+  const workingIndex = latestFiles.findIndex(file => String(file?.id || '') === localId)
+  if (workingIndex >= 0) latestFiles.splice(workingIndex, 1, document)
+  else latestFiles = [...latestFiles, document]
+  return true
 }
 
 function applySyncResult (result, files) {
