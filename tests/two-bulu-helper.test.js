@@ -184,7 +184,7 @@ test('扩展完成回传后激活原页面并仅关闭受管临时标签页', as
     },
     permissions: { contains: async () => true },
     runtime: {
-      getManifest: () => ({ version: '0.3.6' }),
+      getManifest: () => ({ version: '0.3.7' }),
       onMessage: { addListener: listener => listeners.messages.push(listener) },
       onInstalled: { addListener: () => {} },
       onStartup: { addListener: () => {} },
@@ -408,7 +408,25 @@ test('助手探测消息和 Manifest 固定协议能力且不声明任意两步�
     'service-worker.js',
   ].map(file => fs.readFileSync(path.join(extensionDir, file), 'utf8')).join('\n')
   assert.equal(manifest.manifest_version, 3)
-  assert.equal(manifest.version, '0.3.6')
+  assert.equal(manifest.version, '0.3.7')
+  assert.deepEqual(manifest.icons, {
+    '16': 'icons/icon-16.png',
+    '32': 'icons/icon-32.png',
+    '48': 'icons/icon-48.png',
+    '128': 'icons/icon-128.png',
+  })
+  assert.deepEqual(manifest.action.default_icon, {
+    '16': 'icons/icon-16.png',
+    '32': 'icons/icon-32.png',
+  })
+  for (const size of [16, 32, 48, 128]) {
+    const iconPath = path.join(extensionDir, 'icons', `icon-${size}.png`)
+    assert.ok(fs.existsSync(iconPath), `缺少 ${size}px 扩展图标`)
+    const iconBuffer = fs.readFileSync(iconPath)
+    assert.match(iconBuffer.subarray(0, 8).toString('hex'), /^89504e470d0a1a0a$/)
+    assert.equal(iconBuffer.readUInt32BE(16), size)
+    assert.equal(iconBuffer.readUInt32BE(20), size)
+  }
   const twoBuluScripts = manifest.content_scripts.find(item => item.matches.includes('https://www.2bulu.com/*'))?.js
   assert.deepEqual(twoBuluScripts, ['two-bulu-page-hook.js'])
   const pageExportScripts = manifest.content_scripts.find(item => item.world === 'MAIN' && item.run_at === 'document_idle')

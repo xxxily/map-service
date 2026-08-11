@@ -1,6 +1,6 @@
 # 两步路授权浏览器助手与浏览器内导入需求
 
-> 状态：第四版已实现，0.3.6 增强已完成，待用户手工验收  
+> 状态：第四版已实现，0.3.7 图标增强已完成，待用户手工验收  
 > 更新时间：2026-08-11  
 > 关联文档：[两步路公开分享轨迹导入](./2bulu-public-track-import.md)、[用户体系、角色权限、个人空间与多 KML 分享](./user-system-rbac-and-multi-kml-sharing.md)、[用户体系 API](../api-user-system.md)、[两步路导入助手用户操作手册](../user-guides/two-bulu-import.md)
 
@@ -60,6 +60,7 @@
 ### 4.1 形态与安装
 
 - Chrome Manifest V3，无远程代码，无第三方 CDN，无构建依赖；扩展目录为 `extensions/two-bulu-helper/`，可通过“加载已解压的扩展程序”安装。
+- 扩展使用独立的“轨迹双节点 + 导入箭头”图标，不复用或仿制两步路官方商标；保留 SVG 源文件并生成 16/32/48/128px PNG，分别供 Chrome 工具栏、扩展列表和选项页使用。
 - 扩展版本遵循 `major.minor.patch`，消息协议单独使用整数 `protocolVersion`；页面只接受协议 `1`，扩展返回 `helperVersion` 和能力列表。
 - 选项页提供精确的 map-service origin 配置。默认预置 `http://127.0.0.1:3088`、`http://localhost:3088`、`http://127.0.0.1:5174`、`http://localhost:5174`；其他开发端口可由用户显式添加。
 - Chrome host permission 的匹配模式可能覆盖同主机其他端口，桥接脚本必须再次比较 `location.origin`，不在已保存的精确 origin 列表中时立即退出。
@@ -100,7 +101,7 @@
 {"protocolVersion":1,"type":"PING","requestId":"probe-uuid","timestamp":1720000000000}
 
 // PONG
-{"protocolVersion":1,"type":"PONG","requestId":"probe-uuid","helperVersion":"0.3.6","capabilities":["2bulu-kml-import","2bulu-import-tab-lifecycle"]}
+{"protocolVersion":1,"type":"PONG","requestId":"probe-uuid","helperVersion":"0.3.7","capabilities":["2bulu-kml-import","2bulu-import-tab-lifecycle"]}
 ```
 
 导入请求只包含用户输入和业务选项：
@@ -124,7 +125,7 @@
   "protocolVersion": 1,
   "type": "IMPORT_RESULT",
   "requestId": "2bulu-uuid",
-  "helperVersion": "0.3.6",
+  "helperVersion": "0.3.7",
   "status": "success",
   "importSessionId": "import-uuid",
   "tabLifecycle": "created",
@@ -233,7 +234,7 @@ Content-Type: application/json
 ```json
 {
   "protocolVersion": 1,
-  "helperVersion": "0.3.6",
+  "helperVersion": "0.3.7",
   "url": "https://www.2bulu.com/track/t-xxx.htm",
   "kmlText": "<?xml version=\"1.0\"?><kml>...</kml>",
   "sourceMode": "rendered-data",
@@ -317,7 +318,7 @@ Content-Type: application/json
 1. 运行网站开发服务，按扩展 README 加载 `extensions/two-bulu-helper`。
 2. 未授权当前 origin：打开 `/account#kml` 和地图 KML 面板，确认看不到“两步路导入”。
 3. 在扩展选项页授权当前 origin，刷新页面；登录并使用具备 `kml.own.write` 的账号，确认两个入口都出现。
-4. 粘贴示例分享 URL，确认扩展打开可见两步路标签页；若出现登录/验证码，手工完成后按页面结果卡片返回网站重试。已加载旧版扩展时先在 `chrome://extensions/` 点击“重新加载”，确认版本为 `0.3.6`；也可先执行 `await MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })` 验证页面脚本能单独生成 KML。
+4. 粘贴示例分享 URL，确认扩展打开可见两步路标签页；若出现登录/验证码，手工完成后按页面结果卡片返回网站重试。已加载旧版扩展时先在 `chrome://extensions/` 点击“重新加载”，确认版本为 `0.3.7`；也可先执行 `await MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })` 验证页面脚本能单独生成 KML。
 5. 页面没有官方下载 KML 但地图已展示轨迹时，确认助手仍能生成 KML；账号中心出现轨迹线和标注点，线与点在底图上重合且不存在约数百米的整体坐标偏移；导入文件介绍中能看到总里程、运动耗时和作者（页面缺少字段时不显示空行）；地图 KML 管理面板展开“KML 详情”后能看到同一介绍、要素总数和类型统计，并可继续定位、查看详情和预览白名单媒体；地图自动适配范围。图片标注只出现一个媒体项：列表/轨道加载缩略图，点击后加载大图；原图不可用时才把缩略图作为主资源。
 6. 模拟标注接口不可用：默认策略应拒绝；选择“允许仅导入公开轨迹线”后应成功并返回 `track-only` 警告。
 7. 正常导入成功后确认浏览器自动返回原 map-service 标签页，并关闭扩展创建/登记的未固定两步路临时页；将临时页固定、关闭原标签页或模拟保存失败时，确认不强制关页且两步路页面显示结果卡片及“返回 map-service”“关闭此页”操作。
