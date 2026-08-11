@@ -49,6 +49,21 @@ test('KML gallery flattens media across points and keeps the selected point inde
   assert.equal(findKmlMediaGalleryIndex(gallery, { featureId: 'missing' }), 0)
 })
 
+test('unnamed point media keeps titles empty instead of inventing a placeholder', () => {
+  const feature = createFeature('feature-unnamed', '', '<img src="https://cdn.example.com/unnamed.jpg">')
+  const [item] = flattenKmlFeatureMediaItems(feature)
+  assert.equal(item.featureName, '')
+  assert.equal(item.title, '')
+
+  const [legacyItem] = flattenKmlFeatureMediaItems(createFeature(
+    'feature-legacy-unnamed',
+    '未命名要素 9',
+    '<video src="https://cdn.example.com/unnamed.mp4"></video>',
+  ))
+  assert.equal(legacyItem.featureName, '')
+  assert.equal(legacyItem.title, '')
+})
+
 test('KML popup renders a first-click media preview and keeps details as a separate action', () => {
   const feature = createFeature('feature-a', '入口', '<img src="https://cdn.example.com/a.jpg" alt="入口照片"><video src="https://cdn.example.com/a.mp4"></video>')
   const html = renderKmlFeaturePopupContent({ id: 'kml-1', name: '徒步图层' }, feature, false)

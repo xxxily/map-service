@@ -1,4 +1,5 @@
 import { buildFeatureContentView } from '../../shared/kml-content.js'
+import { getKmlFeatureDisplayName } from './kml-feature-name.js'
 
 export const KML_PREVIEWABLE_MEDIA_TYPES = ['image', 'video', 'audio', 'iframe']
 
@@ -28,7 +29,7 @@ function getUrlHostname (value) {
 
 export function flattenKmlFeatureMediaItems (feature, view, options = {}) {
   const contentView = view || buildFeatureContentView(feature, options.contentOptions)
-  const featureName = String(feature?.name || '').trim() || '未命名点位'
+  const featureName = getKmlFeatureDisplayName(feature)
   const featureId = String(feature?.id || '')
   const orderedItems = []
 

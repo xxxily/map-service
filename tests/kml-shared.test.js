@@ -194,6 +194,7 @@ test('SharedKmlManager preserves KML media HTML and style hints', async () => {
     <Placemark>
       <name>图片点位</name>
       <styleUrl>#MarkerStylePicture</styleUrl>
+      <ExtendedData><Data name="map-service:marker-icon"><value>camera</value></Data></ExtendedData>
       <description><![CDATA[<div><img src="https://cdn.example.com/media?id=1" alt="现场照片"></div>]]></description>
       <Point><coordinates>111.4585,21.8390,0</coordinates></Point>
     </Placemark>
@@ -207,7 +208,38 @@ test('SharedKmlManager preserves KML media HTML and style hints', async () => {
   const view = await manager.getFeatureContent(imported.id, feature.id, false)
 
   assert.equal(feature.styleUrl, '#MarkerStylePicture')
+  assert.equal(feature.markerIcon, 'camera')
   assert.match(feature.description, /<img src=/)
   assert.equal(view.contentSummary.imageCount, 1)
   assert.equal(view.groups.find(group => group.type === 'image').items[0].title, '现场照片')
+})
+
+test('SharedKmlManager validates marker icons on managed feature writes', async () => {
+  const store = new MockStore()
+  const manager = new SharedKmlManager({ store })
+
+  const created = await manager.create({
+    name: '图标图层',
+    features: [{
+      id: 'feat-camp',
+      type: 'Point',
+      name: '营地',
+      markerIcon: 'campsite',
+      coordinates: [113.26, 23.12],
+    }],
+  })
+  assert.equal(created.features[0].markerIcon, 'campsite')
+
+  await assert.rejects(
+    () => manager.update(created.id, {
+      features: [{
+        id: 'feat-unsafe',
+        type: 'Point',
+        name: '非法图标',
+        markerIcon: 'https://evil.example/icon.svg',
+        coordinates: [113.26, 23.12],
+      }],
+    }),
+    error => error.statusCode === 400 && error.code === 'VALIDATION_FAILED'
+  )
 })

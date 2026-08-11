@@ -334,6 +334,7 @@ test('KML import rejects entity declarations and export keeps normalized WGS84 d
       <kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>导入路线</name>
         <description><![CDATA[<p><strong>总里程：</strong>12.34 km</p><p><strong>作者：</strong>山友阿明</p><script>alert(1)</script>]]></description>
         <Placemark><name>起点</name><description><![CDATA[<script>alert(1)</script><b>安全说明</b>]]></description>
+          <ExtendedData><Data name="map-service:marker-icon"><value>viewpoint</value></Data></ExtendedData>
           <Point><coordinates>113.2644,23.1291,0</coordinates></Point></Placemark>
       </Document></kml>`
     const imported = harness.service.importKml(harness.one, { kmlText: source })
@@ -342,14 +343,57 @@ test('KML import rejects entity declarations and export keeps normalized WGS84 d
     assert.match(imported.description, /作者[：:]<\/strong>山友阿明/)
     assert.doesNotMatch(imported.description, /<script|alert\(1\)/i)
     assert.equal(imported.features[0].description.includes('<script'), false)
+    assert.equal(imported.features[0].markerIcon, 'viewpoint')
     const exported = harness.service.exportKml(harness.one, imported.id)
     assert.match(exported.filename, /导入路线\.kml$/)
     assert.match(exported.content, /113\.2644,23\.1291,0/)
+    assert.match(exported.content, /name="map-service:marker-icon"/)
+    assert.match(exported.content, /<value>viewpoint<\/value>/)
 
     const parsed = parseKmlText(exported.content)
     assert.equal(parsed.features.length, 1)
+    assert.equal(parsed.features[0].markerIcon, 'viewpoint')
     assert.match(parsed.description, /总里程[：:]<\/strong>12\.34 km/)
     assert.match(generateKmlText('测试', parsed.features, parsed.description), /<description>.*总里程/s)
+  } finally {
+    harness.close()
+  }
+})
+
+test('personal KML validates markerIcon as a Point-only built-in enum', () => {
+  const harness = createHarness()
+  try {
+    const created = harness.service.createKml(harness.one, {
+      name: '图标点位',
+      features: [{ ...point('point-icon'), markerIcon: 'campsite' }],
+    })
+    assert.equal(created.features[0].markerIcon, 'campsite')
+
+    assert.throws(
+      () => harness.service.createKml(harness.one, {
+        name: '非法图标',
+        features: [{ ...point('point-unsafe'), markerIcon: '<svg onload=alert(1)>' }],
+      }),
+      error => error.statusCode === 400 && error.code === 'VALIDATION_FAILED'
+    )
+
+    const lineOnly = harness.service.createKml(harness.one, {
+      name: '线段忽略图标',
+      features: [{
+        id: 'line-icon',
+        type: 'LineString',
+        name: '线路',
+        markerIcon: 'flag',
+        coordinates: [[113.2, 23.1], [113.3, 23.2]],
+      }],
+    })
+    assert.equal(Object.hasOwn(lineOnly.features[0], 'markerIcon'), false)
+
+    const importedUnknown = parseKmlText(`<?xml version="1.0"?><kml><Document><Placemark>
+      <ExtendedData><Data name="map-service:marker-icon"><value>remote-svg</value></Data></ExtendedData>
+      <Point><coordinates>113.2,23.1,0</coordinates></Point>
+    </Placemark></Document></kml>`)
+    assert.equal(Object.hasOwn(importedUnknown.features[0], 'markerIcon'), false)
   } finally {
     harness.close()
   }

@@ -35,3 +35,36 @@ test('KML audio feature receives a Cesium SVG billboard', () => {
 test('plain KML points keep their existing marker rendering', () => {
   assert.equal(getKmlMediaMarkerDescriptor({ description: '普通文字说明' }), null)
 })
+
+test('Douyin and 720yun features receive distinct provider-specific marker icons', () => {
+  const douyin = getKmlMediaMarkerDescriptor({
+    description: '<iframe src="https://open.douyin.com/player/video?vid=7645601561687440101"></iframe>',
+  })
+  const panorama = getKmlMediaMarkerDescriptor({
+    description: 'https://www.720yun.com/vr/f4ejtOsf5y0',
+  })
+
+  assert.equal(douyin.type, 'douyin')
+  assert.equal(douyin.label, '抖音视频')
+  assert.match(douyin.html, /kml-media-marker-douyin/)
+  assert.match(douyin.html, /#25f4ee/)
+  assert.equal(panorama.type, '720yun')
+  assert.equal(panorama.label, '720 云全景')
+  assert.match(panorama.html, /kml-media-marker-720yun/)
+  assert.match(panorama.html, />720<\/text>/)
+  assert.notEqual(douyin.html, panorama.html)
+})
+
+test('an explicit user marker icon overrides provider and generic media icons', () => {
+  const feature = {
+    markerIcon: 'campsite',
+    description: 'https://www.720yun.com/vr/f4ejtOsf5y0',
+  }
+  const descriptor = getKmlMediaMarkerDescriptor(feature)
+
+  assert.equal(descriptor.type, 'custom')
+  assert.equal(descriptor.iconKey, 'campsite')
+  assert.equal(descriptor.label, '营地')
+  assert.match(descriptor.html, /kml-media-marker-custom/)
+  assert.match(getKmlMediaListIcon(feature), /kml-media-list-icon-custom/)
+})

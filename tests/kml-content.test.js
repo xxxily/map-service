@@ -7,6 +7,7 @@ import {
   extractContentUrls,
   getKmlMediaRenderUrl,
   getFeatureDescriptionText,
+  getPrimaryFeatureContentProvider,
   getPrimaryFeatureContentType,
   normalizeKmlMediaRelayTarget,
 } from '../service/bin/admin/kmlContent.js'
@@ -60,6 +61,36 @@ test('Douyin official player is a built-in trusted iframe with provider policy',
   assert.match(classified.item.embedPolicy.sandbox, /allow-same-origin/)
   assert.match(classified.item.embedPolicy.allow, /picture-in-picture/)
   assert.equal(classified.item.embedPolicy.allowFullscreen, true)
+})
+
+test('720yun public panorama is a built-in trusted iframe with a fixed provider policy', () => {
+  const workId = 'f4ejtOsf5y0'
+  const classified = classifyContentUrl(`https://www.720yun.com/vr/${workId}`)
+
+  assert.equal(classified.accepted, true)
+  assert.equal(classified.item.type, 'iframe')
+  assert.equal(classified.item.provider, '720yun')
+  assert.equal(classified.item.resourceId, `vr:${workId}`)
+  assert.equal(classified.item.url, `https://www.720yun.com/vr/${workId}`)
+  assert.equal(classified.item.renderUrl, classified.item.url)
+  assert.match(classified.item.embedPolicy.sandbox, /allow-pointer-lock/)
+  assert.match(classified.item.embedPolicy.allow, /xr-spatial-tracking/)
+  assert.equal(classified.item.embedPolicy.allowFullscreen, true)
+})
+
+test('generated 720yun iframe is deduplicated with its source link and keeps provider identity', () => {
+  const workId = 'f4ejtOsf5y0'
+  const url = `https://www.720yun.com/vr/${workId}`
+  const description = `全景查看 ${url}\n<iframe src="${url}" title="720 云全景" data-kml-share-provider="720yun" data-kml-share-source="${url}" data-kml-share-canonical="https://evil.example.com/"></iframe>`
+  const view = buildFeatureContentView({ description })
+  const item = view.groups.find(group => group.type === 'iframe').items[0]
+
+  assert.equal(view.contentSummary.iframeCount, 1)
+  assert.equal(view.contentSummary.linkCount, 0)
+  assert.equal(item.provider, '720yun')
+  assert.equal(item.canonicalUrl, url)
+  assert.equal(getPrimaryFeatureContentProvider({ description }), '720yun')
+  assert.doesNotMatch(JSON.stringify(item), /evil\.example\.com/)
 })
 
 test('generated Douyin iframe keeps a safe original source, hides its duplicate link and ignores forged metadata', () => {

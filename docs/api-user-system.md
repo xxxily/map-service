@@ -2,7 +2,7 @@
 
 > 状态：已实现，验收中  
 > 基础路径：`/api/v1`  
-> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md) 和 [两步路导入助手用户操作手册](./user-guides/two-bulu-import.md)
+> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md) 和 [两步路导入助手用户操作手册](./user-guides/two-bulu-import.md)
 
 本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。
 
@@ -249,6 +249,7 @@ KML 写入模型：
       "type": "Point",
       "name": "入口",
       "description": "现场入口",
+      "markerIcon": "viewpoint",
       "coordinates": [116.3974, 39.9093]
     }
   ]
@@ -263,6 +264,8 @@ KML 写入模型：
 - `theme`：`default` 或 `simple`。
 - 两步路浏览器助手（`0.3.6`及以上）创建的 KML 默认写入 `theme=simple`，仅显示点位图标；这是导入初始显示策略，用户仍可通过 KML 更新接口切换为 `default`。
 - `description` 保存 KML 文档级信息介绍；两步路助手会将分享页可确认的总里程、运动耗时和原作者写入其中，服务端解析后再追加规范化来源链接并执行富文本清洗。
+- Point 可选 `markerIcon`，只接受 `pin`、`star`、`flag`、`viewpoint`、`camera`、`campsite`、`food`、`lodging`、`parking`、`warning`、`heart`、`home`、`water`、`restroom`、`hospital`、`shop`、`charging`、`bus`、`train`、`bicycle`、`hiking`、`summit`、`waterfall`；缺省表示自动识别内容。`auto` 仅为前端选择器选项，不写入 JSON/KML；LineString、Polygon 的该字段会被忽略或拒绝。
+- 标准 KML 通过 Placemark 下的 `ExtendedData/Data name="map-service:marker-icon"` 往返保存 `markerIcon`。未知枚举不导入，服务端 JSON 写入收到未知值返回 `400 VALIDATION_FAILED`；不会读取远程图标 URL。
 - 更新可携带当前 `revision`；版本不一致返回 `409 KML_REVISION_CONFLICT`，不会静默覆盖。
 - 每个用户始终有一个受保护的默认 KML；默认文件不能直接移入回收站或永久删除。
 
@@ -337,11 +340,11 @@ KML 写入模型：
 }
 ```
 
-导入当前支持标准 `.kml` 的 Point、LineString、Polygon，并读取 KML `Document` 级 `name` 与经清洗的 `description`；请求未显式覆盖介绍时沿用文件介绍，后续服务端或地图端导出会继续写回。接口拒绝 DOCTYPE/ENTITY，暂不支持 KMZ、MultiGeometry 和完整 KML 样式体系。
+导入当前支持标准 `.kml` 的 Point、LineString、Polygon，并读取 KML `Document` 级 `name` 与经清洗的 `description`；Point 中合法的 `map-service:marker-icon` 也会保留。请求未显式覆盖介绍时沿用文件介绍，后续服务端或地图端导出会继续写回。接口拒绝 DOCTYPE/ENTITY，暂不支持 KMZ、MultiGeometry 和完整 KML 样式体系。
 
 ### 3.2 KML 点位第三方分享链接解析
 
-`POST /api/v1/kml/share-links/resolve` 用于把点位描述中需要服务端展开的受支持短链解析为 provider 元数据。当前首期支持抖音 `v.douyin.com` 短链；已经包含视频 ID 的抖音详情页由前端本地转换，不必调用此接口。接口不会返回视频文件，也不会作为通用 URL 代理。
+`POST /api/v1/kml/share-links/resolve` 用于把点位描述中需要服务端展开的受支持短链解析为 provider 元数据。当前服务端解析接口处理抖音 `v.douyin.com` 短链；已经包含视频 ID 的抖音地址和 720 云 `/vr/<ID>`、`/t/<ID>` 地址由共享 provider 在浏览器本地转换，不必调用此接口。接口不会返回视频/全景文件，也不会作为通用 URL 代理。
 
 鉴权：当前用户 Cookie 会话、CSRF，并拥有 `kml.own.write`、`kml.any.manage` 或 `admin.public_kml.manage` 之一。
 
@@ -384,6 +387,8 @@ X-CSRF-Token: <map_csrf_token>
 ```
 
 `text` 最大 100000 字符，单次最多处理 10 个受支持链接。重复视频只返回一个 `items` 项。短链读取最多 3 次重定向、单次请求 5 秒、整批 10 秒；重定向只允许抖音官方域名。部分短链失败时仍返回 `200`，失败原因放入 `warnings`，前端应保存原始描述并提示用户。返回结果不会包含上游 Cookie、响应正文、追踪参数、内部 DNS 地址或请求头。
+
+720 云本地转换示例：`https://www.720yun.com/vr/f4ejtOsf5y0` 生成 `provider=720yun`、`resourceId=vr:f4ejtOsf5y0`、`embedUrl=https://www.720yun.com/vr/f4ejtOsf5y0`；`/t/` 使用 `t:<ID>`，两种命名空间不互相推导。查询参数和片段不会写入持久化地址。
 
 常见错误：
 

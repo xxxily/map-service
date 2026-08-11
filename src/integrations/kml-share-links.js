@@ -14,11 +14,11 @@ function itemKey (item) {
 }
 
 function warningFromError (error) {
-  if (error?.code === 'AUTH_REQUIRED') return '登录后才能自动解析抖音短链接，原分享文本已保留'
+  if (error?.code === 'AUTH_REQUIRED') return '登录后才能自动解析需要展开的分享短链接，原分享文本已保留'
   if (error?.code === 'PERMISSION_DENIED') return '当前账号没有 KML 写权限，原分享文本已保留'
   if (error?.code === 'SHARE_LINK_RATE_LIMITED') return '分享链接解析过于频繁，原分享文本已保留'
-  if (error?.code === 'SHARE_LINK_TIMEOUT') return '抖音分享链接读取超时，原分享文本已保留'
-  return '抖音分享链接暂时无法转换，原分享文本已保留'
+  if (error?.code === 'SHARE_LINK_TIMEOUT') return '第三方分享链接读取超时，原分享文本已保留'
+  return '第三方分享链接暂时无法转换，原分享文本已保留'
 }
 
 function findReusableItem (candidate, existingItems) {
@@ -82,7 +82,7 @@ export async function enrichKmlDescriptionWithShareLinks (description, options =
   if (pending.length) {
     const auth = getAuthSnapshot()
     if (!auth.authenticated) {
-      warnings.push('登录后才能自动解析抖音短链接，原分享文本已保留')
+      warnings.push('登录后才能自动解析需要展开的分享短链接，原分享文本已保留')
     } else {
       try {
         const result = await apiRequest('/kml/share-links/resolve', {

@@ -328,7 +328,7 @@ export function extractContentReferences (text, options = {}) {
   const limit = Number.isInteger(options.limit) ? options.limit : URL_LIMIT
   const description = String(text || '')
   const candidates = collectTagReferences(description)
-  const plainUrlPattern = /https?:\/\/[^\s<>"'`]+/gi
+  const plainUrlPattern = /https?:\/\/[^\s<>"'`，。；：！？、]+/gi
   let match
   while ((match = plainUrlPattern.exec(description)) !== null) {
     // 标签属性中的 href/src 会由结构化标签解析处理；跳过这里，避免
@@ -607,6 +607,18 @@ export function getFeatureContentTypes (feature, options = {}) {
   })
   const styleType = inferKmlStyleContentType(feature?.styleUrl)
   return [...new Set([styleType, ...detected].filter(Boolean))]
+}
+
+export function getFeatureContentProviders (feature, options = {}) {
+  const { references } = extractContentReferences(feature?.description || '', options)
+  return [...new Set(references.flatMap(reference => {
+    const trusted = getTrustedKmlShareEmbed(reference.url)
+    return trusted?.provider ? [trusted.provider] : []
+  }))]
+}
+
+export function getPrimaryFeatureContentProvider (feature, options = {}) {
+  return getFeatureContentProviders(feature, options)[0] || ''
 }
 
 export function getPrimaryFeatureContentType (feature, options = {}) {

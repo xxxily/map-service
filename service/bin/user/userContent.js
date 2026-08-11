@@ -6,6 +6,7 @@ import {
   randomToken,
   verifyPassword,
 } from './security.js'
+import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
 
 const DEFAULT_SETTINGS = Object.freeze({
   quota: {
@@ -215,6 +216,13 @@ export function normalizeKmlFeatures (value) {
     if (feature.styleUrl !== undefined) {
       normalized.styleUrl = normalizeText(feature.styleUrl, { maxLength: 500 })
     }
+    if (type === 'Point') {
+      const markerIcon = normalizeKmlMarkerIcon(feature.markerIcon)
+      if (String(feature.markerIcon ?? '').trim() && !markerIcon) {
+        throw createHttpError('点位图标不受支持', 400, 'VALIDATION_FAILED')
+      }
+      if (markerIcon) normalized.markerIcon = markerIcon
+    }
     return normalized
   })
 }
@@ -245,6 +253,14 @@ function decodeXml (value) {
 function readXmlElement (source, tagName) {
   const match = new RegExp(`<(?:[\\w.-]+:)?${tagName}\\b[^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${tagName}\\s*>`, 'i').exec(source)
   return match ? decodeXml(match[1]).trim() : ''
+}
+
+function readMarkerIconFromXml (source) {
+  const data = /<(?:[\w.-]+:)?Data\b[^>]*\bname\s*=\s*["']map-service:marker-icon["'][^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?Data\s*>/i
+    .exec(String(source || ''))?.[1] || ''
+  const value = /<(?:[\w.-]+:)?value\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?value\s*>/i
+    .exec(data)?.[1] || ''
+  return normalizeKmlMarkerIcon(decodeXml(value))
 }
 
 function parseCoordinateText (value) {
@@ -296,6 +312,7 @@ export function parseKmlText (value) {
     } else {
       continue
     }
+    const markerIcon = type === 'Point' ? readMarkerIconFromXml(source) : ''
     features.push({
       id: randomId('feat'),
       type,
@@ -303,6 +320,7 @@ export function parseKmlText (value) {
       description: readXmlElement(source, 'description'),
       coordinates,
       ...(readXmlElement(source, 'styleUrl') ? { styleUrl: readXmlElement(source, 'styleUrl') } : {}),
+      ...(markerIcon ? { markerIcon } : {}),
     })
   }
   return {
@@ -326,6 +344,14 @@ export function generateKmlText (name, features, description = '') {
     parts.push(`      <name>${escapeXml(feature.name)}</name>`)
     parts.push(`      <description>${escapeXml(feature.description)}</description>`)
     if (feature.styleUrl) parts.push(`      <styleUrl>${escapeXml(feature.styleUrl)}</styleUrl>`)
+    const markerIcon = feature.type === 'Point' ? normalizeKmlMarkerIcon(feature.markerIcon) : ''
+    if (markerIcon) {
+      parts.push('      <ExtendedData>')
+      parts.push('        <Data name="map-service:marker-icon">')
+      parts.push(`          <value>${escapeXml(markerIcon)}</value>`)
+      parts.push('        </Data>')
+      parts.push('      </ExtendedData>')
+    }
     if (feature.type === 'Point') {
       parts.push('      <Point>')
       parts.push(`        <coordinates>${feature.coordinates[0]},${feature.coordinates[1]},0</coordinates>`)

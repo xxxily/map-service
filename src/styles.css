@@ -114,6 +114,9 @@ body.admin-view #footer-bar {
 
 .app-dialog {
   width: min(360px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow-x: hidden;
+  overflow-y: auto;
   box-sizing: border-box;
   border: 1px solid rgba(22, 61, 61, 0.16);
   border-radius: 8px;
@@ -179,6 +182,255 @@ body.admin-view #footer-bar {
 .app-dialog-secondary {
   background: #fff;
   color: #143235;
+}
+
+.app-dialog-icon-picker {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-align: left;
+}
+
+.app-dialog-icon-picker legend {
+  margin-bottom: 8px;
+  color: #4b5563;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.app-dialog-icon-toolbar {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  align-items: stretch;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.app-dialog-icon-strip {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
+  gap: 7px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 2px 7px;
+  scroll-behavior: smooth;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+  scrollbar-color: rgba(15, 118, 110, .32) transparent;
+  scrollbar-width: thin;
+}
+
+.app-dialog-icon-strip::-webkit-scrollbar {
+  height: 4px;
+}
+
+.app-dialog-icon-strip::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(15, 118, 110, .28);
+}
+
+.app-dialog-icon-option {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 3px;
+  border: 1px solid #d7e2e1;
+  border-radius: 9px;
+  padding: 6px 3px;
+  background: #fbfdfd;
+  color: #314c4e;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.app-dialog-icon-option.is-quick {
+  min-width: 58px;
+  flex: 0 0 58px;
+  scroll-snap-align: start;
+}
+
+.app-dialog-icon-option:hover {
+  border-color: #80b9b2;
+  transform: translateY(-1px);
+}
+
+.app-dialog-icon-option:focus-visible,
+.app-dialog-icon-option.is-selected {
+  border-color: #0f766e;
+  background: #eef9f7;
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, .16);
+  outline: none;
+}
+
+.app-dialog-icon-more {
+  display: flex;
+  width: 58px;
+  min-width: 58px;
+  min-height: 68px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+  border: 1px dashed #a9bfbd;
+  border-radius: 9px;
+  padding: 6px 4px;
+  background: #f4f8f7;
+  color: #315758;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.app-dialog-icon-more:hover,
+.app-dialog-icon-more:focus-visible,
+.app-dialog-icon-more[aria-expanded="true"] {
+  border-color: #0f766e;
+  background: #e9f6f3;
+  outline: none;
+}
+
+.app-dialog-icon-more-glyph {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: #dcece9;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.app-dialog-icon-preview,
+.app-dialog-icon-preview svg,
+.kml-marker-picker-glyph,
+.kml-marker-picker-glyph svg {
+  display: block;
+  width: 27px;
+  height: 27px;
+}
+
+.app-dialog-icon-label {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-dialog-field-hint,
+.app-dialog-icon-option small {
+  display: block;
+  margin-top: 5px;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.app-dialog-icon-library {
+  display: grid;
+  position: fixed;
+  inset: 0;
+  z-index: 20001;
+  place-items: center;
+  padding: 18px;
+  background: rgba(8, 22, 25, .58);
+}
+
+.app-dialog-icon-library[hidden] {
+  display: none;
+}
+
+.app-dialog-icon-library-dialog {
+  width: min(480px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  border: 1px solid rgba(22, 61, 61, .2);
+  border-radius: 12px;
+  padding: 16px;
+  background: #f8fbfa;
+  box-shadow: 0 24px 70px rgba(5, 18, 20, .32);
+}
+
+.app-dialog-icon-library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.app-dialog-icon-library-header span {
+  display: block;
+  margin-bottom: 2px;
+  color: #0f766e;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.app-dialog-icon-library-header h3 {
+  margin: 0;
+  color: #102528;
+  font-size: 18px;
+}
+
+.app-dialog-icon-library-close {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  place-items: center;
+  border: 1px solid #cedbd9;
+  border-radius: 50%;
+  background: #fff;
+  color: #27484b;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.app-dialog-icon-library-close:hover,
+.app-dialog-icon-library-close:focus-visible {
+  border-color: #0f766e;
+  color: #0f766e;
+  outline: none;
+}
+
+.app-dialog-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.app-dialog-icon-option.is-library {
+  min-width: 0;
+}
+
+@media (max-width: 520px) {
+  .app-dialog-icon-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 390px) {
+  .app-dialog-icon-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .app-dialog-icon-option.is-quick { min-width: 54px; flex-basis: 54px; }
+  .app-dialog-icon-more { width: 54px; min-width: 54px; }
 }
 
 .favorite-dialog {

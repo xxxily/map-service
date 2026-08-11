@@ -31,6 +31,28 @@ test('resolver returns direct Douyin video items without upstream requests', asy
   assert.deepEqual(result.warnings, [])
 })
 
+test('resolver returns direct 720yun panorama items without upstream requests or rate usage', async () => {
+  let requests = 0
+  const service = new KmlShareLinkResolverService({
+    rateMaxAttempts: 1,
+    httpClient: async () => {
+      requests += 1
+      throw new Error('unexpected request')
+    },
+  })
+
+  const input = { text: '全景 https://720yun.com/vr/f4ejtOsf5y0?from=copy' }
+  const first = await service.resolve({ user: { id: 'user-720' } }, input)
+  const second = await service.resolve({ user: { id: 'user-720' } }, input)
+
+  assert.equal(requests, 0)
+  assert.deepEqual(first, second)
+  assert.equal(first.items[0].provider, '720yun')
+  assert.equal(first.items[0].resourceId, 'vr:f4ejtOsf5y0')
+  assert.equal(first.items[0].embedUrl, 'https://www.720yun.com/vr/f4ejtOsf5y0')
+  assert.deepEqual(first.warnings, [])
+})
+
 test('resolver expands a fixed Douyin short host and strips redirect tracking data', async () => {
   const calls = []
   const service = new KmlShareLinkResolverService({

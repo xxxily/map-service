@@ -1,5 +1,26 @@
 import { AdminStore } from './store.js'
 import { buildFeatureContentView } from './kmlContent.js'
+import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
+
+function normalizeFeatureMarkerIcons (features) {
+  return (Array.isArray(features) ? features : []).map(feature => {
+    const normalized = { ...feature }
+    if (normalized.type !== 'Point') {
+      delete normalized.markerIcon
+      return normalized
+    }
+    const markerIcon = normalizeKmlMarkerIcon(normalized.markerIcon)
+    if (String(normalized.markerIcon ?? '').trim() && !markerIcon) {
+      const error = new Error('点位图标不受支持')
+      error.statusCode = 400
+      error.code = 'VALIDATION_FAILED'
+      throw error
+    }
+    if (markerIcon) normalized.markerIcon = markerIcon
+    else delete normalized.markerIcon
+    return normalized
+  })
+}
 
 function parseKml (kmlText) {
   // Regex parsing of KML features (Placemark)
@@ -48,6 +69,8 @@ function parseKml (kmlText) {
     const rawName = extractTagContent(placemarkContent, 'name')
     const rawDesc = extractTagContent(placemarkContent, 'description')
     const rawStyleUrl = extractTagContent(placemarkContent, 'styleUrl')
+    const markerIconMatch = /<Data\b[^>]*\bname\s*=\s*["']map-service:marker-icon["'][^>]*>([\s\S]*?)<\/Data\s*>/i.exec(placemarkContent)
+    const markerIcon = normalizeKmlMarkerIcon(markerIconMatch ? extractTagContent(markerIconMatch[1], 'value') : '')
 
     const name = rawName ? decodeXmlEntities(rawName) : `未命名要素 ${i}`
     const description = rawDesc ? decodeXmlEntities(rawDesc) : ''
@@ -91,6 +114,7 @@ function parseKml (kmlText) {
         name,
         description,
         ...(styleUrl ? { styleUrl } : {}),
+        ...(markerIcon ? { markerIcon } : {}),
         coordinates,
       })
     }
@@ -158,7 +182,7 @@ export class SharedKmlManager {
     const name = (input.name || '新建公共 KML').trim()
     const status = input.status || 'draft'
     const coordCorrection = input.coordCorrection || 'wgs84-to-gcj02'
-    const features = Array.isArray(input.features) ? input.features : []
+    const features = normalizeFeatureMarkerIcons(input.features)
     const now = new Date().toISOString()
     const newKml = {
       id: `shared-kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
@@ -186,7 +210,7 @@ export class SharedKmlManager {
     if (input.name !== undefined) kml.name = String(input.name).trim()
     if (input.status !== undefined) kml.status = input.status
     if (input.coordCorrection !== undefined) kml.coordCorrection = input.coordCorrection
-    if (input.features !== undefined) kml.features = Array.isArray(input.features) ? input.features : []
+    if (input.features !== undefined) kml.features = normalizeFeatureMarkerIcons(input.features)
     kml.updatedAt = new Date().toISOString()
     await this.store.write(this.storeName, kmls)
     return kml

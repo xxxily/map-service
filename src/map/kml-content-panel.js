@@ -9,6 +9,7 @@ import {
   flattenKmlFeatureMediaItems,
   getKmlFeaturePopupMedia,
 } from './kml-media-gallery.js'
+import { getKmlFeatureDisplayName } from './kml-feature-name.js'
 import { openMediaPreview } from '../ui/media-preview.js'
 import {
   bindFavoriteActionButtons,
@@ -72,8 +73,7 @@ function getMediaTypeIcon (type) {
 }
 
 function getPopupFeatureName (feature) {
-  const name = String(feature?.name || '').trim()
-  return /^未命名(?:点位|要素(?:\s*\d+)?)$/.test(name) ? '' : name
+  return getKmlFeatureDisplayName({ type: feature?.type || 'Point', name: feature?.name })
 }
 
 function getPopupMediaTitle (item) {
@@ -392,11 +392,12 @@ function bindMediaPreviewActions (panel, kmlFile, feature, view) {
 function renderPanelContent (panel, kmlFile, feature, view, errorMessage = '') {
   const summaryText = formatContentSummary(view?.contentSummary)
   const groupsHtml = (view?.groups || []).map(renderGroup).join('')
+  const featureName = getKmlFeatureDisplayName(feature)
   panel.innerHTML = `
     <header class="kml-content-header">
       <div>
         <span class="kml-content-kicker">${escapeHtml(kmlFile?.isPublic ? '公共点位' : '个人点位')}</span>
-        <h2>${escapeHtml(feature?.name || '未命名点位')}</h2>
+        ${featureName ? `<h2>${escapeHtml(featureName)}</h2>` : ''}
         ${summaryText ? `<p>${escapeHtml(summaryText)}</p>` : ''}
       </div>
       <div class="kml-content-header-actions">
@@ -419,12 +420,13 @@ function renderPanelContent (panel, kmlFile, feature, view, errorMessage = '') {
 
 export async function openKmlFeatureContentPanel (kmlFile, feature) {
   const panel = ensurePanel()
+  const featureName = getKmlFeatureDisplayName(feature)
   panel.hidden = false
   panel.innerHTML = `
     <header class="kml-content-header">
       <div>
         <span class="kml-content-kicker">${escapeHtml(kmlFile?.isPublic ? '公共点位' : '个人点位')}</span>
-        <h2>${escapeHtml(feature?.name || '未命名点位')}</h2>
+        ${featureName ? `<h2>${escapeHtml(featureName)}</h2>` : ''}
       </div>
       <div class="kml-content-header-actions">
         ${renderFavoriteActionButton(kmlFile, feature)}

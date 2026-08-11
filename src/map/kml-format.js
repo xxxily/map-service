@@ -1,9 +1,23 @@
+import { normalizeKmlMarkerIcon } from '../../shared/kml-marker-icons.js'
+
 function findDirectChild (element, tagName) {
   const normalizedTagName = String(tagName || '').toLowerCase()
   return [...(element?.children || [])].find(child => {
     const name = String(child?.localName || child?.tagName || '').split(':').pop().toLowerCase()
     return name === normalizedTagName
   }) || null
+}
+
+function readMarkerIcon (placemark) {
+  const dataNodes = placemark?.getElementsByTagName?.('Data') || []
+  for (const dataNode of dataNodes) {
+    if (dataNode.getAttribute('name') !== 'map-service:marker-icon') continue
+    const valueNode = [...(dataNode.children || [])].find(node => {
+      return String(node.localName || node.tagName || '').split(':').pop().toLowerCase() === 'value'
+    })
+    return normalizeKmlMarkerIcon(valueNode?.textContent || '')
+  }
+  return ''
 }
 
 export function parseKmlDocument (kmlText) {
@@ -30,6 +44,7 @@ export function parseKmlDocument (kmlText) {
     const name = nameNode?.textContent.trim() || ''
     const description = descNode ? getDescriptionContent(descNode) : ''
     const styleUrl = styleNode?.textContent.trim() || ''
+    const markerIcon = readMarkerIcon(placemark)
 
     let type = null
     let coordinates = null
@@ -60,6 +75,7 @@ export function parseKmlDocument (kmlText) {
         name,
         description,
         ...(styleUrl ? { styleUrl } : {}),
+        ...(markerIcon ? { markerIcon } : {}),
         coordinates,
       })
     }
@@ -121,6 +137,15 @@ export function generateKmlText (kmlName, features, description = '') {
     xmlParts.push('    <Placemark>')
     xmlParts.push(`      <name>${escapeXml(feat.name)}</name>`)
     xmlParts.push(`      <description>${escapeXml(feat.description)}</description>`)
+    if (feat.styleUrl) xmlParts.push(`      <styleUrl>${escapeXml(feat.styleUrl)}</styleUrl>`)
+    const markerIcon = normalizeKmlMarkerIcon(feat.markerIcon)
+    if (feat.type === 'Point' && markerIcon) {
+      xmlParts.push('      <ExtendedData>')
+      xmlParts.push('        <Data name="map-service:marker-icon">')
+      xmlParts.push(`          <value>${escapeXml(markerIcon)}</value>`)
+      xmlParts.push('        </Data>')
+      xmlParts.push('      </ExtendedData>')
+    }
 
     if (feat.type === 'Point') {
       xmlParts.push('      <Point>')

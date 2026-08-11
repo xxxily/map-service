@@ -12,6 +12,8 @@ import {
 } from '../shared/kml-share-links.js'
 
 const VIDEO_ID = '7645601561687440101'
+const SEVEN_TWENTY_VR_ID = 'f4ejtOsf5y0'
+const SEVEN_TWENTY_EMBED_ID = 'c2ejup4kOn8'
 
 test('extractKmlShareLinkCandidates recognizes a Douyin link inside copied share text', () => {
   const result = extractKmlShareLinkCandidates(
@@ -37,6 +39,20 @@ test('known Douyin page forms build the same official player item without server
   assert.deepEqual(resolved.map(item => item.item.canonicalUrl), Array(3).fill(`https://www.douyin.com/video/${VIDEO_ID}`))
 })
 
+test('720yun public and official embed URLs are normalized locally without server resolution', () => {
+  const publicResult = resolveKnownKmlShareLink(`https://720yun.com/vr/${SEVEN_TWENTY_VR_ID}/?utm_source=share#scene`)
+  const embedResult = resolveKnownKmlShareLink(`https://www.720yun.com/t/${SEVEN_TWENTY_EMBED_ID}`)
+
+  assert.equal(publicResult.recognized, true)
+  assert.equal(publicResult.requiresServerResolution, false)
+  assert.equal(publicResult.provider, '720yun')
+  assert.equal(publicResult.sourceUrl, `https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}`)
+  assert.equal(publicResult.item.resourceId, `vr:${SEVEN_TWENTY_VR_ID}`)
+  assert.equal(publicResult.item.embedUrl, publicResult.sourceUrl)
+  assert.equal(embedResult.item.resourceId, `t:${SEVEN_TWENTY_EMBED_ID}`)
+  assert.equal(embedResult.item.embedUrl, `https://www.720yun.com/t/${SEVEN_TWENTY_EMBED_ID}`)
+})
+
 test('trusted embed validation requires exact official origin path and query', () => {
   const trustedEmbed = getTrustedKmlShareEmbed(`https://open.douyin.com/player/video?vid=${VIDEO_ID}`)
   const previewUrl = new URL(trustedEmbed.previewUrl)
@@ -48,6 +64,14 @@ test('trusted embed validation requires exact official origin path and query', (
   assert.equal(getTrustedKmlShareEmbed(`https://open.douyin.com/player/video?vid=${VIDEO_ID}&token=secret`), null)
   assert.equal(getTrustedKmlShareEmbed(`https://open.douyin.com/other?vid=${VIDEO_ID}`), null)
   assert.equal(getTrustedKmlShareEmbed(`https://evil.example.com/player/video?vid=${VIDEO_ID}`), null)
+
+  const panorama = getTrustedKmlShareEmbed(`https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}`)
+  assert.equal(panorama.provider, '720yun')
+  assert.equal(panorama.resourceId, `vr:${SEVEN_TWENTY_VR_ID}`)
+  assert.match(panorama.embedPolicy.allow, /gyroscope/)
+  assert.equal(panorama.embedPolicy.allowFullscreen, true)
+  assert.equal(getTrustedKmlShareEmbed(`https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}?token=secret`), null)
+  assert.equal(getTrustedKmlShareEmbed(`https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}/extra`), null)
 })
 
 test('generated share iframe is hidden for editing and rebuilt idempotently', () => {
@@ -75,12 +99,16 @@ test('unsupported or malformed links are ignored and limits are reported', () =>
   assert.equal(result.truncated, true)
   assert.equal(resolveKnownKmlShareLink('http://v.douyin.com/unsafe/').recognized, false)
   assert.equal(resolveKnownKmlShareLink('https://www.douyin.com/video/not-a-number').recognized, false)
+  assert.equal(resolveKnownKmlShareLink(`http://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}`).recognized, false)
+  assert.equal(resolveKnownKmlShareLink(`https://www.720yun.com:8443/vr/${SEVEN_TWENTY_VR_ID}`).recognized, false)
+  assert.equal(resolveKnownKmlShareLink(`https://fake.720yun.com/vr/${SEVEN_TWENTY_VR_ID}`).recognized, false)
+  assert.equal(resolveKnownKmlShareLink('https://www.720yun.com/vr/not_ok').recognized, false)
 })
 
 test('supported URLs in user text are normalized without changing surrounding copy', () => {
-  const text = `视频：https://www.iesdouyin.com/share/video/${VIDEO_ID}/?share_sign=secret&utm_source=copy。`
+  const text = `视频：https://www.iesdouyin.com/share/video/${VIDEO_ID}/?share_sign=secret&utm_source=copy。全景：https://720yun.com/vr/${SEVEN_TWENTY_VR_ID}?from=copy。`
   const normalized = normalizeKmlShareLinksInText(text)
 
-  assert.equal(normalized, `视频：https://www.douyin.com/video/${VIDEO_ID}。`)
+  assert.equal(normalized, `视频：https://www.douyin.com/video/${VIDEO_ID}。全景：https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}。`)
   assert.doesNotMatch(normalized, /secret|utm_source/)
 })

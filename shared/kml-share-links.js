@@ -1,6 +1,7 @@
 const DEFAULT_SHARE_LINK_LIMIT = 10
 const DOUYIN_VIDEO_ID_PATTERN = /^\d{10,32}$/
 const DOUYIN_SHORT_CODE_PATTERN = /^[A-Za-z0-9_-]{4,100}$/
+const SEVEN_TWENTY_RESOURCE_ID_PATTERN = /^[A-Za-z0-9]{6,64}$/
 
 function trimUrlBoundary (value) {
   let text = String(value || '').trim()
@@ -72,6 +73,33 @@ function buildDouyinPreviewUrl (videoId) {
   return `${url.toString()}&height=${encodeURIComponent('calc(100vh + 48px)')}`
 }
 
+function parse720yunResource (parsed) {
+  if (!parsed || !['720yun.com', 'www.720yun.com'].includes(parsed.hostname.toLowerCase())) return null
+  const match = /^\/(vr|t)\/([A-Za-z0-9]{6,64})\/?$/i.exec(parsed.pathname)
+  if (!match || !SEVEN_TWENTY_RESOURCE_ID_PATTERN.test(match[2])) return null
+  return {
+    kind: match[1].toLowerCase(),
+    id: match[2],
+    resourceId: `${match[1].toLowerCase()}:${match[2]}`,
+  }
+}
+
+function split720yunResourceId (value) {
+  const match = /^(vr|t):([A-Za-z0-9]{6,64})$/i.exec(String(value || '').trim())
+  if (!match || !SEVEN_TWENTY_RESOURCE_ID_PATTERN.test(match[2])) return null
+  return { kind: match[1].toLowerCase(), id: match[2] }
+}
+
+function build720yunUrl (resourceId) {
+  const resource = split720yunResourceId(resourceId)
+  return resource ? `https://www.720yun.com/${resource.kind}/${resource.id}` : ''
+}
+
+function normalize720yunSourceUrl (parsed) {
+  const resource = parse720yunResource(parsed)
+  return resource ? build720yunUrl(resource.resourceId) : ''
+}
+
 const DOUYIN_PROVIDER = Object.freeze({
   id: 'douyin',
   label: '抖音',
@@ -96,6 +124,7 @@ const DOUYIN_PROVIDER = Object.freeze({
   },
   normalizeSourceUrl: normalizeDouyinSourceUrl,
   extractResourceId: extractDouyinVideoId,
+  validateResourceId: value => DOUYIN_VIDEO_ID_PATTERN.test(String(value || '')),
   requiresServerResolution (parsed) {
     return parsed.hostname.toLowerCase() === 'v.douyin.com' && !extractDouyinVideoId(parsed)
   },
@@ -110,7 +139,32 @@ const DOUYIN_PROVIDER = Object.freeze({
   }),
 })
 
-export const KML_SHARE_LINK_PROVIDERS = Object.freeze([DOUYIN_PROVIDER])
+const SEVEN_TWENTY_PROVIDER = Object.freeze({
+  id: '720yun',
+  label: '720 云',
+  title: '720 云全景',
+  shortHosts: Object.freeze(['720yun.com', 'www.720yun.com']),
+  redirectHosts: Object.freeze(['720yun.com', 'www.720yun.com']),
+  match (parsed) {
+    return Boolean(parse720yunResource(parsed))
+  },
+  normalizeSourceUrl: normalize720yunSourceUrl,
+  extractResourceId (parsed) {
+    return parse720yunResource(parsed)?.resourceId || ''
+  },
+  validateResourceId: value => Boolean(split720yunResourceId(value)),
+  requiresServerResolution: () => false,
+  buildCanonicalUrl: build720yunUrl,
+  buildEmbedUrl: build720yunUrl,
+  embedPolicy: Object.freeze({
+    sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-presentation',
+    referrerPolicy: 'no-referrer',
+    allow: 'autoplay; fullscreen; gyroscope; accelerometer; picture-in-picture; xr-spatial-tracking',
+    allowFullscreen: true,
+  }),
+})
+
+export const KML_SHARE_LINK_PROVIDERS = Object.freeze([DOUYIN_PROVIDER, SEVEN_TWENTY_PROVIDER])
 
 export function getKmlShareLinkProvider (providerId) {
   return KML_SHARE_LINK_PROVIDERS.find(provider => provider.id === String(providerId || '')) || null
@@ -123,7 +177,7 @@ function providerForUrl (parsed) {
 export function createKmlShareEmbedItem (providerId, resourceId, sourceUrl = '') {
   const provider = getKmlShareLinkProvider(providerId)
   const id = String(resourceId || '').trim()
-  if (!provider || (provider.id === 'douyin' && !DOUYIN_VIDEO_ID_PATTERN.test(id))) return null
+  if (!provider || !provider.validateResourceId?.(id)) return null
 
   const canonicalUrl = provider.buildCanonicalUrl(id)
   let normalizedSourceUrl = canonicalUrl
@@ -178,7 +232,7 @@ export function extractKmlShareLinkCandidates (text, options = {}) {
     ? Number(options.limit)
     : DEFAULT_SHARE_LINK_LIMIT
   const source = String(text || '')
-  const pattern = /https?:\/\/[^\s<>"'`]+/gi
+  const pattern = /https?:\/\/[^\s<>"'`，。；：！？、]+/gi
   const candidates = []
   const seen = new Set()
   let supportedCount = 0
@@ -211,7 +265,7 @@ export function extractKmlShareLinkCandidates (text, options = {}) {
 
 export function normalizeKmlShareLinksInText (text) {
   const source = String(text || '')
-  const pattern = /https?:\/\/[^\s<>"'`]+/gi
+  const pattern = /https?:\/\/[^\s<>"'`，。；：！？、]+/gi
   return source.replace(pattern, (matched, offset) => {
     const openingTag = source.lastIndexOf('<', offset)
     const closingTag = source.lastIndexOf('>', offset)
@@ -258,9 +312,6 @@ export function getTrustedKmlShareEmbed (value) {
   const provider = providerForUrl(parsed)
   if (!provider) return null
   const resourceId = provider.extractResourceId(parsed)
-  if (!resourceId || parsed.hostname !== 'open.douyin.com' || parsed.pathname !== '/player/video') return null
-  const queryKeys = [...parsed.searchParams.keys()]
-  if (queryKeys.length !== 1 || queryKeys[0] !== 'vid' || parsed.hash) return null
   const item = createKmlShareEmbedItem(provider.id, resourceId)
   if (!item || parsed.toString() !== item.embedUrl) return null
   return {

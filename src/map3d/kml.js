@@ -19,7 +19,15 @@ import {
   renderKmlFeaturePopupContent,
 } from '../map/kml-content-panel.js'
 import { renderKmlFileOverview } from '../map/kml-file-overview.js'
+import { getKmlFeatureDisplayName, getKmlFeatureNamePresentation } from '../map/kml-feature-name.js'
 import { getKmlMediaBillboard, getKmlMediaListIcon } from '../map/kml-media-marker.js'
+import {
+  applyKmlMarkerIconSelection,
+  buildKmlMarkerIconField,
+  getEditableKmlMarkerIcon,
+  normalizeKmlFeatureMarkerIcon,
+  recordKmlMarkerRecentIcon,
+} from '../map/kml-marker-picker.js'
 import {
   buildTrackSegments,
   cameraHeightToZoom,
@@ -236,7 +244,7 @@ function normalizeKmlFile (kmlFile) {
     coordCorrection: kmlFile.coordCorrection || KML_COORD_CORRECTION,
     lockDrag: kmlFile.lockDrag === true,
     enabled: kmlFile.enabled !== false,
-    features: Array.isArray(kmlFile.features) ? kmlFile.features : [],
+    features: Array.isArray(kmlFile.features) ? kmlFile.features.map(normalizeKmlFeatureMarkerIcon) : [],
   }
 }
 
@@ -368,20 +376,21 @@ function buildKmlTargetOptions () {
 }
 
 function getFeatureLabel (feature) {
-  const name = String(feature?.name || '').replace(/\s+/g, ' ').trim()
+  const name = getKmlFeatureDisplayName(feature).replace(/\s+/g, ' ').trim()
   if (!name) return ''
   if (name.length <= KML_POINT_LABEL_MAX_LENGTH) return name
   return `${name.slice(0, KML_POINT_LABEL_MAX_LENGTH)}...`
 }
 
 function createPointFeature (kmlFile, latlng, result) {
-  return {
+  const feature = {
     id: `feat-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     type: 'Point',
     name: result.name.trim(),
     description: result.description.trim(),
     coordinates: mapLatLngToStoredCoordinate(kmlFile, latlng),
   }
+  return applyKmlMarkerIconSelection(feature, result.markerIcon)
 }
 
 function downloadKmlFile (fileName, kmlText) {
@@ -488,7 +497,7 @@ function renderFeature (kmlFile, feature) {
     } : undefined
 
     const entity = markEntity(viewerRef.entities.add({
-      name: feature.name || 'KML 标注',
+      name: getKmlFeatureDisplayName(feature),
       position: Cartesian3.fromDegrees(point.lng, point.lat, 8),
       point: mediaBillboard ? undefined : pointGraphics,
       billboard: mediaBillboard
@@ -771,16 +780,23 @@ async function handleEditFeature (kmlId, featureId) {
   const result = await showEditDialog({
     title: '修改标注属性',
     fields: [
-      { name: 'name', label: '名称', type: 'text' },
+      {
+        name: 'name',
+        label: '名称',
+        type: 'text',
+        required: false,
+      },
+      buildKmlMarkerIconField(getEditableKmlMarkerIcon(feature)),
       {
         name: 'description',
         label: '描述',
         type: 'textarea',
-        hint: '支持粘贴抖音等应用分享文案；保存时会自动识别可预览内容。',
+        hint: '可粘贴受支持的公开分享链接。',
       },
     ],
     values: {
       name: feature.name,
+      markerIcon: getEditableKmlMarkerIcon(feature),
       description: getEditableKmlDescription(feature.description),
     },
   })
@@ -792,7 +808,9 @@ async function handleEditFeature (kmlId, featureId) {
   pushKmlHistory()
   feature.name = result.name.trim()
   feature.description = enriched.description.trim()
+  applyKmlMarkerIconSelection(feature, result.markerIcon)
   saveKmlChanges(kmlFile)
+  recordKmlMarkerRecentIcon(result.markerIcon)
   renderKmlLayers(kmlFile)
   updateKmlPanelUI()
   showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
@@ -884,12 +902,18 @@ async function createPointAtLatLng (latlng, options = {}) {
   const allowFileSelection = options.allowFileSelection !== false && targetOptions.length > 1
   const targetKmlId = resolveTargetKmlId(options.targetKmlId)
   const fields = [
-    { name: 'name', label: '标注名称', type: 'text' },
+    {
+      name: 'name',
+      label: '标注名称',
+      type: 'text',
+      required: false,
+    },
+    buildKmlMarkerIconField('auto'),
     {
       name: 'description',
       label: '描述信息',
       type: 'textarea',
-      hint: '支持粘贴抖音等应用分享文案；保存时会自动识别可预览内容。',
+      hint: '可粘贴受支持的公开分享链接。',
     },
   ]
 
@@ -920,6 +944,7 @@ async function createPointAtLatLng (latlng, options = {}) {
     values: {
       kmlId: targetKmlId,
       name: '',
+      markerIcon: 'auto',
       description: '',
     },
   })
@@ -948,6 +973,7 @@ async function createPointAtLatLng (latlng, options = {}) {
   expandedKmlIds.add(kmlFile.id)
   rememberTargetKmlId(kmlFile.id)
   saveKmlChanges(kmlFile)
+  recordKmlMarkerRecentIcon(result.markerIcon)
   renderKmlLayers(kmlFile)
   updateKmlPanelUI()
   focusFeature(kmlFile.id, newFeature.id)
@@ -1228,15 +1254,13 @@ function renderFeatureItem (kmlFile, feature, editable) {
       ? '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 22 9 18 22 6 22 2 9"/></svg>'
       : '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
   const iconSvg = getKmlMediaListIcon(feature) || geometryIconSvg
-  const featureName = feature.name || (feature.type === 'LineString'
-    ? '未命名线段'
-    : feature.type === 'Polygon' ? '未命名区域' : '未命名点位')
+  const { displayName, accessibleName } = getKmlFeatureNamePresentation(feature)
 
   return `
     <div class="kml-feature-item" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}">
-      <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}">
+      <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" aria-label="定位到${escapeHtml(accessibleName)}">
         <span class="kml-feature-icon">${iconSvg}</span>
-        <span class="kml-feature-name" title="${escapeHtml(featureName)}">${escapeHtml(featureName)}</span>
+        ${displayName ? `<span class="kml-feature-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>` : ''}
       </div>
       ${editable ? `<button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>` : ''}
     </div>
