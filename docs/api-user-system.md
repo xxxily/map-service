@@ -2,7 +2,7 @@
 
 > 状态：已实现，验收中  
 > 基础路径：`/api/v1`  
-> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [两步路导入助手用户操作手册](./user-guides/two-bulu-import.md)
+> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md) 和 [两步路导入助手用户操作手册](./user-guides/two-bulu-import.md)
 
 本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。
 
@@ -214,6 +214,7 @@ system.super_admin
 | `POST` | `/kml/files/:id/restore` | `kml.own.write` | 从回收站恢复 |
 | `DELETE` | `/kml/files/:id/permanent` | `kml.own.write` | 永久删除回收站文件 |
 | `POST` | `/kml/import` | `kml.own.write` | `multipart/form-data` 导入 KML |
+| `POST` | `/kml/share-links/resolve` | `kml.own.write`、`kml.any.manage` 或 `admin.public_kml.manage` | 解析受支持的第三方分享短链 |
 | `POST` | `/kml/import/2bulu/browser-helper` | `kml.own.write` | 保存授权浏览器助手取得的标准 KML；网站使用此接口 |
 | `POST` | `/kml/import/2bulu` | `kml.own.write` | 服务端直连兼容接口，保留给未来官方 API provider |
 | `GET` | `/kml/files/:id/export` | `kml.own.read` | 下载标准 KML 文本 |
@@ -336,7 +337,65 @@ KML 写入模型：
 
 导入当前支持标准 `.kml` 的 Point、LineString、Polygon，并拒绝 DOCTYPE/ENTITY。暂不支持 KMZ、MultiGeometry 和完整 KML 样式体系。
 
-### 3.2 从两步路公开分享链接导入（服务端直连兼容接口）
+### 3.2 KML 点位第三方分享链接解析
+
+`POST /api/v1/kml/share-links/resolve` 用于把点位描述中需要服务端展开的受支持短链解析为 provider 元数据。当前首期支持抖音 `v.douyin.com` 短链；已经包含视频 ID 的抖音详情页由前端本地转换，不必调用此接口。接口不会返回视频文件，也不会作为通用 URL 代理。
+
+鉴权：当前用户 Cookie 会话、CSRF，并拥有 `kml.own.write`、`kml.any.manage` 或 `admin.public_kml.manage` 之一。
+
+请求：
+
+```http
+POST /api/v1/kml/share-links/resolve
+Content-Type: application/json
+X-CSRF-Token: <map_csrf_token>
+```
+
+```json
+{
+  "text": "8.74 复制打开抖音…… https://v.douyin.com/Xi6sjYn-rps/"
+}
+```
+
+成功响应：
+
+```json
+{
+  "code": 0,
+  "result": {
+    "items": [
+      {
+        "provider": "douyin",
+        "providerLabel": "抖音",
+        "mediaType": "iframe",
+        "resourceId": "7645601561687440101",
+        "title": "抖音视频",
+        "sourceUrl": "https://v.douyin.com/Xi6sjYn-rps/",
+        "canonicalUrl": "https://www.douyin.com/video/7645601561687440101",
+        "embedUrl": "https://open.douyin.com/player/video?vid=7645601561687440101"
+      }
+    ],
+    "warnings": []
+  },
+  "error": null
+}
+```
+
+`text` 最大 100000 字符，单次最多处理 10 个受支持链接。重复视频只返回一个 `items` 项。短链读取最多 3 次重定向、单次请求 5 秒、整批 10 秒；重定向只允许抖音官方域名。部分短链失败时仍返回 `200`，失败原因放入 `warnings`，前端应保存原始描述并提示用户。返回结果不会包含上游 Cookie、响应正文、追踪参数、内部 DNS 地址或请求头。
+
+常见错误：
+
+| HTTP | 错误码 | 说明 |
+| --- | --- | --- |
+| `400` | `VALIDATION_FAILED` | 文本为空或超长 |
+| `401` | `AUTH_REQUIRED` | 未登录 |
+| `403` | `CSRF_INVALID` / `PERMISSION_DENIED` | 请求来源、CSRF 或 KML 写权限失败 |
+| `413` | `SHARE_LINK_LIMIT_EXCEEDED` | 受支持链接超过 10 个 |
+| `429` | `SHARE_LINK_RATE_LIMITED` | 当前账号解析过于频繁 |
+
+成功解析结果由前端写入带 `data-kml-share-*` 标记的 iframe。再次编辑时这些机器标记会被隐藏，用户删除源链接后对应 iframe 也会被移除。公开分享查看端只消费已保存的官方播放器地址。
+
+### 3.3 从两步路公开分享链接导入（服务端直连兼容接口）
 
 `POST /api/v1/kml/import/2bulu` 使用当前用户会话、CSRF 和 `kml.own.write` 权限。接口只接受 `www.2bulu.com`、`2bulu.com`、`app.2bulu.com` 的 HTTPS 分享页，并在服务端重新校验 DNS、重定向、响应大小、超时和 KML/JSON 内容；不会接受调用方提供的 Cookie、代理、认证头或任意下载地址。公开标注媒体仅保留 `down-files.2bulu.com` 的固定 HTTPS 端点及唯一非空 `downParams` 定位参数，含额外 Token、签名、验证码参数或非标准端口的 URL 会被丢弃。
 
@@ -399,7 +458,7 @@ KML 写入模型：
 
 前端账号中心和 2D 地图 KML 面板都复用同一字段和 Dialog。未登录或只有 `kml.own.read` 的用户不显示入口；即使手工调用接口也不会触发两步路外部请求。地图端成功后会登记服务端文档同步快照并自动适配导入要素范围，避免增量同步再次创建副本。
 
-### 3.3 保存两步路授权浏览器助手取得的 KML
+### 3.4 保存两步路授权浏览器助手取得的 KML
 
 ```http
 POST /api/v1/kml/import/2bulu/browser-helper
@@ -429,10 +488,10 @@ Content-Type: application/json
 
 - `protocolVersion` 必填且当前只能为整数 `1`。
 - `helperVersion` 必填，为 1～32 位 ASCII 字母、数字、点、下划线或连字符。
-- `url` 必填，按 3.2 的两步路官方 HTTPS 分享 URL 规则重新规范化；不信任客户端声称的最终来源 URL。
+- `url` 必填，按 3.3 的两步路官方 HTTPS 分享 URL 规则重新规范化；不信任客户端声称的最终来源 URL。
 - `kmlText` 必填，UTF-8 最大 10 MiB；服务端复用标准 KML 解析、DOCTYPE/ENTITY 拒绝、富文本清洗、坐标、要素和用户配额校验。
 - `sourceMode` 为 `official-kml` 或 `rendered-data`；`completeness` 为 `full` 或 `track-only`；`warnings` 最多 10 项、每项最多 300 字符。0.3.x 助手会提交这些字段，服务端执行枚举和长度规范化；兼容旧版助手时省略字段分别按 `official-kml`、`full` 和空数组处理。
-- `coordCorrection`、`partialPolicy`、`requestId` 与 3.2 相同；当 `completeness=track-only` 时必须同时提交 `partialPolicy=allow-track-only`，否则返回 `422 TWO_BULU_PARTIAL_REJECTED`。浏览器助手在页面已展示轨迹但标注接口不可用时才会产生 `track-only`。
+- `coordCorrection`、`partialPolicy`、`requestId` 与 3.3 相同；当 `completeness=track-only` 时必须同时提交 `partialPolicy=allow-track-only`，否则返回 `422 TWO_BULU_PARTIAL_REJECTED`。浏览器助手在页面已展示轨迹但标注接口不可用时才会产生 `track-only`。
 
 浏览器助手 `0.3.4` 在扩展内部增加 `importSessionId` 和二阶段 `COMPLETE_2BULU_IMPORT` 标签页确认，但这两个字段不属于本 HTTP API，也不得提交给服务端。前端只在本接口明确保存成功后通知扩展：扩展校验原发起标签页后激活 map-service，并安全关闭自己管理的未固定两步路临时页；保存失败或无法自动关闭时由两步路页面结果卡片提供手动返回/关闭操作。
 - 相同用户、规范化轨迹和 `requestId` 重放时返回原文档，`importSummary.completeness=existing`，不会再次创建文件或占用配额。

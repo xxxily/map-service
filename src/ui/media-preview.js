@@ -49,6 +49,10 @@ function getMediaSourceUrl (item) {
   return String(item?.renderUrl || item?.url || '')
 }
 
+function getOriginalContentUrl (item) {
+  return String(item?.canonicalUrl || item?.sourceUrl || item?.url || '')
+}
+
 function getItemTypeIcon (type) {
   return {
     video: '▶',
@@ -314,14 +318,20 @@ function renderIframe (item) {
   const content = getPreviewElement('[data-media-preview-content]')
   if (!content) return
   const policy = item.embedPolicy || {}
+  const shell = document.createElement('div')
+  shell.className = 'media-preview-iframe-shell'
+  if (item.provider) shell.dataset.provider = String(item.provider)
   const frame = document.createElement('iframe')
   frame.className = 'media-preview-iframe'
   frame.title = getItemTitle(item)
   frame.loading = 'eager'
   frame.referrerPolicy = policy.referrerPolicy || 'no-referrer'
   frame.setAttribute('sandbox', policy.sandbox || 'allow-scripts allow-forms allow-popups')
-  frame.src = item.url
-  content.appendChild(frame)
+  if (policy.allow) frame.setAttribute('allow', policy.allow)
+  if (policy.allowFullscreen) frame.allowFullscreen = true
+  frame.src = getMediaSourceUrl(item)
+  shell.appendChild(frame)
+  content.appendChild(shell)
 }
 
 function renderMediaTrack () {
@@ -425,7 +435,7 @@ function renderActiveItem () {
   setText('[data-media-preview-restore-title]', title)
   setText('[data-media-preview-restore-position]', `${activeIndex + 1} / ${activeItems.length}`)
   if (source) {
-    source.href = item.url
+    source.href = getOriginalContentUrl(item)
     source.title = item.type === 'iframe' ? '打开原始页面' : '打开原始文件'
   }
   setText('.media-preview-source-label', item.type === 'iframe' ? '原始页面' : '原始文件')

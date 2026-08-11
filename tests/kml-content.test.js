@@ -44,6 +44,37 @@ test('classifyContentUrl detects media types and iframe allowlist', () => {
   assert.equal(classifyContentUrl('https://docs.example.com/report/1').item.type, 'link')
 })
 
+test('Douyin official player is a built-in trusted iframe with provider policy', () => {
+  const videoId = '7645601561687440101'
+  const classified = classifyContentUrl(`https://open.douyin.com/player/video?vid=${videoId}`)
+
+  assert.equal(classified.accepted, true)
+  assert.equal(classified.item.type, 'iframe')
+  assert.equal(classified.item.provider, 'douyin')
+  assert.equal(classified.item.resourceId, videoId)
+  assert.equal(classified.item.url, `https://open.douyin.com/player/video?vid=${videoId}`)
+  assert.equal(classified.item.renderUrl, `https://open.douyin.com/player/video?vid=${videoId}&width=100vw&height=100vh`)
+  assert.match(classified.item.embedPolicy.sandbox, /allow-same-origin/)
+  assert.match(classified.item.embedPolicy.allow, /picture-in-picture/)
+  assert.equal(classified.item.embedPolicy.allowFullscreen, true)
+})
+
+test('generated Douyin iframe keeps a safe original source, hides its duplicate link and ignores forged metadata', () => {
+  const videoId = '7645601561687440101'
+  const description = `抖音分享 https://v.douyin.com/Xi6sjYn-rps/\n<iframe src="https://open.douyin.com/player/video?vid=${videoId}" title="抖音视频" data-kml-share-provider="douyin" data-kml-share-source="https://v.douyin.com/Xi6sjYn-rps/" data-kml-share-canonical="https://evil.example.com/"></iframe>`
+  const view = buildFeatureContentView({ description })
+  const item = view.groups.find(group => group.type === 'iframe').items[0]
+
+  assert.equal(view.contentSummary.iframeCount, 1)
+  assert.equal(view.contentSummary.linkCount, 0)
+  assert.equal(getPrimaryFeatureContentType({ description }), 'iframe')
+  assert.equal(item.sourceUrl, 'https://v.douyin.com/Xi6sjYn-rps/')
+  assert.equal(item.canonicalUrl, `https://www.douyin.com/video/${videoId}`)
+  assert.match(item.renderUrl, /[?&]width=100vw(?:&|$)/)
+  assert.match(item.renderUrl, /[?&]height=100vh(?:&|$)/)
+  assert.doesNotMatch(JSON.stringify(item), /evil\.example\.com/)
+})
+
 test('buildFeatureContentView masks sensitive query params in public output', () => {
   const view = buildFeatureContentView({
     id: 'feat-1',

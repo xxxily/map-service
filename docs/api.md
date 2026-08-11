@@ -1210,7 +1210,7 @@ GET /api/v1/kml/media?url=https%3A%2F%2Fdown-files.2bulu.com%2Ff%2Fdn1%3FdownPar
 
 获取已发布公共 KML 单个点位的富媒体内容视图。接口继承前台访问控制；如果地图访问密码已启用，必须先通过访问验证。
 
-第一阶段解析点位 `description` 中的 HTTPS 文本链接，以及 `img`、`picture/source`、`video/source`、`audio/source`、`iframe`、`embed`、`object` 和 `a` 标签中的 URL，不做任意 URL 代理、截图、转码或上传。图片、视频、音频、iframe 和普通链接按规则分组返回；原始 HTML 不会直接返回给渲染组件。媒体标签中的无扩展名 URL 按标签语义分类；`embed` / `object` 可通过 `type="video/*"`、视频扩展名或点位 `styleUrl` 的 `MarkerStyleVideo` 提示归入视频组。iframe 默认拒绝，只在服务端 `MAP_SERVICE_KML_IFRAME_ALLOWLIST` 配置命中时作为 `iframe` 类型返回，否则作为普通链接处理。固定旧图片地址可能额外返回同源 `renderUrl`，仅用于兼容加载，原始 `url` 保持不变。
+第一阶段解析点位 `description` 中的 HTTPS 文本链接，以及 `img`、`picture/source`、`video/source`、`audio/source`、`iframe`、`embed`、`object` 和 `a` 标签中的 URL，不做任意 URL 代理、截图、转码或上传。图片、视频、音频、iframe 和普通链接按规则分组返回；原始 HTML 不会直接返回给渲染组件。媒体标签中的无扩展名 URL 按标签语义分类；`embed` / `object` 可通过 `type="video/*"`、视频扩展名或点位 `styleUrl` 的 `MarkerStyleVideo` 提示归入视频组。普通 iframe 默认拒绝，只在服务端 `MAP_SERVICE_KML_IFRAME_ALLOWLIST` 配置命中时作为 `iframe` 类型返回；已内置 provider 的官方播放器还必须通过精确 origin、path、资源 ID 和查询参数校验。其他地址均降级为普通链接。固定旧图片地址可能额外返回同源 `renderUrl`，仅用于兼容加载，原始 `url` 保持不变。
 
 前端交互契约：
 
@@ -1219,8 +1219,8 @@ GET /api/v1/kml/media?url=https%3A%2F%2Fdown-files.2bulu.com%2Ff%2Fdn1%3FdownPar
 - 预览器支持 `上一项`、`下一项`、方向键、首尾循环、媒体轨道定位、`收缩为小窗` 和 `展开媒体预览`。每次切换都会同步激活所属点位 popup，关闭预览后保留最后一项媒体对应的点位状态；不再提供重复的点位跳转按钮。小窗状态不锁定页面滚动，关闭时释放视频/音频/iframe 和图片手势资源。
 - 桌面全屏预览的 header/footer 默认透明度为 0.3，hover 或 focus-within 时恢复为 1；移动端隐藏完整 header/footer，只保留主要媒体交互入口。
 - 详情面板仍只负责完整文字、坐标、图层来源和按类型内容清单；它不是进入媒体预览的前置步骤。
-- 视频 URL 按浏览器原生能力播放；普通 `<video>` 资源默认不自动播放，`embed` / `object` 识别为视频后进入预览即尝试自动播放；`.m3u8` 在浏览器不支持原生 HLS 时按需加载 `hls.js`，自动播放失败时按浏览器策略静音重试。iframe 继续使用服务端返回的 `embedPolicy`、sandbox 和 `referrerPolicy`。
-- 个人 KML 的本地解析使用构建期 `VITE_MAP_SERVICE_KML_IFRAME_ALLOWLIST`；公共 KML 接口使用服务端 `MAP_SERVICE_KML_IFRAME_ALLOWLIST`。生产环境应配置相同规则，任一侧未命中时均不得把页面提升为 iframe。
+- 视频 URL 按浏览器原生能力播放；普通 `<video>` 资源默认不自动播放，`embed` / `object` 识别为视频后进入预览即尝试自动播放；`.m3u8` 在浏览器不支持原生 HLS 时按需加载 `hls.js`，自动播放失败时按浏览器策略静音重试。iframe 继续使用服务端返回的 `embedPolicy`、sandbox 和 `referrerPolicy`，并放入与预览舞台同色的居中壳层。内置 provider 可以为 `renderUrl` 增加受控的视口适配参数，但 `url` 和 KML 持久化地址保持稳定且不增加任意查询参数。
+- 个人 KML 的普通 iframe 本地解析使用构建期 `VITE_MAP_SERVICE_KML_IFRAME_ALLOWLIST`；公共 KML 接口使用服务端 `MAP_SERVICE_KML_IFRAME_ALLOWLIST`。生产环境应配置相同规则，任一侧未命中时均不得把普通页面提升为 iframe。内置平台播放器使用前后端共享的精确 provider 规则，不依赖宽泛域名白名单。
 
 成功响应示例：
 
@@ -1309,14 +1309,18 @@ GET /api/v1/kml/media?url=https%3A%2F%2Fdown-files.2bulu.com%2Ff%2Fdn1%3FdownPar
 | 字段 | 说明 |
 | --- | --- |
 | `groups[].type` | 内容分组类型：`image` / `video` / `audio` / `iframe` / `link` |
-| `groups[].items[].sourceType` | 第一阶段固定为 `description-link` |
+| `groups[].items[].sourceType` | 普通描述链接为 `description-link`；受控平台播放器为 `description-share-embed` |
 | `groups[].items[].url` | 已脱敏后的 HTTPS URL；敏感查询参数会替换为 `****` |
-| `groups[].items[].renderUrl` | 前端实际媒体加载地址；通常与 `url` 相同，固定旧图片地址会使用 `/api/v1/kml/media` |
-| `groups[].items[].embedPolicy` | iframe 内容的 sandbox 和 referrer policy；非 iframe 为 `null` |
+| `groups[].items[].renderUrl` | 前端实际媒体加载地址；通常与 `url` 相同，固定旧图片地址会使用 `/api/v1/kml/media`，受控平台播放器可增加 provider 固定的视口适配参数 |
+| `groups[].items[].embedPolicy` | iframe 内容的 sandbox、referrer policy、媒体权限和全屏策略；非 iframe 为 `null` |
+| `groups[].items[].provider` / `resourceId` | 受控第三方播放器的 provider 和稳定资源 ID；普通内容不返回 |
+| `groups[].items[].sourceUrl` / `canonicalUrl` | 受控播放器的规范化来源地址和稳定详情地址；不会返回上游追踪参数 |
 | `groups[].items[].autoplay` | 视频类型固定为 `true`，进入统一预览器时优先带声音自动播放，浏览器阻止时静音重试 |
 | `contentSummary` | 点位内容数量摘要，包括 `imageCount`、`videoCount`、`audioCount`、`iframeCount`、`linkCount` 和 `hasRichContent` |
 | `sourceSummary.truncated` | 描述中 URL 超过解析上限时为 `true` |
 | `rejected` | 因协议、主机安全策略等被拒绝的 URL 摘要 |
+
+登录用户在点位录入阶段解析抖音等受支持分享短链的接口见 [用户体系与多 KML 分享 API：KML 点位第三方分享链接解析](./api-user-system.md#32-kml-点位第三方分享链接解析)。
 
 ### `GET /api/v1/admin/kml`
 

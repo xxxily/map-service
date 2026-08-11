@@ -757,6 +757,25 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/kml/share-links/resolve',
+    method: 'post',
+    describe: '解析受支持的 KML 点位第三方分享链接',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      const session = requireAnyUserPermission(req, [
+        'kml.own.write',
+        'kml.any.manage',
+        'admin.public_kml.manage',
+      ])
+      res.jsonSuc(await service.resolveKmlShareLinks(
+        session,
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
     path: '/kml/files/:id/export',
     method: 'get',
     describe: '导出个人 KML 文件',

@@ -147,6 +147,7 @@ export function showEditDialog (options = {}) {
                       return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(optionLabel)}</option>`
                     }).join('')}
                   </select>
+                  ${field.hint ? `<small style="display: block; margin-top: 4px; color: #6b7280; line-height: 1.45;">${escapeHtml(field.hint)}</small>` : ''}
                 </label>
               `
             }
@@ -155,6 +156,7 @@ export function showEditDialog (options = {}) {
                 <label style="display: block; margin-bottom: 12px;">
                   <span style="display: block; font-size: 13px; margin-bottom: 4px; color: #4b5563; font-weight: 500;">${escapeHtml(field.label)}</span>
                   <textarea name="${escapeHtml(field.name)}" rows="3" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: inherit; font-size: 13px; resize: vertical; outline: none;"></textarea>
+                  ${field.hint ? `<small style="display: block; margin-top: 4px; color: #6b7280; line-height: 1.45;">${escapeHtml(field.hint)}</small>` : ''}
                 </label>
                 `
             }
@@ -162,6 +164,7 @@ export function showEditDialog (options = {}) {
               <label style="display: block; margin-bottom: 12px;">
                 <span style="display: block; font-size: 13px; margin-bottom: 4px; color: #4b5563; font-weight: 500;">${escapeHtml(field.label)}</span>
                 <input type="text" name="${escapeHtml(field.name)}" value="${val}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-size: 13px; outline: none;" required>
+                ${field.hint ? `<small style="display: block; margin-top: 4px; color: #6b7280; line-height: 1.45;">${escapeHtml(field.hint)}</small>` : ''}
               </label>
             `
           }).join('')}

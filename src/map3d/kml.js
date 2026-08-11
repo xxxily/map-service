@@ -45,6 +45,10 @@ import {
   promptKmlAccountRecovery,
 } from '../map/kml-account-recovery-ui.js'
 import { getActiveShare, loadActiveShareFiles } from '../map/share-view.js'
+import {
+  enrichKmlDescriptionWithShareLinks,
+  getEditableKmlDescription,
+} from '../integrations/kml-share-links.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_LAST_TARGET_KEY = 'map_kml_last_target_id'
@@ -765,22 +769,33 @@ async function handleEditFeature (kmlId, featureId) {
     title: '修改标注属性',
     fields: [
       { name: 'name', label: '名称', type: 'text' },
-      { name: 'description', label: '描述', type: 'textarea' },
+      {
+        name: 'description',
+        label: '描述',
+        type: 'textarea',
+        hint: '支持粘贴抖音等应用分享文案；保存时会自动识别可预览内容。',
+      },
     ],
     values: {
       name: feature.name,
-      description: feature.description,
+      description: getEditableKmlDescription(feature.description),
     },
   })
 
   if (!result) return
+  const enriched = await enrichKmlDescriptionWithShareLinks(result.description, {
+    previousDescription: feature.description,
+  })
   pushKmlHistory()
   feature.name = result.name.trim()
-  feature.description = result.description.trim()
+  feature.description = enriched.description.trim()
   saveKmlChanges(kmlFile)
   renderKmlLayers(kmlFile)
   updateKmlPanelUI()
   showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
+  if (enriched.warnings.length) {
+    await showAlert(enriched.warnings.join('；'), { title: '点位已保存' })
+  }
 }
 
 async function handleDeleteFeature (kmlId, featureId) {
@@ -867,7 +882,12 @@ async function createPointAtLatLng (latlng, options = {}) {
   const targetKmlId = resolveTargetKmlId(options.targetKmlId)
   const fields = [
     { name: 'name', label: '标注名称', type: 'text' },
-    { name: 'description', label: '描述信息', type: 'textarea' },
+    {
+      name: 'description',
+      label: '描述信息',
+      type: 'textarea',
+      hint: '支持粘贴抖音等应用分享文案；保存时会自动识别可预览内容。',
+    },
   ]
 
   if (allowFileSelection) {
@@ -915,8 +935,12 @@ async function createPointAtLatLng (latlng, options = {}) {
     return
   }
 
+  const enriched = await enrichKmlDescriptionWithShareLinks(result.description)
   pushKmlHistory()
-  const newFeature = createPointFeature(kmlFile, latlng, result)
+  const newFeature = createPointFeature(kmlFile, latlng, {
+    ...result,
+    description: enriched.description,
+  })
   kmlFile.features.push(newFeature)
   expandedKmlIds.add(kmlFile.id)
   rememberTargetKmlId(kmlFile.id)
@@ -924,6 +948,9 @@ async function createPointAtLatLng (latlng, options = {}) {
   renderKmlLayers(kmlFile)
   updateKmlPanelUI()
   focusFeature(kmlFile.id, newFeature.id)
+  if (enriched.warnings.length) {
+    await showAlert(enriched.warnings.join('；'), { title: '点位已保存' })
+  }
 }
 
 function togglePickupMode (kmlId) {

@@ -1,3 +1,5 @@
+import { getTrustedKmlShareEmbed, resolveKnownKmlShareLink } from './kml-share-links.js'
+
 const URL_LIMIT = 50
 const KML_MEDIA_RELAY_ENDPOINT = '/api/v1/kml/media'
 const KML_MEDIA_COMPATIBILITY_RULES = new Map([
@@ -264,7 +266,11 @@ function collectTagReferences (description) {
       const parentType = mediaStack.at(-1)?.type || ''
       add(attributes.src || getFirstSrcsetUrl(attributes.srcset), parentType || typeFromMime(attributes.type), tagName, attributes, match.index)
     } else if (tagName === 'iframe') {
-      add(attributes.src, 'iframe', tagName, attributes, match.index)
+      add(attributes.src, 'iframe', tagName, attributes, match.index, {
+        provider: attributes['data-kml-share-provider'] || '',
+        sourceUrl: attributes['data-kml-share-source'] || '',
+        canonicalUrl: attributes['data-kml-share-canonical'] || '',
+      })
     } else if (tagName === 'embed') {
       add(attributes.src, typeFromMime(attributes.type), tagName, attributes, match.index)
     } else if (tagName === 'object') {
@@ -374,6 +380,9 @@ export function extractContentReferences (text, options = {}) {
       tagName: candidate.tagName,
       title: candidate.title,
       thumbnailUrl,
+      provider: candidate.provider || '',
+      sourceUrl: candidate.sourceUrl || '',
+      canonicalUrl: candidate.canonicalUrl || '',
     }
     references.push(reference)
     referencesByUrl.set(key, reference)
@@ -391,39 +400,65 @@ export function extractContentUrls (text, options = {}) {
 }
 
 function createContentItem (parsed, index, options = {}) {
+  const trustedShareEmbed = getTrustedKmlShareEmbed(parsed)
   const explicitType = ['image', 'video', 'audio', 'iframe'].includes(options.typeHint)
     ? options.typeHint
     : ''
   let type = ['image', 'video', 'audio'].includes(explicitType)
     ? explicitType
     : getExtensionType(parsed) || 'link'
-  if (explicitType === 'iframe' || (type === 'link' && matchesIframeAllowlist(parsed, options.iframeAllowlist))) {
-    type = matchesIframeAllowlist(parsed, options.iframeAllowlist) ? 'iframe' : 'link'
+  if (trustedShareEmbed || explicitType === 'iframe' || (type === 'link' && matchesIframeAllowlist(parsed, options.iframeAllowlist))) {
+    type = trustedShareEmbed || matchesIframeAllowlist(parsed, options.iframeAllowlist) ? 'iframe' : 'link'
   }
 
   const maskedUrl = maskSensitiveQueryParams(parsed)
   const renderUrl = type === 'image'
     ? getKmlMediaRenderUrl(maskedUrl)
-    : maskedUrl
+    : type === 'iframe'
+      ? (trustedShareEmbed?.previewUrl || maskedUrl)
+      : maskedUrl
   const thumbnailParsed = type === 'image' ? normalizeThumbnailUrl(options.thumbnailUrl) : null
   const maskedThumbnailUrl = thumbnailParsed ? maskSensitiveQueryParams(thumbnailParsed) : ''
   const thumbnailRenderUrl = maskedThumbnailUrl ? getKmlMediaRenderUrl(maskedThumbnailUrl) : ''
+  let shareSourceUrl = ''
+  if (trustedShareEmbed) {
+    const sourceCandidate = resolveKnownKmlShareLink(options.sourceUrl || '')
+    if (
+      sourceCandidate.recognized &&
+      sourceCandidate.provider === trustedShareEmbed.provider &&
+      (!sourceCandidate.item || sourceCandidate.item.resourceId === trustedShareEmbed.resourceId)
+    ) {
+      shareSourceUrl = sourceCandidate.sourceUrl
+    } else {
+      shareSourceUrl = trustedShareEmbed.canonicalUrl
+    }
+  }
+  const maskedShareSourceUrl = shareSourceUrl
+    ? maskSensitiveQueryParams(new URL(shareSourceUrl))
+    : ''
+  const itemTitle = String(options.title || '').trim() || trustedShareEmbed?.title || parsed.hostname
   return {
     id: `description-link-${index + 1}`,
     type,
-    title: String(options.title || '').trim() || parsed.hostname,
+    title: itemTitle,
     description: '',
     url: maskedUrl,
     renderUrl,
-    displayUrl: maskedUrl,
+    displayUrl: trustedShareEmbed?.canonicalUrl || maskedShareSourceUrl || maskedUrl,
     thumbnailUrl: type === 'image' ? (thumbnailRenderUrl || renderUrl) : '',
-    sourceType: 'description-link',
+    sourceType: trustedShareEmbed ? 'description-share-embed' : 'description-link',
+    ...(trustedShareEmbed ? {
+      provider: trustedShareEmbed.provider,
+      resourceId: trustedShareEmbed.resourceId,
+      sourceUrl: maskedShareSourceUrl,
+      canonicalUrl: trustedShareEmbed.canonicalUrl,
+    } : {}),
     autoplay: type === 'video',
     embedPolicy: type === 'iframe'
-      ? {
+      ? (trustedShareEmbed?.embedPolicy || {
           sandbox: 'allow-scripts allow-forms allow-popups',
           referrerPolicy: 'no-referrer',
-        }
+        })
       : null,
   }
 }
@@ -445,8 +480,22 @@ export function classifyContentUrl (value, options = {}) {
   }
 }
 
+function getEmbeddedShareSourceUrls (references) {
+  return new Set(references.flatMap(reference => {
+    const trusted = getTrustedKmlShareEmbed(reference.url)
+    const source = trusted ? resolveKnownKmlShareLink(reference.sourceUrl || '') : null
+    return source?.recognized ? [source.sourceUrl] : []
+  }))
+}
+
+function isEmbeddedShareSourceReference (reference, sourceUrls) {
+  const sourceLink = resolveKnownKmlShareLink(reference.url)
+  return !reference.typeHint && sourceLink.recognized && sourceUrls.has(sourceLink.sourceUrl)
+}
+
 export function buildFeatureContentView (feature, options = {}) {
   const { references, truncated } = extractContentReferences(feature?.description || '', options)
+  const embeddedShareSourceUrls = getEmbeddedShareSourceUrls(references)
   const styleType = inferKmlStyleContentType(feature?.styleUrl)
   const rejected = []
   const groups = CONTENT_GROUP_ORDER.map(type => ({
@@ -457,6 +506,7 @@ export function buildFeatureContentView (feature, options = {}) {
   const groupMap = new Map(groups.map(group => [group.type, group]))
 
   references.forEach((reference, index) => {
+    if (isEmbeddedShareSourceReference(reference, embeddedShareSourceUrls)) return
     const typeHint = ['embed', 'object'].includes(reference.tagName) && !reference.typeHint && styleType === 'video'
       ? 'video'
       : reference.typeHint
@@ -467,6 +517,9 @@ export function buildFeatureContentView (feature, options = {}) {
       title: reference.title,
       tagName: reference.tagName,
       thumbnailUrl: reference.thumbnailUrl,
+      provider: reference.provider,
+      sourceUrl: reference.sourceUrl,
+      canonicalUrl: reference.canonicalUrl,
     })
     if (!classified.accepted) {
       rejected.push({
@@ -541,7 +594,9 @@ export function inferKmlStyleContentType (styleUrl) {
 
 export function getFeatureContentTypes (feature, options = {}) {
   const { references } = extractContentReferences(feature?.description || '', options)
+  const embeddedShareSourceUrls = getEmbeddedShareSourceUrls(references)
   const detected = references.flatMap((reference, index) => {
+    if (isEmbeddedShareSourceReference(reference, embeddedShareSourceUrls)) return []
     const classified = classifyContentUrl(reference.url.toString(), {
       ...options,
       index,

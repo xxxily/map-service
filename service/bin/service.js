@@ -21,6 +21,7 @@ import { UserSystemService } from './user/userSystem.js'
 import { UserContentService } from './user/userContent.js'
 import { TwoBuluImportService } from './user/twoBuluImport.js'
 import TwoBuluImportCoordinator from './user/twoBuluImportCoordinator.js'
+import KmlShareLinkResolverService from './user/shareLinkResolver.js'
 import { createHttpError } from './user/security.js'
 import { buildShareMapCatalog, hasShareMapSource } from './user/shareMapCatalog.js'
 import {
@@ -91,6 +92,7 @@ const twoBuluImportCoordinator = new TwoBuluImportCoordinator({
   userContent,
   provider: twoBuluImport,
 })
+const kmlShareLinkResolver = new KmlShareLinkResolverService(userSystemConfig.shareLinkResolver || {})
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
 
@@ -367,6 +369,10 @@ const service = {
 
   async importTwoBuluBrowserHelperKml (actor, input = {}, context = {}) {
     return twoBuluImportCoordinator.importFromBrowserHelper(actor, input, context)
+  },
+
+  async resolveKmlShareLinks (actor, input = {}, context = {}) {
+    return kmlShareLinkResolver.resolve(actor, input, context)
   },
 
   exportUserKml (actor, id) {
