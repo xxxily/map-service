@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02 } from '../src/map/coord-transform.js'
-import { generateKmlText, parseKML } from '../src/map/kml-format.js'
+import { generateKmlText, parseKML, parseKmlDocument } from '../src/map/kml-format.js'
 
 // Node 测试环境无 DOM，注入覆盖 parseKML 调用面的轻量 DOMParser mock
 class MockElement {
   constructor (node) {
     this.tagName = node.tag
+    this.localName = node.tag
+    this.nodeType = node.tag === '#text' ? 3 : 1
+    this.nodeValue = node.tag === '#text' ? node.text : null
     this.children = node.children.map(child => new MockElement(child))
-    this.textContent = node.children
-      .filter(child => child.tag === '#text')
-      .map(child => child.text)
-      .join('')
+    this.childNodes = this.children
+    this.textContent = node.tag === '#text'
+      ? node.text
+      : this.children.map(child => child.textContent).join('')
   }
 
   getElementsByTagName (tag) {
@@ -68,6 +71,13 @@ class MockDOMParser {
 }
 
 globalThis.DOMParser = MockDOMParser
+globalThis.Node = { TEXT_NODE: 3, CDATA_SECTION_NODE: 4 }
+globalThis.XMLSerializer = class MockXMLSerializer {
+  serializeToString (node) {
+    if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) return node.nodeValue || ''
+    return `<${node.tagName}>${node.childNodes.map(child => this.serializeToString(child)).join('')}</${node.tagName}>`
+  }
+}
 
 test('WGS84 coordinates convert to GCJ-02 for AMap display and restore accurately', () => {
   const source = [111.3950162020138, 22.3796367459376]
@@ -153,6 +163,26 @@ test('parseKML keeps empty name for unnamed placemarks', () => {
   assert.equal(features[0].name, '已命名点位')
   assert.equal(features[1].name, '')
   assert.equal(features[2].name, '')
+})
+
+test('KML 文档解析保留文件级名称和介绍，导出时继续写入 Document.description', () => {
+  const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>带统计信息的路线</name>
+    <description><p><strong>总里程：</strong>12.34 km</p><p><strong>原作者：</strong>山友阿明</p></description>
+    <Placemark><Point><coordinates>113.26,23.13,0</coordinates></Point></Placemark>
+  </Document>
+</kml>`
+
+  const parsed = parseKmlDocument(kml)
+  const exported = generateKmlText(parsed.name, parsed.features, parsed.description)
+
+  assert.equal(parsed.name, '带统计信息的路线')
+  assert.match(parsed.description, /总里程：<\/strong>12\.34 km/)
+  assert.match(parsed.description, /原作者：<\/strong>山友阿明/)
+  assert.equal(parsed.features.length, 1)
+  assert.match(exported, /<description>&lt;p&gt;&lt;strong&gt;总里程：/)
 })
 
 test('KML export keeps empty name for unnamed features', () => {

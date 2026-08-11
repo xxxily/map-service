@@ -15,6 +15,11 @@ const VALID_KML = `<?xml version="1.0"?>
   <kml><Document><name>公开路线</name><Placemark><LineString>
     <coordinates>113.1,23.1,0 113.2,23.2,0</coordinates>
   </LineString></Placemark></Document></kml>`
+const METADATA_KML = `<?xml version="1.0"?>
+  <kml><Document><name>公开路线</name>
+    <description>&lt;p&gt;&lt;strong&gt;总里程：&lt;/strong&gt;12.34 km&lt;/p&gt;&lt;p&gt;&lt;strong&gt;运动耗时：&lt;/strong&gt;06:05:04&lt;/p&gt;&lt;p&gt;&lt;strong&gt;作者：&lt;/strong&gt;山友阿明&lt;/p&gt;&lt;script&gt;alert(1)&lt;/script&gt;</description>
+    <Placemark><LineString><coordinates>113.1,23.1,0 113.2,23.2,0</coordinates></LineString></Placemark>
+  </Document></kml>`
 
 function providerError (code, statusCode = 502) {
   return Object.assign(new Error('上游读取失败'), { code, statusCode })
@@ -60,6 +65,7 @@ function createHarness (options = {}) {
         features,
         sourceType: input.sourceType,
         coordCorrection: input.coordCorrection,
+        theme: input.theme,
       }
       state.createCalls.push({ input, createOptions, document })
       if (createOptions.syncClientId) {
@@ -97,6 +103,8 @@ test('两步路协调服务用 requestId 幂等恢复且不重复读取上游或
   assert.match(state.createCalls[0].createOptions.syncClientId, /^2bulu:2bulu-request-one:[A-Za-z0-9_-]{16}$/)
   assert.equal(first.id, repeated.id)
   assert.equal(first.importSummary.completeness, 'full')
+  assert.equal(first.theme, 'simple')
+  assert.equal(state.createCalls[0].input.theme, 'simple')
   assert.equal(repeated.importSummary.completeness, 'existing')
   assert.equal(repeated.importSummary.idempotent, true)
   assert.equal(state.audits.length, 2)
@@ -238,6 +246,8 @@ test('浏览器助手导入只保存浏览器取得的 KML，不调用服务端�
   assert.equal(state.createCalls.length, 1)
   assert.match(state.createCalls[0].createOptions.syncClientId, /^2bulu-helper:helper-request-one:[A-Za-z0-9_-]{16}$/)
   assert.equal(first.name, '浏览器取得的路线')
+  assert.equal(first.theme, 'simple')
+  assert.equal(state.createCalls[0].input.theme, 'simple')
   assert.equal(first.importSummary.helperVersion, '0.2.0')
   assert.equal(first.importSummary.sourceMode, 'rendered-data')
   assert.deepEqual(first.importSummary.warnings, ['已忽略 一个无效点'])
@@ -246,6 +256,51 @@ test('浏览器助手导入只保存浏览器取得的 KML，不调用服务端�
   assert.equal(state.audits[0].action, 'kml.import-2bulu-browser-helper')
   assert.equal(state.audits[0].metadata.sourceMode, 'rendered-data')
   assert.equal(state.audits[1].metadata.idempotent, true)
+})
+
+test('浏览器助手导入保留 KML 文档统计介绍并追加服务端规范化来源', async () => {
+  const { coordinator, state } = createHarness({ withoutProvider: true })
+  const result = await coordinator.importFromBrowserHelper(ACTOR, {
+    protocolVersion: 1,
+    helperVersion: '0.3.6',
+    url: SHARE_URL,
+    requestId: 'helper-metadata-one',
+    partialPolicy: 'allow-track-only',
+    kmlText: METADATA_KML,
+    sourceMode: 'rendered-data',
+    completeness: 'track-only',
+  })
+
+  assert.equal(state.createCalls.length, 1)
+  assert.match(result.description, /总里程[：:]<\/strong>12\.34 km/)
+  assert.match(result.description, /运动耗时[：:]<\/strong>06:05:04/)
+  assert.match(result.description, /作者[：:]<\/strong>山友阿明/)
+  assert.match(result.description, /来源[：:].*两步路公开分享轨迹/s)
+  assert.match(result.description, /https:\/\/www\.2bulu\.com\/track\/track_detail\.htm\?trackId=/)
+  assert.doesNotMatch(result.description, /<script|alert\(1\)/i)
+})
+
+test('服务端兼容文档已有两步路来源时替换为规范化来源且不重复追加', async () => {
+  const { coordinator } = createHarness({
+    resolved: {
+      sourceUrl: SHARE_URL,
+      sourceByteSize: 256,
+      completeness: 'full',
+      warnings: [],
+      document: {
+        name: '兼容公开路线',
+        description: '<p><strong>总里程：</strong>9.6 km</p><p>来源：<a href="https://www.2bulu.com/track/old.htm">两步路公开分享轨迹</a></p>',
+        features: [{ id: 'line-one', type: 'LineString', coordinates: [[113.1, 23.1], [113.2, 23.2]] }],
+      },
+    },
+  })
+
+  const result = await coordinator.import(ACTOR, { url: SHARE_URL })
+
+  assert.equal((result.description.match(/两步路公开分享轨迹/g) || []).length, 1)
+  assert.match(result.description, /总里程[：:]<\/strong>9\.6 km/)
+  assert.match(result.description, /https:\/\/www\.2bulu\.com\/track\/track_detail\.htm\?trackId=/)
+  assert.doesNotMatch(result.description, /\/track\/old\.htm/)
 })
 
 test('浏览器助手还原结果为仅轨迹线时要求用户显式允许并回传完整性警告', async () => {

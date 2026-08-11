@@ -270,7 +270,9 @@ export function parseKmlText (value) {
   const withoutComments = text.replace(/<!--[\s\S]*?-->/g, '')
   const documentMatch = /<(?:[\w.-]+:)?Document\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?Document\s*>/i.exec(withoutComments)
   const documentSource = documentMatch?.[1] || withoutComments
-  const documentName = readXmlElement(documentSource.replace(/<(?:[\w.-]+:)?Placemark\b[\s\S]*$/i, ''), 'name')
+  const documentHeader = documentSource.replace(/<(?:[\w.-]+:)?Placemark\b[\s\S]*$/i, '')
+  const documentName = readXmlElement(documentHeader, 'name')
+  const documentDescription = sanitizeRichText(readXmlElement(documentHeader, 'description'), 10000)
   const features = []
   const placemarkPattern = /<(?:[\w.-]+:)?Placemark\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?Placemark\s*>/gi
   let match
@@ -305,11 +307,12 @@ export function parseKmlText (value) {
   }
   return {
     name: normalizeText(documentName || '导入的 KML', { minLength: 1, maxLength: 200 }),
+    description: documentDescription,
     features: normalizeKmlFeatures(features),
   }
 }
 
-export function generateKmlText (name, features) {
+export function generateKmlText (name, features, description = '') {
   const normalizedFeatures = normalizeKmlFeatures(features)
   const parts = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -317,6 +320,7 @@ export function generateKmlText (name, features) {
     '  <Document>',
     `    <name>${escapeXml(name)}</name>`,
   ]
+  if (description) parts.push(`    <description>${escapeXml(description)}</description>`)
   normalizedFeatures.forEach(feature => {
     parts.push('    <Placemark>')
     parts.push(`      <name>${escapeXml(feature.name)}</name>`)
@@ -1110,7 +1114,7 @@ export class UserContentService {
     const parsed = parseKmlText(text)
     return this.createKml(actor, {
       name: input.name || parsed.name || String(input.fileName || '').replace(/\.kml$/i, ''),
-      description: input.description || '',
+      description: input.description !== undefined ? input.description : parsed.description,
       features: parsed.features,
       sourceType: 'imported',
       coordCorrection: input.coordCorrection,
@@ -1128,7 +1132,7 @@ export class UserContentService {
     return {
       filename: `${document.name.replace(/[\\/:*?"<>|]/g, '_') || 'map'}.kml`,
       contentType: 'application/vnd.google-earth.kml+xml; charset=utf-8',
-      content: generateKmlText(document.name, document.features),
+      content: generateKmlText(document.name, document.features, document.description),
     }
   }
 
@@ -1979,7 +1983,7 @@ export class UserContentService {
     return {
       filename: `${document.name.replace(/[\\/:*?"<>|]/g, '_') || 'map'}.kml`,
       contentType: 'application/vnd.google-earth.kml+xml; charset=utf-8',
-      content: generateKmlText(document.name, document.features),
+      content: generateKmlText(document.name, document.features, document.description),
     }
   }
 

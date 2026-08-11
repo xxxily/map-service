@@ -1,7 +1,7 @@
 # 两步路授权浏览器助手与浏览器内导入需求
 
-> 状态：第四版已实现，待用户手工验收  
-> 更新时间：2026-08-10  
+> 状态：第四版已实现，0.3.6 增强已完成，待用户手工验收  
+> 更新时间：2026-08-11  
 > 关联文档：[两步路公开分享轨迹导入](./2bulu-public-track-import.md)、[用户体系、角色权限、个人空间与多 KML 分享](./user-system-rbac-and-multi-kml-sharing.md)、[用户体系 API](../api-user-system.md)、[两步路导入助手用户操作手册](../user-guides/two-bulu-import.md)
 
 ## 1. 背景与问题
@@ -100,7 +100,7 @@
 {"protocolVersion":1,"type":"PING","requestId":"probe-uuid","timestamp":1720000000000}
 
 // PONG
-{"protocolVersion":1,"type":"PONG","requestId":"probe-uuid","helperVersion":"0.3.4","capabilities":["2bulu-kml-import","2bulu-import-tab-lifecycle"]}
+{"protocolVersion":1,"type":"PONG","requestId":"probe-uuid","helperVersion":"0.3.6","capabilities":["2bulu-kml-import","2bulu-import-tab-lifecycle"]}
 ```
 
 导入请求只包含用户输入和业务选项：
@@ -124,7 +124,7 @@
   "protocolVersion": 1,
   "type": "IMPORT_RESULT",
   "requestId": "2bulu-uuid",
-  "helperVersion": "0.3.4",
+  "helperVersion": "0.3.6",
   "status": "success",
   "importSessionId": "import-uuid",
   "tabLifecycle": "created",
@@ -184,8 +184,8 @@
 读取按以下优先级执行：
 
 1. `document_start` 在页面主世界安装被动 Resource Timing 观察器，只记录固定轨迹/标注资源 URL，不改写 `fetch`/`XMLHttpRequest`，不读取请求头、Cookie、Token、请求体或响应正文，避免触发 SafeLine 的调试环境检测。
-2. 页面完成后注入 `two-bulu-page-export.js`，优先读取实际运行态：两步路当前页面的 `trackLngs`、`trackMarks[].pointMsg`、分离的经纬度数组、Leaflet/高德风格线点图层、页面脚本中的安全数组字面量，以及 Performance Resource 中页面实际访问过的固定数据 URL。`trackLngs`/原始轨迹响应是 GPS/WGS84 主数据源，必须优先于已经转换为底图坐标的折线图层，防止导入后再次执行 WGS84→GCJ-02 造成整条轨迹位移。
-3. 页面脚本在浏览器内直接生成标准 KML，并保留轨迹名称、海拔、标注文本和白名单公开媒体；仅使用地图线/点图层回退时，使用页面自己的 `changeMapCoordByMapType` 还原为 GPS 坐标。两步路图片标注的 `commnFileUrl` 作为唯一大图/主资源，`centerUrl`/`fileUrl` 作为该媒体项的缩略图；大图不可用时才将缩略图提升为主资源。同一标注不得把大图和缩略图解析成两个媒体项；视频封面仅作为 poster，不计为独立图片附件。可单独执行 `MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })` 下载并验证，不依赖 map-service 服务端。
+2. 页面完成后注入 `two-bulu-page-export.js`，优先读取实际运行态：两步路当前页面的 `trackLngs`、`trackMarks[].pointMsg`、分离的经纬度数组、Leaflet/高德风格线点图层、页面脚本中的安全数组字面量，以及 Performance Resource 中页面实际访问过的固定数据 URL。所有有效独立线段都会合并，按原始 GPS/WGS84 数据优先、地图图层补充的顺序去重；`trackLngs`/原始轨迹响应必须优先于已经转换为底图坐标的折线图层，防止导入后再次执行 WGS84→GCJ-02 造成整条轨迹位移。
+3. 页面脚本在浏览器内直接生成标准 KML，并保留轨迹名称、海拔、可信的用户标注名称和白名单公开媒体；图层标题、序号和系统 UI 文本不得写入点位名称，未命名点位的 `<name>` 为空。页面右侧“总里程”“运动耗时”“原作者”按语义标签和可见文本提取，缺少任一字段时保留其余字段；这些值以安全的 KML `Document.description` 信息介绍写入。仅使用地图线/点图层回退时，使用页面自己的 `changeMapCoordByMapType` 还原为 GPS 坐标。两步路图片标注的 `commnFileUrl` 作为唯一大图/主资源，`centerUrl`/`fileUrl` 作为该媒体项的缩略图；大图不可用时才将缩略图提升为主资源。同一标注不得把大图和缩略图解析成两个媒体项；视频封面仅作为 poster，不计为独立图片附件。导入创建的 KML 默认使用 `theme=simple`，仅显示点位图标，用户可在 KML 管理中切换主题。可单独执行 `MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })` 下载并验证，不依赖 map-service 服务端。
 4. 页面运行态暂未就绪时最多有限次等待重试，再从页面脚本或隐藏字段中提取 `trackId`、`trackStr`、`encryptTrackId` 和可选 `operationCode`；不执行页面脚本文本，不使用 `eval`。
 5. 兼容回退只访问固定轨迹路径 `/track/get_track_positions_list4.htm`、`/track/get_track_positions_list_new.htm`、`/track/get_track_positions_list.htm`，以及固定标注路径 `/track/get_track_marker_list_new.htm`、`/track/get_track_marker_list_2.htm`。媒体 URL 继续只接受 `down-files.2bulu.com` 的 `/f/d1`、`/f/dn1` 以及唯一非空 `downParams`。
 6. 如果标注数据不可用，`completeness=track-only`；只有用户选择 `partialPolicy=allow-track-only` 才生成并保存轨迹线，否则返回 `TWO_BULU_PARTIAL_REJECTED`。
@@ -233,7 +233,7 @@ Content-Type: application/json
 ```json
 {
   "protocolVersion": 1,
-  "helperVersion": "0.3.4",
+  "helperVersion": "0.3.6",
   "url": "https://www.2bulu.com/track/t-xxx.htm",
   "kmlText": "<?xml version=\"1.0\"?><kml>...</kml>",
   "sourceMode": "rendered-data",
@@ -317,8 +317,8 @@ Content-Type: application/json
 1. 运行网站开发服务，按扩展 README 加载 `extensions/two-bulu-helper`。
 2. 未授权当前 origin：打开 `/account#kml` 和地图 KML 面板，确认看不到“两步路导入”。
 3. 在扩展选项页授权当前 origin，刷新页面；登录并使用具备 `kml.own.write` 的账号，确认两个入口都出现。
-4. 粘贴示例分享 URL，确认扩展打开可见两步路标签页；若出现登录/验证码，手工完成后按页面结果卡片返回网站重试。已加载旧版扩展时先在 `chrome://extensions/` 点击“重新加载”，确认版本为 `0.3.4`；也可先执行 `await MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })` 验证页面脚本能单独生成 KML。
-5. 页面没有官方下载 KML 但地图已展示轨迹时，确认助手仍能生成 KML；账号中心出现轨迹线和标注点，线与点在底图上重合且不存在约数百米的整体坐标偏移；地图页可展开、定位、查看详情和预览白名单媒体，并自动适配范围。图片标注只出现一个媒体项：列表/轨道加载缩略图，点击后加载大图；原图不可用时才把缩略图作为主资源。
+4. 粘贴示例分享 URL，确认扩展打开可见两步路标签页；若出现登录/验证码，手工完成后按页面结果卡片返回网站重试。已加载旧版扩展时先在 `chrome://extensions/` 点击“重新加载”，确认版本为 `0.3.6`；也可先执行 `await MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })` 验证页面脚本能单独生成 KML。
+5. 页面没有官方下载 KML 但地图已展示轨迹时，确认助手仍能生成 KML；账号中心出现轨迹线和标注点，线与点在底图上重合且不存在约数百米的整体坐标偏移；导入文件介绍中能看到总里程、运动耗时和作者（页面缺少字段时不显示空行）；地图 KML 管理面板展开“KML 详情”后能看到同一介绍、要素总数和类型统计，并可继续定位、查看详情和预览白名单媒体；地图自动适配范围。图片标注只出现一个媒体项：列表/轨道加载缩略图，点击后加载大图；原图不可用时才把缩略图作为主资源。
 6. 模拟标注接口不可用：默认策略应拒绝；选择“允许仅导入公开轨迹线”后应成功并返回 `track-only` 警告。
 7. 正常导入成功后确认浏览器自动返回原 map-service 标签页，并关闭扩展创建/登记的未固定两步路临时页；将临时页固定、关闭原标签页或模拟保存失败时，确认不强制关页且两步路页面显示结果卡片及“返回 map-service”“关闭此页”操作。
 8. 关闭扩展或撤销 origin 授权并刷新，确认入口再次隐藏；普通本地 `.kml` 导入仍可用。

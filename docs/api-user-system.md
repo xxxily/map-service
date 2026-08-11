@@ -261,6 +261,8 @@ KML 写入模型：
 - 坐标统一为 WGS84 `[longitude, latitude]`；Polygon 外环会自动闭合。
 - `coordCorrection`：`none` 或 `wgs84-to-gcj02`。
 - `theme`：`default` 或 `simple`。
+- 两步路浏览器助手（`0.3.6`及以上）创建的 KML 默认写入 `theme=simple`，仅显示点位图标；这是导入初始显示策略，用户仍可通过 KML 更新接口切换为 `default`。
+- `description` 保存 KML 文档级信息介绍；两步路助手会将分享页可确认的总里程、运动耗时和原作者写入其中，服务端解析后再追加规范化来源链接并执行富文本清洗。
 - 更新可携带当前 `revision`；版本不一致返回 `409 KML_REVISION_CONFLICT`，不会静默覆盖。
 - 每个用户始终有一个受保护的默认 KML；默认文件不能直接移入回收站或永久删除。
 
@@ -335,7 +337,7 @@ KML 写入模型：
 }
 ```
 
-导入当前支持标准 `.kml` 的 Point、LineString、Polygon，并拒绝 DOCTYPE/ENTITY。暂不支持 KMZ、MultiGeometry 和完整 KML 样式体系。
+导入当前支持标准 `.kml` 的 Point、LineString、Polygon，并读取 KML `Document` 级 `name` 与经清洗的 `description`；请求未显式覆盖介绍时沿用文件介绍，后续服务端或地图端导出会继续写回。接口拒绝 DOCTYPE/ENTITY，暂不支持 KMZ、MultiGeometry 和完整 KML 样式体系。
 
 ### 3.2 KML 点位第三方分享链接解析
 
@@ -472,7 +474,7 @@ Content-Type: application/json
 ```json
 {
   "protocolVersion": 1,
-  "helperVersion": "0.3.4",
+  "helperVersion": "0.3.6",
   "url": "https://www.2bulu.com/track/t-OavTTmw9VMzp%252FR2KBg5Tzw%253D%253D.htm",
   "kmlText": "<?xml version=\"1.0\"?><kml xmlns=\"http://www.opengis.net/kml/2.2\">...</kml>",
   "sourceMode": "rendered-data",
@@ -493,7 +495,8 @@ Content-Type: application/json
 - `sourceMode` 为 `official-kml` 或 `rendered-data`；`completeness` 为 `full` 或 `track-only`；`warnings` 最多 10 项、每项最多 300 字符。0.3.x 助手会提交这些字段，服务端执行枚举和长度规范化；兼容旧版助手时省略字段分别按 `official-kml`、`full` 和空数组处理。
 - `coordCorrection`、`partialPolicy`、`requestId` 与 3.3 相同；当 `completeness=track-only` 时必须同时提交 `partialPolicy=allow-track-only`，否则返回 `422 TWO_BULU_PARTIAL_REJECTED`。浏览器助手在页面已展示轨迹但标注接口不可用时才会产生 `track-only`。
 
-浏览器助手 `0.3.4` 在扩展内部增加 `importSessionId` 和二阶段 `COMPLETE_2BULU_IMPORT` 标签页确认，但这两个字段不属于本 HTTP API，也不得提交给服务端。前端只在本接口明确保存成功后通知扩展：扩展校验原发起标签页后激活 map-service，并安全关闭自己管理的未固定两步路临时页；保存失败或无法自动关闭时由两步路页面结果卡片提供手动返回/关闭操作。
+浏览器助手 `0.3.4+` 在扩展内部使用 `importSessionId` 和二阶段 `COMPLETE_2BULU_IMPORT` 标签页确认；`0.3.5` 支持多线段合并、重复图层去重和可信点位名称；`0.3.6` 增加分享页总里程、运动耗时、原作者提取，并将其写入 KML 文档级 `description`。这些字段和显示策略不属于本 HTTP API；`importSessionId` 也不得提交给服务端。前端只在本接口明确保存成功后通知扩展：扩展校验原发起标签页后激活 map-service，并安全关闭自己管理的未固定两步路临时页；保存失败或无法自动关闭时由两步路页面结果卡片提供手动返回/关闭操作。
+
 - 相同用户、规范化轨迹和 `requestId` 重放时返回原文档，`importSummary.completeness=existing`，不会再次创建文件或占用配额。
 
 成功响应：
@@ -504,6 +507,8 @@ Content-Type: application/json
   "result": {
     "id": "kml_xxx",
     "name": "两步路公开轨迹",
+    "description": "<p><strong>总里程：</strong>12.34 km</p><p><strong>运动耗时：</strong>06:05:04</p><p><strong>作者：</strong>山友阿明</p><p>来源：<a href=\"https://www.2bulu.com/track/track_detail.htm?trackId=xxx\">两步路公开分享轨迹</a></p>",
+    "theme": "simple",
     "featureCount": 3,
     "revision": 1,
     "features": [],
@@ -513,7 +518,7 @@ Content-Type: application/json
       "completeness": "full",
       "warnings": [],
       "idempotent": false,
-      "helperVersion": "0.3.4",
+      "helperVersion": "0.3.6",
       "sourceMode": "rendered-data"
     }
   }

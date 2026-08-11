@@ -10,6 +10,7 @@ import {
   shareAccessPolicyLabel,
   shareStatusLabel,
 } from './model.js'
+import { getFeatureDescriptionText } from '../../shared/kml-content.js'
 
 const TAB_ITEMS = [
   ['profile', '个人资料'],
@@ -147,7 +148,7 @@ function renderKmlRows (state) {
         <span class="account-file-mark" style="--file-color:${escapeHtml(item.color || '#0f766e')}">KML</span>
         <div class="account-row-main">
           <div class="account-row-title"><strong>${escapeHtml(item.name)}</strong>${item.isDefault ? '<span class="account-badge">默认</span>' : ''}<span class="account-badge is-muted">${kmlStatusLabel(item.status)}</span>${item.enabled === false ? '<span class="account-badge is-muted">已禁用</span>' : ''}</div>
-          <p>${escapeHtml(item.description || '暂无描述')}</p>
+          <p>${escapeHtml(getFeatureDescriptionText(item.description) || '暂无描述')}</p>
           <div class="account-row-meta"><span>${Number(item.featureCount || 0).toLocaleString()} 个要素</span><span>${formatBytes(item.byteSize)}</span><span>${Number(item.shareReferenceCount || 0)} 个分享引用</span><span>${formatDateTime(item.updatedAt)}</span></div>
         </div>
         <div class="account-row-actions">

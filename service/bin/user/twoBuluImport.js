@@ -249,20 +249,53 @@ function coordinateFromPoint (value) {
 }
 
 function findTrackSegments (payload) {
-  const candidates = [
-    payload?.trackPositions,
-    payload?.positions,
-    payload?.data?.trackPositions,
-    payload?.data?.positions,
-    payload?.data,
-    payload,
-  ]
-  for (const candidate of candidates) {
-    if (!Array.isArray(candidate) || candidate.length === 0) continue
+  const queue = [{ value: payload, depth: 0 }]
+  const preferredKeys = ['trackPositions', 'positions', 'trackPoints', 'points', 'path', 'coordinates', 'segments', 'routes', 'list', 'items', 'data', 'result', 'payload']
+  const seen = new Set()
+  const segmentKeys = new Set()
+  const result = []
+  let scanned = 0
+  const toSegments = candidate => {
+    if (!Array.isArray(candidate) || candidate.length === 0) return []
     if (coordinateFromPoint(candidate[0])) return [candidate]
-    if (Array.isArray(candidate[0])) return candidate
+    if (Array.isArray(candidate[0]) && coordinateFromPoint(candidate[0][0])) {
+      return candidate.filter(segment => Array.isArray(segment) && segment.length > 0 && coordinateFromPoint(segment[0]))
+    }
+    return []
   }
-  return []
+  const segmentKey = segment => {
+    const coordinates = segment.map(coordinateFromPoint).filter(Boolean).map(point => point.join(','))
+    const forward = coordinates.join(';')
+    const reverse = [...coordinates].reverse().join(';')
+    return forward < reverse ? forward : reverse
+  }
+  while (queue.length && scanned++ < 5000) {
+    const current = queue.shift()
+    const value = current.value
+    if (!value || (typeof value !== 'object' && !Array.isArray(value)) || seen.has(value)) continue
+    seen.add(value)
+    const directSegments = toSegments(value)
+    directSegments.forEach(segment => {
+      const key = segmentKey(segment)
+      if (key && !segmentKeys.has(key)) {
+        segmentKeys.add(key)
+        result.push(segment)
+      }
+    })
+    if (directSegments.length || current.depth >= 6) continue
+    if (Array.isArray(value)) {
+      value.slice(0, 2000).forEach(item => queue.push({ value: item, depth: current.depth + 1 }))
+      continue
+    }
+    const discoveredKeys = Object.keys(value).filter(key =>
+      !/(?:marker|mark|media|photo|image|video|audio)/i.test(key) &&
+      /(?:track|route|path|line|coord|position|point|segment|list|item|data|result|payload)/i.test(key))
+    const keys = [...new Set([...preferredKeys, ...discoveredKeys])]
+    keys.slice(0, 200).forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(value, key)) queue.push({ value: value[key], depth: current.depth + 1 })
+    })
+  }
+  return result
 }
 
 function findMarkerList (payload) {
@@ -293,7 +326,14 @@ function markerFeature (marker, index, baseUrl) {
   if (!coordinates) return null
   const params = marker.params && typeof marker.params === 'object' ? marker.params : {}
   const media = { ...marker, ...params }
-  const text = decodeHtmlText(media.text ?? media.name ?? media.title ?? '')
+  const isGeneratedMarkerName = value => {
+    const normalized = decodeHtmlText(value).trim()
+    return !normalized || /^(?:两步路)?(?:标注点|轨迹点|路线点|途经点|兴趣点|marker|mark|point|poi)\s*\d*$/iu.test(normalized) ||
+      /^未(?:命名|标题)(?:点位|标注)?$/iu.test(normalized)
+  }
+  const textCandidates = [media.userName, media.customName, media.pointName, media.markerName, media.name, media.text, media.title]
+  const text = textCandidates.map(decodeHtmlText).find(value => !isGeneratedMarkerName(value)) || ''
+  const descriptionText = decodeHtmlText(media.descriptionText ?? media.description ?? media.text ?? media.name ?? '')
   const fileType = Number(media.fileType)
   const mediaType = fileType === 0 ? 'image' : fileType === 1 ? 'audio' : fileType === 2 ? 'video' : 'link'
   // 两步路同一标注会同时返回预览图 centerUrl/fileUrl 和大图/原资源
@@ -332,8 +372,8 @@ function markerFeature (marker, index, baseUrl) {
   return {
     id: `2bulu-marker-${index + 1}`,
     type: 'Point',
-    name: text.slice(0, 200) || `两步路标注点 ${index + 1}`,
-    description: [text ? `<p>${escapeHtml(text)}</p>` : '', mediaHtml].filter(Boolean).join('\n'),
+    name: text.slice(0, 200),
+    description: [descriptionText ? `<p>${escapeHtml(descriptionText.slice(0, 2000))}</p>` : '', mediaHtml].filter(Boolean).join('\n'),
     coordinates,
     ...(mediaUrls.length ? { styleUrl: `#2bulu-${mediaType}` } : {}),
   }

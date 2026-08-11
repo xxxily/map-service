@@ -184,7 +184,7 @@ test('扩展完成回传后激活原页面并仅关闭受管临时标签页', as
     },
     permissions: { contains: async () => true },
     runtime: {
-      getManifest: () => ({ version: '0.3.4' }),
+      getManifest: () => ({ version: '0.3.6' }),
       onMessage: { addListener: listener => listeners.messages.push(listener) },
       onInstalled: { addListener: () => {} },
       onStartup: { addListener: () => {} },
@@ -408,7 +408,7 @@ test('助手探测消息和 Manifest 固定协议能力且不声明任意两步�
     'service-worker.js',
   ].map(file => fs.readFileSync(path.join(extensionDir, file), 'utf8')).join('\n')
   assert.equal(manifest.manifest_version, 3)
-  assert.equal(manifest.version, '0.3.4')
+  assert.equal(manifest.version, '0.3.6')
   const twoBuluScripts = manifest.content_scripts.find(item => item.matches.includes('https://www.2bulu.com/*'))?.js
   assert.deepEqual(twoBuluScripts, ['two-bulu-page-hook.js'])
   const pageExportScripts = manifest.content_scripts.find(item => item.world === 'MAIN' && item.run_at === 'document_idle')
@@ -470,8 +470,75 @@ test('浏览器助手可将页面轨迹数组、标注点和安全媒体还原�
   const parsed = parseKmlText(result.kmlText)
   assert.equal(parsed.name, '页面展示路线')
   assert.deepEqual(parsed.features.map(item => item.type), ['LineString', 'LineString', 'Point'])
+  assert.match(parsed.features.at(-1).name, /营地 & 水源$/)
   assert.match(parsed.features.at(-1).description, /<img/)
   assert.match(parsed.features.at(-1).description, /营地 &amp; 水源|营地 & 水源/)
+})
+
+test('轨迹解析器会合并嵌套对象中的全部独立线段并去重', () => {
+  const api = loadTwoBuluDataApi()
+  const first = [{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }]
+  const second = [{ lng: 114.1, lat: 24.1 }, { lng: 114.2, lat: 24.2 }]
+  const segments = api.findTrackSegments({
+    data: {
+      routes: [
+        { trackPositions: first },
+        { positions: second },
+        { path: [...first].reverse() },
+      ],
+    },
+  })
+
+  assert.equal(segments.length, 2)
+  assert.deepEqual(Array.from(segments[0], point => [point.lng, point.lat]), [[113.1, 23.1], [113.2, 23.2]])
+  assert.deepEqual(Array.from(segments[1], point => [point.lng, point.lat]), [[114.1, 24.1], [114.2, 24.2]])
+})
+
+test('浏览器转换不会为无名标注生成自动点位名称', () => {
+  const api = loadTwoBuluDataApi()
+  const result = api.convertTwoBuluRenderedData({
+    title: '无名标注路线',
+    sourceUrl: 'https://www.2bulu.com/track/track_detail.htm?trackId=abc',
+    partialPolicy: 'reject',
+    positionsPayload: {
+      trackPositions: [[{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }]],
+    },
+    markersPayload: {
+      markers: [{
+        longitude: 113.15,
+        latitude: 23.15,
+        fileType: 0,
+        centerUrl: 'https://down-files.2bulu.com/f/d1?downParams=unnamed-preview',
+      }],
+    },
+  })
+
+  const point = parseKmlText(result.kmlText).features.find(feature => feature.type === 'Point')
+  assert.equal(point.name, '')
+  assert.doesNotMatch(result.kmlText, /两步路标注点/)
+  assert.match(point.description, /downParams=unnamed-preview/)
+})
+
+test('浏览器转换过滤自动标注名但保留明确用户名称', () => {
+  const api = loadTwoBuluDataApi()
+  const result = api.convertTwoBuluRenderedData({
+    title: '点位名称路线',
+    sourceUrl: 'https://www.2bulu.com/track/track_detail.htm?trackId=abc',
+    partialPolicy: 'reject',
+    positionsPayload: {
+      trackPositions: [[{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }]],
+    },
+    markersPayload: {
+      markers: [
+        { longitude: 113.15, latitude: 23.15, text: '两步路标注点 30' },
+        { longitude: 113.16, latitude: 23.16, text: '用户命名营地' },
+      ],
+    },
+  })
+
+  const points = parseKmlText(result.kmlText).features.filter(feature => feature.type === 'Point')
+  assert.deepEqual(points.map(point => point.name), ['', '用户命名营地'])
+  assert.doesNotMatch(result.kmlText, /<name>两步路标注点 30<\/name>/)
 })
 
 test('页面仅能读取轨迹线时遵循用户选择并限制坐标数量', () => {
@@ -529,6 +596,10 @@ test('页面导出脚本可从 Leaflet 风格图层提取轨迹和标注媒体',
   }
   const marker = {
     getLatLng: () => ({ lat: 23.15, lng: 113.15 }),
+    pointMsg: {
+      latLng: { lat: 23.15, lng: 113.15 },
+      text: '营地',
+    },
     getPopup: () => ({ getContent: () => '<p>营地</p><img src="https://down-files.2bulu.com/f/dn1?downParams=public" />' }),
   }
   const api = loadTwoBuluPageExportApi({
@@ -541,6 +612,82 @@ test('页面导出脚本可从 Leaflet 风格图层提取轨迹和标注媒体',
   assert.equal(result.completeness, 'full')
   assert.match(result.kmlText, /downParams=public/)
   assert.match(result.kmlText, /营地/)
+})
+
+test('页面导出脚本会合并多个独立地图线图层', async () => {
+  const firstLine = {
+    getPath: () => [
+      { lng: 113.1, lat: 23.1 },
+      { lng: 113.2, lat: 23.2 },
+    ],
+  }
+  const secondLine = {
+    getPath: () => [
+      { lng: 114.1, lat: 24.1 },
+      { lng: 114.2, lat: 24.2 },
+    ],
+  }
+  const api = loadTwoBuluPageExportApi({
+    globals: {
+      mapInstance: { getAllOverlays: () => [firstLine, secondLine] },
+    },
+  })
+
+  const result = await api.collect({ partialPolicy: 'allow-track-only' })
+  const lines = parseKmlText(result.kmlText).features.filter(feature => feature.type === 'LineString')
+  assert.equal(result.status, 'success')
+  assert.equal(lines.length, 2)
+  assert.deepEqual(lines.map(line => line.coordinates), [
+    [[113.1, 23.1], [113.2, 23.2]],
+    [[114.1, 24.1], [114.2, 24.2]],
+  ])
+})
+
+test('页面导出脚本会合并分散在多个运行态变量中的独立原始线段', async () => {
+  const api = loadTwoBuluPageExportApi({
+    globals: {
+      trackPositions: [{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }],
+      routeData: { positions: [{ lng: 114.1, lat: 24.1 }, { lng: 114.2, lat: 24.2 }] },
+    },
+  })
+
+  const result = await api.collect({ partialPolicy: 'allow-track-only' })
+  const lines = parseKmlText(result.kmlText).features.filter(feature => feature.type === 'LineString')
+  assert.equal(lines.length, 2)
+  assert.deepEqual(lines.map(line => line.coordinates), [
+    [[113.1, 23.1], [113.2, 23.2]],
+    [[114.1, 24.1], [114.2, 24.2]],
+  ])
+})
+
+test('页面导出脚本优先保留原始 GPS 线并补充地图中的独立线段', async () => {
+  const renderedDuplicate = {
+    getPath: () => [
+      { lng: 113.106, lat: 23.106 },
+      { lng: 113.206, lat: 23.206 },
+    ],
+  }
+  const renderedAdditional = {
+    getPath: () => [
+      { lng: 114.106, lat: 24.106 },
+      { lng: 114.206, lat: 24.206 },
+    ],
+  }
+  const api = loadTwoBuluPageExportApi({
+    globals: {
+      trackLngs: [{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }],
+      mapInstance: { getAllOverlays: () => [renderedDuplicate, renderedAdditional] },
+      changeMapCoordByMapType: (lng, lat) => ({ lng: lng - 0.006, lat: lat - 0.006 }),
+    },
+  })
+
+  const result = await api.collect({ partialPolicy: 'allow-track-only' })
+  const lines = parseKmlText(result.kmlText).features.filter(feature => feature.type === 'LineString')
+  assert.equal(lines.length, 2)
+  assert.deepEqual(lines.map(line => line.coordinates), [
+    [[113.1, 23.1], [113.2, 23.2]],
+    [[114.1, 24.1], [114.2, 24.2]],
+  ])
 })
 
 test('页面只有地图折线回退时会先反算底图坐标再生成 GPS KML', async () => {
@@ -562,7 +709,7 @@ test('页面只有地图折线回退时会先反算底图坐标再生成 GPS KML
   assert.doesNotMatch(result.kmlText, /113\.106,23\.106/)
 })
 
-test('页面导出脚本兼容高德地图风格的路径和标注对象', async () => {
+test('页面导出脚本兼容高德地图风格路径且不会把图层标题当成用户点位名称', async () => {
   const line = {
     getPath: () => [
       { getLng: () => 113.1, getLat: () => 23.1 },
@@ -581,7 +728,9 @@ test('页面导出脚本兼容高德地图风格的路径和标注对象', async
   const result = await api.collect({ partialPolicy: 'reject' })
   assert.equal(result.status, 'success')
   assert.equal(result.completeness, 'full')
-  assert.match(result.kmlText, /观景点/)
+  const point = parseKmlText(result.kmlText).features.find(feature => feature.type === 'Point')
+  assert.equal(point.name, '')
+  assert.doesNotMatch(result.kmlText, /观景点/)
 })
 
 test('页面导出脚本按两步路实际运行态还原标题、标注媒体和 GPS 坐标，且不重复请求数据接口', async () => {
@@ -643,6 +792,90 @@ test('页面导出脚本按两步路实际运行态还原标题、标注媒体�
   assert.match(result.kmlText, /113\.1,23\.1,12 113\.2,23\.2,18/)
   assert.doesNotMatch(result.kmlText, /113\.106,23\.106/)
   assert.match(result.kmlText, /113\.15,23\.15,0/)
+})
+
+test('页面导出脚本读取总里程、运动耗时和原作者并写入 KML 文档介绍', async () => {
+  const api = loadTwoBuluPageExportApi({
+    document: {
+      title: '带统计信息的路线 - 两步路',
+      body: {
+        innerText: [
+          '下载',
+          '山友阿明<img src=x onerror=alert(1)>',
+          '原作者',
+          '基本信息',
+          '12.34 km总里程',
+          '06:05:04 运动耗时',
+        ].join('\n'),
+      },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      scripts: [],
+      documentElement: { localName: 'html', innerText: '' },
+    },
+    globals: {
+      trackLngs: [{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }],
+    },
+  })
+
+  const result = await api.collect({ partialPolicy: 'allow-track-only' })
+  const parsed = parseKmlText(result.kmlText)
+
+  assert.equal(result.status, 'success')
+  assert.equal(result.metadata.distance, '12.34 km')
+  assert.equal(result.metadata.duration, '06:05:04')
+  assert.equal(result.metadata.author, '山友阿明')
+  assert.match(parsed.description, /总里程[：:]<\/strong>12\.34 km/)
+  assert.match(parsed.description, /运动耗时[：:]<\/strong>06:05:04/)
+  assert.match(parsed.description, /作者[：:]<\/strong>山友阿明/)
+  assert.doesNotMatch(parsed.description, /script|onerror|alert\(1\)/i)
+})
+
+test('页面统计信息缺少部分字段时仍保留可确认的 KML 文档介绍', async () => {
+  const api = loadTwoBuluPageExportApi({
+    document: {
+      title: '只有里程的路线 - 两步路',
+      body: { innerText: '基本信息\n8.5 公里 总里程\n标注点' },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      scripts: [],
+      documentElement: { localName: 'html', innerText: '' },
+    },
+    globals: {
+      trackLngs: [{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }],
+    },
+  })
+
+  const result = await api.collect({ partialPolicy: 'allow-track-only' })
+  const parsed = parseKmlText(result.kmlText)
+
+  assert.equal(result.metadata.distance, '8.5 km')
+  assert.equal(result.metadata.duration, '')
+  assert.equal(result.metadata.author, '')
+  assert.match(parsed.description, /总里程[：:]<\/strong>8\.5 km/)
+  assert.doesNotMatch(parsed.description, /运动耗时|作者[：:]/)
+})
+
+test('页面统计数值和标签分行时仍能读取里程与耗时', async () => {
+  const api = loadTwoBuluPageExportApi({
+    document: {
+      title: '分行统计信息路线 - 两步路',
+      body: { innerText: '山友小林\n原作者\n12.8 km\n总里程\n07:08:09\n运动耗时' },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      scripts: [],
+      documentElement: { localName: 'html', innerText: '' },
+    },
+    globals: {
+      trackLngs: [{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }],
+    },
+  })
+
+  const result = await api.collect({ partialPolicy: 'allow-track-only' })
+
+  assert.equal(result.metadata.distance, '12.8 km')
+  assert.equal(result.metadata.duration, '07:08:09')
+  assert.equal(result.metadata.author, '山友小林')
 })
 
 test('页面导出脚本读取性能资源中的实际轨迹响应，不依赖固定 trackId 变量', async () => {

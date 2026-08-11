@@ -1,4 +1,12 @@
-export function parseKML (kmlText) {
+function findDirectChild (element, tagName) {
+  const normalizedTagName = String(tagName || '').toLowerCase()
+  return [...(element?.children || [])].find(child => {
+    const name = String(child?.localName || child?.tagName || '').split(':').pop().toLowerCase()
+    return name === normalizedTagName
+  }) || null
+}
+
+export function parseKmlDocument (kmlText) {
   const parser = new DOMParser()
   const xmlDoc = parser.parseFromString(kmlText, 'text/xml')
 
@@ -9,6 +17,9 @@ export function parseKML (kmlText) {
 
   const placemarks = xmlDoc.getElementsByTagName('Placemark')
   const features = []
+  const documentNode = xmlDoc.getElementsByTagName('Document')[0]
+  const documentNameNode = findDirectChild(documentNode, 'name')
+  const documentDescriptionNode = findDirectChild(documentNode, 'description')
 
   for (let i = 0; i < placemarks.length; i++) {
     const placemark = placemarks[i]
@@ -54,7 +65,15 @@ export function parseKML (kmlText) {
     }
   }
 
-  return features
+  return {
+    name: documentNameNode?.textContent.trim() || '',
+    description: documentDescriptionNode ? getDescriptionContent(documentDescriptionNode) : '',
+    features,
+  }
+}
+
+export function parseKML (kmlText) {
+  return parseKmlDocument(kmlText).features
 }
 
 function getDescriptionContent (descriptionNode) {
@@ -81,7 +100,7 @@ function parseCoords (coordText) {
     .filter(coord => !isNaN(coord[0]) && !isNaN(coord[1]))
 }
 
-export function generateKmlText (kmlName, features) {
+export function generateKmlText (kmlName, features, description = '') {
   const escapeXml = (unsafe) => {
     return String(unsafe ?? '')
       .replace(/&/g, '&amp;')
@@ -96,6 +115,7 @@ export function generateKmlText (kmlName, features) {
   xmlParts.push('<kml xmlns="http://www.opengis.net/kml/2.2">')
   xmlParts.push('  <Document>')
   xmlParts.push(`    <name>${escapeXml(kmlName)}</name>`)
+  if (description) xmlParts.push(`    <description>${escapeXml(description)}</description>`)
 
   for (const feat of features) {
     xmlParts.push('    <Placemark>')

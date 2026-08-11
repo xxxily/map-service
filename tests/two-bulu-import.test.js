@@ -148,6 +148,27 @@ test('服务端兼容转换读取 pointMsg.params 中的图片主资源', () => 
   assert.equal((description.match(/<img\b/g) || []).length, 1)
 })
 
+test('服务端兼容转换保留用户命名并让无名标注保持空名称', () => {
+  const converted = convertTwoBuluPublicData({
+    data: {
+      routes: [
+        { positions: [{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }] },
+        { positions: [{ lng: 114.1, lat: 24.1 }, { lng: 114.2, lat: 24.2 }] },
+      ],
+    },
+  }, {
+    sourceUrl: 'https://www.2bulu.com/track/track_detail.htm?trackId=abc',
+    markersPayload: [
+      { longitude: 113.15, latitude: 23.15, text: '两步路标注点 30' },
+      { longitude: 114.15, latitude: 24.15, text: '用户命名营地' },
+    ],
+  })
+
+  assert.equal(converted.features.filter(feature => feature.type === 'LineString').length, 2)
+  assert.equal(converted.features.at(-2).name, '')
+  assert.equal(converted.features.at(-1).name, '用户命名营地')
+})
+
 test('公开标注媒体只保留固定两步路端点且不传播敏感查询参数', () => {
   const converted = convertTwoBuluPublicData({
     trackPositions: [[{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }]],

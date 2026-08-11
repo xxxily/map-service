@@ -104,36 +104,69 @@
   function toSegments (candidate) {
     if (!Array.isArray(candidate) || candidate.length === 0) return []
     if (coordinateFromPoint(candidate[0])) return [candidate]
-    if (Array.isArray(candidate[0]) && coordinateFromPoint(candidate[0][0])) return candidate
+    if (Array.isArray(candidate[0]) && coordinateFromPoint(candidate[0][0])) {
+      return candidate.filter(segment => Array.isArray(segment) && segment.length > 0 && coordinateFromPoint(segment[0]))
+    }
     return []
+  }
+
+  function segmentKey (segment) {
+    const coordinates = (Array.isArray(segment) ? segment : [])
+      .map(coordinateFromPoint)
+      .filter(Boolean)
+      .map(point => point.coordinates.map(value => Number(value).toFixed(7)).join(','))
+    if (!coordinates.length) return ''
+    const forward = coordinates.join(';')
+    const reverse = [...coordinates].reverse().join(';')
+    return forward < reverse ? forward : reverse
   }
 
   function findTrackSegments (payload) {
     const queue = [{ value: payload, depth: 0 }]
-    const preferredKeys = ['trackPositions', 'positions', 'trackPoints', 'points', 'path', 'coordinates', 'list']
+    const preferredKeys = ['trackPositions', 'positions', 'trackPoints', 'points', 'path', 'coordinates', 'segments', 'routes', 'list', 'items', 'data', 'result', 'payload']
     const seen = new Set()
+    const segmentKeys = new Set()
+    const result = []
+    let scanned = 0
     while (queue.length) {
       const current = queue.shift()
       const value = current.value
       if (!value || (typeof value !== 'object' && !Array.isArray(value))) continue
+      if (++scanned > 5000) break
       if (seen.has(value)) continue
       seen.add(value)
-      const segments = toSegments(value)
-      if (segments.length) return segments
-      if (current.depth >= 4) continue
+      const directSegments = toSegments(value)
+      directSegments.forEach(segment => {
+        const key = segmentKey(segment)
+        if (!key || segmentKeys.has(key)) return
+        segmentKeys.add(key)
+        result.push(segment)
+      })
+      if (directSegments.length || current.depth >= 6 || coordinateFromPoint(value)) continue
 
       if (Array.isArray(value)) {
-        value.slice(0, 12).forEach(item => queue.push({ value: item, depth: current.depth + 1 }))
+        value.slice(0, 2000).forEach(item => queue.push({ value: item, depth: current.depth + 1 }))
         continue
       }
-      preferredKeys.forEach(key => {
+      const discoveredKeys = safeReadObjectKeys(value).filter(key =>
+        !/(?:marker|mark|media|photo|image|video|audio)/i.test(key) &&
+        /(?:track|route|path|line|coord|position|point|segment|list|item|data|result|payload)/i.test(key))
+      const keys = [...new Set([...preferredKeys, ...discoveredKeys])]
+      keys.slice(0, 200).forEach(key => {
         if (Object.prototype.hasOwnProperty.call(value, key)) {
-          queue.push({ value: value[key], depth: current.depth + 1 })
+          queue.push({ value: safeReadProperty(value, key), depth: current.depth + 1 })
         }
       })
-      unwrap(value).forEach(item => queue.push({ value: item, depth: current.depth + 1 }))
     }
-    return []
+    return result
+  }
+
+  function safeReadObjectKeys (value) {
+    try { return Object.keys(value) } catch { return [] }
+  }
+
+  function safeReadProperty (value, key) {
+    try { return value[key] } catch { return undefined }
   }
 
   function findMarkerList (payload) {
@@ -273,14 +306,45 @@
     return 'link'
   }
 
+  const USER_NAME_KEYS = Object.freeze([
+    'userName',
+    'customName',
+    'pointName',
+    'markerName',
+    'name',
+    'text',
+    'title',
+  ])
+
+  function isGeneratedMarkerName (value) {
+    const normalized = decodeHtmlText(value).trim()
+    if (!normalized) return true
+    return /^(?:两步路)?(?:标注点|轨迹点|路线点|途经点|兴趣点|marker|mark|point|poi)\s*\d*$/iu.test(normalized) ||
+      /^未(?:命名|标题)(?:点位|标注)?$/iu.test(normalized)
+  }
+
+  function getMarkerUserName (marker) {
+    if (!marker || typeof marker !== 'object') return ''
+    const params = marker.params && typeof marker.params === 'object' ? marker.params : null
+    const sources = [marker, params].filter(Boolean)
+    for (const source of sources) {
+      for (const key of USER_NAME_KEYS) {
+        const value = decodeHtmlText(source[key])
+        if (value && !isGeneratedMarkerName(value)) return value.slice(0, 2000)
+      }
+    }
+    return ''
+  }
+
   function markerFeature (marker, index, baseUrl) {
     const point = coordinateFromPoint(marker)
     if (!point) return null
     const params = marker?.params && typeof marker.params === 'object' ? marker.params : {}
-    const text = decodeHtmlText(marker?.text ?? marker?.name ?? marker?.title ?? params.text ?? params.name ?? params.title ?? '').slice(0, 2000)
+    const text = getMarkerUserName(marker)
+    const descriptionText = decodeHtmlText(marker?.descriptionText ?? marker?.description ?? marker?.text ?? marker?.name ?? params.text ?? params.name ?? '')
     const mediaItems = markerMedia(marker, baseUrl)
     const description = []
-    if (text) description.push(`<p>${escapeXml(text)}</p>`)
+    if (descriptionText) description.push(`<p>${escapeXml(descriptionText.slice(0, 2000))}</p>`)
     mediaItems.forEach(item => {
       const safeUrl = escapeXml(item.url)
       if (item.type === 'image') {
@@ -298,7 +362,7 @@
     })
     return {
       type: 'Point',
-      name: text || `两步路标注点 ${index + 1}`,
+      name: text,
       description: description.join('\n'),
       coordinates: point.coordinates,
       altitude: point.altitude,
@@ -310,13 +374,43 @@
     return `${point.coordinates[0]},${point.coordinates[1]},${altitude}`
   }
 
-  function generateKml (name, features) {
+  function normalizeTrackMetadata (value = {}) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+    const distanceText = decodeHtmlText(source.distance).slice(0, 40)
+    const durationText = decodeHtmlText(source.duration).slice(0, 40)
+    const authorText = decodeHtmlText(source.author).slice(0, 80)
+    const distanceMatch = /^(\d{1,5}(?:\.\d{1,3})?)\s*(?:km|公里|千米)$/i.exec(distanceText)
+    const distanceNumber = Number(distanceMatch?.[1])
+    const distance = Number.isFinite(distanceNumber) && distanceNumber >= 0 && distanceNumber <= 100000
+      ? `${distanceNumber.toFixed(3).replace(/\.?0+$/, '')} km`
+      : ''
+    const duration = /^\d{1,3}:[0-5]\d:[0-5]\d$/.test(durationText) || /^[0-5]?\d:[0-5]\d$/.test(durationText)
+      ? durationText
+      : ''
+    const author = authorText && !/https?:\/\/|(?:总里程|运动耗时|原作者|轨迹作者)/i.test(authorText)
+      ? authorText
+      : ''
+    return { distance, duration, author }
+  }
+
+  function buildDocumentDescription (metadata = {}) {
+    const normalized = normalizeTrackMetadata(metadata)
+    const rows = [
+      ['总里程', normalized.distance],
+      ['运动耗时', normalized.duration],
+      ['作者', normalized.author],
+    ].filter(([, value]) => Boolean(value))
+    return rows.map(([label, value]) => `<p><strong>${label}：</strong>${escapeXml(value)}</p>`).join('\n')
+  }
+
+  function generateKml (name, features, description = '') {
     const parts = [
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<kml xmlns="http://www.opengis.net/kml/2.2">',
       '  <Document>',
       `    <name>${escapeXml(name)}</name>`,
     ]
+    if (description) parts.push(`    <description>${escapeXml(description)}</description>`)
     features.forEach(feature => {
       parts.push('    <Placemark>')
       parts.push(`      <name>${escapeXml(feature.name)}</name>`)
@@ -404,7 +498,8 @@
     const warnings = []
     if (invalidPointCount) warnings.push(`已忽略 ${invalidPointCount} 个无效坐标或标注点`)
     if (!markerResult.found) warnings.push('两步路页面未提供可读取的标注点或媒体，本次仅导入轨迹线')
-    const kmlText = generateKml(title, features)
+    const metadata = normalizeTrackMetadata(options.metadata)
+    const kmlText = generateKml(title, features, buildDocumentDescription(metadata))
     if (utf8Bytes(kmlText) > MAX_KML_BYTES) throw dataError('生成的 KML 超过 10 MiB 导入限制', 'FILE_TOO_LARGE')
     return {
       status: 'success',
@@ -413,6 +508,7 @@
       warnings,
       pointCount,
       name: title,
+      metadata,
       kmlText,
     }
   }
@@ -424,6 +520,9 @@
     findTrackSegments,
     findMarkerList,
     normalizeMediaUrl,
+    getMarkerUserName,
+    normalizeTrackMetadata,
+    buildDocumentDescription,
     generateKml,
     convertTwoBuluRenderedData,
   })

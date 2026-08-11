@@ -33,6 +33,28 @@ function trackEmptyError () {
   )
 }
 
+function escapeHtml (value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+function sourceDescription (canonicalUrl) {
+  return `<p>来源：<a href="${escapeHtml(canonicalUrl)}">两步路公开分享轨迹</a></p>`
+}
+
+function mergeDocumentDescription (description, canonicalUrl) {
+  const withoutLegacySource = String(description || '')
+    .replace(/<p\b[^>]*>\s*来源\s*[：:]\s*<a\b[^>]*>\s*两步路公开分享轨迹\s*<\/a>\s*<\/p>/gi, '')
+    .trim()
+  return [withoutLegacySource, sourceDescription(canonicalUrl)]
+    .filter(Boolean)
+    .join('\n')
+}
+
 function parseProviderKml (value) {
   try {
     return parseKmlText(value)
@@ -124,10 +146,11 @@ export class TwoBuluImportCoordinator {
       if (!parsed.features.length) throw trackEmptyError()
       return this.userContent.createKml(actor, {
         name: resolved.name || parsed.name || '两步路公开轨迹',
-        description: `<p>来源：<a href="${canonicalUrl}">两步路公开分享轨迹</a></p>`,
+        description: mergeDocumentDescription(parsed.description, canonicalUrl),
         features: parsed.features,
         sourceType: 'imported',
         coordCorrection: input.coordCorrection,
+        theme: 'simple',
       }, createOptions)
     }
 
@@ -139,8 +162,10 @@ export class TwoBuluImportCoordinator {
     try {
       return this.userContent.createKml(actor, {
         ...resolved.document,
+        description: mergeDocumentDescription(resolved.document.description, canonicalUrl),
         sourceType: 'imported',
         coordCorrection: input.coordCorrection,
+        theme: 'simple',
       }, createOptions)
     } catch (error) {
       if (PROVIDER_VALIDATION_ERROR_CODES.has(error?.code)) throw upstreamInvalidError()
@@ -314,10 +339,11 @@ export class TwoBuluImportCoordinator {
       if (!parsed.features.length) throw trackEmptyError()
       const document = this.userContent.createKml(actor, {
         name: normalizedHelper.name || parsed.name || '两步路公开轨迹',
-        description: `<p>来源：<a href="${normalizedSource.canonicalUrl}">两步路公开分享轨迹</a></p>`,
+        description: mergeDocumentDescription(parsed.description, normalizedSource.canonicalUrl),
         features: parsed.features,
         sourceType: 'imported',
         coordCorrection,
+        theme: 'simple',
       }, {
         sourceType: 'imported',
         sourceByteSize: normalizedHelper.sourceByteSize,

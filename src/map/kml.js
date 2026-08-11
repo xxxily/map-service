@@ -2,12 +2,13 @@ import L from 'leaflet'
 import { showConfirm, showEditDialog, showAlert } from '../ui/dialog.js'
 import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListeners } from '../ui/controls.js'
 import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from './coord-transform.js'
-import { generateKmlText, parseKML } from './kml-format.js'
+import { generateKmlText, parseKmlDocument } from './kml-format.js'
 import {
   bindKmlFeaturePopupMediaActions,
   openKmlFeatureContentPanel,
   renderKmlFeaturePopupContent,
 } from './kml-content-panel.js'
+import { renderKmlFileOverview } from './kml-file-overview.js'
 import { getKmlMediaListIcon, getKmlMediaMarkerDescriptor } from './kml-media-marker.js'
 import {
   buildTrackSegments,
@@ -379,6 +380,7 @@ function normalizeKmlFile (kmlFile) {
       ? String(kmlFile.id)
       : (isDefault ? DEFAULT_KML_ID : String(kmlFile.id || `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`)),
     name: String(kmlFile.name || (isDefault ? DEFAULT_KML_NAME : '未命名 KML')),
+    description: String(kmlFile.description || '').slice(0, 10000),
     isDefault,
     theme: kmlFile.theme || 'default',
     color: kmlFile.color || '#0f766e',
@@ -396,6 +398,7 @@ function createKmlFile (options = {}) {
       ? DEFAULT_KML_ID
       : `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     name: options.name || (isDefault ? DEFAULT_KML_NAME : '新建 KML 文件'),
+    description: options.description || '',
     isDefault,
     theme: options.theme || 'default',
     color: options.color || '#0f766e',
@@ -779,7 +782,7 @@ function updateKmlPanelUI (map) {
           : `<button type="button" class="kml-file-btn delete" data-kml-action="delete-file" data-kml-id="${safeKmlId}" title="删除此 KML 文件" aria-label="删除此 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>`
         return `
           <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${safeKmlId}">
-            <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${safeKmlId}" aria-expanded="${expanded}" title="点击展开更多 KML 操作">
+            <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${safeKmlId}" aria-expanded="${expanded}" title="点击展开 KML 详情、操作和要素">
               <div class="kml-file-title">
                 <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
                 <span class="kml-file-count">${kmlFile.features.length}</span>
@@ -794,6 +797,7 @@ function updateKmlPanelUI (map) {
               </div>
             </div>
             <div class="kml-file-detail" id="features-${safeKmlId}" style="display: ${expanded ? 'flex' : 'none'};">
+              ${renderKmlFileOverview(kmlFile)}
               <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
                 <div style="display: flex; flex-direction: column; gap: 4px;">
                   <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
@@ -896,6 +900,7 @@ function updateKmlPanelUI (map) {
               </div>
             </div>
             <div class="kml-file-detail" id="features-${safeKmlId}" style="display: ${expanded ? 'flex' : 'none'};">
+              ${renderKmlFileOverview(kmlFile)}
               <div class="kml-file-toolbox">
                 <div style="display: flex; flex-direction: column; gap: 4px;">
                   <label class="kml-correction-switch" title="公共图层不可在此修改纠偏配置">
@@ -1610,7 +1615,7 @@ function renderShareKmlPanel (map) {
       const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
       return `
       <article class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${safeKmlId}">
-        <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-share-kml-action="toggle-collapse" data-kml-id="${safeKmlId}" aria-expanded="${expanded}" title="展开或收起 KML 要素">
+        <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-share-kml-action="toggle-collapse" data-kml-id="${safeKmlId}" aria-expanded="${expanded}" title="展开或收起 KML 详情和要素">
           <div class="kml-file-title">
             <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
             <span class="kml-file-count">${features.length}</span>
@@ -1624,6 +1629,7 @@ function renderShareKmlPanel (map) {
           </div>
         </div>
         <div class="kml-file-detail" id="features-${safeKmlId}" style="display: ${expanded ? 'flex' : 'none'};">
+          ${renderKmlFileOverview(kmlFile)}
           ${kmlFile.loadError ? `<p class="kml-share-item-error">${escapeHtml(kmlFile.loadError)}</p>` : ''}
           <div class="kml-features-list">
             ${features.map(feature => {
@@ -1710,7 +1716,7 @@ async function initShareKmlSupport (map) {
     } else if (action === 'focus-feature' && target.dataset.featureId) {
       focusFeature(map, kmlFile.id, target.dataset.featureId)
     } else if (action === 'export' && kmlFile.allowDownload) {
-      downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features))
+      downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features, kmlFile.description))
     }
   })
 }
@@ -1809,7 +1815,8 @@ export async function initKmlSupport (map) {
     reader.onload = (event) => {
       try {
         const text = event.target.result
-        const features = parseKML(text)
+        const parsed = parseKmlDocument(text)
+        const features = parsed.features
         
         if (features.length === 0) {
           showAlert('KML 文件中未找到有效的点、线、面要素')
@@ -1818,6 +1825,7 @@ export async function initKmlSupport (map) {
         
         const newKml = createKmlFile({
           name: file.name,
+          description: parsed.description,
           coordCorrection: correctionInput?.checked === false ? 'none' : KML_COORD_CORRECTION,
           features
         })
@@ -2067,14 +2075,14 @@ export async function initKmlSupport (map) {
             return
           }
         }
-        const kmlText = generateKmlText(kmlFile.name, kmlFile.features)
+        const kmlText = generateKmlText(kmlFile.name, kmlFile.features, kmlFile.description)
         downloadKmlFile(kmlFile.name, kmlText)
         return
       }
 
       kmlFile = kmlList.find(k => k.id === kmlId)
       if (kmlFile) {
-        const kmlText = generateKmlText(kmlFile.name, kmlFile.features)
+        const kmlText = generateKmlText(kmlFile.name, kmlFile.features, kmlFile.description)
         downloadKmlFile(kmlFile.name, kmlText)
       }
       return

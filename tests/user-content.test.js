@@ -332,11 +332,15 @@ test('KML import rejects entity declarations and export keeps normalized WGS84 d
 
     const source = `<?xml version="1.0" encoding="UTF-8"?>
       <kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>导入路线</name>
+        <description><![CDATA[<p><strong>总里程：</strong>12.34 km</p><p><strong>作者：</strong>山友阿明</p><script>alert(1)</script>]]></description>
         <Placemark><name>起点</name><description><![CDATA[<script>alert(1)</script><b>安全说明</b>]]></description>
           <Point><coordinates>113.2644,23.1291,0</coordinates></Point></Placemark>
       </Document></kml>`
     const imported = harness.service.importKml(harness.one, { kmlText: source })
     assert.equal(imported.name, '导入路线')
+    assert.match(imported.description, /总里程[：:]<\/strong>12\.34 km/)
+    assert.match(imported.description, /作者[：:]<\/strong>山友阿明/)
+    assert.doesNotMatch(imported.description, /<script|alert\(1\)/i)
     assert.equal(imported.features[0].description.includes('<script'), false)
     const exported = harness.service.exportKml(harness.one, imported.id)
     assert.match(exported.filename, /导入路线\.kml$/)
@@ -344,7 +348,8 @@ test('KML import rejects entity declarations and export keeps normalized WGS84 d
 
     const parsed = parseKmlText(exported.content)
     assert.equal(parsed.features.length, 1)
-    assert.match(generateKmlText('测试', parsed.features), /<Document>/)
+    assert.match(parsed.description, /总里程[：:]<\/strong>12\.34 km/)
+    assert.match(generateKmlText('测试', parsed.features, parsed.description), /<description>.*总里程/s)
   } finally {
     harness.close()
   }

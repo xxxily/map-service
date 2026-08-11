@@ -85,6 +85,116 @@
       .slice(0, 200) || '两步路公开轨迹'
   }
 
+  function pageVisibleTextLines () {
+    const value = safeRead(() => document.body?.innerText || document.documentElement?.innerText, '')
+    return String(value || '')
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+      .split(/\r?\n|[·|]+/)
+      .map(decodeText)
+      .filter(Boolean)
+      .slice(0, 4000)
+  }
+
+  function normalizeDistance (value) {
+    const number = Number(value)
+    if (!Number.isFinite(number) || number < 0 || number > 100000) return ''
+    const formatted = number.toFixed(3).replace(/\.?0+$/, '')
+    return `${formatted} km`
+  }
+
+  function distanceFromText (value) {
+    const text = String(value || '')
+    const patterns = [
+      /(\d{1,5}(?:\.\d{1,3})?)\s*(?:km|公里|千米)\s*(?:总里程|轨迹里程|总距离|里程)/i,
+      /(?:总里程|轨迹里程|总距离|里程)\s*[:：]?\s*(\d{1,5}(?:\.\d{1,3})?)\s*(?:km|公里|千米)/i,
+    ]
+    for (const pattern of patterns) {
+      const match = pattern.exec(text)
+      const normalized = normalizeDistance(match?.[1])
+      if (normalized) return normalized
+    }
+    return ''
+  }
+
+  function normalizeDuration (value) {
+    const normalized = decodeText(value)
+    if (!/^\d{1,3}:[0-5]\d:[0-5]\d$/.test(normalized) && !/^[0-5]?\d:[0-5]\d$/.test(normalized)) return ''
+    return normalized
+  }
+
+  function durationFromText (value) {
+    const text = String(value || '')
+    const durationPattern = '(\\d{1,3}:[0-5]\\d:[0-5]\\d|[0-5]?\\d:[0-5]\\d)'
+    const labelPattern = '(?:运动耗时|运动时长|轨迹耗时|总耗时|耗时|用时)'
+    const patterns = [
+      new RegExp(`${durationPattern}\\s*${labelPattern}`, 'i'),
+      new RegExp(`${labelPattern}\\s*[:：]?\\s*${durationPattern}`, 'i'),
+    ]
+    for (const pattern of patterns) {
+      const match = pattern.exec(text)
+      const normalized = normalizeDuration(match?.[1])
+      if (normalized) return normalized
+    }
+    return ''
+  }
+
+  function normalizeAuthor (value) {
+    const normalized = decodeText(value).slice(0, 80)
+    if (!normalized || /(?:原作者|轨迹作者|作者|基本信息|标注点|互动|下载|分享|扫码|登录|注册|总里程|运动耗时)/.test(normalized)) return ''
+    if (/https?:\/\/|\d+(?:\.\d+)?\s*(?:km|公里|千米)|\d{1,3}:[0-5]\d:[0-5]\d/i.test(normalized)) return ''
+    return normalized
+  }
+
+  function authorFromDom () {
+    const nodes = safeRead(() => Array.from(document.querySelectorAll('body *')), []).slice(0, 3000)
+    for (const node of nodes) {
+      const label = decodeText(safeRead(() => node.textContent, ''))
+      if (!/^(?:原作者|轨迹作者|作者)$/.test(label)) continue
+      const parent = safeRead(() => node.parentElement, null)
+      const nearbyLink = safeRead(() => parent?.querySelector?.('a[href*="user"], a[href*="space"], a[href*="member"], [class*="author"], [class*="nick"]'), null)
+      const candidates = [
+        safeRead(() => node.previousElementSibling?.textContent, ''),
+        safeRead(() => nearbyLink?.textContent, ''),
+        safeRead(() => parent?.previousElementSibling?.textContent, ''),
+        safeRead(() => node.nextElementSibling?.textContent, ''),
+      ]
+      for (const candidate of candidates) {
+        const normalized = normalizeAuthor(candidate)
+        if (normalized) return normalized
+      }
+    }
+    return ''
+  }
+
+  function authorFromLines (lines) {
+    const labels = /^(?:原作者|轨迹作者|作者)$/
+    for (let index = 0; index < lines.length; index += 1) {
+      const sameLine = /^(.*?)\s*(?:原作者|轨迹作者)$/.exec(lines[index]) || /^(?:原作者|轨迹作者)\s*[:：]?\s*(.+)$/.exec(lines[index])
+      const sameLineAuthor = normalizeAuthor(sameLine?.[1])
+      if (sameLineAuthor) return sameLineAuthor
+      if (!labels.test(lines[index])) continue
+      for (const offset of [-1, -2, 1, 2]) {
+        const normalized = normalizeAuthor(lines[index + offset])
+        if (normalized) return normalized
+      }
+    }
+    return ''
+  }
+
+  function readPageMetadata () {
+    const lines = pageVisibleTextLines()
+    // 数值和标签在不同页面版本中可能是同一行的内联元素，也可能被块级
+    // 元素拆成相邻两行；使用换行拼接可同时覆盖两种结构，而不跨过其他
+    // 可见文本猜测字段值。
+    const visibleText = lines.join('\n')
+    const metaAuthor = safeRead(() => document.querySelector('meta[name="author"], meta[property="article:author"]')?.content, '')
+    return {
+      distance: distanceFromText(visibleText),
+      duration: durationFromText(visibleText),
+      author: authorFromLines(lines) || authorFromDom() || normalizeAuthor(metaAuthor),
+    }
+  }
+
   function pointFromValue (value) {
     if (!value || typeof value !== 'object' && !Array.isArray(value)) return null
     const parsed = dataApi()?.coordinateFromPoint?.(value)
@@ -250,12 +360,16 @@
     const urls = [...String(html).matchAll(/(?:src|href)=["']([^"']+)["']/gi)].map(match => match[1]).filter(Boolean)
     const imageUrl = linkedImageUrl || urls.find(url => /\.(?:png|jpe?g|gif|webp)(?:[?#]|$)/i.test(url)) || urls[0] || ''
     const previewImageUrl = linkedThumbnailUrl && linkedThumbnailUrl !== imageUrl ? linkedThumbnailUrl : ''
-    const text = decodeText(html) || decodeText(merged.text || safeRead(() => layer?.getTitle?.(), '') || options.title || options.name || options.alt || '')
+    // 只有 pointMsg/extData 中明确的用户字段才作为名称；图层标题、alt 和
+    // 弹窗系统文本通常是序号或 UI 标签，不能直接生成点位名称。
+    const text = decodeText(merged.userName || merged.customName || merged.pointName || merged.markerName || merged.name || merged.text || merged.title || '')
+    const descriptionText = decodeText(html) || text
     return {
       longitude: point.coordinates[0],
       latitude: point.coordinates[1],
       elevation: point.altitude,
       text,
+      descriptionText,
       ...(imageUrl ? { centerUrl: previewImageUrl || imageUrl, fileType: 0 } : {}),
       ...(merged.fileUrl || merged.centerUrl ? { centerUrl: merged.fileUrl || merged.centerUrl } : {}),
       ...(merged.fileUrl || merged.centerUrl ? { fileUrl: merged.fileUrl || merged.centerUrl } : {}),
@@ -313,7 +427,7 @@
     layers.forEach(layer => {
       const segments = lineSegmentsFromLayer(layer)
       if (segments.some(segment => segment.length >= 2)) {
-        positions.push({ payload: { trackPositions: segments }, score: segments.reduce((sum, item) => sum + item.length, 0) + 1000 })
+        positions.push({ payload: { trackPositions: segments }, score: segments.reduce((sum, item) => sum + item.length, 0) + 1000, source: 'rendered' })
         diagnostics.lineLayers += 1
         return
       }
@@ -360,6 +474,7 @@
           positions.push({
             payload: value,
             score: segments.reduce((sum, segment) => sum + segment.length, 0) + sourceBonus,
+            source: 'raw',
           })
         }
       }
@@ -379,16 +494,16 @@
     const lats = readGlobal(['trackLats', 'trackLatitudes', 'lats', 'latitudes'])
     const alts = readGlobal(['trackElevations', 'trackAlts', 'trackHeights', 'elevations', 'altitudes'])
     const paired = pairLongitudeLatitude(lngs, lats, alts)
-    if (paired.length) positions.push({ payload: { trackPositions: paired }, score: paired.reduce((sum, segment) => sum + segment.length, 0) + 4000 })
+    if (paired.length) positions.push({ payload: { trackPositions: paired }, score: paired.reduce((sum, segment) => sum + segment.length, 0) + 4000, source: 'raw' })
     addMarkers(readGlobal(['trackMarks', 'trackMarkers', 'trackMarkerList', 'markerList', 'markList']))
     const scriptValues = collectScriptLiterals(diagnostics)
     const scriptMap = new Map(scriptValues.map(item => [item.name, item.value]))
     const scriptPaired = pairLongitudeLatitude(scriptMap.get('trackLngs'), scriptMap.get('trackLats'), scriptMap.get('trackElevations'))
-    if (scriptPaired.length) positions.push({ payload: { trackPositions: scriptPaired }, score: scriptPaired.reduce((sum, segment) => sum + segment.length, 0) + 3500 })
+    if (scriptPaired.length) positions.push({ payload: { trackPositions: scriptPaired }, score: scriptPaired.reduce((sum, segment) => sum + segment.length, 0) + 3500, source: 'raw' })
     scriptValues.forEach(item => {
       const segments = dataApi()?.findTrackSegments?.(item.value) || coordinateSeries(item.value)
       if (segments.length && /(?:trackPositions|trackLngs|trackLats|trackPoints)/.test(item.name)) {
-        positions.push({ payload: item.value, score: segments.reduce((sum, segment) => sum + segment.length, 0) + 1800 })
+        positions.push({ payload: item.value, score: segments.reduce((sum, segment) => sum + segment.length, 0) + 1800, source: 'raw' })
       }
       if (/marker|mark/i.test(item.name)) addMarkers(item.value)
     })
@@ -432,8 +547,38 @@
     return payloads
   }
 
-  function choosePositions (candidates) {
-    return candidates.sort((left, right) => right.score - left.score)[0]?.payload || null
+  function positionSegmentKey (segment) {
+    const coordinates = (Array.isArray(segment) ? segment : [])
+      .map(pointFromValue)
+      .filter(Boolean)
+      .map(point => point.coordinates.map(value => Number(value).toFixed(6)).join(','))
+    if (!coordinates.length) return ''
+    const forward = coordinates.join(';')
+    const reverse = [...coordinates].reverse().join(';')
+    return forward < reverse ? forward : reverse
+  }
+
+  function mergePositions (candidates) {
+    const result = []
+    const seen = new Set()
+    const rawCandidates = candidates.filter(candidate => candidate?.source === 'raw')
+      .sort((left, right) => Number(right?.score || 0) - Number(left?.score || 0))
+    const renderedCandidates = candidates.filter(candidate => candidate?.source === 'rendered')
+      .sort((left, right) => Number(right?.score || 0) - Number(left?.score || 0))
+    // 原始 GPS/WGS84 候选优先，地图线图层随后补充；相同或反向重复线段
+    // 通过坐标键去重，独立线段则全部保留。
+    const ordered = [...rawCandidates, ...renderedCandidates]
+    ordered.forEach(candidate => {
+      const segments = dataApi()?.findTrackSegments?.(candidate?.payload) || coordinateSeries(candidate?.payload)
+      segments.forEach(segment => {
+        if (!Array.isArray(segment) || segment.length < 2) return
+        const key = positionSegmentKey(segment)
+        if (!key || seen.has(key)) return
+        seen.add(key)
+        result.push(segment)
+      })
+    })
+    return result.length ? { trackPositions: result } : null
   }
 
   function uniqueMarkers (values) {
@@ -453,6 +598,8 @@
   async function collect (options = {}) {
     if (!isPageUrl(location.href)) return pageError('当前页面不是受支持的两步路官方页面。', 'TWO_BULU_URL_INVALID', 'failed')
     const diagnostics = { globalNodes: 0, resourceUrls: 0, lineLayers: 0, markerLayers: 0 }
+    const metadata = readPageMetadata()
+    diagnostics.metadataFields = Object.entries(metadata).filter(([, value]) => Boolean(value)).map(([key]) => key)
     const positionCandidates = []
     const markerValues = []
     const globals = collectGlobalData(diagnostics)
@@ -466,7 +613,7 @@
       score: Number(candidate.score || 0) - 1000000,
     })))
     markerValues.push(...leaflet.markers)
-    let positionsPayload = choosePositions(positionCandidates)
+    let positionsPayload = mergePositions(positionCandidates)
     let markers = uniqueMarkers(markerValues)
     // 运行态已经包含完整轨迹和标注时不再重复读取接口。两步路会把重复
     // 请求判定为异常流量，且这些接口常返回 SafeLine 页面而不是 JSON。
@@ -477,14 +624,14 @@
         const pathname = safeRead(() => new URL(item.url, location.href).pathname, '')
         if (/positions/i.test(pathname)) {
           const segments = dataApi()?.findTrackSegments?.(item.payload) || []
-          if (segments.length) positionCandidates.push({ payload: item.payload, score: segments.reduce((sum, segment) => sum + segment.length, 0) + 1500 })
+          if (segments.length) positionCandidates.push({ payload: item.payload, score: segments.reduce((sum, segment) => sum + segment.length, 0) + 1500, source: 'raw' })
         }
         if (/marker/i.test(pathname)) {
           const markerResult = dataApi()?.findMarkerList?.(item.payload)
           if (markerResult?.found) markerValues.push(...markerResult.markers)
         }
       })
-      positionsPayload = choosePositions(positionCandidates)
+      positionsPayload = mergePositions(positionCandidates)
       markers = uniqueMarkers(markerValues)
     }
     const markerPayload = markers.length ? { markers } : undefined
@@ -505,6 +652,7 @@
         markersPayload: markerPayload,
         sourceUrl: location.href,
         title: pageTitle(),
+        metadata,
         partialPolicy: options.partialPolicy || 'reject',
         maxPoints: MAX_POINTS,
       })
@@ -512,6 +660,7 @@
         ...converted,
         sourceUrl: location.href,
         name: pageTitle(),
+        metadata: converted.metadata || metadata,
         diagnostics,
       }
     } catch (error) {
@@ -570,5 +719,6 @@
     collect,
     download,
     installButton,
+    readPageMetadata,
   })
 })()

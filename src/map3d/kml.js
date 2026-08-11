@@ -12,12 +12,13 @@ import {
 } from 'cesium'
 import { escapeHtml } from '../admin/utils.js'
 import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from '../map/coord-transform.js'
-import { generateKmlText, parseKML } from '../map/kml-format.js'
+import { generateKmlText, parseKmlDocument } from '../map/kml-format.js'
 import {
   bindKmlFeaturePopupMediaActions,
   openKmlFeatureContentPanel,
   renderKmlFeaturePopupContent,
 } from '../map/kml-content-panel.js'
+import { renderKmlFileOverview } from '../map/kml-file-overview.js'
 import { getKmlMediaBillboard, getKmlMediaListIcon } from '../map/kml-media-marker.js'
 import {
   buildTrackSegments,
@@ -228,6 +229,7 @@ function normalizeKmlFile (kmlFile) {
       ? String(kmlFile.id)
       : (isDefault ? DEFAULT_KML_ID : String(kmlFile.id || `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`)),
     name: String(kmlFile.name || (isDefault ? DEFAULT_KML_NAME : '未命名 KML')),
+    description: String(kmlFile.description || '').slice(0, 10000),
     isDefault,
     theme: kmlFile.theme || 'default',
     color: kmlFile.color || '#0f766e',
@@ -245,6 +247,7 @@ function createKmlFile (options = {}) {
       ? DEFAULT_KML_ID
       : `kml-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     name: options.name || (isDefault ? DEFAULT_KML_NAME : '新建 KML 文件'),
+    description: options.description || '',
     isDefault,
     theme: options.theme || 'default',
     color: options.color || '#0f766e',
@@ -1275,7 +1278,7 @@ function renderKmlCard (kmlFile) {
 
   return `
     <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${safeKmlId}">
-      <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${safeKmlId}" aria-expanded="${expanded}" title="点击展开更多 KML 操作">
+      <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${safeKmlId}" aria-expanded="${expanded}" title="点击展开 KML 详情、操作和要素">
         <div class="kml-file-title">
           <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
           <span class="kml-file-count">${kmlFile.features ? kmlFile.features.length : (kmlFile.featureCount || 0)}</span>
@@ -1293,6 +1296,7 @@ function renderKmlCard (kmlFile) {
       </div>
       ${kmlFile.loadError ? `<p class="kml-share-item-error">${escapeHtml(kmlFile.loadError)}</p>` : ''}
       <div class="kml-file-detail" id="features-${safeKmlId}" style="display: ${expanded ? 'flex' : 'none'};">
+        ${renderKmlFileOverview(kmlFile)}
         <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
           <div style="display: flex; flex-direction: column; gap: 4px;">
             <label class="kml-correction-switch" title="${kmlFile.isPublic ? '公共图层不可在此修改纠偏配置' : '开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度'}">
@@ -1440,7 +1444,8 @@ function bindPanelEvents () {
     const reader = new FileReader()
     reader.onload = (loadEvent) => {
       try {
-        const features = parseKML(loadEvent.target.result)
+        const parsed = parseKmlDocument(loadEvent.target.result)
+        const features = parsed.features
         if (features.length === 0) {
           showAlert('KML 文件中未找到有效的点、线、面要素')
           return
@@ -1449,6 +1454,7 @@ function bindPanelEvents () {
         pushKmlHistory()
         const newKml = createKmlFile({
           name: file.name,
+          description: parsed.description,
           coordCorrection: correctionInput?.checked === false ? 'none' : KML_COORD_CORRECTION,
           features,
         })
@@ -1669,7 +1675,7 @@ function bindPanelEvents () {
       if (kmlFile) {
         if (kmlFile.isShare) {
           if (!kmlFile.allowDownload || kmlFile.loadError) return
-          downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features || []))
+          downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features || [], kmlFile.description))
           return
         }
         if (!kmlFile.features || kmlFile.features.length === 0) {
@@ -1681,13 +1687,13 @@ function bindPanelEvents () {
             return
           }
         }
-        downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features))
+        downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features, kmlFile.description))
         return
       }
 
       kmlFile = kmlList.find(k => k.id === kmlId)
       if (kmlFile) {
-        downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features))
+        downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features, kmlFile.description))
       }
       return
     }
