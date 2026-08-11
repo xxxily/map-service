@@ -64,10 +64,12 @@ function buildDouyinEmbedUrl (videoId) {
 function buildDouyinPreviewUrl (videoId) {
   const url = new URL(buildDouyinEmbedUrl(videoId))
   // 抖音官方播放器在移动布局默认只创建 324×672px 的播放器；使用
-  // 视口单位让它跟随 iframe 视口，避免未被播放器覆盖的区域露出白底。
+  // 视口单位让它跟随 iframe 视口。额外预留官方播放器底部跳转栏的高度，
+  // 让该跳转栏落在 iframe 可视区域之外，避免露出白色空白区域。
   url.searchParams.set('width', '100vw')
-  url.searchParams.set('height', '100vh')
-  return url.toString()
+  // 抖音播放器读取原始查询串时不兼容 URLSearchParams 把空格编码成 `+`，
+  // 因此这里保留 `%20`，否则 calc() 会被当成无效高度并重新露出白色页脚。
+  return `${url.toString()}&height=${encodeURIComponent('calc(100vh + 48px)')}`
 }
 
 const DOUYIN_PROVIDER = Object.freeze({

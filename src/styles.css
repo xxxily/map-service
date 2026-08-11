@@ -3618,19 +3618,21 @@ body.media-preview-open {
   min-height: 0;
   box-sizing: border-box;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   overflow: hidden;
-  padding: clamp(0px, 1.2vw, 16px);
+  padding-block: clamp(0px, 1.2vw, 16px);
+  padding-inline: 0;
   background: var(--media-preview-surface, #050909);
 }
 
 .media-preview-iframe {
   display: block;
-  width: min(1280px, 100%);
+  width: 100%;
   height: min(960px, 100%);
-  max-width: 100%;
+  max-width: none;
   max-height: 100%;
-  flex: 0 1 auto;
+  flex: 0 0 100%;
+  box-sizing: border-box;
   border: 0;
   border-radius: 6px;
   background: var(--media-preview-surface, #050909);

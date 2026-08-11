@@ -38,8 +38,12 @@ test('known Douyin page forms build the same official player item without server
 })
 
 test('trusted embed validation requires exact official origin path and query', () => {
-  assert.equal(getTrustedKmlShareEmbed(`https://open.douyin.com/player/video?vid=${VIDEO_ID}`).provider, 'douyin')
-  assert.equal(getTrustedKmlShareEmbed(`https://open.douyin.com/player/video?vid=${VIDEO_ID}`).previewUrl, `https://open.douyin.com/player/video?vid=${VIDEO_ID}&width=100vw&height=100vh`)
+  const trustedEmbed = getTrustedKmlShareEmbed(`https://open.douyin.com/player/video?vid=${VIDEO_ID}`)
+  const previewUrl = new URL(trustedEmbed.previewUrl)
+  assert.equal(trustedEmbed.provider, 'douyin')
+  assert.equal(previewUrl.searchParams.get('width'), '100vw')
+  assert.equal(previewUrl.searchParams.get('height'), 'calc(100vh + 48px)')
+  assert.match(trustedEmbed.previewUrl, /height=calc\(100vh%20%2B%2048px\)$/)
   assert.equal(getTrustedKmlShareEmbed(`https://open.douyin.com/player/video?vid=${VIDEO_ID}&width=100vw&height=100vh`), null)
   assert.equal(getTrustedKmlShareEmbed(`https://open.douyin.com/player/video?vid=${VIDEO_ID}&token=secret`), null)
   assert.equal(getTrustedKmlShareEmbed(`https://open.douyin.com/other?vid=${VIDEO_ID}`), null)

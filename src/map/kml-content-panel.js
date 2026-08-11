@@ -21,6 +21,7 @@ const BUILD_IFRAME_ALLOWLIST = String(typeof import.meta.env === 'object' ? (imp
   .filter(Boolean)
 
 let activeContentRequest = null
+const popupMediaBindings = new WeakMap()
 
 function escapeHtml (value) {
   return String(value ?? '')
@@ -166,9 +167,19 @@ function buildPreviewItems (kmlFile, feature, view = null) {
   }))
 }
 
+function getKmlMediaFeatureKey (item) {
+  const kmlId = String(item?.kmlId || '')
+  const featureId = String(item?.featureId || '')
+  return kmlId && featureId ? `${kmlId}:${featureId}` : ''
+}
+
 function openKmlMediaFromSelection (kmlFile, feature, selection, trigger, view = null) {
   const items = buildPreviewItems(kmlFile, feature, view)
   if (!items.length) return false
+  let activeFeatureKey = getKmlMediaFeatureKey({
+    kmlId: kmlFile?.id,
+    featureId: feature?.id,
+  })
   return openMediaPreview({
     items,
     index: findKmlMediaGalleryIndex(items, {
@@ -177,31 +188,46 @@ function openKmlMediaFromSelection (kmlFile, feature, selection, trigger, view =
     }),
     trigger,
     collectionTitle: String(kmlFile?.name || '').trim() || '未命名 KML',
-    onActiveItemChange: item => window.activateKmlFeatureForMedia?.(item),
+    onActiveItemChange: item => {
+      const nextFeatureKey = getKmlMediaFeatureKey(item)
+      if (!nextFeatureKey || nextFeatureKey === activeFeatureKey) return
+      activeFeatureKey = nextFeatureKey
+      window.activateKmlFeatureForMedia?.(item)
+    },
   })
 }
 
 export function bindKmlFeaturePopupMediaActions (container, kmlFile, feature) {
   if (!container) return
   bindFavoriteActionButtons(container, kmlFile, feature)
-  container.querySelectorAll('.kml-popup-media-image img').forEach(image => {
-    if (image.dataset.kmlPopupMediaFallbackBound === 'true') return
-    image.dataset.kmlPopupMediaFallbackBound = 'true'
-    image.addEventListener('error', () => image.closest('.kml-popup-media-image')?.classList.add('is-load-error'), { once: true })
+  const eventRoot = container.querySelector('.leaflet-popup-content') || container
+  const existingBinding = popupMediaBindings.get(eventRoot)
+  if (existingBinding) {
+    existingBinding.kmlFile = kmlFile
+    existingBinding.feature = feature
+    return
+  }
+
+  const binding = { kmlFile, feature }
+  popupMediaBindings.set(eventRoot, binding)
+  eventRoot.addEventListener('click', event => {
+    const trigger = event.target.closest?.('[data-kml-popup-media]')
+    if (!trigger || !eventRoot.contains(trigger)) return
+    event.stopPropagation()
+    event.preventDefault()
+    const currentBinding = popupMediaBindings.get(eventRoot)
+    if (!currentBinding) return
+    openKmlMediaFromSelection(currentBinding.kmlFile, currentBinding.feature, {
+      id: trigger.dataset.mediaId,
+      url: trigger.dataset.mediaUrl,
+      type: trigger.dataset.mediaType,
+    }, trigger)
   })
-  container.querySelectorAll('[data-kml-popup-media]').forEach(trigger => {
-    if (trigger.dataset.kmlPopupMediaBound === 'true') return
-    trigger.dataset.kmlPopupMediaBound = 'true'
-    trigger.addEventListener('click', event => {
-      event.stopPropagation()
-      event.preventDefault()
-      openKmlMediaFromSelection(kmlFile, feature, {
-        id: trigger.dataset.mediaId,
-        url: trigger.dataset.mediaUrl,
-        type: trigger.dataset.mediaType,
-      }, trigger)
-    })
-  })
+  eventRoot.addEventListener('error', event => {
+    const image = event.target
+    if (!image?.matches?.('.kml-popup-media-image img')) return
+    image.closest('.kml-popup-media-image')?.classList.add('is-load-error')
+  }, true)
 }
 
 function ensurePanel () {

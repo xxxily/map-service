@@ -128,7 +128,13 @@ test('flattened feature media preserves content view overrides for public featur
 
 test('2D popup binds media actions through the central popupopen lifecycle', () => {
   const source = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
+  const panelSource = readFileSync(new URL('../src/map/kml-content-panel.js', import.meta.url), 'utf8')
   assert.match(source, /map\.on\('popupopen',[\s\S]*bindKmlFeaturePopupMediaActions\(container, kmlFile, feature\)/)
   assert.doesNotMatch(source, /layer\.on\('popupopen',[\s\S]*bindKmlFeaturePopupMediaActions/)
   assert.match(source, /window\.activateKmlFeatureForMedia/)
+  assert.match(panelSource, /popupMediaBindings\s*=\s*new WeakMap\(\)/)
+  assert.match(panelSource, /const eventRoot = container\.querySelector\('\.leaflet-popup-content'\) \|\| container/)
+  assert.match(panelSource, /eventRoot\.addEventListener\('click',[\s\S]*event\.target\.closest\?\.\('\[data-kml-popup-media\]'\)/)
+  assert.doesNotMatch(panelSource, /trigger\.dataset\.kmlPopupMediaBound/)
+  assert.match(panelSource, /if \(!nextFeatureKey \|\| nextFeatureKey === activeFeatureKey\) return/)
 })
