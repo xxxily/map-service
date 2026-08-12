@@ -37,7 +37,6 @@ import {
   VIEWPORT_MAX_POINTS,
 } from '../map/location-track.js'
 import { createTrackKml3d, hasTrackKml3d, updateTrackKml3d } from './kml.js'
-import { setFavoriteCandidate } from '../map/favorite-actions.js'
 
 let targetEntity = null
 const MAX_RENDERED_HISTORY_POINTS = VIEWPORT_MAX_POINTS // 保留常量作为 hard cap fallback
@@ -558,17 +557,6 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
 
   const { result, mapPosition, locationSample, reanchored } = filtered
 
-  if (!isIntervalUpdate) {
-    setFavoriteCandidate({
-      name: '当前位置',
-      note: result.accuracy ? `定位精度约 ${Math.round(result.accuracy)} 米` : '',
-      longitude: result.lng,
-      latitude: result.lat,
-      coordType: result.coordType || 'wgs84',
-      sourceType: 'location',
-    })
-  }
-  
   // 飞往位置（开启自动旋转时代入最新计算出的航向角）
   const headingVal = intervalLocationState3d.autoRotate ? (intervalLocationState3d.currentHeading || 0) : 0
   flyToLngLat(viewer, mapPosition.lng, mapPosition.lat, { height: customHeight, heading: headingVal })

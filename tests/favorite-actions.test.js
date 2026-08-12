@@ -140,7 +140,7 @@ test('账号回跳只使用站内路径，会话必须保持同一有效登录�
   assert.equal(isFavoriteSessionUsable({ ...auth, user: { permissions: [] } }, 'ses_1'), false)
 })
 
-test('2D/3D 移除地图中心收藏入口并保留点位等收藏动作', () => {
+test('2D/3D 定位成功不再展示收藏快捷条并保留搜索与 KML 点位收藏动作', () => {
   const indexHtml = fs.readFileSync(path.join(projectRoot, 'index.html'), 'utf8')
   const map3dHtml = fs.readFileSync(path.join(projectRoot, '3d.html'), 'utf8')
   const mainSource = fs.readFileSync(path.join(projectRoot, 'src/main.js'), 'utf8')
@@ -162,8 +162,8 @@ test('2D/3D 移除地图中心收藏入口并保留点位等收藏动作', () =>
     assert.match(source, /sourceType: 'search'/)
   }
   for (const source of [location2d, location3d]) {
-    assert.match(source, /setFavoriteCandidate/)
-    assert.match(source, /sourceType: 'location'/)
+    assert.doesNotMatch(source, /setFavoriteCandidate/)
+    assert.doesNotMatch(source, /sourceType: 'location'/)
   }
   assert.match(kmlPanel, /renderFavoriteActionButton/)
   assert.match(kmlPanel, /bindFavoriteActionButtons/)

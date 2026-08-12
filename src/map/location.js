@@ -29,7 +29,6 @@ import {
 } from './location-track.js'
 import { createTrackKml2d, hasTrackKml2d, updateTrackKml2d } from './kml.js'
 import { startLocationKeepAlive, stopLocationKeepAlive } from './location-keepalive.js'
-import { setFavoriteCandidate } from './favorite-actions.js'
 
 const MAX_RENDERED_HISTORY_POINTS = VIEWPORT_MAX_POINTS // 保留常量作为 hard cap fallback
 const TRACK_CHECKPOINT_MIN_INTERVAL_MS = 15000
@@ -491,17 +490,6 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
 
   const { result, mapPosition, locationSample, reanchored } = filtered
 
-  if (!isIntervalUpdate) {
-    setFavoriteCandidate({
-      name: '当前位置',
-      note: result.accuracy ? `定位精度约 ${Math.round(result.accuracy)} 米` : '',
-      longitude: result.lng,
-      latitude: result.lat,
-      coordType: result.coordType || 'wgs84',
-      sourceType: 'location',
-    })
-  }
-  
   // 更新地图视口与主定位图标
   map.setView(mapPosition, customZoom)
   
