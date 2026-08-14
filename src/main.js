@@ -40,8 +40,9 @@ import {
   MAX_LOCATION_INTERVAL_SECONDS,
   parseBoundedInteger,
 } from './map/location-track.js'
+import { initDesktopShiftDragRotate } from './map/desktop-rotation.js'
 
-// 优化移动端手势缩放时容易误触旋转的问题：加入旋转阈值(12度)与无缝软启动交互
+// 优化移动端手势缩放时容易误触旋转的问题：加入旋转阈值与无缝软启动交互
 if (L.Map.TouchGestures) {
   const originalTouchStart = L.Map.TouchGestures.prototype._onTouchStart
   L.Map.TouchGestures.prototype._onTouchStart = function (e) {
@@ -155,66 +156,6 @@ async function loadAmap () {
   })
 }
 
-function initDesktopShiftDragRotate (map) {
-  if (!(map.setBearing instanceof Function)) return
-
-  const container = map.getContainer()
-  let rotateState = null
-
-  const stopRotate = () => {
-    if (!rotateState) return
-    if (rotateState.wasDraggingEnabled && map.dragging?.enable instanceof Function) {
-      map.dragging.enable()
-    }
-    container.classList.remove('map-shift-rotating')
-    rotateState = null
-    document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
-  }
-
-  const onMouseMove = (event) => {
-    if (!rotateState) return
-    event.preventDefault()
-    const deltaX = event.clientX - rotateState.startX
-    map.setBearing(rotateState.startBearing + deltaX * 0.5)
-  }
-
-  const onMouseUp = (event) => {
-    if (rotateState) {
-      event.preventDefault()
-    }
-    stopRotate()
-  }
-
-  const onMouseDown = (event) => {
-    if (event.button !== 0 || !event.shiftKey) return
-    if (event.target.closest('.leaflet-control, button, a, input, textarea, select')) return
-
-    event.preventDefault()
-    event.stopPropagation()
-    event.stopImmediatePropagation?.()
-
-    rotateState = {
-      startX: event.clientX,
-      startBearing: map.getBearing instanceof Function ? map.getBearing() : 0,
-      wasDraggingEnabled: Boolean(map.dragging?.enabled?.()),
-    }
-
-    if (rotateState.wasDraggingEnabled && map.dragging?.disable instanceof Function) {
-      map.dragging.disable()
-    }
-    container.classList.add('map-shift-rotating')
-    document.addEventListener('mousemove', onMouseMove, { passive: false })
-    document.addEventListener('mouseup', onMouseUp, { passive: false })
-  }
-
-  container.addEventListener('mousedown', onMouseDown, true)
-  map.on('unload', () => {
-    stopRotate()
-    container.removeEventListener('mousedown', onMouseDown, true)
-  })
-}
-
 async function initLeafletMap () {
   const shareMode = isShareLocation(window.location)
   const activeShare = getActiveShare()
@@ -241,7 +182,6 @@ async function initLeafletMap () {
   }).setMaxBounds([[-90, 0], [90, 360]])
 
   window.map = map
-  initDesktopShiftDragRotate(map)
   initFavoriteActions({
     readOnly: shareMode,
   })
@@ -271,10 +211,12 @@ async function initLeafletMap () {
     initLocationHistoryPanel2d()
   }
 
-  map.on('moveend', () => writeMapViewToUrl(map, { persist: !shareMode }))
-  map.on('zoomend', () => writeMapViewToUrl(map, { persist: !shareMode }))
+  let desktopRotationController = null
+  const syncMapView = () => writeMapViewToUrl(map, { persist: !shareMode })
+
+  map.on('moveend', syncMapView)
+  map.on('zoomend', syncMapView)
   map.on('rotate', () => {
-    writeMapViewToUrl(map, { persist: !shareMode })
     const bearing = map.getBearing ? map.getBearing() : 0
     const btn = document.getElementById('reset-bearing-btn')
     if (btn) {
@@ -286,6 +228,13 @@ async function initLeafletMap () {
         btn.style.display = 'none'
       }
     }
+    // The desktop controller writes once after mouseup. Other rotation paths
+    // retain their existing immediate view-state behavior, including touch.
+    if (!desktopRotationController?.isActive()) syncMapView()
+  })
+
+  desktopRotationController = initDesktopShiftDragRotate(map, {
+    onRotateEnd: syncMapView,
   })
 
   // 触发一次以初始化可能已经存在的旋转状态

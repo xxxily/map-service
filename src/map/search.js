@@ -1,7 +1,10 @@
 import L from 'leaflet'
 import { getBestPosition, positionToGcj02 } from './geolocation.js'
 import { showAlert } from '../ui/dialog.js'
-import { setFavoriteCandidate } from './favorite-actions.js'
+import {
+  renderSearchHistoryDropdown,
+  saveSearchHistory,
+} from './search-history.js'
 
 let currentSearchMarker = null
 
@@ -14,121 +17,6 @@ let startPoi = null
 let endPoi = null
 let startPickMarker = null
 let endPickMarker = null
-
-function setSearchResultFavorite (poi, marker = null) {
-  if (!poi?.location) return
-  const candidate = {
-    name: poi.name || '搜索结果',
-    address: poi.address || poi.district || '',
-    longitude: poi.location.lng,
-    latitude: poi.location.lat,
-    coordType: 'gcj02',
-    sourceType: 'search',
-  }
-  setFavoriteCandidate(candidate)
-  marker?.on('dragend', event => {
-    const latlng = event.target.getLatLng()
-    setFavoriteCandidate({
-      ...candidate,
-      longitude: latlng.lng,
-      latitude: latlng.lat,
-    })
-  })
-}
-
-// 获取 localStorage 中的历史记录
-function getHistory (key) {
-  try {
-    return JSON.parse(localStorage.getItem(key)) || []
-  } catch (e) {
-    return []
-  }
-}
-
-// 写入一条历史记录（上限10条，名字去重置顶）
-function saveHistory (key, poi) {
-  if (!poi || !poi.name) return
-  let history = getHistory(key)
-  history = history.filter(item => item.name !== poi.name)
-  history.unshift({ name: poi.name, location: poi.location })
-  if (history.length > 10) {
-    history = history.slice(0, 10)
-  }
-  localStorage.setItem(key, JSON.stringify(history))
-}
-
-// 清除历史记录
-function clearHistory (key) {
-  localStorage.removeItem(key)
-}
-
-// 绑定并渲染历史记录下拉菜单
-function renderHistoryDropdown (container, input, key, onSelect) {
-  if (!container || !input) return
-
-  let dropdown = container.querySelector('.history-dropdown')
-  if (!dropdown) {
-    dropdown = document.createElement('div')
-    dropdown.className = 'history-dropdown amap-sug-result'
-    dropdown.style.cssText = 'display: none; position: absolute; top: 100%; left: 0; width: 100%; z-index: 20000; box-sizing: border-box;'
-    container.appendChild(dropdown)
-  }
-
-  const showDropdown = () => {
-    if (input.value.trim()) {
-      dropdown.style.display = 'none'
-      return
-    }
-    const history = getHistory(key)
-    if (history.length === 0) {
-      dropdown.style.display = 'none'
-      return
-    }
-
-    dropdown.innerHTML = ''
-    history.forEach(item => {
-      const div = document.createElement('div')
-      div.className = 'auto-item'
-      div.innerHTML = `<span class="sug-key">${item.name}</span>`
-      div.addEventListener('mousedown', (e) => {
-        e.preventDefault()
-        input.value = item.name
-        onSelect(item)
-        dropdown.style.display = 'none'
-      })
-      dropdown.appendChild(div)
-    })
-
-    // 清除历史记录按钮
-    const clearDiv = document.createElement('div')
-    clearDiv.className = 'auto-item'
-    clearDiv.style.cssText = 'text-align: right; font-size: 11px !important; color: #94a3b8 !important; border-top: 1px dashed #edf2f7; padding: 6px 12px !important; cursor: pointer;'
-    clearDiv.innerHTML = '<span>清除历史</span>'
-    clearDiv.addEventListener('mousedown', (e) => {
-      e.preventDefault()
-      clearHistory(key)
-      dropdown.style.display = 'none'
-    })
-    dropdown.appendChild(clearDiv)
-
-    dropdown.style.display = 'block'
-  }
-
-  input.addEventListener('focus', showDropdown)
-  input.addEventListener('click', showDropdown)
-  input.addEventListener('input', () => {
-    if (input.value.trim()) {
-      dropdown.style.display = 'none'
-    } else {
-      showDropdown()
-    }
-  })
-  input.addEventListener('blur', () => {
-    setTimeout(() => {
-      dropdown.style.display = 'none'
-    }, 200)
-  })
-}
 
 // 清理路线相关的地图图层和状态
 function clearRouteLayers (map) {
@@ -263,7 +151,7 @@ function bindMarkerDragEvents (map, marker, isStart) {
         } else {
           input.value = displayName
         }
-        saveHistory('map_route_history', poi)
+        saveSearchHistory('map_route_history', poi)
         if (startPoi && endPoi) {
           triggerRoutePlanning(map, AMap)
         } else {
@@ -293,8 +181,8 @@ function triggerRoutePlanning (map, AMap) {
         return
       }
 
-      saveHistory('map_route_history', startPoi)
-      saveHistory('map_route_history', endPoi)
+      saveSearchHistory('map_route_history', startPoi)
+      saveSearchHistory('map_route_history', endPoi)
 
       clearRouteLayers(map)
       routeFeatureGroup = L.featureGroup().addTo(map)
@@ -396,7 +284,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       return
     }
 
-    saveHistory('map_search_history', event.poi)
+    saveSearchHistory('map_search_history', event.poi)
 
     const location = [event.poi.location.lat, event.poi.location.lng]
     map.setView(location, 18)
@@ -410,14 +298,13 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       draggable: true,
       title: event.poi.name,
     }).addTo(map)
-    setSearchResultFavorite(event.poi, currentSearchMarker)
   })
 
   // 绑定普通位置搜索框历史记录下拉
   const searchContainer = document.getElementById('map-search-mod')
   const searchInput = document.getElementById('tipinput')
   if (searchContainer && searchInput) {
-    renderHistoryDropdown(searchContainer, searchInput, 'map_search_history', (item) => {
+    renderSearchHistoryDropdown(searchContainer, searchInput, 'map_search_history', (item) => {
       if (item.location) {
         const location = [item.location.lat, item.location.lng]
         map.setView(location, 18)
@@ -429,7 +316,6 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           draggable: true,
           title: item.name,
         }).addTo(map)
-        setSearchResultFavorite(item, currentSearchMarker)
       }
     })
   }
@@ -452,7 +338,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           lat: event.poi.location.lat,
         },
       }
-      saveHistory('map_route_history', startPoi)
+      saveSearchHistory('map_route_history', startPoi)
       updatePickMarker(map, [startPoi.location.lat, startPoi.location.lng], true)
       if (startPoi && endPoi) {
         triggerRoutePlanning(map, AMap)
@@ -469,7 +355,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           lat: event.poi.location.lat,
         },
       }
-      saveHistory('map_route_history', endPoi)
+      saveSearchHistory('map_route_history', endPoi)
       updatePickMarker(map, [endPoi.location.lat, endPoi.location.lng], false)
       if (startPoi && endPoi) {
         triggerRoutePlanning(map, AMap)
@@ -506,7 +392,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   // 绑定起终点规划框历史记录下拉
   if (startInput) {
     const container = startInput.closest('.route-input-container')
-    renderHistoryDropdown(container, startInput, 'map_route_history', (item) => {
+    renderSearchHistoryDropdown(container, startInput, 'map_route_history', (item) => {
       startPoi = item
       if (item.location) {
         updatePickMarker(map, [item.location.lat, item.location.lng], true)
@@ -519,7 +405,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
 
   if (endInput) {
     const container = endInput.closest('.route-input-container')
-    renderHistoryDropdown(container, endInput, 'map_route_history', (item) => {
+    renderSearchHistoryDropdown(container, endInput, 'map_route_history', (item) => {
       endPoi = item
       if (item.location) {
         updatePickMarker(map, [item.location.lat, item.location.lng], false)
@@ -661,7 +547,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
             } else {
               input.value = displayName
             }
-            saveHistory('map_route_history', poi)
+            saveSearchHistory('map_route_history', poi)
             if (startPoi && endPoi) {
               triggerRoutePlanning(map, AMap)
             } else {
@@ -697,7 +583,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           },
         }
         startInput.value = '我的位置'
-        saveHistory('map_route_history', startPoi)
+        saveSearchHistory('map_route_history', startPoi)
         updatePickMarker(map, [mapPosition.lat, mapPosition.lng], true)
         if (startPoi && endPoi) {
           triggerRoutePlanning(map, AMap)

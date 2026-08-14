@@ -24,7 +24,6 @@ const SOURCE_LABELS = Object.freeze({
 let favoriteConfig = {
   readOnly: false,
 }
-let activeCandidate = null
 let authUnsubscribe = null
 let favoriteSubmitting = false
 
@@ -193,66 +192,6 @@ function renderFavoriteAvailability () {
       button.hidden = !offered
     })
   }
-  renderCandidateBar()
-}
-
-function ensureCandidateBar () {
-  if (typeof document === 'undefined') return null
-  let bar = document.getElementById('favorite-candidate-bar')
-  if (bar) return bar
-  bar = document.createElement('section')
-  bar.id = 'favorite-candidate-bar'
-  bar.className = 'favorite-candidate-bar'
-  bar.hidden = true
-  bar.setAttribute('aria-live', 'polite')
-  bar.innerHTML = `
-    <div class="favorite-candidate-copy">
-      <span data-favorite-candidate-source></span>
-      <strong data-favorite-candidate-name></strong>
-      <small data-favorite-candidate-coordinates></small>
-    </div>
-    <button type="button" class="favorite-candidate-save" data-favorite-candidate-save>
-      <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-4.35-9.33-8.28C.9 9.73 2.04 6 5.4 5.1A5.35 5.35 0 0 1 12 8a5.35 5.35 0 0 1 6.6-2.9c3.36.9 4.5 4.63 2.73 7.62C19 16.65 12 21 12 21Z"/></svg>
-      <span>保存收藏</span>
-    </button>
-    <button type="button" class="favorite-candidate-close" data-favorite-candidate-close aria-label="关闭收藏快捷条">×</button>
-  `
-  bar.querySelector('[data-favorite-candidate-save]')?.addEventListener('click', () => {
-    if (activeCandidate) openFavoriteDialog(activeCandidate)
-  })
-  bar.querySelector('[data-favorite-candidate-close]')?.addEventListener('click', () => {
-    activeCandidate = null
-    renderCandidateBar()
-  })
-  document.body.appendChild(bar)
-  return bar
-}
-
-function renderCandidateBar () {
-  const bar = ensureCandidateBar()
-  if (!bar) return
-  if (!activeCandidate || !shouldOfferFavoriteAction()) {
-    bar.hidden = true
-    return
-  }
-  bar.hidden = false
-  bar.querySelector('[data-favorite-candidate-source]').textContent = SOURCE_LABELS[activeCandidate.sourceType] || '候选位置'
-  bar.querySelector('[data-favorite-candidate-name]').textContent = activeCandidate.name
-  bar.querySelector('[data-favorite-candidate-coordinates]').textContent = `WGS84 · ${activeCandidate.latitude.toFixed(6)}, ${activeCandidate.longitude.toFixed(6)}`
-  const saveButton = bar.querySelector('[data-favorite-candidate-save]')
-  if (saveButton) saveButton.disabled = favoriteSubmitting
-}
-
-export function setFavoriteCandidate (candidate) {
-  if (favoriteConfig.readOnly) return null
-  try {
-    activeCandidate = normalizeFavoriteCandidate(candidate)
-  } catch (error) {
-    console.warn('忽略无效的收藏候选位置', error)
-    return null
-  }
-  renderCandidateBar()
-  return { ...activeCandidate }
 }
 
 function ensureDialogRoot () {
@@ -387,7 +326,7 @@ async function offerExpiredSessionLogin () {
   if (confirmed) window.location.assign(buildFavoriteAccountUrl(window.location))
 }
 
-export async function openFavoriteDialog (candidate = activeCandidate) {
+export async function openFavoriteDialog (candidate) {
   if (favoriteConfig.readOnly || favoriteSubmitting) return null
   let normalizedCandidate
   try {
@@ -412,17 +351,11 @@ export async function openFavoriteDialog (candidate = activeCandidate) {
   }
 
   favoriteSubmitting = true
-  renderCandidateBar()
   try {
     const result = await apiRequest('/favorites', {
       method: 'POST',
       body: editorResult.payload,
     })
-    if (activeCandidate && activeCandidate.sourceType === normalizedCandidate.sourceType &&
-        activeCandidate.longitude === normalizedCandidate.longitude &&
-        activeCandidate.latitude === normalizedCandidate.latitude) {
-      activeCandidate = null
-    }
     await showAlert(`已保存收藏“${result?.name || editorResult.payload.name}”。`)
     return result
   } catch (error) {
@@ -434,7 +367,6 @@ export async function openFavoriteDialog (candidate = activeCandidate) {
     return null
   } finally {
     favoriteSubmitting = false
-    renderCandidateBar()
   }
 }
 

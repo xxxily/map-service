@@ -140,7 +140,7 @@ test('账号回跳只使用站内路径，会话必须保持同一有效登录�
   assert.equal(isFavoriteSessionUsable({ ...auth, user: { permissions: [] } }, 'ses_1'), false)
 })
 
-test('2D/3D 定位成功不再展示收藏快捷条并保留搜索与 KML 点位收藏动作', () => {
+test('2D/3D 定位和搜索成功不再展示收藏快捷条并保留 KML 点位收藏动作', () => {
   const indexHtml = fs.readFileSync(path.join(projectRoot, 'index.html'), 'utf8')
   const map3dHtml = fs.readFileSync(path.join(projectRoot, '3d.html'), 'utf8')
   const mainSource = fs.readFileSync(path.join(projectRoot, 'src/main.js'), 'utf8')
@@ -150,6 +150,8 @@ test('2D/3D 定位成功不再展示收藏快捷条并保留搜索与 KML 点位
   const location2d = fs.readFileSync(path.join(projectRoot, 'src/map/location.js'), 'utf8')
   const location3d = fs.readFileSync(path.join(projectRoot, 'src/map3d/location.js'), 'utf8')
   const kmlPanel = fs.readFileSync(path.join(projectRoot, 'src/map/kml-content-panel.js'), 'utf8')
+  const favoriteActions = fs.readFileSync(path.join(projectRoot, 'src/map/favorite-actions.js'), 'utf8')
+  const styles = fs.readFileSync(path.join(projectRoot, 'src/styles.css'), 'utf8')
 
   assert.doesNotMatch(indexHtml, /data-action="saveFavorite"/)
   assert.doesNotMatch(map3dHtml, /data-action="saveFavorite"/)
@@ -157,14 +159,12 @@ test('2D/3D 定位成功不再展示收藏快捷条并保留搜索与 KML 点位
   assert.match(map3dSource, /initFavoriteActions\(\{\s*readOnly: shareMode/)
   assert.doesNotMatch(mainSource, /当前地图中心|getCenterCandidate/)
   assert.doesNotMatch(map3dSource, /当前地图中心|getMap3dCenterFavoriteCandidate/)
-  for (const source of [search2d, search3d]) {
-    assert.match(source, /setFavoriteCandidate/)
-    assert.match(source, /sourceType: 'search'/)
-  }
-  for (const source of [location2d, location3d]) {
+  for (const source of [search2d, search3d, location2d, location3d]) {
     assert.doesNotMatch(source, /setFavoriteCandidate/)
-    assert.doesNotMatch(source, /sourceType: 'location'/)
+    assert.doesNotMatch(source, /sourceType: '(?:search|location)'/)
   }
+  assert.doesNotMatch(favoriteActions, /setFavoriteCandidate|favorite-candidate|activeCandidate/)
+  assert.doesNotMatch(styles, /favorite-candidate/)
   assert.match(kmlPanel, /renderFavoriteActionButton/)
   assert.match(kmlPanel, /bindFavoriteActionButtons/)
 })

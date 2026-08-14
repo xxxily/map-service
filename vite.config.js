@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import { readFileSync } from 'node:fs'
+import { normalizeCesiumShaderComments } from './scripts/cesium-build-compat.js'
 
 const packageInfo = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 
@@ -19,6 +20,17 @@ export default defineConfig({
       },
     },
   },
+  plugins: [
+    {
+      name: 'normalize-cesium-shader-comments',
+      apply: 'build',
+      renderChunk (code) {
+        const normalizedCode = normalizeCesiumShaderComments(code)
+        if (normalizedCode === code) return null
+        return { code: normalizedCode, map: null }
+      },
+    },
+  ],
   server: {
     host: '127.0.0.1',
     port: 5173,
