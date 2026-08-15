@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
   clampMediaPreviewScale,
+  getDefaultMediaPreviewTrackExpanded,
   getWrappedMediaIndex,
   normalizeMediaPreviewItems,
 } from '../src/ui/media-preview-state.js'
@@ -15,6 +16,9 @@ test('media preview wraps gallery navigation and clamps image scale', () => {
   assert.equal(clampMediaPreviewScale(3.4), 3.4)
   assert.equal(clampMediaPreviewScale(20), 6)
   assert.equal(clampMediaPreviewScale('invalid'), 1)
+  assert.equal(getDefaultMediaPreviewTrackExpanded(3, false), true)
+  assert.equal(getDefaultMediaPreviewTrackExpanded(3, true), false)
+  assert.equal(getDefaultMediaPreviewTrackExpanded(1, false), false)
 })
 
 test('media preview only accepts supported HTTPS media items', () => {
@@ -40,6 +44,8 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.match(previewSource, /item\?\.renderUrl \|\| item\?\.url/)
   assert.match(previewSource, /source\.href = getOriginalContentUrl\(item\)/)
   assert.match(previewSource, /data-media-preview-track/)
+  assert.match(previewSource, /data-media-preview-action="toggle-track"/)
+  assert.match(previewSource, /createMediaPreviewHistoryGuard/)
   assert.match(previewSource, /data-media-preview-action="minimize"/)
   assert.match(previewSource, /data-media-preview-action="restore"/)
   assert.match(previewSource, /import\('hls\.js'\)/)

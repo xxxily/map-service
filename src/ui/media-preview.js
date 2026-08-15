@@ -1,11 +1,14 @@
 import Panzoom from '@panzoom/panzoom/dist/panzoom.es.js'
 import {
   clampMediaPreviewScale,
+  getDefaultMediaPreviewTrackExpanded,
   getWrappedMediaIndex,
   MEDIA_PREVIEW_MAX_SCALE,
   MEDIA_PREVIEW_MIN_SCALE,
   normalizeMediaPreviewItems,
 } from './media-preview-state.js'
+import { createMediaPreviewHistoryGuard } from './media-preview-history.js'
+import { isTouchFirstEnvironment } from './touch-environment.js'
 
 const TYPE_LABELS = {
   image: '图片',
@@ -27,6 +30,8 @@ let isMinimized = false
 let activeCollectionTitle = ''
 let trackObserver = null
 let activeItemChangeHandler = null
+let isTrackExpanded = true
+let previewHistoryGuard = null
 
 function prefersReducedMotion () {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
@@ -81,6 +86,7 @@ function createPreviewRoot () {
           <span class="media-preview-position" data-media-preview-position aria-live="polite"></span>
         </div>
         <div class="media-preview-header-actions">
+          <button type="button" class="media-preview-icon-button media-preview-track-toggle" data-media-preview-action="toggle-track" aria-expanded="true" aria-label="收起缩略图" title="收起缩略图">▦</button>
           <button type="button" class="media-preview-icon-button media-preview-minimize" data-media-preview-action="minimize" aria-label="收缩为小窗" title="收缩为小窗">⌟</button>
           <a class="media-preview-source" data-media-preview-source target="_blank" rel="noopener noreferrer" title="打开原始文件">
             <span class="media-preview-source-label">原始文件</span><span aria-hidden="true">↗</span>
@@ -127,6 +133,14 @@ function ensurePreviewRoot () {
 
 function getPreviewElement (selector) {
   return ensurePreviewRoot().querySelector(selector)
+}
+
+function ensurePreviewHistoryGuard () {
+  previewHistoryGuard ||= createMediaPreviewHistoryGuard({
+    isEnabled: isTouchFirstEnvironment,
+    onBack: hideMediaPreview,
+  })
+  return previewHistoryGuard
 }
 
 function setText (selector, value) {
@@ -410,6 +424,22 @@ function renderMediaTrack () {
   activeButton?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
 }
 
+function syncMediaTrackVisibility () {
+  const root = ensurePreviewRoot()
+  const hasMultipleItems = activeItems.length > 1
+  const expanded = hasMultipleItems && isTrackExpanded
+  const track = getPreviewElement('[data-media-preview-track]')
+  const toggle = getPreviewElement('[data-media-preview-action="toggle-track"]')
+  root.classList.toggle('is-track-collapsed', !expanded)
+  track?.setAttribute('aria-hidden', String(!expanded))
+  if (toggle) {
+    toggle.hidden = !hasMultipleItems
+    toggle.setAttribute('aria-expanded', String(expanded))
+    toggle.setAttribute('aria-label', expanded ? '收起缩略图' : '展开缩略图')
+    toggle.title = expanded ? '收起缩略图' : '展开缩略图'
+  }
+}
+
 function renderActiveItem () {
   const generation = ++renderGeneration
   cleanupCurrentMedia()
@@ -444,6 +474,7 @@ function renderActiveItem () {
   if (nextButton) nextButton.hidden = !hasMultipleItems
   if (zoomControls) zoomControls.hidden = item.type !== 'image'
   syncZoomControls(MEDIA_PREVIEW_MIN_SCALE)
+  syncMediaTrackVisibility()
   renderMediaTrack()
 
   const renderer = {
@@ -479,6 +510,13 @@ function onRootClick (event) {
   if (action === 'select') {
     activeIndex = getWrappedMediaIndex(event.target.closest('[data-media-preview-action]')?.dataset.mediaPreviewIndex, activeItems.length)
     renderActiveItem()
+  }
+  if (action === 'toggle-track') {
+    isTrackExpanded = !isTrackExpanded
+    syncMediaTrackVisibility()
+    if (isTrackExpanded) {
+      requestAnimationFrame(() => getPreviewElement('.media-preview-track-item.is-active')?.scrollIntoView?.({ block: 'nearest', inline: 'center' }))
+    }
   }
   if (action === 'minimize') setPreviewMinimized(true)
   if (action === 'restore') setPreviewMinimized(false)
@@ -584,7 +622,7 @@ function setPreviewMinimized (minimized) {
   }
 }
 
-export function closeMediaPreview () {
+function hideMediaPreview () {
   const root = previewRoot || document.getElementById('app-media-preview')
   if (!root || root.hidden) return
   renderGeneration += 1
@@ -593,7 +631,7 @@ export function closeMediaPreview () {
   root.hidden = true
   root.setAttribute('aria-hidden', 'true')
   root.removeAttribute('data-media-type')
-  root.classList.remove('is-minimized')
+  root.classList.remove('is-minimized', 'is-track-collapsed')
   document.body.classList.remove('media-preview-open')
   document.removeEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', onWindowResize)
@@ -602,20 +640,31 @@ export function closeMediaPreview () {
   activeCollectionTitle = ''
   activeItemChangeHandler = null
   isMinimized = false
+  isTrackExpanded = true
   if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
   previousFocus = null
+}
+
+export function closeMediaPreview () {
+  const root = previewRoot || document.getElementById('app-media-preview')
+  if (!root || root.hidden) return
+  if (previewHistoryGuard?.isActive() && previewHistoryGuard.requestClose()) return
+  previewHistoryGuard?.release()
+  hideMediaPreview()
 }
 
 export function openMediaPreview ({ items, index = 0, type = '', trigger = null, collectionTitle = '', onActiveItemChange = null } = {}) {
   const normalizedItems = normalizeMediaPreviewItems(items, type)
   if (!normalizedItems.length) return false
   const root = ensurePreviewRoot()
-  if (root.hidden || isMinimized) previousFocus = trigger || document.activeElement
+  const wasHidden = root.hidden
+  if (wasHidden || isMinimized) previousFocus = trigger || document.activeElement
   activeItems = normalizedItems
   activeIndex = getWrappedMediaIndex(index, activeItems.length)
   activeCollectionTitle = String(collectionTitle || normalizedItems[activeIndex]?.kmlName || '').trim()
   activeItemChangeHandler = typeof onActiveItemChange === 'function' ? onActiveItemChange : null
   isMinimized = false
+  isTrackExpanded = getDefaultMediaPreviewTrackExpanded(activeItems.length, isTouchFirstEnvironment())
   root.classList.remove('is-minimized')
   getPreviewElement('.media-preview-dialog')?.setAttribute('aria-modal', 'true')
   const minimizeButton = getPreviewElement('[data-media-preview-action="minimize"]')
@@ -627,6 +676,7 @@ export function openMediaPreview ({ items, index = 0, type = '', trigger = null,
   document.addEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', onWindowResize)
   window.addEventListener('resize', onWindowResize)
+  if (wasHidden) ensurePreviewHistoryGuard().activate()
   renderActiveItem()
   requestAnimationFrame(() => getPreviewElement('.media-preview-stage')?.focus({ preventScroll: true }))
   return true

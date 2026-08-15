@@ -5,7 +5,9 @@ import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from './coord-tran
 import { generateKmlText, parseKmlDocument } from './kml-format.js'
 import {
   bindKmlFeaturePopupMediaActions,
+  hasKmlFeaturePreviewMedia,
   openKmlFeatureContentPanel,
+  openKmlFeatureMediaPreview,
   renderKmlFeaturePopupContent,
 } from './kml-content-panel.js'
 import { renderKmlFileOverview } from './kml-file-overview.js'
@@ -58,6 +60,7 @@ import {
   enrichKmlDescriptionWithShareLinks,
   getEditableKmlDescription,
 } from '../integrations/kml-share-links.js'
+import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
 
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
@@ -564,16 +567,109 @@ function getFeatureLabel (feature) {
   return `${name.slice(0, KML_POINT_LABEL_MAX_LENGTH)}...`
 }
 
+function bindMobileMediaPointInteraction (layer, kmlFile, feature) {
+  if (!hasKmlFeaturePreviewMedia(feature)) return
+
+  const defaultPopupHandler = layer._openPopup
+  if (defaultPopupHandler instanceof Function) layer.off('click', defaultPopupHandler)
+
+  let pressState = null
+  let suppressClickUntil = 0
+  let lastLongPressAt = 0
+
+  const clearPress = () => {
+    if (pressState?.timer) window.clearTimeout(pressState.timer)
+    pressState = null
+  }
+
+  const isTouchPointer = event => isTouchFirstEnvironment() &&
+    event?.isPrimary !== false &&
+    event?.pointerType !== 'mouse' &&
+    (event?.button === undefined || event.button === 0)
+
+  const bindMarkerElement = () => {
+    const element = layer.getElement?.()
+    if (!element || element.dataset.kmlMobileMediaBound === 'true') return
+    element.dataset.kmlMobileMediaBound = 'true'
+
+    const onPointerDown = event => {
+      if (!isTouchPointer(event)) return
+      clearPress()
+      const startX = Number(event.clientX)
+      const startY = Number(event.clientY)
+      pressState = {
+        pointerId: event.pointerId,
+        startX,
+        startY,
+        longPressTriggered: false,
+        timer: window.setTimeout(() => {
+          if (!pressState || pressState.pointerId !== event.pointerId) return
+          pressState.longPressTriggered = true
+          pressState.timer = null
+          lastLongPressAt = Date.now()
+          layer.openPopup()
+        }, LONG_PRESS_DELAY_MS),
+      }
+    }
+
+    const onPointerMove = event => {
+      if (!pressState || pressState.pointerId !== event.pointerId) return
+      if (Math.hypot(Number(event.clientX) - pressState.startX, Number(event.clientY) - pressState.startY) > LONG_PRESS_MOVE_TOLERANCE) {
+        clearPress()
+      }
+    }
+
+    const onPointerEnd = event => {
+      if (pressState?.pointerId !== event.pointerId) return
+      if (pressState.longPressTriggered) suppressClickUntil = Date.now() + 700
+      clearPress()
+    }
+
+    const onContextMenu = event => {
+      if (pressState || Date.now() - lastLongPressAt < 1200) event.preventDefault()
+    }
+
+    element.addEventListener('pointerdown', onPointerDown, { passive: true })
+    element.addEventListener('pointermove', onPointerMove, { passive: true })
+    element.addEventListener('pointerup', onPointerEnd, { passive: true })
+    element.addEventListener('pointercancel', onPointerEnd, { passive: true })
+    element.addEventListener('contextmenu', onContextMenu)
+  }
+
+  layer.on('add', bindMarkerElement)
+  bindMarkerElement()
+  layer.on('remove', clearPress)
+  layer.on('dragstart', clearPress)
+  layer.on('click', event => {
+    if (!isTouchFirstEnvironment()) {
+      defaultPopupHandler?.call(layer, event)
+      return
+    }
+    if (Date.now() < suppressClickUntil) {
+      suppressClickUntil = 0
+      return
+    }
+    event.originalEvent?.preventDefault?.()
+    event.originalEvent?.stopPropagation?.()
+    layer.closePopup()
+    openKmlFeatureMediaPreview(kmlFile, feature, {
+      trigger: layer.getElement?.(),
+      linkMapFeatures: false,
+    })
+  })
+}
+
 function renderFeature (map, kmlFile, feature) {
   const kmlId = kmlFile.id
   let layer
+  let mediaMarker = null
   const editable = isKmlEditable(kmlFile)
   const theme = getKmlTheme(kmlFile)
   const dragAllowed = editable && !kmlFile.lockDrag
   
   if (feature.type === 'Point') {
     const latlng = getMapPoint(kmlFile, feature)
-    const mediaMarker = getKmlMediaMarkerDescriptor(feature)
+    mediaMarker = getKmlMediaMarkerDescriptor(feature)
     
     if (mediaMarker) {
       const mediaIcon = L.divIcon({
@@ -657,6 +753,9 @@ function renderFeature (map, kmlFile, feature) {
       maxWidth: 360,
       minWidth: 270,
     })
+    if (feature.type === 'Point' && mediaMarker) {
+      bindMobileMediaPointInteraction(layer, kmlFile, feature)
+    }
     featureLayers.set(getFeatureLayerKey(kmlId, feature.id), layer)
   }
   

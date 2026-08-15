@@ -213,27 +213,30 @@ async function initLeafletMap () {
 
   let desktopRotationController = null
   const syncMapView = () => writeMapViewToUrl(map, { persist: !shareMode })
+  const updateBearingControl = (bearing) => {
+    const btn = document.getElementById('reset-bearing-btn')
+    if (!btn) return
+    if (Math.abs(bearing) > 0.1) {
+      btn.style.display = 'grid'
+      const icon = btn.querySelector('.compass-icon') || btn
+      icon.style.transform = `rotate(${-bearing}deg)`
+    } else {
+      btn.style.display = 'none'
+    }
+  }
 
   map.on('moveend', syncMapView)
   map.on('zoomend', syncMapView)
   map.on('rotate', () => {
     const bearing = map.getBearing ? map.getBearing() : 0
-    const btn = document.getElementById('reset-bearing-btn')
-    if (btn) {
-      if (Math.abs(bearing) > 0.1) {
-        btn.style.display = 'grid'
-        const icon = btn.querySelector('.compass-icon') || btn
-        icon.style.transform = `rotate(${-bearing}deg)`
-      } else {
-        btn.style.display = 'none'
-      }
-    }
+    updateBearingControl(bearing)
     // The desktop controller writes once after mouseup. Other rotation paths
     // retain their existing immediate view-state behavior, including touch.
     if (!desktopRotationController?.isActive()) syncMapView()
   })
 
   desktopRotationController = initDesktopShiftDragRotate(map, {
+    onRotatePreview: ({ bearing }) => updateBearingControl(bearing),
     onRotateEnd: syncMapView,
   })
 

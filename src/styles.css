@@ -102,6 +102,10 @@ body.admin-view #footer-bar {
   cursor: ew-resize !important;
 }
 
+.map-shift-rotating .leaflet-map-pane {
+  backface-visibility: hidden;
+}
+
 .app-dialog-backdrop {
   display: grid;
   position: fixed;
@@ -3563,6 +3567,7 @@ body.media-preview-open {
 .media-preview-root[hidden],
 .media-preview-nav[hidden],
 .media-preview-zoom-controls[hidden],
+.media-preview-track-toggle[hidden],
 .media-preview-restore[hidden] {
   display: none;
 }
@@ -3578,6 +3583,14 @@ body.media-preview-open {
   border-radius: 8px;
   background: #0b1112;
   box-shadow: 0 24px 72px rgba(0, 0, 0, 0.42);
+}
+
+.media-preview-root.is-track-collapsed .media-preview-dialog {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.media-preview-root.is-track-collapsed .media-preview-track {
+  display: none;
 }
 
 .media-preview-header {
@@ -3687,6 +3700,10 @@ body.media-preview-open {
 
 .media-preview-close {
   font-size: 24px;
+}
+
+.media-preview-track-toggle {
+  font-size: 18px;
 }
 
 .media-preview-stage {
@@ -3965,6 +3982,7 @@ body.media-preview-open {
 .media-preview-root.is-minimized .media-preview-kind,
 .media-preview-root.is-minimized .media-preview-position,
 .media-preview-root.is-minimized .media-preview-source,
+.media-preview-root.is-minimized .media-preview-track-toggle,
 .media-preview-root.is-minimized .media-preview-track,
 .media-preview-root.is-minimized .media-preview-footer,
 .media-preview-root.is-minimized .media-preview-minimize {
@@ -4074,7 +4092,7 @@ body.media-preview-open {
   font-size: 11px;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
   .media-preview-root {
     padding: 0;
   }
@@ -4085,6 +4103,10 @@ body.media-preview-open {
     grid-template-rows: minmax(0, 1fr) auto;
     border: 0;
     border-radius: 0;
+  }
+
+  .media-preview-root.is-track-collapsed .media-preview-dialog {
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .media-preview-header {
@@ -4199,7 +4221,7 @@ body.media-preview-open {
 
 }
 
-@media (max-height: 520px) and (orientation: landscape) {
+@media (max-height: 520px) and (orientation: landscape) and (hover: hover) and (pointer: fine) {
   .media-preview-header {
     min-height: calc(46px + var(--safe-area-top));
     padding-top: calc(5px + var(--safe-area-top));

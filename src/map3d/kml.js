@@ -15,7 +15,9 @@ import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02Deep } from '../map/coord
 import { generateKmlText, parseKmlDocument } from '../map/kml-format.js'
 import {
   bindKmlFeaturePopupMediaActions,
+  hasKmlFeaturePreviewMedia,
   openKmlFeatureContentPanel,
+  openKmlFeatureMediaPreview,
   renderKmlFeaturePopupContent,
 } from '../map/kml-content-panel.js'
 import { renderKmlFileOverview } from '../map/kml-file-overview.js'
@@ -58,6 +60,7 @@ import {
   enrichKmlDescriptionWithShareLinks,
   getEditableKmlDescription,
 } from '../integrations/kml-share-links.js'
+import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_LAST_TARGET_KEY = 'map_kml_last_target_id'
@@ -68,6 +71,7 @@ const PUBLIC_PREFS_KEY = 'map_shared_kml_prefs'
 const KML_POINT_LABEL_MAX_LENGTH = 18
 const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
+const MEDIA_CLICK_SUPPRESSION_MS = 1400
 
 let viewerRef = null
 let accountSessionExpiryBound3d = false
@@ -114,6 +118,7 @@ let pickupToastElement = null
 let featurePopupElement = null
 let handler = null
 let mediaFeatureActivationTimer = null
+let mobileMediaClickSuppression = null
 
 const renderedKmlEntities = new Map()
 const featureEntities = new Map()
@@ -680,6 +685,29 @@ function showFeaturePopup (kmlId, featureId, windowPosition) {
   featurePopupElement = popup
 }
 
+function getCanvasPointerPosition (canvas, event) {
+  const rect = canvas?.getBoundingClientRect?.()
+  return new Cartesian2(
+    Number(event?.clientX || 0) - Number(rect?.left || 0),
+    Number(event?.clientY || 0) - Number(rect?.top || 0),
+  )
+}
+
+function getPickedKmlMeta (windowPosition) {
+  return viewerRef?.scene?.pick?.(windowPosition)?.id?._map3dKmlFeature || null
+}
+
+function getMobileMediaPointTarget (meta) {
+  if (!meta) return null
+  const { kmlFile, feature } = getFeatureById(meta.kmlId, meta.featureId)
+  if (!kmlFile || feature?.type !== 'Point' || !hasKmlFeaturePreviewMedia(feature)) return null
+  return {
+    kmlFile,
+    feature,
+    key: getFeatureEntityKey(meta.kmlId, meta.featureId),
+  }
+}
+
 // 优先锚定深度或真实地形，避免在山地上回落到椭球面。
 export function pickKmlWorldPosition (scene, camera, windowPosition) {
   if (!scene || !camera || !windowPosition) return null
@@ -1009,15 +1037,17 @@ function togglePickupMode (kmlId) {
   document.body.appendChild(pickupToastElement)
 }
 
-function initLongPressPointCreation () {
+function initLongPressPointCreation (options = {}) {
   const canvas = viewerRef?.canvas
   if (!canvas) return
 
+  const allowPointCreation = options.allowPointCreation !== false
   let pressState = null
   let lastLongPressAt = 0
   const activePointerIds = new Set()
 
   const clearPress = () => {
+    if (pressState?.timer) window.clearTimeout(pressState.timer)
     pressState = null
   }
 
@@ -1029,17 +1059,64 @@ function initLongPressPointCreation () {
       clearPress()
       return
     }
+
+    const windowPosition = getCanvasPointerPosition(canvas, event)
+    const pickedMeta = getPickedKmlMeta(windowPosition)
+    if (event.pointerType !== 'mouse' && isTouchFirstEnvironment() && pickedMeta) {
+      const mediaTarget = getMobileMediaPointTarget(pickedMeta)
+      if (mediaTarget) {
+        pressState = {
+          kind: 'media',
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          key: mediaTarget.key,
+          longPressTriggered: false,
+          timer: window.setTimeout(() => {
+            if (pressState?.kind !== 'media' || pressState.pointerId !== event.pointerId) return
+            lastLongPressAt = Date.now()
+            pressState.longPressTriggered = true
+            pressState.timer = null
+            // Cesium may dispatch LEFT_CLICK during pointerup before our own
+            // pointerup listener runs. Set suppression here, at the moment the
+            // long press is recognized, so the same gesture cannot open media.
+            mobileMediaClickSuppression = {
+              key: mediaTarget.key,
+              until: Date.now() + MEDIA_CLICK_SUPPRESSION_MS,
+            }
+            showFeaturePopup(
+              pickedMeta.kmlId,
+              pickedMeta.featureId,
+              new Cartesian2(event.clientX, event.clientY),
+            )
+          }, LONG_PRESS_DELAY_MS),
+        }
+        return
+      }
+
+      // A long press on an existing KML feature must never create a new point.
+      pressState = {
+        kind: 'feature',
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+      }
+      return
+    }
+
+    if (!allowPointCreation) return
     if (typeof window.getMap3dInteractionMode === 'function' && window.getMap3dInteractionMode() === '3d') return
     if (isAddingPoint || event.button > 0 || isInteractiveTarget(event.target)) return
 
     const startX = event.clientX
     const startY = event.clientY
     pressState = {
+      kind: 'create',
       pointerId: event.pointerId,
       startedAt: Date.now(),
       startX,
       startY,
-      windowPosition: new Cartesian2(event.clientX, event.clientY),
+      windowPosition,
       moved: false,
     }
   }
@@ -1061,8 +1138,19 @@ function initLongPressPointCreation () {
       return
     }
 
+    if (currentPress.kind === 'media') {
+      if (currentPress.longPressTriggered) {
+        mobileMediaClickSuppression = {
+          key: currentPress.key,
+          until: Date.now() + MEDIA_CLICK_SUPPRESSION_MS,
+        }
+      }
+      clearPress()
+      return
+    }
+
     clearPress()
-    if (currentPress.moved || activePointerIds.size > 0) {
+    if (currentPress.kind !== 'create' || currentPress.moved || activePointerIds.size > 0) {
       return
     }
 
@@ -1086,7 +1174,7 @@ function initLongPressPointCreation () {
   }
 
   const onContextMenu = (event) => {
-    if (Date.now() - lastLongPressAt < 1200) {
+    if (pressState?.kind === 'media' || Date.now() - lastLongPressAt < 1200) {
       event.preventDefault()
     }
   }
@@ -1836,9 +1924,8 @@ function bindCanvasPickEvents () {
   handler = new ScreenSpaceEventHandler(viewerRef.canvas)
 
   handler.setInputAction(async (movement) => {
-    closeFeaturePopup()
-
     if (isAddingPoint) {
+      closeFeaturePopup()
       const latlng = getLatLngFromWindowPosition(movement.position)
       const targetKmlId = activeKmlIdForAdd
       togglePickupMode(null)
@@ -1852,8 +1939,28 @@ function bindCanvasPickEvents () {
     const picked = viewerRef.scene.pick(movement.position)
     const meta = picked?.id?._map3dKmlFeature
     if (meta) {
+      const featureKey = getFeatureEntityKey(meta.kmlId, meta.featureId)
+      if (mobileMediaClickSuppression?.until <= Date.now()) mobileMediaClickSuppression = null
+      if (mobileMediaClickSuppression?.key === featureKey) {
+        mobileMediaClickSuppression = null
+        return
+      }
+      mobileMediaClickSuppression = null
+
+      closeFeaturePopup()
+      const mediaTarget = isTouchFirstEnvironment() ? getMobileMediaPointTarget(meta) : null
+      if (mediaTarget) {
+        openKmlFeatureMediaPreview(mediaTarget.kmlFile, mediaTarget.feature, {
+          trigger: viewerRef.canvas,
+          linkMapFeatures: false,
+        })
+        return
+      }
       showFeaturePopup(meta.kmlId, meta.featureId, movement.position)
+      return
     }
+
+    closeFeaturePopup()
   }, ScreenSpaceEventType.LEFT_CLICK)
 }
 
@@ -1953,6 +2060,7 @@ export async function initKmlSupport3d (viewer) {
     viewer.camera.moveEnd.addEventListener(scheduleKmlViewportRerender3d)
     bindPanelEvents()
     bindCanvasPickEvents()
+    initLongPressPointCreation({ allowPointCreation: false })
     return
   }
 

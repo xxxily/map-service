@@ -28,6 +28,66 @@ function getFrameScheduler (options = {}) {
   }
 }
 
+function getPreviewOrigin (map) {
+  const privateCenter = map?._getPixelCenter?.()
+  if (Number.isFinite(privateCenter?.x) && Number.isFinite(privateCenter?.y)) {
+    return privateCenter
+  }
+  const size = map?.getSize?.()
+  if (Number.isFinite(size?.x) && Number.isFinite(size?.y)) {
+    return { x: size.x / 2, y: size.y / 2 }
+  }
+  return null
+}
+
+export function createLeafletRotationPreview (map) {
+  const pane = map?._mapPane || map?.getPane?.('mapPane')
+  if (!pane?.style) return null
+
+  let originalStyle = null
+  let useIndividualRotate = false
+
+  const start = () => {
+    const origin = getPreviewOrigin(map)
+    if (!origin) return false
+    originalStyle = {
+      rotate: pane.style.rotate,
+      transform: pane.style.transform,
+      transformOrigin: pane.style.transformOrigin,
+      willChange: pane.style.willChange,
+    }
+    useIndividualRotate = 'rotate' in pane.style
+    pane.style.transformOrigin = `${origin.x}px ${origin.y}px`
+    pane.style.willChange = useIndividualRotate ? 'rotate' : 'transform'
+    return true
+  }
+
+  const update = ({ delta }) => {
+    if (!originalStyle) return false
+    const rotation = `${finiteNumber(delta)}deg`
+    if (useIndividualRotate) {
+      pane.style.rotate = rotation
+    } else {
+      const baseTransform = originalStyle.transform && originalStyle.transform !== 'none'
+        ? `${originalStyle.transform} `
+        : ''
+      pane.style.transform = `${baseTransform}rotate(${rotation})`
+    }
+    return true
+  }
+
+  const finish = () => {
+    if (!originalStyle) return
+    pane.style.rotate = originalStyle.rotate
+    pane.style.transform = originalStyle.transform
+    pane.style.transformOrigin = originalStyle.transformOrigin
+    pane.style.willChange = originalStyle.willChange
+    originalStyle = null
+  }
+
+  return { start, update, finish }
+}
+
 export function initDesktopShiftDragRotate (map, options = {}) {
   if (!(map?.setBearing instanceof Function) || !(map?.getContainer instanceof Function)) return null
 
@@ -37,6 +97,9 @@ export function initDesktopShiftDragRotate (map, options = {}) {
   if (!container || !documentLike?.addEventListener) return null
 
   const { requestFrame, cancelFrame } = getFrameScheduler(options)
+  const rotationPreview = options.preview === undefined
+    ? createLeafletRotationPreview(map)
+    : options.preview
   const sensitivity = Math.max(
     0,
     finiteNumber(options.sensitivity, DEFAULT_DESKTOP_ROTATION_SENSITIVITY),
@@ -66,7 +129,18 @@ export function initDesktopShiftDragRotate (map, options = {}) {
     if (Math.abs(nextBearing - rotateState.lastAppliedBearing) < 0.001) return false
 
     rotateState.lastAppliedBearing = nextBearing
-    map.setBearing(nextBearing)
+    if (rotateState.previewActive) {
+      const updated = rotationPreview?.update?.({
+        bearing: nextBearing,
+        delta: nextBearing - rotateState.startBearing,
+      })
+      if (updated === false) {
+        rotationPreview?.finish?.()
+        rotateState.previewActive = false
+      }
+    }
+    if (!rotateState.previewActive) map.setBearing(nextBearing)
+    options.onRotatePreview?.({ bearing: nextBearing })
     return true
   }
 
@@ -94,6 +168,15 @@ export function initDesktopShiftDragRotate (map, options = {}) {
     }
 
     const previousState = rotateState
+    if (previousState.previewActive) {
+      // Clear the temporary transform before Leaflet writes its authoritative
+      // bearing; otherwise restoring the old inline transform would overwrite
+      // the committed rotate-pane position.
+      rotationPreview?.finish?.()
+      if (Math.abs(previousState.lastAppliedBearing - previousState.startBearing) >= 0.001) {
+        map.setBearing(previousState.lastAppliedBearing)
+      }
+    }
     rotateState = null
     pendingClientX = null
     removeActiveListeners()
@@ -147,6 +230,7 @@ export function initDesktopShiftDragRotate (map, options = {}) {
       startBearing: finiteNumber(startBearing),
       lastAppliedBearing: finiteNumber(startBearing),
       wasDraggingEnabled: Boolean(map.dragging?.enabled?.()),
+      previewActive: rotationPreview?.start?.() === true,
     }
     pendingClientX = rotateState.startX
 
@@ -168,6 +252,7 @@ export function initDesktopShiftDragRotate (map, options = {}) {
       if (frameId !== null) cancelFrame(frameId)
       frameId = null
       pendingClientX = null
+      rotationPreview?.finish?.()
       container.classList?.remove('map-shift-rotating')
     }
     container.removeEventListener('mousedown', onMouseDown, true)

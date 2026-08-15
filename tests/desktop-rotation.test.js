@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  createLeafletRotationPreview,
   getDesktopDragBearing,
   initDesktopShiftDragRotate,
 } from '../src/map/desktop-rotation.js'
@@ -37,6 +38,9 @@ function createRotationFixture () {
   const windowLike = new FakeEventTarget()
   const frames = new Map()
   const bearings = []
+  const previewBearings = []
+  let previewFinishCount = 0
+  let previewStartCount = 0
   const rotateEndBearings = []
   let nextFrameId = 1
   let draggingEnabled = true
@@ -68,6 +72,19 @@ function createRotationFixture () {
       return frameId
     },
     cancelFrame: frameId => frames.delete(frameId),
+    preview: {
+      start: () => {
+        previewStartCount += 1
+        return true
+      },
+      update: ({ bearing }) => {
+        previewBearings.push(bearing)
+        return true
+      },
+      finish: () => {
+        previewFinishCount += 1
+      },
+    },
     onRotateEnd: event => rotateEndBearings.push(event.bearing),
   })
 
@@ -89,6 +106,9 @@ function createRotationFixture () {
     },
     get draggingEnabled () { return draggingEnabled },
     get pendingFrameCount () { return frames.size },
+    get previewFinishCount () { return previewFinishCount },
+    get previewStartCount () { return previewStartCount },
+    previewBearings,
     rotateEndBearings,
   }
 }
@@ -112,7 +132,7 @@ test('桌面拖拽按观察方向计算角度，向右拖动时地图内容逆�
   assert.equal(getDesktopDragBearing(30, 100, 60), 50)
 })
 
-test('Shift 拖拽将高频 mousemove 合并为每个动画帧一次旋转', () => {
+test('Shift 拖拽每帧只更新合成层预览，松手后一次提交真实 bearing', () => {
   const fixture = createRotationFixture()
   fixture.container.emit('mousedown', mouseEvent())
 
@@ -126,14 +146,19 @@ test('Shift 拖拽将高频 mousemove 合并为每个动画帧一次旋转', () 
 
   assert.equal(fixture.pendingFrameCount, 1)
   assert.deepEqual(fixture.bearings, [])
+  assert.deepEqual(fixture.previewBearings, [])
   assert.deepEqual(fixture.rotateEndBearings, [])
   assert.equal(fixture.flushFrame(), true)
-  assert.deepEqual(fixture.bearings, [10])
+  assert.deepEqual(fixture.bearings, [])
+  assert.deepEqual(fixture.previewBearings, [10])
 
   fixture.documentLike.emit('mouseup', mouseEvent({ buttons: 0, clientX: 140 }))
   assert.equal(fixture.controller.isActive(), false)
   assert.equal(fixture.draggingEnabled, true)
   assert.equal(fixture.container.classList.contains('map-shift-rotating'), false)
+  assert.deepEqual(fixture.bearings, [10])
+  assert.equal(fixture.previewStartCount, 1)
+  assert.equal(fixture.previewFinishCount, 1)
   assert.deepEqual(fixture.rotateEndBearings, [10])
   fixture.controller.destroy()
 })
@@ -171,6 +196,7 @@ test('销毁活动控制器会恢复地图拖拽但不提交一次伪造的旋�
 
   assert.equal(fixture.controller.isActive(), false)
   assert.equal(fixture.draggingEnabled, true)
+  assert.equal(fixture.previewFinishCount, 1)
   assert.deepEqual(fixture.rotateEndBearings, [])
 })
 
@@ -182,5 +208,66 @@ test('地图卸载时只清理控制器，不重新启用已由 Leaflet 销毁�
 
   assert.equal(fixture.controller.isActive(), false)
   assert.equal(fixture.draggingEnabled, false)
+  assert.equal(fixture.previewFinishCount, 1)
   assert.deepEqual(fixture.rotateEndBearings, [])
+})
+
+test('合成层预览不可用时回退为逐帧 setBearing', () => {
+  const fixture = createRotationFixture()
+  fixture.controller.destroy()
+
+  const container = new FakeEventTarget()
+  const documentLike = new FakeEventTarget()
+  let currentBearing = 30
+  const bearings = []
+  const frames = []
+  const map = {
+    getContainer: () => container,
+    getBearing: () => currentBearing,
+    setBearing: bearing => {
+      currentBearing = bearing
+      bearings.push(bearing)
+    },
+    dragging: { enabled: () => false },
+  }
+  const controller = initDesktopShiftDragRotate(map, {
+    document: documentLike,
+    window: new FakeEventTarget(),
+    preview: null,
+    requestFrame: callback => {
+      frames.push(callback)
+      return frames.length
+    },
+    cancelFrame: () => {},
+  })
+
+  container.emit('mousedown', mouseEvent())
+  documentLike.emit('mousemove', mouseEvent({ clientX: 140 }))
+  frames.shift()?.()
+
+  assert.deepEqual(bearings, [10])
+  controller.destroy()
+})
+
+test('Leaflet pane 预览恢复已有内联样式', () => {
+  const style = {
+    rotate: '',
+    transform: 'translate3d(4px, 6px, 0)',
+    transformOrigin: '',
+    willChange: '',
+  }
+  const preview = createLeafletRotationPreview({
+    _mapPane: { style },
+    _getPixelCenter: () => ({ x: 320, y: 240 }),
+  })
+
+  assert.equal(preview.start(), true)
+  preview.update({ delta: -20 })
+  assert.equal(style.rotate, '-20deg')
+  assert.equal(style.transformOrigin, '320px 240px')
+  preview.finish()
+  assert.equal(style.rotate, '')
+  assert.equal(style.transform, 'translate3d(4px, 6px, 0)')
+  assert.equal(style.transformOrigin, '')
+  assert.equal(style.willChange, '')
 })

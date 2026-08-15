@@ -11,6 +11,7 @@ import {
 } from './kml-media-gallery.js'
 import { getKmlFeatureDisplayName } from './kml-feature-name.js'
 import { openMediaPreview } from '../ui/media-preview.js'
+import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
 import {
   bindFavoriteActionButtons,
   renderFavoriteActionButton,
@@ -167,13 +168,25 @@ function buildPreviewItems (kmlFile, feature, view = null) {
   }))
 }
 
+export function hasKmlFeaturePreviewMedia (feature) {
+  return getKmlFeaturePopupMedia(feature, {
+    contentOptions: getKmlContentOptions(),
+  }).total > 0
+}
+
 function getKmlMediaFeatureKey (item) {
   const kmlId = String(item?.kmlId || '')
   const featureId = String(item?.featureId || '')
   return kmlId && featureId ? `${kmlId}:${featureId}` : ''
 }
 
-function openKmlMediaFromSelection (kmlFile, feature, selection, trigger, view = null) {
+export function openKmlFeatureMediaPreview (kmlFile, feature, options = {}) {
+  const {
+    selection = {},
+    trigger = null,
+    view = null,
+    linkMapFeatures = !isTouchFirstEnvironment(),
+  } = options
   const items = buildPreviewItems(kmlFile, feature, view)
   if (!items.length) return false
   let activeFeatureKey = getKmlMediaFeatureKey({
@@ -189,11 +202,20 @@ function openKmlMediaFromSelection (kmlFile, feature, selection, trigger, view =
     trigger,
     collectionTitle: String(kmlFile?.name || '').trim() || '未命名 KML',
     onActiveItemChange: item => {
+      if (!linkMapFeatures) return
       const nextFeatureKey = getKmlMediaFeatureKey(item)
       if (!nextFeatureKey || nextFeatureKey === activeFeatureKey) return
       activeFeatureKey = nextFeatureKey
       window.activateKmlFeatureForMedia?.(item)
     },
+  })
+}
+
+function openKmlMediaFromSelection (kmlFile, feature, selection, trigger, view = null) {
+  return openKmlFeatureMediaPreview(kmlFile, feature, {
+    selection,
+    trigger,
+    view,
   })
 }
 

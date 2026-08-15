@@ -22,6 +22,11 @@ export function clampMediaPreviewScale (scale) {
   return Math.min(MEDIA_PREVIEW_MAX_SCALE, Math.max(MEDIA_PREVIEW_MIN_SCALE, value))
 }
 
+export function getDefaultMediaPreviewTrackExpanded (total, touchFirst = false) {
+  const count = Math.max(0, Number.parseInt(total, 10) || 0)
+  return count > 1 && !touchFirst
+}
+
 export function normalizeMediaPreviewItems (items, fallbackType = '') {
   if (!Array.isArray(items)) return []
   return items.flatMap(item => {
