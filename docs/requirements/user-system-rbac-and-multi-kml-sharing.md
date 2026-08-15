@@ -3,7 +3,8 @@
 > 状态：核心功能已实施（验收中）  
 > 版本：v1.0  
 > 日期：2026-08-05  
-> 适用范围：map-service 前台地图、用户中心、管理后台及 `/api/v1` 服务端接口
+> 适用范围：map-service 前台地图、用户中心、管理后台及 `/api/v1` 服务端接口  
+> 专题扩展：[KML 分享空间访问控制与半公开地图需求](./kml-share-spatial-access-and-semi-public-map.md)
 
 ## 1. 文档目的
 
