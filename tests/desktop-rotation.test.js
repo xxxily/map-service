@@ -258,16 +258,121 @@ test('Leaflet pane 预览恢复已有内联样式', () => {
   }
   const preview = createLeafletRotationPreview({
     _mapPane: { style },
-    _getPixelCenter: () => ({ x: 320, y: 240 }),
+    getSize: () => ({ x: 640, y: 480 }),
+    _getMapPanePos: () => ({ x: 4, y: 6 }),
   })
 
   assert.equal(preview.start(), true)
   preview.update({ delta: -20 })
-  assert.equal(style.rotate, '-20deg')
-  assert.equal(style.transformOrigin, '320px 240px')
+  assert.equal(style.rotate, '')
+  assert.equal(style.transformOrigin, '0 0')
+  assert.match(style.transform, /^translate3d\(.+px, .+px, 0\) rotate\(-20deg\)$/)
   preview.finish()
   assert.equal(style.rotate, '')
   assert.equal(style.transform, 'translate3d(4px, 6px, 0)')
   assert.equal(style.transformOrigin, '')
   assert.equal(style.willChange, '')
+})
+
+test('Leaflet pane 预览围绕页面视觉中心旋转，兼容非零 pane 平移', () => {
+  const style = {
+    rotate: '',
+    transform: 'translate3d(0px, 40px, 0px)',
+    transformOrigin: '',
+    willChange: '',
+  }
+  const preview = createLeafletRotationPreview({
+    _mapPane: { style },
+    getSize: () => ({ x: 1280, y: 800 }),
+    _getMapPanePos: () => ({ x: 0, y: 40 }),
+  })
+
+  assert.equal(preview.start(), true)
+  assert.equal(preview.update({ delta: -100 }), true)
+  assert.equal(
+    style.transform,
+    'translate3d(396.604px, 1092.79px, 0) rotate(-100deg)',
+  )
+  preview.finish()
+})
+
+test('Leaflet pane 预览在缺少地图尺寸或 pane 位置时回退', () => {
+  const style = {
+    rotate: '',
+    transform: 'translate3d(0px, 0px, 0px)',
+    transformOrigin: '',
+    willChange: '',
+  }
+  const preview = createLeafletRotationPreview({ _mapPane: { style } })
+
+  assert.equal(preview.start(), false)
+  assert.equal(preview.update({ delta: 10 }), false)
+})
+
+test('Leaflet pane 处于缩放复合变换时不接管预览', () => {
+  const style = {
+    rotate: '',
+    transform: 'translate3d(0px, 40px, 0px) scale(1.1)',
+    transformOrigin: '',
+    willChange: '',
+  }
+  const preview = createLeafletRotationPreview({
+    _mapPane: { style },
+    getSize: () => ({ x: 1280, y: 800 }),
+    _getMapPanePos: () => ({ x: 0, y: 40 }),
+  })
+
+  assert.equal(preview.start(), false)
+  assert.equal(style.transform, 'translate3d(0px, 40px, 0px) scale(1.1)')
+})
+
+test('Leaflet pane 预览遇到平移变化时保留最新变换并回退', () => {
+  const style = {
+    rotate: '',
+    transform: 'translate3d(0px, 40px, 0px)',
+    transformOrigin: '',
+    willChange: '',
+  }
+  let panePosition = { x: 0, y: 40 }
+  const preview = createLeafletRotationPreview({
+    _mapPane: { style },
+    getSize: () => ({ x: 1280, y: 800 }),
+    _getMapPanePos: () => panePosition,
+  })
+
+  assert.equal(preview.start(), true)
+  assert.equal(preview.update({ delta: -30 }), true)
+  panePosition = { x: -64, y: 12 }
+  style.transform = 'translate3d(-64px, 12px, 0) scale(1.2)'
+  assert.equal(preview.update({ delta: -40 }), false)
+  preview.finish()
+
+  assert.equal(style.transform, 'translate3d(-64px, 12px, 0) scale(1.2)')
+  assert.equal(style.transformOrigin, '')
+  assert.equal(style.willChange, '')
+})
+
+test('Leaflet pane 缩放状态先于外部 transform 时清除自有预览', () => {
+  const style = {
+    rotate: '',
+    transform: 'translate3d(0px, 40px, 0px)',
+    transformOrigin: '',
+    willChange: '',
+  }
+  const map = {
+    _animatingZoom: false,
+    _mapPane: { style },
+    getSize: () => ({ x: 1280, y: 800 }),
+    _getMapPanePos: () => ({ x: 0, y: 40 }),
+  }
+  const preview = createLeafletRotationPreview(map)
+
+  assert.equal(preview.start(), true)
+  assert.equal(preview.update({ delta: -30 }), true)
+  assert.notEqual(style.transform, 'translate3d(0px, 40px, 0px)')
+  map._animatingZoom = true
+  assert.equal(preview.update({ delta: -40 }), false)
+  preview.finish()
+
+  assert.equal(style.transform, 'translate3d(0px, 40px, 0px)')
 })

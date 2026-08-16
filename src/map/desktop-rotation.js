@@ -28,16 +28,47 @@ function getFrameScheduler (options = {}) {
   }
 }
 
-function getPreviewOrigin (map) {
-  const privateCenter = map?._getPixelCenter?.()
-  if (Number.isFinite(privateCenter?.x) && Number.isFinite(privateCenter?.y)) {
-    return privateCenter
-  }
-  const size = map?.getSize?.()
-  if (Number.isFinite(size?.x) && Number.isFinite(size?.y)) {
-    return { x: size.x / 2, y: size.y / 2 }
+function getMapPanePosition (map) {
+  const privatePosition = map?._getMapPanePos?.() || map?._mapPane?._leaflet_pos
+  if (Number.isFinite(privatePosition?.x) && Number.isFinite(privatePosition?.y)) {
+    return { x: privatePosition.x, y: privatePosition.y }
   }
   return null
+}
+
+function getMapSize (map) {
+  const size = map?.getSize?.()
+  if (Number.isFinite(size?.x) && Number.isFinite(size?.y)) {
+    return { x: size.x, y: size.y }
+  }
+  return null
+}
+
+function pointsEqual (left, right, tolerance = 0.01) {
+  return Boolean(left && right) &&
+    Math.abs(left.x - right.x) <= tolerance &&
+    Math.abs(left.y - right.y) <= tolerance
+}
+
+function rotatePointAround (point, radians, pivot) {
+  const sin = Math.sin(radians)
+  const cos = Math.cos(radians)
+  const x = point.x - pivot.x
+  const y = point.y - pivot.y
+  return {
+    x: x * cos - y * sin + pivot.x,
+    y: x * sin + y * cos + pivot.y,
+  }
+}
+
+function formatCssNumber (value) {
+  if (!Number.isFinite(value) || Math.abs(value) < 0.0005) return '0'
+  return String(Number(value.toFixed(3)))
+}
+
+function canReplaceMapPaneTransform (transform) {
+  const value = String(transform || '').trim()
+  return value === '' || value === 'none' || /^translate(?:3d)?\([^)]*\)$/i.test(value)
 }
 
 export function createLeafletRotationPreview (map) {
@@ -45,41 +76,56 @@ export function createLeafletRotationPreview (map) {
   if (!pane?.style) return null
 
   let originalStyle = null
-  let useIndividualRotate = false
 
   const start = () => {
-    const origin = getPreviewOrigin(map)
-    if (!origin) return false
+    const size = getMapSize(map)
+    const panePosition = getMapPanePosition(map)
+    if (!size || !panePosition || !canReplaceMapPaneTransform(pane.style.transform)) return false
+
     originalStyle = {
       rotate: pane.style.rotate,
       transform: pane.style.transform,
       transformOrigin: pane.style.transformOrigin,
       willChange: pane.style.willChange,
+      panePosition,
+      size,
+      expectedTransform: pane.style.transform,
     }
-    useIndividualRotate = 'rotate' in pane.style
-    pane.style.transformOrigin = `${origin.x}px ${origin.y}px`
-    pane.style.willChange = useIndividualRotate ? 'rotate' : 'transform'
+    pane.style.rotate = ''
+    pane.style.transformOrigin = '0 0'
+    pane.style.willChange = 'transform'
     return true
   }
 
   const update = ({ delta }) => {
     if (!originalStyle) return false
-    const rotation = `${finiteNumber(delta)}deg`
-    if (useIndividualRotate) {
-      pane.style.rotate = rotation
-    } else {
-      const baseTransform = originalStyle.transform && originalStyle.transform !== 'none'
-        ? `${originalStyle.transform} `
-        : ''
-      pane.style.transform = `${baseTransform}rotate(${rotation})`
-    }
+    const size = getMapSize(map)
+    const panePosition = getMapPanePosition(map)
+    const transformChanged = pane.style.transform !== originalStyle.expectedTransform
+    const geometryChanged = !pointsEqual(panePosition, originalStyle.panePosition) ||
+      !pointsEqual(size, originalStyle.size)
+    if (!size || !panePosition || transformChanged || geometryChanged || map?._animatingZoom) return false
+
+    const degrees = finiteNumber(delta)
+    const visualCenter = { x: size.x / 2, y: size.y / 2 }
+    // Rotate Leaflet's existing pane translation around the viewport center so
+    // this temporary parent transform matches the final setBearing transform.
+    const translatedPanePosition = rotatePointAround(
+      panePosition,
+      degrees * Math.PI / 180,
+      visualCenter,
+    )
+    pane.style.transform = `translate3d(${formatCssNumber(translatedPanePosition.x)}px, ${formatCssNumber(translatedPanePosition.y)}px, 0) rotate(${degrees}deg)`
+    originalStyle.expectedTransform = pane.style.transform
     return true
   }
 
   const finish = () => {
     if (!originalStyle) return
     pane.style.rotate = originalStyle.rotate
-    pane.style.transform = originalStyle.transform
+    if (pane.style.transform === originalStyle.expectedTransform) {
+      pane.style.transform = originalStyle.transform
+    }
     pane.style.transformOrigin = originalStyle.transformOrigin
     pane.style.willChange = originalStyle.willChange
     originalStyle = null
