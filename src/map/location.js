@@ -11,6 +11,10 @@ import {
   assessPositionSample,
   createContinuousLocationController,
 } from './continuous-location.js'
+import {
+  createLatestLocationRequestCoordinator,
+  createLocationCameraCoordinator,
+} from './location-camera.js'
 import { createLocationLifecycleTarget } from './location-lifecycle.js'
 import {
   createTrackRecordingSession,
@@ -34,6 +38,114 @@ const MAX_RENDERED_HISTORY_POINTS = VIEWPORT_MAX_POINTS // 保留常量作为 ha
 const TRACK_CHECKPOINT_MIN_INTERVAL_MS = 15000
 const TRACK_PERSIST_RETRY_BASE_MS = 5000
 const TRACK_PERSIST_RETRY_MAX_MS = 5 * 60_000
+const singleLocationRequestCoordinator2d = createLatestLocationRequestCoordinator()
+const locationCameraCoordinators2d = new WeakMap()
+
+function isLeafletLocationInteractionActive (map) {
+  const draggable = map?.dragging?._draggable
+  return Boolean(
+    map?.dragging?.moving?.() ||
+    (draggable && L.Draggable?._dragging === draggable) ||
+    map?.touchZoom?._zooming ||
+    map?._animatingZoom ||
+    map?._panAnim?._inProgress
+  )
+}
+
+function subscribeLeafletLocationInteractionEnd (map, callback) {
+  let scheduled = false
+  const handleEnd = () => {
+    if (scheduled) return
+    scheduled = true
+    Promise.resolve().then(() => {
+      scheduled = false
+      callback()
+    })
+  }
+  const mapEvents = 'dragend moveend zoomend'
+  map?.on?.(mapEvents, handleEnd)
+  if (typeof document !== 'undefined') {
+    document.addEventListener('mouseup', handleEnd)
+    document.addEventListener('touchend', handleEnd)
+    document.addEventListener('touchcancel', handleEnd)
+  }
+  return () => {
+    map?.off?.(mapEvents, handleEnd)
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('mouseup', handleEnd)
+      document.removeEventListener('touchend', handleEnd)
+      document.removeEventListener('touchcancel', handleEnd)
+    }
+  }
+}
+
+function getLocationCameraCoordinator2d (map) {
+  let coordinator = locationCameraCoordinators2d.get(map)
+  if (coordinator) return coordinator
+  coordinator = createLocationCameraCoordinator({
+    isInteractionActive: () => isLeafletLocationInteractionActive(map),
+    subscribeInteractionEnd: callback => subscribeLeafletLocationInteractionEnd(map, callback),
+    applyTarget: ({ position, zoom }) => {
+      map.stop?.()
+      map.setView(position, zoom, { animate: false, reset: true })
+    },
+  })
+  locationCameraCoordinators2d.set(map, coordinator)
+  map?.once?.('unload', () => {
+    singleLocationRequestCoordinator2d.cancel()
+    coordinator.destroy()
+    locationCameraCoordinators2d.delete(map)
+  })
+  return coordinator
+}
+
+function requestLocationCameraUpdate2d (map, position, zoom) {
+  return getLocationCameraCoordinator2d(map).update({ position, zoom })
+}
+
+function beginSingleLocationRequest2d (map) {
+  const token = singleLocationRequestCoordinator2d.begin()
+  let released = false
+  const cancelOnNavigation = () => token.abort()
+  const container = map?.getContainer?.()
+  const releaseNavigationGuard = () => {
+    if (released) return
+    released = true
+    map?.off?.('movestart zoomstart', cancelOnNavigation)
+    container?.removeEventListener?.('pointerdown', cancelOnNavigation)
+    container?.removeEventListener?.('touchstart', cancelOnNavigation)
+    container?.removeEventListener?.('wheel', cancelOnNavigation)
+    token.signal?.removeEventListener?.('abort', releaseNavigationGuard)
+  }
+  map?.on?.('movestart zoomstart', cancelOnNavigation)
+  container?.addEventListener?.('pointerdown', cancelOnNavigation)
+  container?.addEventListener?.('touchstart', cancelOnNavigation)
+  container?.addEventListener?.('wheel', cancelOnNavigation)
+  token.signal?.addEventListener?.('abort', releaseNavigationGuard, { once: true })
+  return {
+    generation: token.generation,
+    signal: token.signal,
+    isCurrent: token.isCurrent,
+    releaseNavigationGuard,
+    finish: () => {
+      releaseNavigationGuard()
+      token.complete()
+    },
+  }
+}
+
+function restoreCancelledSingleLocationStatus2d () {
+  if (!intervalLocationState.active) {
+    updateLocationStatusBar2d()
+    return
+  }
+  const lastPosition = intervalLocationState.lastPosition
+  updateLocationStatusBar2d(
+    '持续定位中',
+    lastPosition?.accuracy,
+    lastPosition?.timestamp,
+  )
+}
 
 function calculateBearing (lat1, lng1, lat2, lng2) {
   const dLng = (lng2 - lng1) * Math.PI / 180
@@ -301,7 +413,7 @@ export function addTargetMarker (map, location, options = {}) {
 
   const markerOptions = {
     opacity: 1,
-    draggable: true,
+    draggable: false,
   }
 
   // 持续定位状态下使用带呼吸灯效果的 divIcon
@@ -316,11 +428,6 @@ export function addTargetMarker (map, location, options = {}) {
 
   const marker = L.marker(location, markerOptions).addTo(map)
   currentLocationMarker = marker
-  marker.on('dragend', (event) => {
-    const latlng = event.target.getLatLng()
-    const coords = `${latlng.lat},${latlng.lng},${map.getZoom()}`
-    window.history.replaceState(null, '', `?coords=${coords}`)
-  })
 
   if (options.detailInfo) {
     const popupContent = createLocationPopupContent(options.detailInfo)
@@ -464,7 +571,7 @@ async function getFilteredPosition2d (map, geolocation, customZoom, isIntervalUp
   }
 }
 
-export async function updatePosition (map, geolocation = null, customZoom = 18, isIntervalUpdate = false, runtime = {}) {
+async function updatePositionInternal (map, geolocation, customZoom, isIntervalUpdate, runtime, singleRequest) {
   if (!isIntervalUpdate) {
     updateLocationStatusBar2d('正在定位...')
   }
@@ -486,12 +593,10 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
     return false
   }
 
-  if (runtime.signal?.aborted) return false
+  if (runtime.signal?.aborted || (singleRequest && !singleRequest.isCurrent())) return false
+  singleRequest?.releaseNavigationGuard()
 
   const { result, mapPosition, locationSample, reanchored } = filtered
-
-  // 更新地图视口与主定位图标
-  map.setView(mapPosition, customZoom)
   
   // 若是持续定位模式，记录历史轨迹点
   if (isIntervalUpdate) {
@@ -653,7 +758,34 @@ export async function updatePosition (map, geolocation = null, customZoom = 18, 
       staySeconds: 0
     }, false)
   }
+  const targetZoom = isIntervalUpdate ? intervalLocationState.zoomLevel : customZoom
+  requestLocationCameraUpdate2d(map, mapPosition, targetZoom)
   return true
+}
+
+export async function updatePosition (map, geolocation = null, customZoom = 18, isIntervalUpdate = false, runtime = {}) {
+  const singleRequest = isIntervalUpdate ? null : beginSingleLocationRequest2d(map)
+  const effectiveRuntime = singleRequest
+    ? { ...runtime, signal: singleRequest.signal }
+    : runtime
+
+  try {
+    return await updatePositionInternal(
+      map,
+      geolocation,
+      customZoom,
+      isIntervalUpdate,
+      effectiveRuntime,
+      singleRequest,
+    )
+  } finally {
+    singleRequest?.finish()
+    if (singleRequest?.signal.aborted &&
+        singleRequest.generation === singleLocationRequestCoordinator2d.getGeneration() &&
+        !singleLocationRequestCoordinator2d.isActive()) {
+      restoreCancelledSingleLocationStatus2d()
+    }
+  }
 }
 
 let intervalLocationController2d = null
@@ -731,6 +863,8 @@ export function configureIntervalLocation2d (map, {
   onlyLine = intervalLocationState.onlyLine,
   autoRotate = intervalLocationState.autoRotate,
 }) {
+  singleLocationRequestCoordinator2d.cancel()
+  getLocationCameraCoordinator2d(map).cancel()
   const wasRecording = intervalLocationState.recordTrack
   let finalPersistSucceeded = wasRecording && !recordTrack &&
     hasTrackRecordingData(intervalLocationState.recordingSession)
@@ -773,6 +907,8 @@ export function configureIntervalLocation2d (map, {
 
 // 启动 2D 持续定位
 export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false, onlyLine = false, autoRotate = false) {
+  singleLocationRequestCoordinator2d.cancel()
+  getLocationCameraCoordinator2d(map).cancel()
   intervalLocationController2d?.destroy()
   intervalLocationController2d = null
 
@@ -823,6 +959,8 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHi
 
 // 停止 2D 持续定位
 export function stopIntervalLocation2d (map) {
+  singleLocationRequestCoordinator2d.cancel()
+  getLocationCameraCoordinator2d(map).cancel()
   // 先撤销用户运行意图并使旧 generation 失效，随后才执行最终落盘。
   intervalLocationController2d?.stop()
   intervalLocationController2d?.destroy()
@@ -867,11 +1005,7 @@ export function stopIntervalLocation2d (map) {
         // 清除呼吸灯 Marker
         map.removeLayer(layer)
         // 重新绘制普通靶心 Marker
-        currentLocationMarker = L.marker(latlng, { opacity: 1, draggable: true }).addTo(map)
-        currentLocationMarker.on('dragend', (event) => {
-          const coords = `${event.target.getLatLng().lat},${event.target.getLatLng().lng},${map.getZoom()}`
-          window.history.replaceState(null, '', `?coords=${coords}`)
-        })
+        currentLocationMarker = L.marker(latlng, { opacity: 1, draggable: false }).addTo(map)
       }
     }
   })

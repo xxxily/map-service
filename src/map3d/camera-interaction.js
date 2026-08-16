@@ -365,6 +365,8 @@ export function installMap3dCameraInteraction (options = {}) {
     keyboardPanPixels = DEFAULT_KEYBOARD_PAN_CSS_PIXELS,
     keyboardZoomFraction = DEFAULT_KEYBOARD_ZOOM_FRACTION,
     onCameraChanged,
+    onInteractionStart,
+    onInteractionEnd,
     window: windowLike = getGlobalWindow(),
     document: documentLike = getGlobalDocument(),
   } = options
@@ -396,6 +398,8 @@ export function installMap3dCameraInteraction (options = {}) {
   let previousTouchAction = null
   let previousTabIndex = null
   let assignedTabIndex = false
+  let interactionActive = false
+  let wheelInteractionTimer = null
   const capturedPointerIds = new Set()
 
   const addListener = (target, type, listener, listenerOptions) => {
@@ -418,6 +422,40 @@ export function installMap3dCameraInteraction (options = {}) {
     } catch (err) {
       // State reporting must not interrupt an active camera gesture.
     }
+  }
+
+  const beginInteraction = () => {
+    if (interactionActive) return
+    interactionActive = true
+    try {
+      onInteractionStart?.()
+    } catch (err) {
+      // Camera ownership reporting must not interrupt the active gesture.
+    }
+  }
+
+  const endInteraction = () => {
+    if (!interactionActive) return
+    interactionActive = false
+    try {
+      onInteractionEnd?.()
+    } catch (err) {
+      // Camera ownership reporting must not interrupt gesture cleanup.
+    }
+  }
+
+  const clearWheelInteractionTimer = () => {
+    if (wheelInteractionTimer === null) return
+    clearTimeout(wheelInteractionTimer)
+    wheelInteractionTimer = null
+  }
+
+  const scheduleWheelInteractionEnd = () => {
+    clearWheelInteractionTimer()
+    wheelInteractionTimer = setTimeout(() => {
+      wheelInteractionTimer = null
+      if (!gesture) endInteraction()
+    }, 160)
   }
 
   const screenPoint = (eventOrPoint) => {
@@ -637,6 +675,7 @@ export function installMap3dCameraInteraction (options = {}) {
     if (!hasReachedDragThreshold(gesture.startPosition, position, dragThreshold)) return false
 
     const previousPosition = gesture.previousPosition
+    beginInteraction()
     capturePointer(pointerId)
     suspendController()
     gesture = {
@@ -648,6 +687,7 @@ export function installMap3dCameraInteraction (options = {}) {
   }
 
   const beginOrbit = (pointerId, position, buttonMask) => {
+    beginInteraction()
     suspendController()
     gesture = {
       kind: 'orbit',
@@ -667,6 +707,7 @@ export function installMap3dCameraInteraction (options = {}) {
   const beginTwoTouchGesture = () => {
     const metrics = currentTwoTouchMetrics()
     if (!metrics) return
+    beginInteraction()
     suspendController()
     const midpoint = createCartesian2(cesium, metrics.midpoint.x, metrics.midpoint.y)
     gesture = {
@@ -679,10 +720,12 @@ export function installMap3dCameraInteraction (options = {}) {
   }
 
   const cancel = () => {
+    clearWheelInteractionTimer()
     for (const pointerId of [...capturedPointerIds]) releasePointer(pointerId)
     pointerState.clear()
     gesture = null
     restoreController()
+    endInteraction()
   }
 
   const onPointerDown = (event) => {
@@ -844,6 +887,7 @@ export function installMap3dCameraInteraction (options = {}) {
       } else {
         gesture = null
         restoreController()
+        endInteraction()
       }
       return
     }
@@ -852,6 +896,7 @@ export function installMap3dCameraInteraction (options = {}) {
       releasePointer(event.pointerId)
       gesture = null
       restoreController()
+      endInteraction()
     }
   }
 
@@ -868,11 +913,13 @@ export function installMap3dCameraInteraction (options = {}) {
     })
     if (fraction === 0) return
     preventHandled(event)
+    beginInteraction()
     suspendController()
     try {
       zoomCameraAt(position, fraction)
     } finally {
       if (!gesture) restoreController()
+      if (!gesture) scheduleWheelInteractionEnd()
     }
   }
 
@@ -885,6 +932,7 @@ export function installMap3dCameraInteraction (options = {}) {
     if (!command) return
 
     preventHandled(event)
+    beginInteraction()
     suspendController()
     try {
       const center = getCanvasCenter()
@@ -896,6 +944,7 @@ export function installMap3dCameraInteraction (options = {}) {
       }
     } finally {
       if (!gesture) restoreController()
+      if (!gesture) endInteraction()
     }
   }
 

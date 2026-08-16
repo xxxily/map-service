@@ -39,6 +39,9 @@ import {
   configureIntervalLocation3d,
   startIntervalLocation3d,
   stopIntervalLocation3d,
+  setLocationCameraInteraction3d,
+  cancelLocationCamera3d,
+  destroyLocationCamera3d,
   initLocationHistoryPanel3d
 } from './map3d/location.js'
 import {
@@ -841,6 +844,16 @@ async function init3dEarth () {
     return
   }
   const shareViewConfig = activeShare?.manifest?.viewConfig || {}
+  if (viewer) {
+    const previousViewer = viewer
+    if (intervalLocationState3d.active) stopIntervalLocation3d(previousViewer)
+    else cancelLocationCamera3d(previousViewer)
+    cameraInteraction?.destroy()
+    cameraInteraction = null
+    destroyLocationCamera3d(previousViewer)
+    if (previousViewer.isDestroyed?.() !== true) previousViewer.destroy?.()
+    viewer = null
+  }
   // 1. 初始化 Viewer 并移除大部分内置控件，打造极简前卫外观
   viewer = new Viewer('cesiumContainer', {
     animation: false,
@@ -860,8 +873,8 @@ async function init3dEarth () {
   // All camera input is normalized by the adapter below so Cesium defaults cannot race it.
   const controller = viewer.scene.screenSpaceCameraController
   const canvas = viewer.canvas
+  const interactionViewer = viewer
   controller.enableInputs = false
-  cameraInteraction?.destroy()
   cameraInteraction = installMap3dCameraInteraction({
     viewer,
     cesium: Cesium,
@@ -869,6 +882,8 @@ async function init3dEarth () {
     getNavigationMode: () => interactionMode,
     isToolInteractionActive: isMapToolInteractionActive,
     onNavigationModeRequest: () => setInteractionMode('3d'),
+    onInteractionStart: () => setLocationCameraInteraction3d(interactionViewer, true),
+    onInteractionEnd: () => setLocationCameraInteraction3d(interactionViewer, false),
     onCameraChanged: () => {
       updateCameraStatus()
       syncCameraStateToUrl()

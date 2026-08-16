@@ -372,6 +372,45 @@ test('plain left clicks pass through, while drag starts after the CSS-pixel thre
   interaction.destroy()
 })
 
+test('interaction callbacks ignore clicks and bracket real drag, wheel, and keyboard navigation', async () => {
+  const events = []
+  const { canvas, interaction, windowLike } = createCameraInteractionFixture({
+    onInteractionStart: () => events.push('start'),
+    onInteractionEnd: () => events.push('end'),
+  })
+
+  canvas.emit('pointerdown', createPointerEvent(30, 20, 20))
+  canvas.emit('pointerup', createPointerEvent(30, 20, 20, { buttons: 0 }))
+  assert.deepEqual(events, [], 'plain feature clicks must not take camera ownership')
+
+  canvas.emit('pointerdown', createPointerEvent(31, 40, 40))
+  windowLike.emit('pointermove', createPointerEvent(31, 52, 40))
+  assert.deepEqual(events, ['start'])
+  windowLike.emit('pointerup', createPointerEvent(31, 52, 40, { buttons: 0 }))
+  assert.deepEqual(events, ['start', 'end'])
+
+  canvas.emit('wheel', {
+    clientX: 100,
+    clientY: 80,
+    deltaMode: 0,
+    deltaY: -120,
+    preventDefault () {},
+    stopImmediatePropagation () {},
+  })
+  assert.deepEqual(events, ['start', 'end', 'start'])
+  await new Promise(resolve => setTimeout(resolve, 180))
+  assert.deepEqual(events, ['start', 'end', 'start', 'end'])
+
+  canvas.emit('keydown', {
+    key: 'ArrowRight',
+    target: canvas,
+    preventDefault () {},
+    stopImmediatePropagation () {},
+  })
+  assert.deepEqual(events, ['start', 'end', 'start', 'end', 'start', 'end'])
+  interaction.destroy()
+})
+
 test('compatibility profile keeps pan while disabling shift and middle-button orbit', () => {
   const { camera, cameraCalls, canvas, interaction, windowLike } = createCameraInteractionFixture({
     advancedGestures: false,

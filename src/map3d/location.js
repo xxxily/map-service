@@ -19,6 +19,10 @@ import {
   assessPositionSample,
   createContinuousLocationController,
 } from '../map/continuous-location.js'
+import {
+  createLatestLocationRequestCoordinator,
+  createLocationCameraCoordinator,
+} from '../map/location-camera.js'
 import { createLocationLifecycleTarget } from '../map/location-lifecycle.js'
 import { startLocationKeepAlive, stopLocationKeepAlive } from '../map/location-keepalive.js'
 import {
@@ -43,6 +47,122 @@ const MAX_RENDERED_HISTORY_POINTS = VIEWPORT_MAX_POINTS // 保留常量作为 ha
 const TRACK_CHECKPOINT_MIN_INTERVAL_MS = 15000
 const TRACK_PERSIST_RETRY_BASE_MS = 5000
 const TRACK_PERSIST_RETRY_MAX_MS = 5 * 60_000
+const singleLocationRequestCoordinator3d = createLatestLocationRequestCoordinator()
+const locationCameraRuntimes3d = new WeakMap()
+
+function subscribeCesiumEvent (event, callback) {
+  if (!event?.addEventListener) return () => {}
+  const remove = event.addEventListener(callback)
+  if (typeof remove === 'function') return remove
+  return () => event.removeEventListener?.(callback)
+}
+
+function getLocationCameraRuntime3d (viewer) {
+  let runtime = locationCameraRuntimes3d.get(viewer)
+  if (runtime) return runtime
+
+  runtime = {
+    interactionActive: false,
+    coordinator: null,
+  }
+  runtime.coordinator = createLocationCameraCoordinator({
+    isInteractionActive: () => runtime.interactionActive,
+    applyTarget: target => flyToLngLat(viewer, target.lng, target.lat, target),
+  })
+  locationCameraRuntimes3d.set(viewer, runtime)
+  return runtime
+}
+
+function getLocationCameraCoordinator3d (viewer) {
+  return getLocationCameraRuntime3d(viewer).coordinator
+}
+
+export function setLocationCameraInteraction3d (viewer, active) {
+  if (!viewer) return
+  const runtime = getLocationCameraRuntime3d(viewer)
+  const nextActive = Boolean(active)
+  if (runtime.interactionActive === nextActive) return
+
+  runtime.interactionActive = nextActive
+  if (nextActive) {
+    singleLocationRequestCoordinator3d.cancel()
+    viewer.camera?.cancelFlight?.()
+    return
+  }
+  runtime.coordinator.flush()
+}
+
+export function cancelLocationCamera3d (viewer) {
+  singleLocationRequestCoordinator3d.cancel()
+  if (!viewer) return
+  const runtime = locationCameraRuntimes3d.get(viewer)
+  if (runtime) {
+    runtime.interactionActive = false
+    runtime.coordinator.cancel()
+  }
+  viewer.camera?.cancelFlight?.()
+}
+
+export function destroyLocationCamera3d (viewer) {
+  if (!viewer) return
+  cancelLocationCamera3d(viewer)
+  const runtime = locationCameraRuntimes3d.get(viewer)
+  runtime?.coordinator?.destroy()
+  locationCameraRuntimes3d.delete(viewer)
+}
+
+function requestLocationCameraUpdate3d (viewer, position, options) {
+  return getLocationCameraCoordinator3d(viewer).update({
+    lng: position.lng,
+    lat: position.lat,
+    ...options,
+  })
+}
+
+function beginSingleLocationRequest3d (viewer) {
+  getLocationCameraCoordinator3d(viewer)
+  const token = singleLocationRequestCoordinator3d.begin()
+  let released = false
+  const cancelOnNavigation = () => token.abort()
+  const removeMoveStart = subscribeCesiumEvent(viewer?.camera?.moveStart, cancelOnNavigation)
+  const canvas = viewer?.canvas
+  canvas?.addEventListener?.('pointerdown', cancelOnNavigation)
+  canvas?.addEventListener?.('touchstart', cancelOnNavigation)
+  canvas?.addEventListener?.('wheel', cancelOnNavigation)
+  const releaseNavigationGuard = () => {
+    if (released) return
+    released = true
+    removeMoveStart()
+    canvas?.removeEventListener?.('pointerdown', cancelOnNavigation)
+    canvas?.removeEventListener?.('touchstart', cancelOnNavigation)
+    canvas?.removeEventListener?.('wheel', cancelOnNavigation)
+    token.signal?.removeEventListener?.('abort', releaseNavigationGuard)
+  }
+  token.signal?.addEventListener?.('abort', releaseNavigationGuard, { once: true })
+  return {
+    generation: token.generation,
+    signal: token.signal,
+    isCurrent: token.isCurrent,
+    releaseNavigationGuard,
+    finish: () => {
+      releaseNavigationGuard()
+      token.complete()
+    },
+  }
+}
+
+function restoreCancelledSingleLocationStatus3d () {
+  if (!intervalLocationState3d.active) {
+    updateLocationStatusBar3d()
+    return
+  }
+  const lastPosition = intervalLocationState3d.lastPosition
+  updateLocationStatusBar3d(
+    '持续定位中',
+    lastPosition?.accuracy,
+    lastPosition?.timestamp,
+  )
+}
 
 function calculateBearing (lat1, lng1, lat2, lng2) {
   const dLng = (lng2 - lng1) * Math.PI / 180
@@ -331,15 +451,19 @@ function renderHistoryPoints3d (viewer, points) {
 export function flyToLngLat (viewer, lng, lat, options = {}) {
   if (!viewer) return
   const height = Number(options.height || 1200)
-  viewer.camera.flyTo({
-    destination: Cartesian3.fromDegrees(lng, lat, height),
-    orientation: {
-      heading: CesiumMath.toRadians(Number(options.heading || 0)),
-      pitch: CesiumMath.toRadians(Number(options.pitch || -90)),
-      roll: 0,
-    },
-    duration: Number(options.duration ?? 1.1),
-  })
+  const destination = Cartesian3.fromDegrees(lng, lat, height)
+  const orientation = {
+    heading: CesiumMath.toRadians(Number(options.heading || 0)),
+    pitch: CesiumMath.toRadians(Number(options.pitch || -90)),
+    roll: 0,
+  }
+  viewer.camera.cancelFlight?.()
+  const duration = Number(options.duration ?? 1.1)
+  if (!(duration > 0)) {
+    viewer.camera.setView({ destination, orientation })
+    return
+  }
+  viewer.camera.flyTo({ destination, orientation, duration })
 }
 
 export function addTargetMarker3d (viewer, location, options = {}) {
@@ -531,7 +655,7 @@ async function getFilteredPosition3d (viewer, geolocation, customHeight, isInter
   }
 }
 
-export async function updatePosition3d (viewer, geolocation = null, customHeight = 1200, isIntervalUpdate = false, runtime = {}) {
+async function updatePosition3dInternal (viewer, geolocation, customHeight, isIntervalUpdate, runtime, singleRequest) {
   if (!isIntervalUpdate) {
     updateLocationStatusBar3d('正在定位...')
   }
@@ -553,13 +677,10 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
     return false
   }
 
-  if (runtime.signal?.aborted) return false
+  if (runtime.signal?.aborted || (singleRequest && !singleRequest.isCurrent())) return false
+  singleRequest?.releaseNavigationGuard()
 
   const { result, mapPosition, locationSample, reanchored } = filtered
-
-  // 飞往位置（开启自动旋转时代入最新计算出的航向角）
-  const headingVal = intervalLocationState3d.autoRotate ? (intervalLocationState3d.currentHeading || 0) : 0
-  flyToLngLat(viewer, mapPosition.lng, mapPosition.lat, { height: customHeight, heading: headingVal })
 
   if (isIntervalUpdate) {
     let isStationary = false
@@ -719,7 +840,43 @@ export async function updatePosition3d (viewer, geolocation = null, customHeight
       staySeconds: 0
     }, false)
   }
+  const heading = intervalLocationState3d.autoRotate
+    ? (intervalLocationState3d.currentHeading || 0)
+    : 0
+  const targetHeight = isIntervalUpdate
+    ? 20000000.0 / Math.pow(2, intervalLocationState3d.zoomLevel)
+    : customHeight
+  requestLocationCameraUpdate3d(viewer, mapPosition, {
+    height: targetHeight,
+    heading,
+    duration: isIntervalUpdate ? 0 : 0.65,
+  })
   return true
+}
+
+export async function updatePosition3d (viewer, geolocation = null, customHeight = 1200, isIntervalUpdate = false, runtime = {}) {
+  const singleRequest = isIntervalUpdate ? null : beginSingleLocationRequest3d(viewer)
+  const effectiveRuntime = singleRequest
+    ? { ...runtime, signal: singleRequest.signal }
+    : runtime
+
+  try {
+    return await updatePosition3dInternal(
+      viewer,
+      geolocation,
+      customHeight,
+      isIntervalUpdate,
+      effectiveRuntime,
+      singleRequest,
+    )
+  } finally {
+    singleRequest?.finish()
+    if (singleRequest?.signal.aborted &&
+        singleRequest.generation === singleLocationRequestCoordinator3d.getGeneration() &&
+        !singleLocationRequestCoordinator3d.isActive()) {
+      restoreCancelledSingleLocationStatus3d()
+    }
+  }
 }
 
 let intervalLocationController3d = null
@@ -797,6 +954,8 @@ export function configureIntervalLocation3d (viewer, {
   onlyLine = intervalLocationState3d.onlyLine,
   autoRotate = intervalLocationState3d.autoRotate,
 }) {
+  singleLocationRequestCoordinator3d.cancel()
+  locationCameraRuntimes3d.get(viewer)?.coordinator.cancel()
   const wasRecording = intervalLocationState3d.recordTrack
   let finalPersistSucceeded = wasRecording && !recordTrack &&
     hasTrackRecordingData(intervalLocationState3d.recordingSession)
@@ -839,6 +998,7 @@ export function configureIntervalLocation3d (viewer, {
 
 // 启动 3D 持续定位
 export function startIntervalLocation3d (viewer, geolocation, interval, zoom, maxHistoryPoints = 0, recordTrack = false, onlyLine = false, autoRotate = false) {
+  cancelLocationCamera3d(viewer)
   intervalLocationController3d?.destroy()
   intervalLocationController3d = null
 
@@ -892,6 +1052,7 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom, ma
 
 // 停止 3D 持续定位
 export function stopIntervalLocation3d (viewer) {
+  cancelLocationCamera3d(viewer)
   intervalLocationController3d?.stop()
   intervalLocationController3d?.destroy()
   intervalLocationController3d = null
