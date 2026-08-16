@@ -88,6 +88,9 @@ function createPreviewRoot () {
         <div class="media-preview-header-actions">
           <button type="button" class="media-preview-icon-button media-preview-track-toggle" data-media-preview-action="toggle-track" aria-expanded="true" aria-label="收起缩略图" title="收起缩略图">▦</button>
           <button type="button" class="media-preview-icon-button media-preview-minimize" data-media-preview-action="minimize" aria-label="收缩为小窗" title="收缩为小窗">⌟</button>
+          <button type="button" class="media-preview-icon-button media-preview-restore" data-media-preview-action="restore" aria-label="展开媒体预览" title="展开媒体预览">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
+          </button>
           <a class="media-preview-source" data-media-preview-source target="_blank" rel="noopener noreferrer" title="打开原始文件">
             <span class="media-preview-source-label">原始文件</span><span aria-hidden="true">↗</span>
           </a>
@@ -95,9 +98,9 @@ function createPreviewRoot () {
         </div>
       </header>
       <div class="media-preview-stage" data-media-preview-stage tabindex="0" aria-label="媒体查看区域，使用方向键切换">
-        <button type="button" class="media-preview-nav media-preview-nav-previous" data-media-preview-action="previous" aria-label="上一项" title="上一项">‹</button>
+        <button type="button" class="media-preview-nav media-preview-nav-previous" data-media-preview-action="previous" aria-label="上一项" title="上一项"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
         <div class="media-preview-content" data-media-preview-content></div>
-        <button type="button" class="media-preview-nav media-preview-nav-next" data-media-preview-action="next" aria-label="下一项" title="下一项">›</button>
+        <button type="button" class="media-preview-nav media-preview-nav-next" data-media-preview-action="next" aria-label="下一项" title="下一项"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
       </div>
       <nav class="media-preview-track" data-media-preview-track aria-label="KML 媒体浏览轨道"></nav>
       <footer class="media-preview-footer">
@@ -113,11 +116,6 @@ function createPreviewRoot () {
           <span data-media-preview-url></span>
         </div>
       </footer>
-      <button type="button" class="media-preview-restore" data-media-preview-action="restore" aria-label="展开媒体预览" title="展开媒体预览">
-        <span class="media-preview-restore-icon" aria-hidden="true">▣</span>
-        <span class="media-preview-restore-copy"><strong data-media-preview-restore-title>媒体预览</strong><small data-media-preview-restore-position></small></span>
-        <span aria-hidden="true">↗</span>
-      </button>
     </section>
   `
   root.addEventListener('click', onRootClick)
@@ -462,8 +460,6 @@ function renderActiveItem () {
   setText('[data-media-preview-position]', activeItems.length > 1 ? `${activeIndex + 1} / ${activeItems.length}` : '单项')
   setText('[data-media-preview-caption]', title)
   setText('[data-media-preview-url]', getDisplayUrl(item))
-  setText('[data-media-preview-restore-title]', title)
-  setText('[data-media-preview-restore-position]', `${activeIndex + 1} / ${activeItems.length}`)
   if (source) {
     source.href = getOriginalContentUrl(item)
     source.title = item.type === 'iframe' ? '打开原始页面' : '打开原始文件'

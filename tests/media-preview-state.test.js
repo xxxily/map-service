@@ -62,3 +62,23 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.match(stylesSource, /\.media-preview-iframe\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;[^}]*background:\s*var\(--media-preview-surface,\s*#050909\);[^}]*color-scheme:\s*dark;/s)
   assert.doesNotMatch(stylesSource, /\.media-preview-iframe\s*\{[^}]*width:\s*min\(1280px,\s*100%\)/s)
 })
+
+test('media preview small-window mode keeps one title bar and centers navigation icons', () => {
+  const previewSource = readFileSync(new URL('../src/ui/media-preview.js', import.meta.url), 'utf8')
+  const stylesSource = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+  const previewTemplate = previewSource.match(/root\.innerHTML = `([\s\S]*?)`/)?.[1]
+  const headerTemplate = previewTemplate?.match(/<header class="media-preview-header">[\s\S]*?<\/header>/)?.[0]
+
+  assert.ok(previewTemplate)
+  assert.ok(headerTemplate)
+  assert.equal([...previewTemplate.matchAll(/data-media-preview-action="restore"/g)].length, 1)
+  assert.match(headerTemplate, /data-media-preview-action="restore"/)
+  assert.doesNotMatch(previewSource, /media-preview-restore-copy|data-media-preview-restore-title|data-media-preview-restore-position/)
+  assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-header\s*\{[^}]*opacity:\s*1;[^}]*background:/s)
+  assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-heading\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;[^}]*align-items:\s*center;/s)
+  const minimizedNavRule = stylesSource.match(/\.media-preview-root\.is-minimized \.media-preview-nav:not\(\[hidden\]\)\s*\{([^}]*)\}/s)?.[1] || ''
+  assert.match(minimizedNavRule, /display:\s*grid;/)
+  assert.match(minimizedNavRule, /place-items:\s*center;/)
+  assert.match(minimizedNavRule, /top:\s*50%;/)
+  assert.match(minimizedNavRule, /transform:\s*translateY\(-50%\);/)
+})
