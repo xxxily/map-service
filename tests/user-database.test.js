@@ -200,3 +200,103 @@ test('UserDatabase v4 adds durable tombstones for delete-before-create ordering'
     database.close()
   }
 })
+
+test('UserDatabase v5 adds spatial share fields and nullable unlimited sessions', () => {
+  const rawDatabase = new DatabaseSync(':memory:')
+  rawDatabase.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE schema_migrations (
+      version INTEGER PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+    INSERT INTO schema_migrations(version, applied_at) VALUES (4, '2026-08-15T00:00:00.000Z');
+    CREATE TABLE users (id TEXT PRIMARY KEY);
+    INSERT INTO users(id) VALUES ('usr_one');
+    CREATE TABLE kml_shares (
+      id TEXT PRIMARY KEY,
+      public_id TEXT NOT NULL UNIQUE,
+      owner_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active',
+      access_mode TEXT NOT NULL DEFAULT 'public_link',
+      password_hash TEXT,
+      allow_download INTEGER NOT NULL DEFAULT 1,
+      expires_at TEXT,
+      view_config_json TEXT NOT NULL DEFAULT '{}',
+      revision INTEGER NOT NULL DEFAULT 1,
+      blocked_reason TEXT NOT NULL DEFAULT '',
+      access_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_accessed_at TEXT,
+      FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    INSERT INTO kml_shares(
+      id, public_id, owner_id, title, created_at, updated_at
+    ) VALUES (
+      'shr_one', 'public-one', 'usr_one', '旧分享',
+      '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z'
+    );
+    CREATE TABLE share_access_sessions (
+      id TEXT PRIMARY KEY,
+      share_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      FOREIGN KEY (share_id) REFERENCES kml_shares(id) ON DELETE CASCADE
+    );
+    INSERT INTO share_access_sessions(
+      id, share_id, token_hash, created_at, expires_at
+    ) VALUES (
+      'sas_one', 'shr_one', 'hash-one',
+      '2026-08-15T00:00:00.000Z', '2026-08-15T01:00:00.000Z'
+    );
+  `)
+
+  const database = new UserDatabase({ filePath: ':memory:', database: rawDatabase })
+  try {
+    const share = database.prepare(`
+      SELECT spatial_access_mode, password_access_ttl_mode, spatial_scope_revision,
+             spatial_status, password_version, access_policy_revision
+      FROM kml_shares WHERE id = 'shr_one'
+    `).get()
+    assert.deepEqual({ ...share }, {
+      spatial_access_mode: 'unrestricted',
+      password_access_ttl_mode: 'finite',
+      spatial_scope_revision: 0,
+      spatial_status: 'ready',
+      password_version: 1,
+      access_policy_revision: 1,
+    })
+
+    const session = database.prepare(`
+      SELECT ttl_mode, password_version, policy_revision, last_accessed_at, revoke_reason
+      FROM share_access_sessions WHERE id = 'sas_one'
+    `).get()
+    assert.deepEqual({ ...session }, {
+      ttl_mode: 'finite',
+      password_version: 1,
+      policy_revision: 1,
+      last_accessed_at: '2026-08-15T00:00:00.000Z',
+      revoke_reason: '',
+    })
+    const expiresColumn = database.prepare('PRAGMA table_info(share_access_sessions)').all()
+      .find(column => column.name === 'expires_at')
+    assert.equal(expiresColumn.notnull, 0)
+    assert.doesNotThrow(() => {
+      database.prepare(`
+        INSERT INTO share_access_sessions(
+          id, share_id, token_hash, created_at, ttl_mode, expires_at,
+          password_version, policy_revision, last_accessed_at
+        ) VALUES (?, ?, ?, ?, 'unlimited', NULL, 1, 1, ?)
+      `).run(
+        'sas_unlimited', 'shr_one', 'hash-unlimited',
+        '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z'
+      )
+    })
+  } finally {
+    database.close()
+  }
+})

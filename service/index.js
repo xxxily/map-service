@@ -133,8 +133,13 @@ const index = {
         res.set('Cache-Control', 'no-cache')
         res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
       })
-      app.get(['/account', '/account/:tab', '/share/:publicId'], (req, res) => {
+      app.get(['/account', '/account/:tab'], (req, res) => {
         res.set('Cache-Control', 'no-cache')
+        res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
+      })
+      app.get('/share/:publicId', (req, res) => {
+        res.set('Cache-Control', 'no-cache')
+        res.set('X-Robots-Tag', 'noindex, nofollow')
         res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
       })
     }

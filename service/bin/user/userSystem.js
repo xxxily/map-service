@@ -41,8 +41,26 @@ const DEFAULT_SETTINGS = Object.freeze({
     publicAccessPolicy: 'inherit_site_access',
     maxFilesPerShare: 20,
     accessTtlMs: 1000 * 60 * 60 * 12,
+    spatialAccessEnabled: true,
+    spatialPaddingMeters: 1000,
+    spatialMaxAreaKm2: 10000,
+    spatialMaxDiagonalKm: 300,
+    unlimitedAccessEnabled: false,
+    unlimitedAccessMaxAreaKm2: 2000,
+    unlimitedAccessMaxDiagonalKm: 100,
+    spatialPolicyRevision: 1,
   },
 })
+
+const SPATIAL_SHARE_SETTING_KEYS = Object.freeze([
+  'spatialAccessEnabled',
+  'spatialPaddingMeters',
+  'spatialMaxAreaKm2',
+  'spatialMaxDiagonalKm',
+  'unlimitedAccessEnabled',
+  'unlimitedAccessMaxAreaKm2',
+  'unlimitedAccessMaxDiagonalKm',
+])
 
 const LOGIN_LIMIT = Object.freeze({
   maxAttempts: 5,
@@ -86,6 +104,23 @@ function clampInteger (value, fallback, min, max) {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed)) return fallback
   return Math.max(min, Math.min(max, parsed))
+}
+
+function normalizeBooleanSetting (value, fallback, label) {
+  if (value === undefined) return Boolean(fallback)
+  if (typeof value !== 'boolean') {
+    throw createHttpError(`${label}格式不正确`, 400, 'VALIDATION_FAILED')
+  }
+  return value
+}
+
+function normalizeNumberSetting (value, fallback, min, max, label) {
+  if (value === undefined) return Number(fallback)
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    throw createHttpError(`${label}需在 ${min}～${max} 之间`, 400, 'VALIDATION_FAILED')
+  }
+  return parsed
 }
 
 function normalizePage (input = {}) {
@@ -234,12 +269,22 @@ export class UserSystemService {
     this.registerLimiter = new AttemptLimiter(options.registerLimit || REGISTER_LIMIT, this.clock)
     this.passwordLimiter = new AttemptLimiter(options.passwordLimit || PASSWORD_VERIFY_LIMIT, this.clock)
     this.requireSecureBootstrap = options.requireSecureBootstrap === true
+    this.settingsChangeHandler = options.settingsChangeHandler || null
+    this.settingsPreviewHandler = options.settingsPreviewHandler || null
     this.seedSystem(options.bootstrapAdmin || {})
     this.dummyPasswordHash = hashPasswordSync('map-service timing password', { allowWeak: true })
   }
 
   nowIso () {
     return new Date(this.clock()).toISOString()
+  }
+
+  setSettingsChangeHandler (handler) {
+    this.settingsChangeHandler = handler instanceof Function ? handler : null
+  }
+
+  setSettingsPreviewHandler (handler) {
+    this.settingsPreviewHandler = handler instanceof Function ? handler : null
   }
 
   seedSystem (bootstrapAdmin = {}) {
@@ -449,7 +494,7 @@ export class UserSystemService {
     }
   }
 
-  updateSettings (actor, input = {}, context = {}) {
+  updateSettings (actor, input = {}, context = {}, options = {}) {
     const current = this.getSettings()
     const next = clone(current)
 
@@ -489,6 +534,9 @@ export class UserSystemService {
 
     if (input.share !== undefined) {
       this.assertPermission(actor, 'admin.security.manage')
+      if (!input.share || typeof input.share !== 'object' || Array.isArray(input.share)) {
+        throw createHttpError('公开分享设置格式不正确', 400, 'VALIDATION_FAILED')
+      }
       const policy = String(input.share.publicAccessPolicy || current.share.publicAccessPolicy)
       if (!['independent', 'inherit_site_access'].includes(policy)) {
         throw createHttpError('公开分享访问策略不正确', 400, 'VALIDATION_FAILED')
@@ -496,13 +544,79 @@ export class UserSystemService {
       next.share.publicAccessPolicy = policy
       next.share.maxFilesPerShare = clampInteger(input.share.maxFilesPerShare, current.share.maxFilesPerShare, 1, 20)
       next.share.accessTtlMs = clampInteger(input.share.accessTtlMs, current.share.accessTtlMs, 1000 * 60 * 5, 1000 * 60 * 60 * 24 * 7)
+
+      const spatialSettingRequested = SPATIAL_SHARE_SETTING_KEYS.some(key => Object.hasOwn(input.share, key))
+      if (spatialSettingRequested) this.assertSuperAdmin(actor)
+      next.share.spatialAccessEnabled = normalizeBooleanSetting(
+        input.share.spatialAccessEnabled,
+        current.share.spatialAccessEnabled,
+        '空间受限分享开关'
+      )
+      next.share.spatialPaddingMeters = normalizeNumberSetting(
+        input.share.spatialPaddingMeters,
+        current.share.spatialPaddingMeters,
+        50,
+        10000,
+        '空间边界余量'
+      )
+      next.share.spatialMaxAreaKm2 = normalizeNumberSetting(
+        input.share.spatialMaxAreaKm2,
+        current.share.spatialMaxAreaKm2,
+        1,
+        500000,
+        '空间限制最大面积'
+      )
+      next.share.spatialMaxDiagonalKm = normalizeNumberSetting(
+        input.share.spatialMaxDiagonalKm,
+        current.share.spatialMaxDiagonalKm,
+        1,
+        5000,
+        '空间限制最大对角线'
+      )
+      next.share.unlimitedAccessEnabled = normalizeBooleanSetting(
+        input.share.unlimitedAccessEnabled,
+        current.share.unlimitedAccessEnabled,
+        '不限授权开关'
+      )
+      next.share.unlimitedAccessMaxAreaKm2 = normalizeNumberSetting(
+        input.share.unlimitedAccessMaxAreaKm2,
+        current.share.unlimitedAccessMaxAreaKm2,
+        1,
+        next.share.spatialMaxAreaKm2,
+        '不限授权最大面积'
+      )
+      next.share.unlimitedAccessMaxDiagonalKm = normalizeNumberSetting(
+        input.share.unlimitedAccessMaxDiagonalKm,
+        current.share.unlimitedAccessMaxDiagonalKm,
+        1,
+        next.share.spatialMaxDiagonalKm,
+        '不限授权最大对角线'
+      )
+      if (next.share.unlimitedAccessMaxAreaKm2 > next.share.spatialMaxAreaKm2 ||
+          next.share.unlimitedAccessMaxDiagonalKm > next.share.spatialMaxDiagonalKm) {
+        throw createHttpError('不限授权阈值不能大于空间限制总体阈值', 400, 'VALIDATION_FAILED')
+      }
+      const spatialPolicyChanged = SPATIAL_SHARE_SETTING_KEYS.some(
+        key => next.share[key] !== current.share[key]
+      )
+      next.share.spatialPolicyRevision = spatialPolicyChanged
+        ? Number(current.share.spatialPolicyRevision || 1) + 1
+        : Number(current.share.spatialPolicyRevision || 1)
     }
 
     if (['registration', 'session', 'quota', 'share'].some(section => Object.hasOwn(input, section))) {
       this.assertRecentReauth(actor)
     }
 
+    if (options.preview === true) {
+      const sharePolicyImpact = next.share.spatialPolicyRevision !== current.share.spatialPolicyRevision && this.settingsPreviewHandler
+        ? this.settingsPreviewHandler(next.share, current.share) || null
+        : null
+      return sharePolicyImpact ? { ...next, sharePolicyImpact, preview: true } : { ...next, preview: true }
+    }
+
     const now = this.nowIso()
+    let sharePolicyImpact = null
     this.database.transaction(() => {
       this.database.prepare(`
         INSERT INTO user_system_settings(key, value_json, updated_at, updated_by)
@@ -512,6 +626,22 @@ export class UserSystemService {
           updated_at = excluded.updated_at,
           updated_by = excluded.updated_by
       `).run(JSON.stringify(next), now, actor.user.id)
+      if (next.share.spatialPolicyRevision !== current.share.spatialPolicyRevision && this.settingsChangeHandler) {
+        sharePolicyImpact = this.settingsChangeHandler(next.share, current.share) || null
+        this.insertAudit({
+          actorUserId: actor.user.id,
+          action: 'admin.share-spatial-policy.update',
+          targetType: 'settings',
+          targetId: 'user-system',
+          metadata: {
+            spatialPolicyRevision: next.share.spatialPolicyRevision,
+            affectedShares: Number(sharePolicyImpact?.affectedShares || 0),
+            downgradedShares: Number(sharePolicyImpact?.downgradedShares || 0),
+            revokedUnlimitedSessions: Number(sharePolicyImpact?.revokedUnlimitedSessions || 0),
+          },
+          ipSummary: normalizeContext(context).ip,
+        })
+      }
       this.insertAudit({
         actorUserId: actor.user.id,
         action: 'settings.user-system.update',
@@ -521,7 +651,7 @@ export class UserSystemService {
         ipSummary: normalizeContext(context).ip,
       })
     })
-    return next
+    return sharePolicyImpact ? { ...next, sharePolicyImpact } : next
   }
 
   roleCodesForUser (userId) {

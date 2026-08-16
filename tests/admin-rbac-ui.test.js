@@ -13,6 +13,8 @@ import {
   loginAdmin,
 } from '../src/admin/api.js'
 import { renderUsersPage } from '../src/admin/pages/users.js'
+import { renderUserSystemSettingsPage } from '../src/admin/pages/userSystemSettings.js'
+import { renderShareModerationPage } from '../src/admin/pages/shareModeration.js'
 
 function sessionWith (...permissions) {
   return {
@@ -55,6 +57,54 @@ test('后台导航按细粒度权限过滤，超级管理员可访问全部页�
     filterAdminPages(pages, superAdmin).map(page => page.id),
     pages.map(page => page.id),
   )
+})
+
+test('空间分享策略只对超级管理员呈现', () => {
+  const settings = {
+    userSystemSettings: {
+      share: {
+        spatialAccessEnabled: true,
+        spatialPaddingMeters: 1000,
+        spatialMaxAreaKm2: 10000,
+        spatialMaxDiagonalKm: 300,
+        unlimitedAccessEnabled: true,
+        unlimitedAccessMaxAreaKm2: 2000,
+        unlimitedAccessMaxDiagonalKm: 100,
+      },
+    },
+    roles: [],
+  }
+  const securityHtml = renderUserSystemSettingsPage({ ...settings, session: sessionWith('admin.security.manage') })
+  const superHtml = renderUserSystemSettingsPage({ ...settings, session: sessionWith('system.super_admin') })
+  assert.doesNotMatch(securityHtml, /name="spatialAccessEnabled"/)
+  assert.match(superHtml, /name="spatialAccessEnabled"/)
+  assert.match(superHtml, /name="unlimitedAccessMaxAreaKm2"/)
+  assert.equal(typeof adminApi.previewUserSystemSettings, 'function')
+})
+
+test('分享治理页展示空间范围、授权模式和安全摘要', () => {
+  const html = renderShareModerationPage({
+    shareFilters: {},
+    moderatedShares: {
+      total: 1,
+      items: [{
+        id: 'share_1',
+        title: '巡检分享',
+        itemCount: 2,
+        owner: { username: 'operator', displayName: '操作员' },
+        status: 'active',
+        passwordProtected: true,
+        passwordAccess: { ttlMode: 'unlimited' },
+        spatialAccess: { mode: 'kml_bounds', status: 'ready', areaKm2: 12.3, diagonalKm: 8.4 },
+        accessCount: 3,
+      }],
+    },
+  })
+  assert.match(html, /空间与授权/)
+  assert.match(html, /限制在 KML 区域/)
+  assert.match(html, /12\.3 km²/)
+  assert.match(html, /8\.4 km/)
+  assert.match(html, /不限授权/)
 })
 
 test('后台修改请求使用同源 Cookie 和 CSRF，不发送 Bearer Token', async () => {

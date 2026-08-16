@@ -259,6 +259,54 @@ export function shareAccessPolicyLabel (share) {
   return share?.passwordProtected ? `${accessMode}（密码保护）` : `${accessMode}（无需密码）`
 }
 
+export function spatialAccessLabel (share) {
+  return share?.spatialAccess?.mode === 'kml_bounds' || share?.spatialAccessMode === 'kml_bounds'
+    ? '限制在 KML 区域'
+    : '不限制'
+}
+
+export function spatialStatusLabel (share) {
+  const status = share?.spatialAccess?.status || share?.spatialStatus || ''
+  return {
+    ready: '正常',
+    recalculating: '重新计算中',
+    out_of_policy: '超出策略',
+    empty: '无有效几何',
+    error: '计算失败',
+  }[status] || (share?.spatialAccess?.mode === 'kml_bounds' || share?.spatialAccessMode === 'kml_bounds' ? '未知' : '不适用')
+}
+
+export function passwordAccessLabel (share) {
+  if (!share?.passwordProtected) return '不适用'
+  const mode = share?.passwordAccess?.ttlMode || share?.passwordAccessTtlMode
+  return mode === 'unlimited' ? '不限固定期限' : '有限期'
+}
+
+function optionalFiniteNumber (value) {
+  if (value === null || value === undefined || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+export function normalizeSpatialAccess (share = {}) {
+  const spatial = share.spatialAccess && typeof share.spatialAccess === 'object' ? share.spatialAccess : {}
+  const mode = spatial.mode || share.spatialAccessMode || 'unrestricted'
+  return {
+    mode: mode === 'kml_bounds' ? 'kml_bounds' : 'unrestricted',
+    status: spatial.status || share.spatialStatus || (mode === 'kml_bounds' ? 'recalculating' : 'ready'),
+    bbox: Array.isArray(spatial.bbox) ? spatial.bbox : null,
+    areaKm2: optionalFiniteNumber(spatial.areaKm2),
+    diagonalKm: optionalFiniteNumber(spatial.diagonalKm),
+    paddingMeters: optionalFiniteNumber(spatial.paddingMeters),
+    minZoom: optionalFiniteNumber(spatial.minZoom),
+    maxCameraHeight: optionalFiniteNumber(spatial.maxCameraHeight),
+    displayGeometry: spatial.displayGeometry || null,
+    revision: Number(spatial.revision || share.spatialScopeRevision || 0),
+    unlimitedAccessEligible: spatial.unlimitedAccessEligible === true || share.unlimitedAccessEligible === true,
+    reasonCode: spatial.reasonCode || share.spatialReasonCode || null,
+  }
+}
+
 export function revisionConflictPrompt (code) {
   if (code === 'KML_REVISION_CONFLICT') {
     return {

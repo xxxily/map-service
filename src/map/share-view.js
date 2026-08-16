@@ -2,6 +2,16 @@ import { apiRequest } from '../auth/api.js'
 
 let activeShare = null
 
+function markSharePageNoIndex () {
+  let meta = document.querySelector('meta[name="robots"]')
+  if (!meta) {
+    meta = document.createElement('meta')
+    meta.name = 'robots'
+    document.head.appendChild(meta)
+  }
+  meta.content = 'noindex, nofollow'
+}
+
 function escapeHtml (value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -28,6 +38,38 @@ export function getSharePublicId (location = window.location) {
 
 export function isShareLocation (location = window.location) {
   return Boolean(getSharePublicId(location))
+}
+
+export function getShareSpatialConfig (manifest) {
+  const spatial = manifest?.spatialAccess
+  if (!spatial || spatial.mode === 'unrestricted') {
+    return { restricted: false, valid: true, mode: 'unrestricted' }
+  }
+  if (spatial.mode !== 'kml_bounds' || spatial.status !== 'ready') {
+    return { restricted: true, valid: false, mode: spatial.mode || 'unknown', reasonCode: spatial.reasonCode || 'SHARE_SPATIAL_UNAVAILABLE' }
+  }
+  const cameraBounds = Array.isArray(spatial.cameraBounds) && spatial.cameraBounds.length === 4
+    ? spatial.cameraBounds.map(Number)
+    : null
+  const minZoom = Number(spatial.minZoom)
+  const valid = Boolean(
+    cameraBounds && cameraBounds.every(Number.isFinite) &&
+    cameraBounds[2] - cameraBounds[0] > 0 &&
+    cameraBounds[2] - cameraBounds[0] <= 360 &&
+    cameraBounds[1] >= -90 && cameraBounds[1] <= 90 &&
+    cameraBounds[3] >= -90 && cameraBounds[3] <= 90 &&
+    cameraBounds[1] < cameraBounds[3] &&
+    Number.isFinite(minZoom) && minZoom >= 0 && minZoom <= 24
+  )
+  return {
+    restricted: true,
+    valid,
+    mode: 'kml_bounds',
+    cameraBounds: valid ? cameraBounds : null,
+    minZoom: valid ? minZoom : null,
+    maxCameraHeight: Number.isFinite(Number(spatial.maxCameraHeight)) ? Number(spatial.maxCameraHeight) : null,
+    reasonCode: valid ? null : 'SHARE_SPATIAL_UNAVAILABLE',
+  }
 }
 
 export function getActiveShare () {
@@ -99,6 +141,7 @@ function shareUnavailableMessage (error) {
     SHARE_PAUSED: '分享已由所有者暂停。',
     SHARE_EXPIRED: '分享已过期。',
     RESOURCE_NOT_FOUND: '分享不存在、已撤销或已被管理员封禁。',
+    SHARE_SPATIAL_UNAVAILABLE: '分享地图范围暂不可用，请稍后重试。',
   }
   return messages[error?.code] || error?.message || '分享数据加载失败，请稍后重试。'
 }
@@ -106,6 +149,7 @@ function shareUnavailableMessage (error) {
 export async function prepareShareView (init) {
   const publicId = getSharePublicId()
   if (!publicId) return false
+  markSharePageNoIndex()
   document.body.classList.add('share-view')
 
   const load = async () => {
@@ -113,7 +157,17 @@ export async function prepareShareView (init) {
       const manifest = await apiRequest(`/public/kml-shares/${encodeURIComponent(publicId)}`, {
         csrf: false,
       })
-      if (manifest.viewConfig?.mapMode === '3d' && window.location.pathname.startsWith('/share/')) {
+      const spatial = getShareSpatialConfig(manifest)
+      if (!spatial.valid) {
+        const error = new Error('分享地图范围暂不可用')
+        error.code = spatial.reasonCode || 'SHARE_SPATIAL_UNAVAILABLE'
+        throw error
+      }
+      if (spatial.restricted && (window.location.pathname === '/3d' || window.location.pathname === '/3d.html')) {
+        window.location.replace(`/share/${encodeURIComponent(publicId)}`)
+        return
+      }
+      if (!spatial.restricted && manifest.viewConfig?.mapMode === '3d' && window.location.pathname.startsWith('/share/')) {
         window.location.replace(`/3d?share=${encodeURIComponent(publicId)}`)
         return
       }

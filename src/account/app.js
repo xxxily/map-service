@@ -603,27 +603,24 @@ async function createShareFromSelection () {
   const items = buildShareItems(state.kml.selected, state.kml.items)
   if (!items.length) return
   const selectedNames = state.kml.items.filter(item => state.kml.selected.has(item.id)).map(item => item.name)
-  const values = await showEditDialog({
-    title: `创建分享（${items.length} 个 KML）`,
-    fields: [
-      { name: 'title', label: '分享标题' },
-      { name: 'description', label: '分享说明', type: 'textarea' },
-      { name: 'allowDownload', label: '允许下载', type: 'select', options: [{ label: '允许', value: 'true' }, { label: '禁止', value: 'false' }] },
-      { name: 'expiresMode', label: '有效期', type: 'select', options: [{ label: '永不过期', value: 'none' }, { label: '7 天', value: '7d' }, { label: '30 天', value: '30d' }, { label: '90 天', value: '90d' }] },
-      { name: 'passwordMode', label: '访问密码', type: 'select', options: [{ label: '不设置', value: 'none' }, { label: '设置密码', value: 'set' }] },
-    ],
-    values: {
+  const values = await showAccountShareDialog({
+    mode: 'create',
+    share: {
       title: selectedNames.join('、').slice(0, 200),
-      description: '',
-      allowDownload: 'true',
-      expiresMode: 'none',
-      passwordMode: 'none',
+      storedStatus: 'active',
+      allowDownload: true,
+      items,
+      viewConfig: { mapMode: '2d' },
     },
-    confirmText: '生成链接',
+    documents: state.kml.items,
+    onSpatialPreview: previewItems => accountApi.spatialPreview({
+      items: previewItems,
+      spatialAccess: { mode: 'kml_bounds' },
+    }),
   })
   if (!values) return
   let password
-  if (values.passwordMode === 'set') {
+  if (values.passwordAction === 'change') {
     password = await showAccountPasswordDialog({
       title: '设置分享密码',
       message: '访问者需输入该密码后才能查看分享内容，长度为 4～128 位。',
@@ -637,9 +634,12 @@ async function createShareFromSelection () {
   const result = await runAction(() => accountApi.createShare({
     title: values.title,
     description: values.description,
-    items,
-    allowDownload: values.allowDownload === 'true',
+    items: values.items,
+    allowDownload: values.allowDownload,
     expiresAt: expiresAtFromMode(values.expiresMode),
+    spatialAccess: values.spatialAccess,
+    passwordAccess: values.passwordAccess,
+    viewConfig: values.viewConfig,
     ...(password ? { password } : {}),
   }), { progress: '正在创建分享链接…' })
   if (!result) return
@@ -670,7 +670,15 @@ async function editShare (id) {
     })
     return
   }
-  const values = await showAccountShareDialog({ share, documents })
+  const values = await showAccountShareDialog({
+    // showAccountShareDialog({ share, documents }) keeps the edit dialog contract stable.
+    share,
+    documents,
+    onSpatialPreview: previewItems => accountApi.spatialPreview({
+      items: previewItems,
+      spatialAccess: { mode: 'kml_bounds' },
+    }),
+  })
   if (!values) return
   const body = {
     revision: share.revision,
@@ -680,6 +688,8 @@ async function editShare (id) {
     allowDownload: values.allowDownload,
     items: values.items,
     viewConfig: values.viewConfig,
+    spatialAccess: values.spatialAccess,
+    passwordAccess: values.passwordAccess,
   }
   const expiresAt = expiresAtFromMode(values.expiresMode)
   if (expiresAt !== undefined) body.expiresAt = expiresAt

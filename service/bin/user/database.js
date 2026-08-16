@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 4
+export const USER_DATABASE_VERSION = 5
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -244,6 +244,15 @@ CREATE TABLE IF NOT EXISTS kml_sync_delete_tombstones (
 );
 `
 
+const SCHEMA_V5_INDEXES = `
+CREATE INDEX IF NOT EXISTS idx_share_spatial_status
+  ON kml_shares(spatial_status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_share_access_token
+  ON share_access_sessions(share_id, token_hash);
+CREATE INDEX IF NOT EXISTS idx_share_access_expires
+  ON share_access_sessions(share_id, expires_at);
+`
+
 export class UserDatabase {
   constructor (options = {}) {
     this.filePath = options.filePath || path.resolve(rootPath, '.db/map-service.sqlite')
@@ -317,6 +326,81 @@ export class UserDatabase {
         this.database.exec(SCHEMA_V4)
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(4, new Date().toISOString())
+      })
+    }
+
+    if (current < 5) {
+      this.transaction(() => {
+        const tableExists = (tableName) => Boolean(this.database.prepare(`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+        `).get(tableName))
+        const columnsOf = (tableName) => tableExists(tableName)
+          ? this.database.prepare(`PRAGMA table_info(${tableName})`).all().map(column => column.name)
+          : []
+        const addColumn = (tableName, columnName, definition) => {
+          if (!columnsOf(tableName).includes(columnName)) {
+            this.database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+          }
+        }
+
+        if (tableExists('kml_shares')) {
+          addColumn('kml_shares', 'spatial_access_mode', "TEXT NOT NULL DEFAULT 'unrestricted'")
+          addColumn('kml_shares', 'password_access_ttl_mode', "TEXT NOT NULL DEFAULT 'finite'")
+          addColumn('kml_shares', 'spatial_scope_json', "TEXT NOT NULL DEFAULT '{}'")
+          addColumn('kml_shares', 'spatial_scope_revision', 'INTEGER NOT NULL DEFAULT 0')
+          addColumn('kml_shares', 'spatial_status', "TEXT NOT NULL DEFAULT 'ready'")
+          addColumn('kml_shares', 'spatial_error_code', "TEXT NOT NULL DEFAULT ''")
+          addColumn('kml_shares', 'password_version', 'INTEGER NOT NULL DEFAULT 1')
+          addColumn('kml_shares', 'access_policy_revision', 'INTEGER NOT NULL DEFAULT 1')
+        }
+
+        if (tableExists('share_access_sessions') && tableExists('kml_shares')) {
+          const sessionColumns = columnsOf('share_access_sessions')
+          const needsRebuild = !['ttl_mode', 'password_version', 'policy_revision', 'last_accessed_at', 'revoke_reason']
+            .every(column => sessionColumns.includes(column)) ||
+            !this.database.prepare('PRAGMA table_info(share_access_sessions)').all()
+              .some(column => column.name === 'expires_at' && Number(column.notnull) === 0)
+
+          if (needsRebuild) {
+            const ttlExpression = sessionColumns.includes('ttl_mode') ? "COALESCE(ttl_mode, 'finite')" : "'finite'"
+            const passwordVersionExpression = sessionColumns.includes('password_version') ? 'COALESCE(password_version, 1)' : '1'
+            const policyRevisionExpression = sessionColumns.includes('policy_revision') ? 'COALESCE(policy_revision, 1)' : '1'
+            const lastAccessedExpression = sessionColumns.includes('last_accessed_at') ? 'last_accessed_at' : 'created_at'
+            const revokeReasonExpression = sessionColumns.includes('revoke_reason') ? "COALESCE(revoke_reason, '')" : "''"
+            this.database.exec(`
+              CREATE TABLE share_access_sessions_v5 (
+                id TEXT PRIMARY KEY,
+                share_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                ttl_mode TEXT NOT NULL DEFAULT 'finite',
+                expires_at TEXT,
+                password_version INTEGER NOT NULL DEFAULT 1,
+                policy_revision INTEGER NOT NULL DEFAULT 1,
+                last_accessed_at TEXT NOT NULL,
+                revoked_at TEXT,
+                revoke_reason TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (share_id) REFERENCES kml_shares(id) ON DELETE CASCADE
+              );
+              INSERT INTO share_access_sessions_v5(
+                id, share_id, token_hash, created_at, ttl_mode, expires_at,
+                password_version, policy_revision, last_accessed_at, revoked_at, revoke_reason
+              )
+              SELECT id, share_id, token_hash, created_at, ${ttlExpression}, expires_at,
+                ${passwordVersionExpression}, ${policyRevisionExpression}, ${lastAccessedExpression},
+                revoked_at, ${revokeReasonExpression}
+              FROM share_access_sessions;
+              DROP TABLE share_access_sessions;
+              ALTER TABLE share_access_sessions_v5 RENAME TO share_access_sessions;
+            `)
+          }
+        }
+
+        if (tableExists('kml_shares') && tableExists('share_access_sessions')) {
+          this.database.exec(SCHEMA_V5_INDEXES)
+        }
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(5, new Date().toISOString())
       })
     }
 

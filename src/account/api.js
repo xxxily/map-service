@@ -30,6 +30,7 @@ export const accountApi = {
   updateFavorite: (id, body) => apiRequest(`/favorites/${pathId(id)}`, { method: 'PUT', body }),
   deleteFavorite: id => apiRequest(`/favorites/${pathId(id)}`, { method: 'DELETE' }),
   listShares: query => apiRequest('/kml/shares', { query }),
+  spatialPreview: body => apiRequest('/kml/shares/spatial-preview', { method: 'POST', body }),
   getShare: id => apiRequest(`/kml/shares/${pathId(id)}`),
   createShare: body => apiRequest('/kml/shares', { method: 'POST', body }),
   updateShare: (id, body) => apiRequest(`/kml/shares/${pathId(id)}`, { method: 'PUT', body }),

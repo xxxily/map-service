@@ -19,6 +19,11 @@ function registrationRoles (state) {
   })
 }
 
+function isSuperAdmin (state) {
+  const permissions = state?.session?.user?.permissions || state?.session?.permissions || []
+  return permissions.includes('system.super_admin')
+}
+
 export function renderUserSystemSettingsPage (state) {
   const settings = state.userSystemSettings || {}
   const registration = settings.registration || {}
@@ -27,6 +32,7 @@ export function renderUserSystemSettingsPage (state) {
   const share = settings.share || {}
   const canManageRegistration = hasPermission(state, 'admin.registration.manage')
   const canManageSecurity = hasPermission(state, 'admin.security.manage')
+  const canManageSpatialPolicy = isSuperAdmin(state)
   const roles = registrationRoles(state)
   const defaultRoles = new Set(registration.defaultRoleCodes || ['user'])
 
@@ -114,6 +120,21 @@ export function renderUserSystemSettingsPage (state) {
                 <label><span>分享密码授权有效期（小时）</span><input name="shareAccessHours" type="number" min="1" max="168" value="${numberValue(share.accessTtlMs, HOUR_MS)}" required></label>
               </div>
             </fieldset>
+            ${canManageSpatialPolicy ? `
+              <fieldset class="admin-permission-fieldset">
+                <legend>空间受限分享</legend>
+                <div class="admin-field-grid admin-field-grid-three">
+                  <label><span>空间受限分享</span><select name="spatialAccessEnabled"><option value="true" ${share.spatialAccessEnabled !== false ? 'selected' : ''}>允许</option><option value="false" ${share.spatialAccessEnabled === false ? 'selected' : ''}>关闭</option></select></label>
+                  <label><span>边界余量（米）</span><input name="spatialPaddingMeters" type="number" min="50" max="10000" step="1" value="${Number(share.spatialPaddingMeters || 1000)}" required></label>
+                  <label><span>最大面积（km²）</span><input name="spatialMaxAreaKm2" type="number" min="1" max="500000" step="0.1" value="${Number(share.spatialMaxAreaKm2 || 10000)}" required></label>
+                  <label><span>最大对角线（km）</span><input name="spatialMaxDiagonalKm" type="number" min="1" max="5000" step="0.1" value="${Number(share.spatialMaxDiagonalKm || 300)}" required></label>
+                  <label><span>不限授权</span><select name="unlimitedAccessEnabled"><option value="true" ${share.unlimitedAccessEnabled === true ? 'selected' : ''}>允许</option><option value="false" ${share.unlimitedAccessEnabled !== true ? 'selected' : ''}>关闭</option></select></label>
+                  <label><span>不限授权最大面积（km²）</span><input name="unlimitedAccessMaxAreaKm2" type="number" min="1" max="${Number(share.spatialMaxAreaKm2 || 10000)}" step="0.1" value="${Number(share.unlimitedAccessMaxAreaKm2 || 2000)}" required></label>
+                  <label><span>不限授权最大对角线（km）</span><input name="unlimitedAccessMaxDiagonalKm" type="number" min="1" max="${Number(share.spatialMaxDiagonalKm || 300)}" step="0.1" value="${Number(share.unlimitedAccessMaxDiagonalKm || 100)}" required></label>
+                </div>
+                <p class="admin-field-help">范围超过不限授权阈值时，分享仍保留空间限制并自动使用有限授权。</p>
+              </fieldset>
+            ` : ''}
             <button type="submit">保存安全与配额策略</button>
           </form>
         </section>
@@ -126,7 +147,43 @@ function integerField (form, name) {
   return Number.parseInt(String(form.get(name) || ''), 10)
 }
 
-export async function handleUserSystemSettingsSubmit ({ api, event, renderDashboard, setNotice, state }) {
+function numberField (form, name) {
+  return Number(form.get(name))
+}
+
+const SPATIAL_POLICY_FIELDS = [
+  'spatialAccessEnabled',
+  'spatialPaddingMeters',
+  'spatialMaxAreaKm2',
+  'spatialMaxDiagonalKm',
+  'unlimitedAccessEnabled',
+  'unlimitedAccessMaxAreaKm2',
+  'unlimitedAccessMaxDiagonalKm',
+]
+
+function hasSpatialPolicyChange (currentShare = {}, nextShare = {}) {
+  return SPATIAL_POLICY_FIELDS.some(key => {
+    if (nextShare[key] === undefined) return false
+    if (Number.isFinite(Number(nextShare[key])) && Number.isFinite(Number(currentShare[key]))) {
+      return Number(nextShare[key]) !== Number(currentShare[key])
+    }
+    return nextShare[key] !== currentShare[key]
+  })
+}
+
+function isRestrictiveSpatialPolicyChange (currentShare = {}, nextShare = {}) {
+  if (currentShare.spatialAccessEnabled === true && nextShare.spatialAccessEnabled === false) return true
+  if (currentShare.unlimitedAccessEnabled === true && nextShare.unlimitedAccessEnabled === false) return true
+  if (Number(nextShare.spatialPaddingMeters) > Number(currentShare.spatialPaddingMeters)) return true
+  return [
+    'spatialMaxAreaKm2',
+    'spatialMaxDiagonalKm',
+    'unlimitedAccessMaxAreaKm2',
+    'unlimitedAccessMaxDiagonalKm',
+  ].some(key => Number(nextShare[key]) < Number(currentShare[key]))
+}
+
+export async function handleUserSystemSettingsSubmit ({ api, event, renderDashboard, setNotice, showConfirm, state }) {
   const registrationForm = event.target.closest('[data-admin-registration-settings]')
   if (registrationForm) {
     event.preventDefault()
@@ -171,10 +228,59 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
         accessTtlMs: integerField(data, 'shareAccessHours') * HOUR_MS,
       },
     }
+    if (isSuperAdmin(state)) {
+      const spatialMaxAreaKm2 = numberField(data, 'spatialMaxAreaKm2')
+      const spatialMaxDiagonalKm = numberField(data, 'spatialMaxDiagonalKm')
+      const unlimitedAccessMaxAreaKm2 = numberField(data, 'unlimitedAccessMaxAreaKm2')
+      const unlimitedAccessMaxDiagonalKm = numberField(data, 'unlimitedAccessMaxDiagonalKm')
+      if (![spatialMaxAreaKm2, spatialMaxDiagonalKm, unlimitedAccessMaxAreaKm2, unlimitedAccessMaxDiagonalKm].every(Number.isFinite)) {
+        setNotice('', '空间策略阈值必须是有效数字')
+        renderDashboard()
+        return true
+      }
+      if (unlimitedAccessMaxAreaKm2 > spatialMaxAreaKm2 || unlimitedAccessMaxDiagonalKm > spatialMaxDiagonalKm) {
+        setNotice('', '不限授权阈值不能大于空间限制总体阈值')
+        renderDashboard()
+        return true
+      }
+      body.share.spatialAccessEnabled = data.get('spatialAccessEnabled') === 'true'
+      body.share.spatialPaddingMeters = numberField(data, 'spatialPaddingMeters')
+      body.share.spatialMaxAreaKm2 = spatialMaxAreaKm2
+      body.share.spatialMaxDiagonalKm = spatialMaxDiagonalKm
+      body.share.unlimitedAccessEnabled = data.get('unlimitedAccessEnabled') === 'true'
+      body.share.unlimitedAccessMaxAreaKm2 = unlimitedAccessMaxAreaKm2
+      body.share.unlimitedAccessMaxDiagonalKm = unlimitedAccessMaxDiagonalKm
+    }
     try {
+      const currentShare = state.userSystemSettings?.share || {}
+      if (isSuperAdmin(state) && hasSpatialPolicyChange(currentShare, body.share)) {
+        setNotice('正在评估空间策略影响...')
+        const preview = await withRecentReauth(api, () => api.previewUserSystemSettings(body))
+        const impact = preview.sharePolicyImpact || {}
+        const affectedShares = Number(impact.affectedShares || 0)
+        const revokedUnlimitedSessions = Number(impact.revokedUnlimitedSessions || 0)
+        const downgradedShares = Number(impact.downgradedShares || 0)
+        if (isRestrictiveSpatialPolicyChange(currentShare, body.share) ||
+            affectedShares > 0 || revokedUnlimitedSessions > 0 || downgradedShares > 0) {
+          const confirmed = showConfirm instanceof Function
+            ? await showConfirm(
+                `本次策略变更将重新评估 ${affectedShares} 个分享，降级 ${downgradedShares} 个分享，并撤销 ${revokedUnlimitedSessions} 个不限授权会话。是否继续？`,
+                { title: '确认空间策略变更', confirmText: '继续保存' },
+              )
+            : true
+          if (!confirmed) {
+            setNotice('')
+            renderDashboard()
+            return true
+          }
+        }
+      }
       setNotice('正在保存用户体系策略...')
       state.userSystemSettings = await withRecentReauth(api, () => api.updateUserSystemSettings(body))
-      setNotice('用户体系策略已更新')
+      const impact = state.userSystemSettings.sharePolicyImpact
+      setNotice(impact
+        ? `用户体系策略已更新；影响 ${Number(impact.affectedShares || 0)} 个分享，降级 ${Number(impact.downgradedShares || 0)} 个，撤销长期授权 ${Number(impact.revokedUnlimitedSessions || 0)} 个`
+        : '用户体系策略已更新')
     } catch (err) {
       setNotice('', err.code === 'ACTION_CANCELLED' ? '' : err.message)
     }

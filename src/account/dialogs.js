@@ -2,6 +2,7 @@ import {
   buildShareUpdateItems,
   buildShareViewConfig,
   escapeHtml,
+  normalizeSpatialAccess,
 } from './model.js'
 
 function ensureAccountDialogRoot () {
@@ -93,6 +94,9 @@ export function showAccountShareDialog (options = {}) {
       displayName: String(item.displayName || ''),
     }))
   const viewConfig = share.viewConfig || {}
+  const spatialAccess = normalizeSpatialAccess(share)
+  const passwordTtlMode = share.passwordAccess?.ttlMode || share.passwordAccessTtlMode || 'finite'
+  const mode = options.mode === 'create' ? 'create' : 'edit'
   const center = Array.isArray(viewConfig.center) ? viewConfig.center : []
 
   root.hidden = false
@@ -101,8 +105,8 @@ export function showAccountShareDialog (options = {}) {
       <form class="app-dialog account-share-dialog" role="dialog" aria-modal="true" aria-labelledby="account-share-dialog-title" data-account-share-form autocomplete="off">
         <div class="account-share-dialog-heading">
           <div>
-            <h2 id="account-share-dialog-title">编辑分享</h2>
-            <p>调整内容和地图视图后，原分享链接保持不变。</p>
+            <h2 id="account-share-dialog-title">${mode === 'create' ? '创建分享' : '编辑分享'}</h2>
+            <p>${mode === 'create' ? '选择内容和访问范围，生成只读分享链接。' : '调整内容和地图视图后，原分享链接保持不变。'}</p>
           </div>
           <span data-account-share-count>${selectedItems.length} / 20 个 KML</span>
         </div>
@@ -112,10 +116,10 @@ export function showAccountShareDialog (options = {}) {
             <label class="account-dialog-field"><span>分享标题</span><input name="title" value="${escapeHtml(share.title || '')}" maxlength="200" required></label>
             <label class="account-dialog-field"><span>分享说明</span><textarea name="description" rows="3" maxlength="5000">${escapeHtml(share.description || '')}</textarea></label>
             <div class="account-share-dialog-columns">
-              <label class="account-dialog-field"><span>状态</span><select name="status"><option value="active" ${share.storedStatus === 'active' ? 'selected' : ''}>分享中</option><option value="paused" ${share.storedStatus !== 'active' ? 'selected' : ''}>暂停</option></select></label>
+              <label class="account-dialog-field"><span>状态</span><select name="status"><option value="active" ${mode === 'create' || share.storedStatus === 'active' ? 'selected' : ''}>分享中</option><option value="paused" ${mode !== 'create' && share.storedStatus !== 'active' ? 'selected' : ''}>暂停</option></select></label>
               <label class="account-dialog-field"><span>允许下载</span><select name="allowDownload"><option value="true" ${share.allowDownload ? 'selected' : ''}>允许</option><option value="false" ${share.allowDownload ? '' : 'selected'}>禁止</option></select></label>
-              <label class="account-dialog-field"><span>有效期</span><select name="expiresMode"><option value="keep">保持当前设置</option><option value="none">永不过期</option><option value="7d">从现在起 7 天</option><option value="30d">从现在起 30 天</option><option value="90d">从现在起 90 天</option></select></label>
-              <label class="account-dialog-field"><span>分享密码</span><select name="passwordAction"><option value="keep">保持不变</option><option value="change">设置新密码</option><option value="remove">移除密码</option></select></label>
+              <label class="account-dialog-field"><span>有效期</span><select name="expiresMode">${mode === 'edit' ? '<option value="keep">保持当前设置</option>' : ''}<option value="none">永不过期</option><option value="7d">从现在起 7 天</option><option value="30d">从现在起 30 天</option><option value="90d">从现在起 90 天</option></select></label>
+              <label class="account-dialog-field"><span>分享密码</span><select name="passwordAction">${mode === 'create' ? '<option value="keep">不设置</option>' : '<option value="keep">保持不变</option>'}<option value="change">设置新密码</option>${mode === 'edit' ? '<option value="remove">移除密码</option>' : ''}</select></label>
             </div>
           </section>
           <section class="account-share-dialog-section">
@@ -132,6 +136,17 @@ export function showAccountShareDialog (options = {}) {
             </div>
           </section>
           <section class="account-share-dialog-section">
+            <h3>访问范围</h3>
+            <div class="account-share-dialog-columns">
+              <label class="account-dialog-field"><span>地图范围</span><select name="spatialAccessMode"><option value="unrestricted" ${spatialAccess.mode !== 'kml_bounds' ? 'selected' : ''}>不限制</option><option value="kml_bounds" ${spatialAccess.mode === 'kml_bounds' ? 'selected' : ''}>限制在 KML 区域</option></select></label>
+              <label class="account-dialog-field" data-account-password-access-field><span>密码授权</span><select name="passwordAccessTtlMode"><option value="finite" ${passwordTtlMode !== 'unlimited' ? 'selected' : ''}>按后台有效期</option><option value="unlimited" ${passwordTtlMode === 'unlimited' ? 'selected' : ''}>不限固定期限</option></select></label>
+            </div>
+            <p data-account-spatial-summary>${spatialAccess.mode === 'kml_bounds'
+              ? `${spatialAccess.status === 'ready' ? '范围正常' : '范围待确认'}${spatialAccess.areaKm2 !== null ? ` · 面积 ${spatialAccess.areaKm2.toFixed(1)} km²` : ''}${spatialAccess.diagonalKm !== null ? ` · 对角线 ${spatialAccess.diagonalKm.toFixed(1)} km` : ''}${spatialAccess.paddingMeters !== null ? ` · 余量 ${Math.round(spatialAccess.paddingMeters)} m` : ''}`
+              : '地图范围不限制'}</p>
+            <button type="button" class="account-secondary-button" data-account-spatial-preview>重新计算范围</button>
+          </section>
+          <section class="account-share-dialog-section">
             <h3>默认地图视图</h3>
             <div class="account-share-view-grid">
               <label class="account-dialog-field"><span>地图模式</span><select name="mapMode"><option value="2d" ${viewConfig.mapMode !== '3d' ? 'selected' : ''}>2D</option><option value="3d" ${viewConfig.mapMode === '3d' ? 'selected' : ''}>3D</option></select></label>
@@ -146,7 +161,7 @@ export function showAccountShareDialog (options = {}) {
         <p class="account-share-dialog-error" data-account-share-error role="alert" hidden></p>
         <div class="app-dialog-actions">
           <button type="button" class="app-dialog-secondary" data-account-share-action="cancel">取消</button>
-          <button type="submit" class="app-dialog-primary">保存分享</button>
+          <button type="submit" class="app-dialog-primary">${mode === 'create' ? '生成链接' : '保存分享'}</button>
         </div>
       </form>
     </div>
@@ -157,6 +172,72 @@ export function showAccountShareDialog (options = {}) {
   const orderRoot = root.querySelector('[data-account-share-order]')
   const countRoot = root.querySelector('[data-account-share-count]')
   const errorRoot = root.querySelector('[data-account-share-error]')
+  const spatialSummaryRoot = root.querySelector('[data-account-spatial-summary]')
+  const spatialPreviewButton = root.querySelector('[data-account-spatial-preview]')
+  const passwordAccessField = root.querySelector('[data-account-password-access-field]')
+  let previewKey = spatialAccess.mode === 'kml_bounds' ? selectedItems.map(item => item.kmlId).join(',') : ''
+  let latestPreview = spatialAccess.mode === 'kml_bounds' && spatialAccess.status === 'ready' ? spatialAccess : null
+  let previewSequence = 0
+  let previewTimer = null
+
+  const renderPreview = preview => {
+    latestPreview = preview || null
+    if (!preview) {
+      spatialSummaryRoot.textContent = '范围待确认'
+      return
+    }
+    const status = preview.status === 'ready' ? '范围正常' : '范围不可用'
+    spatialSummaryRoot.textContent = `${status}${preview.areaKm2 != null ? ` · 面积 ${Number(preview.areaKm2).toFixed(1)} km²` : ''}${preview.diagonalKm != null ? ` · 对角线 ${Number(preview.diagonalKm).toFixed(1)} km` : ''}${preview.paddingMeters != null ? ` · 余量 ${Math.round(Number(preview.paddingMeters))} m` : ''}${preview.unlimitedAccessEligible === true ? ' · 可用不限授权' : ''}`
+  }
+  const updatePasswordAccessVisibility = () => {
+    const passwordAction = form.elements.passwordAction.value
+    const hasPassword = passwordAction === 'change' ||
+      (mode === 'edit' && share.passwordProtected === true && passwordAction !== 'remove')
+    passwordAccessField.hidden = !hasPassword
+    if (!hasPassword) form.elements.passwordAccessTtlMode.value = 'finite'
+  }
+  const requestSpatialPreview = async () => {
+    if (form.elements.spatialAccessMode.value !== 'kml_bounds') {
+      spatialPreviewButton.hidden = true
+      previewKey = ''
+      latestPreview = null
+      spatialSummaryRoot.textContent = '地图范围不限制'
+      return
+    }
+    spatialPreviewButton.hidden = false
+    if (typeof options.onSpatialPreview !== 'function' || !selectedItems.length) {
+      latestPreview = null
+      spatialSummaryRoot.textContent = '请选择 KML 后计算范围'
+      return
+    }
+    const key = selectedItems.map(item => item.kmlId).join(',')
+    previewKey = key
+    const sequence = ++previewSequence
+    spatialPreviewButton.disabled = true
+    spatialSummaryRoot.textContent = '正在计算范围…'
+    try {
+      const preview = await options.onSpatialPreview(selectedItems.map(item => ({ kmlId: item.kmlId })))
+      if (sequence !== previewSequence || key !== previewKey) return
+      if (preview?.spatialAccessEligible === false || preview?.status !== 'ready') {
+        renderPreview({ ...preview, status: preview?.status || 'error' })
+        latestPreview = null
+        return
+      }
+      renderPreview(preview)
+    } catch (error) {
+      if (sequence !== previewSequence) return
+      latestPreview = null
+      spatialSummaryRoot.textContent = error.message || '范围计算失败'
+    } finally {
+      if (sequence === previewSequence) spatialPreviewButton.disabled = false
+    }
+  }
+  const scheduleSpatialPreview = () => {
+    clearTimeout(previewTimer)
+    previewTimer = setTimeout(() => { requestSpatialPreview() }, 120)
+  }
+  updatePasswordAccessVisibility()
+  spatialPreviewButton.hidden = spatialAccess.mode !== 'kml_bounds'
 
   const showError = message => {
     errorRoot.textContent = String(message || '')
@@ -191,6 +272,7 @@ export function showAccountShareDialog (options = {}) {
       root.removeEventListener('change', onChange)
       form.removeEventListener('submit', onSubmit)
       document.removeEventListener('keydown', onKeydown)
+      clearTimeout(previewTimer)
     }
     const finish = value => {
       cleanup()
@@ -199,6 +281,11 @@ export function showAccountShareDialog (options = {}) {
       resolve(value)
     }
     const onClick = event => {
+      const previewTarget = event.target.closest('[data-account-spatial-preview]')
+      if (previewTarget) {
+        requestSpatialPreview()
+        return
+      }
       const moveTarget = event.target.closest('[data-account-share-move]')
       if (moveTarget) {
         const index = selectedItems.findIndex(item => item.kmlId === moveTarget.dataset.id)
@@ -235,12 +322,32 @@ export function showAccountShareDialog (options = {}) {
         }
         showError('')
         renderSelectedItems()
+        scheduleSpatialPreview()
         return
       }
       const visibleToggle = event.target.closest('[data-account-share-visible]')
-      if (!visibleToggle) return
-      const item = selectedItems.find(entry => entry.kmlId === visibleToggle.dataset.accountShareVisible)
-      if (item) item.visibleByDefault = visibleToggle.checked
+      if (visibleToggle) {
+        const item = selectedItems.find(entry => entry.kmlId === visibleToggle.dataset.accountShareVisible)
+        if (item) item.visibleByDefault = visibleToggle.checked
+        return
+      }
+      if (event.target.name === 'spatialAccessMode') {
+        const restricted = event.target.value === 'kml_bounds'
+        if (restricted) form.elements.mapMode.value = '2d'
+        else form.elements.passwordAccessTtlMode.value = 'finite'
+        spatialPreviewButton.hidden = !restricted
+        latestPreview = null
+        spatialSummaryRoot.textContent = restricted ? '保存前将重新计算范围' : '地图范围不限制'
+        scheduleSpatialPreview()
+      }
+      if (event.target.name === 'passwordAction') {
+        updatePasswordAccessVisibility()
+      }
+      if (event.target.name === 'passwordAccessTtlMode' && event.target.value === 'unlimited' && form.elements.spatialAccessMode.value !== 'kml_bounds') {
+        form.elements.spatialAccessMode.value = 'kml_bounds'
+        form.elements.mapMode.value = '2d'
+        scheduleSpatialPreview()
+      }
     }
     const onSubmit = event => {
       event.preventDefault()
@@ -254,7 +361,29 @@ export function showAccountShareDialog (options = {}) {
         showError('地图中心需同时填写纬度和经度')
         return
       }
-      const viewInput = { mapMode: form.elements.mapMode.value }
+      const spatialAccessMode = form.elements.spatialAccessMode.value === 'kml_bounds' ? 'kml_bounds' : 'unrestricted'
+      const passwordAccessTtlMode = form.elements.passwordAccessTtlMode.value === 'unlimited' ? 'unlimited' : 'finite'
+      if (passwordAccessTtlMode === 'unlimited' && spatialAccessMode !== 'kml_bounds') {
+        showError('不限授权需要先限制地图范围')
+        return
+      }
+      if (passwordAccessTtlMode === 'unlimited' && (mode === 'create' ? form.elements.passwordAction.value !== 'change' : share.passwordProtected !== true && form.elements.passwordAction.value !== 'change')) {
+        showError('不限授权需要设置分享密码')
+        return
+      }
+      if (spatialAccessMode === 'kml_bounds') {
+        const key = selectedItems.map(item => item.kmlId).join(',')
+        if (!latestPreview || previewKey !== key || latestPreview.status !== 'ready') {
+          showError('请先完成范围计算')
+          scheduleSpatialPreview()
+          return
+        }
+        if (passwordAccessTtlMode === 'unlimited' && latestPreview.unlimitedAccessEligible !== true) {
+          showError('当前范围不能使用不限授权')
+          return
+        }
+      }
+      const viewInput = { mapMode: spatialAccessMode === 'kml_bounds' ? '2d' : form.elements.mapMode.value }
       if (latitude && longitude) viewInput.center = [Number(latitude), Number(longitude)]
       const numericFieldNames = ['zoom', 'bearing', 'pitch']
       numericFieldNames.forEach(name => {
@@ -269,6 +398,8 @@ export function showAccountShareDialog (options = {}) {
           allowDownload: form.elements.allowDownload.value === 'true',
           expiresMode: form.elements.expiresMode.value,
           passwordAction: form.elements.passwordAction.value,
+          spatialAccess: { mode: spatialAccessMode },
+          passwordAccess: { ttlMode: passwordAccessTtlMode },
           items: buildShareUpdateItems(selectedItems),
           viewConfig: buildShareViewConfig(viewInput, viewConfig),
         })
@@ -285,5 +416,6 @@ export function showAccountShareDialog (options = {}) {
     root.addEventListener('change', onChange)
     form.addEventListener('submit', onSubmit)
     document.addEventListener('keydown', onKeydown)
+    if (spatialAccess.mode === 'kml_bounds') scheduleSpatialPreview()
   })
 }

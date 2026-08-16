@@ -27,7 +27,7 @@ import { isAdminLocation } from './admin/routes.js'
 import { initIdentityEntry } from './auth/identity.js'
 import { amapConfig, map3dCameraInteractionConfig, terrainConfig } from './config.js'
 import { initAfterAccessCheck } from './map/access-control.js'
-import { getActiveShare, isShareLocation, prepareShareView } from './map/share-view.js'
+import { getActiveShare, getShareSpatialConfig, isShareLocation, prepareShareView } from './map/share-view.js'
 import { initFavoriteActions } from './map/favorite-actions.js'
 import { initAmapGeolocation } from './map/geolocation.js'
 import { registerServiceWorker } from './pwa.js'
@@ -834,6 +834,12 @@ function flyToTerrainDemoView () {
 async function init3dEarth () {
   const shareMode = isShareLocation(window.location)
   const activeShare = getActiveShare()
+  const shareSpatial = shareMode ? getShareSpatialConfig(activeShare?.manifest) : { restricted: false, valid: true }
+  if (shareMode && shareSpatial.restricted) {
+    const publicId = activeShare?.publicId
+    if (publicId) window.location.replace(`/share/${encodeURIComponent(publicId)}`)
+    return
+  }
   const shareViewConfig = activeShare?.manifest?.viewConfig || {}
   // 1. 初始化 Viewer 并移除大部分内置控件，打造极简前卫外观
   viewer = new Viewer('cesiumContainer', {
@@ -942,6 +948,7 @@ async function init3dEarth () {
       defaultLayerId = defaultLayer.id
     }
   } catch (err) {
+    if (shareMode) throw err
     console.error('Failed to load 3D map catalog, using backend fallback sources', err)
     globalCatalogSources = new Map(FALLBACK_3D_CATALOG.sources.map(source => [source.id, source]))
     globalCatalogLayers = FALLBACK_3D_CATALOG.layers

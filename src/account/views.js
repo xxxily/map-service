@@ -8,6 +8,9 @@ import {
   kmlStatusLabel,
   registrationEnabled,
   shareAccessPolicyLabel,
+  passwordAccessLabel,
+  spatialAccessLabel,
+  spatialStatusLabel,
   shareStatusLabel,
 } from './model.js'
 import { getFeatureDescriptionText } from '../../shared/kml-content.js'
@@ -251,7 +254,7 @@ function renderShares (state) {
         <article class="account-card account-share-card">
           <div class="account-share-heading"><div><span class="account-status is-${escapeHtml(item.status)}">${shareStatusLabel(item.status)}</span><h3>${escapeHtml(item.title)}</h3></div><strong>${Number(item.itemCount || 0)}<small> KML</small></strong></div>
           <p>${escapeHtml(item.description || '暂无描述')}</p>
-          <dl><div><dt>访问次数</dt><dd>${Number(item.accessCount || 0).toLocaleString()} 次</dd></div><div><dt>访问策略</dt><dd>${escapeHtml(shareAccessPolicyLabel(item))}</dd></div><div><dt>下载</dt><dd>${item.allowDownload ? '允许' : '禁止'}</dd></div><div><dt>密码</dt><dd>${item.passwordProtected ? '已设置' : '无'}</dd></div><div><dt>过期时间</dt><dd>${item.expiresAt ? formatDateTime(item.expiresAt) : '永不'}</dd></div><div><dt>创建时间</dt><dd>${formatDateTime(item.createdAt)}</dd></div><div><dt>最近访问</dt><dd>${item.lastAccessedAt ? formatDateTime(item.lastAccessedAt) : '尚无访问'}</dd></div></dl>
+          <dl><div><dt>访问次数</dt><dd>${Number(item.accessCount || 0).toLocaleString()} 次</dd></div><div><dt>访问策略</dt><dd>${escapeHtml(shareAccessPolicyLabel(item))}</dd></div><div><dt>地图范围</dt><dd>${escapeHtml(spatialAccessLabel(item))}</dd></div><div><dt>范围状态</dt><dd>${escapeHtml(spatialStatusLabel(item))}</dd></div><div><dt>密码授权</dt><dd>${escapeHtml(passwordAccessLabel(item))}</dd></div><div><dt>下载</dt><dd>${item.allowDownload ? '允许' : '禁止'}</dd></div><div><dt>密码</dt><dd>${item.passwordProtected ? '已设置' : '无'}</dd></div><div><dt>过期时间</dt><dd>${item.expiresAt ? formatDateTime(item.expiresAt) : '永不'}</dd></div><div><dt>创建时间</dt><dd>${formatDateTime(item.createdAt)}</dd></div><div><dt>最近访问</dt><dd>${item.lastAccessedAt ? formatDateTime(item.lastAccessedAt) : '尚无访问'}</dd></div></dl>
           ${item.status === 'blocked' ? `<div class="account-share-blocked-reason"><strong>封禁原因</strong><span>${escapeHtml(item.blockedReason || '管理员未填写原因')}</span></div>` : ''}
           <code>${escapeHtml(item.shareUrl || `/share/${item.publicId}`)}</code>
           <small>更新于 ${formatDateTime(item.updatedAt)}</small>

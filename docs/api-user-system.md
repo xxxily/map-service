@@ -2,7 +2,7 @@
 
 > 状态：已实现，验收中  
 > 基础路径：`/api/v1`  
-> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md) 和 [两步路导入助手用户操作手册](./user-guides/two-bulu-import.md)
+> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./requirements/kml-share-spatial-access-and-semi-public-map.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md)、[两步路导入助手用户操作手册](./user-guides/two-bulu-import.md) 和 [KML 空间受限分享使用说明](./user-guides/kml-spatial-sharing.md)
 
 本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。
 
@@ -608,6 +608,8 @@ Content-Type: application/json
   "password": "optional-share-password",
   "allowDownload": true,
   "expiresAt": "2026-12-31T16:00:00.000Z",
+  "spatialAccess": { "mode": "kml_bounds" },
+  "passwordAccess": { "ttlMode": "unlimited" },
   "viewConfig": {
     "center": [30.2741, 120.1551],
     "zoom": 11,
@@ -631,6 +633,8 @@ Content-Type: application/json
 - `publicId` 是不可枚举的稳定链接标识，内部 `id` 和 KML ID不会暴露给公开清单。
 - 更新时可携带 `revision`；冲突返回 `SHARE_REVISION_CONFLICT`。
 - `password` 省略表示保持现状，空字符串或 `null` 表示移除密码。
+- `spatialAccess.mode` 支持 `unrestricted` 和 `kml_bounds`；省略时创建默认为 `unrestricted`，更新时保持现状。`kml_bounds` 的范围、面积和对角线只能由服务端根据分享内 active KML 计算。
+- `passwordAccess.ttlMode` 支持 `finite` 和 `unlimited`；无密码时公开视图为 `not_applicable`。`unlimited` 仅在空间受限、范围合规且后台允许时可用，服务端保存时会重新计算，不信任前端预检。
 - 非空分享密码采用独立访问口令规则，长度为 4～128 位；不沿用账号密码的 12 位和常见密码限制，但仍仅保存安全哈希并受独立尝试限流保护。
 - active 分享删除到没有有效文件时会自动暂停。
 - `revoked` 不可恢复；`blocked` 只能由管理员解封。
@@ -654,9 +658,17 @@ Content-Type: application/json
 
 成功后写入路径受限的 `map_share_access_<publicId>` HttpOnly Cookie，响应不返回授权 Token。
 
+响应包含 `ttlMode` 和 `expiresAt`：`finite` 使用管理员配置的有限授权时长，`unlimited` 的 `expiresAt` 为 `null` 但仍受分享生命周期、策略版本、密码版本和服务端撤销控制。
+
 公开清单使用分享项 ID `shareItemId` 引用文件，不返回所有者邮箱、内部用户 ID、内部 KML ID、密码哈希、管理备注或代理凭据。分享 scoped catalog 当前只包含后台已发布、前台可见且受控的栅格图源；任意 URL、未公开图源和矢量图源不会通过分享接口暴露。
 
 公开查看页在取得各分享文件后直接使用响应中的脱敏要素进行只读渲染，不再调用传统公共 KML 的内容接口。2D 和 3D 均展示完整要素列表并复用常规 KML 的定位、信息窗口、详情和媒体预览交互；不提供新增、编辑、拖拽或删除。首屏对 `visibleByDefault=true` 且加载成功的文件计算联合几何范围并自动适配，只有没有有效点、线、面时才使用 `viewConfig.center` / `viewConfig.zoom` 兜底。
+
+空间受限分享的公开清单和 catalog 返回脱敏 `spatialAccess` 摘要，包括 `bbox`、`bboxSegments`、`cameraBounds`、`paddingMeters`、`minZoom`、`maxCameraHeight`、范围版本和状态；不返回内部投影、空间索引、源 revision hash 或管理员阈值。分享瓦片请求会规范化世界环绕 `x`，只有完全落在允许范围且不低于 `minZoom` 的瓦片才回源，其他情况返回透明占位并带 `X-Kml-Share-Spatial-Decision` 响应头。分享瓦片无论回源成功还是返回透明占位，均使用 `Cache-Control: private, no-store`，避免分享授权内容进入共享缓存或浏览器持久缓存。
+
+空间受限分享加载时强制使用 2D，避免 3D 全球地形或影像链路形成未校验的资源入口。
+
+空间预检：`POST /api/v1/kml/shares/spatial-preview`，需要 `share.own.manage`，请求体为 `{ "items": [{ "kmlId": "kml_a" }], "spatialAccess": { "mode": "kml_bounds" } }`。响应返回 `status`、`bbox`、`areaKm2`、`diagonalKm`、`paddingMeters`、`minZoom`、`spatialAccessEligible`、`unlimitedAccessEligible` 和 `reasonCode`；预检结果不写入分享，创建和更新时服务端会再次计算。
 
 ## 6. 管理后台
 
@@ -728,6 +740,7 @@ Content-Type: application/json
 | 方法 | 路径 | 权限 |
 | --- | --- | --- |
 | `GET` | `/admin/user-system/settings` | `admin.registration.manage` 或 `admin.security.manage` |
+| `POST` | `/admin/user-system/settings/impact-preview` | `admin.security.manage`；空间字段还需超级管理员 |
 | `PUT` | `/admin/user-system/settings` | 对修改分区分别校验权限，并要求最近再验证 |
 
 设置模型：
@@ -746,7 +759,15 @@ Content-Type: application/json
   "share": {
     "publicAccessPolicy": "inherit_site_access",
     "maxFilesPerShare": 20,
-    "accessTtlMs": 43200000
+    "accessTtlMs": 43200000,
+    "spatialAccessEnabled": true,
+    "spatialPaddingMeters": 1000,
+    "spatialMaxAreaKm2": 10000,
+    "spatialMaxDiagonalKm": 300,
+    "unlimitedAccessEnabled": false,
+    "unlimitedAccessMaxAreaKm2": 2000,
+    "unlimitedAccessMaxDiagonalKm": 100,
+    "spatialPolicyRevision": 1
   }
 }
 ```
@@ -756,11 +777,28 @@ Content-Type: application/json
 - `inherit_site_access`：分享页继承全站访问密码。
 - `independent`：分享授权独立于全站访问密码。
 
+空间策略影响预览响应包含：
+
+```json
+{
+  "preview": true,
+  "sharePolicyImpact": {
+    "affectedShares": 3,
+    "downgradedShares": 1,
+    "revokedUnlimitedSessions": 2,
+    "recalculatedShares": 8
+  }
+}
+```
+
+预览不写入设置。超级管理员在收紧范围阈值、关闭空间受限能力或关闭不限授权前，后台使用统一确认 Dialog 展示这些数量。
+
 ### 6.5 分享治理与审计
 
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/admin/kml/shares` | `admin.share.moderate` | 按用户、状态、搜索条件分页查看分享 |
+| `GET` | `/admin/kml/shares/runtime-metrics` | `admin.share.moderate` | 查看内存有界的分享瓦片判定、范围拒绝和限流聚合指标 |
 | `POST` | `/admin/kml/shares/:id/block` | `admin.share.moderate` | 封禁并记录原因 |
 | `POST` | `/admin/kml/shares/:id/unblock` | `admin.share.moderate` | 解封后进入 paused，由所有者决定恢复 |
 | `GET` | `/admin/audit-logs` | `admin.audit.read` | 分页查询脱敏审计日志 |
@@ -772,6 +810,8 @@ Content-Type: application/json
 ```
 
 审计和治理列表不会返回密码、Token、Cookie、CSRF、会话哈希、请求认证头或代理凭据。
+
+运行指标按内部分享 ID、受控图源 ID、事件和空间判定结果聚合，返回计数、首次/最近发生时间，以及空间重算累计/最大耗时。响应同时给出当前空间分享、半公开分享、范围状态和有限/不限授权会话数量快照；不记录来源 IP、`publicId`、Cookie、Token、完整 URL 或瓦片坐标。指标为单进程内存状态，服务重启后清空，多实例部署需接入统一监控系统。
 
 ## 7. 常见错误码
 
@@ -789,9 +829,19 @@ Content-Type: application/json
 | `409` | `KML_REVISION_CONFLICT` | KML 并发版本冲突 |
 | `409` | `SHARE_REVISION_CONFLICT` | 分享配置并发版本冲突 |
 | `409` | `LAST_SUPER_ADMIN` | 操作会移除最后一个有效超级管理员 |
+| `409` | `SHARE_SPATIAL_RECALCULATING` | 空间范围正在重算，暂不能安全访问 |
 | `410` | `SHARE_PAUSED` / `SHARE_EXPIRED` | 分享暂停或过期 |
+| `410` | `SHARE_SPATIAL_UNAVAILABLE` | 分享地图范围不可安全使用 |
+| `400` | `SHARE_SPATIAL_MODE_INVALID` | 空间访问模式不受支持 |
+| `400` | `SHARE_PASSWORD_ACCESS_MODE_INVALID` | 密码授权模式不受支持 |
+| `400` | `INVALID_TILE_COORDINATES` | 分享瓦片坐标无效 |
+| `422` | `SHARE_SPATIAL_DISABLED` / `SHARE_SPATIAL_BOUNDS_EMPTY` | 空间受限分享未开放或没有有效几何 |
+| `422` | `SHARE_SPATIAL_RANGE_TOO_LARGE` | 超过空间限制总体阈值 |
+| `422` | `SHARE_UNLIMITED_ACCESS_DISABLED` / `SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE` | 不限授权未开放或范围超过更严格阈值 |
 | `413` | `FILE_TOO_LARGE` | KML 文件或请求超过限制 |
 | `429` | `RATE_LIMITED` | 登录、注册或分享密码尝试过多 |
+| `429` | `SHARE_MANIFEST_RATE_LIMITED` | 单个分享和来源 IP 的公开清单请求过于频繁 |
+| `429` | `SHARE_TILE_RATE_LIMITED` | 单个分享和来源 IP 的瓦片请求过于频繁 |
 | `500` | `INTERNAL_ERROR` | 未预期服务端错误，响应已脱敏 |
 
 ## 8. 当前实施边界
@@ -802,4 +852,6 @@ Content-Type: application/json
 - 回收站保留天数已进入设置和数据模型，但超期异步清理任务尚未实现。
 - 超级管理员跨用户 KML 归属转移尚未提供管理接口。
 - 分享页底图 catalog 当前只开放受控公开栅格图源。
+- 空间受限分享首期仅允许完全包含瓦片回源，边界和范围外瓦片返回透明占位；3D 分享强制回退 2D。
+- 管理员空间策略保存前影响预览为同步计算，重算失败时以保守拒绝资源访问处理。
 - 数据库迁移前的自动备份尚未内置，生产升级必须由运维流程先完成一致性备份。

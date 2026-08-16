@@ -5,6 +5,7 @@ import UserContentService, {
   generateKmlText,
   parseKmlText,
 } from '../service/bin/user/userContent.js'
+import { hashToken } from '../service/bin/user/security.js'
 
 const USER_PERMISSIONS = [
   'kml.own.read',
@@ -61,6 +62,15 @@ function createHarness (options = {}) {
       publicAccessPolicy: options.publicAccessPolicy || 'independent',
       maxFilesPerShare: 20,
       accessTtlMs: 1000 * 60 * 60,
+      spatialAccessEnabled: true,
+      spatialPaddingMeters: 1000,
+      spatialMaxAreaKm2: 10000,
+      spatialMaxDiagonalKm: 300,
+      unlimitedAccessEnabled: true,
+      unlimitedAccessMaxAreaKm2: 2000,
+      unlimitedAccessMaxDiagonalKm: 100,
+      spatialPolicyRevision: 1,
+      ...(options.share || {}),
     },
   }
   const service = new UserContentService({
@@ -68,6 +78,8 @@ function createHarness (options = {}) {
     clock: () => now,
     settingsProvider: () => settings,
     isSiteAccessEnabled: () => Boolean(options.siteAccessEnabled),
+    shareTileRateLimit: options.shareTileRateLimit,
+    shareManifestRateLimit: options.shareManifestRateLimit,
   })
   return {
     database,
@@ -521,6 +533,8 @@ test('multi-KML shares expose only public item IDs and detach trashed files', ()
     harness.service.trashKml(harness.one, second.id)
     const afterOneRemoval = harness.service.getPublicShareManifest(share.publicId)
     assert.equal(afterOneRemoval.itemCount, 1)
+    harness.service.restoreKml(harness.one, second.id)
+    assert.equal(harness.service.getPublicShareManifest(share.publicId).itemCount, 1)
     harness.service.trashKml(harness.one, first.id)
     assert.throws(
       () => harness.service.getPublicShareManifest(share.publicId),
@@ -656,6 +670,488 @@ test('share expiry, download control, site policy and administrator moderation a
     const inspectable = harness.service.listAllShares(contentAuditor)
     assert.equal(inspectable.items[0].publicId, share.publicId)
     assert.equal(inspectable.items[0].shareUrl, `/share/${share.publicId}`)
+  } finally {
+    harness.close()
+  }
+})
+
+test('spatial preview returns a safe bounds summary and rejects empty or oversized ranges', () => {
+  const harness = createHarness({
+    share: {
+      spatialMaxAreaKm2: 500,
+      spatialMaxDiagonalKm: 300,
+    },
+  })
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '空间预览',
+      features: [
+        point('preview-point', 113.2644, 23.1291),
+        { id: 'preview-line', type: 'LineString', coordinates: [[113.2, 23.1], [113.3, 23.2]] },
+      ],
+    })
+    const preview = harness.service.getSpatialPreview(harness.one, {
+      spatialAccess: { mode: 'kml_bounds' },
+      items: [{ kmlId: document.id }],
+    })
+    assert.equal(preview.mode, 'kml_bounds')
+    assert.equal(preview.status, 'ready')
+    assert.equal(preview.spatialAccessEligible, true)
+    assert.equal(typeof preview.areaKm2, 'number')
+    assert.equal(Object.hasOwn(preview, 'projection'), false)
+    assert.equal(Object.hasOwn(preview, 'primitives'), false)
+    assert.equal(Object.hasOwn(preview, 'sourceRevisionHash'), false)
+
+    const empty = harness.service.createKml(harness.one, { name: '空文件', features: [] })
+    assert.throws(
+      () => harness.service.getSpatialPreview(harness.one, {
+        spatialAccess: { mode: 'kml_bounds' }, items: [{ kmlId: empty.id }],
+      }),
+      error => error.code === 'SHARE_SPATIAL_BOUNDS_EMPTY'
+    )
+
+    const oversized = harness.service.createKml(harness.one, {
+      name: '超大范围',
+      features: [{ id: 'wide', type: 'LineString', coordinates: [[100, 0], [105, 0]] }],
+    })
+    assert.throws(
+      () => harness.service.getSpatialPreview(harness.one, {
+        spatialAccess: { mode: 'kml_bounds' }, items: [{ kmlId: oversized.id }],
+      }),
+      error => error.code === 'SHARE_SPATIAL_RANGE_TOO_LARGE'
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('unlimited password authorization requires spatial policy and creates a non-expiring session', async () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '不限期路线', features: [point('unlimited')] })
+    assert.throws(
+      () => harness.service.createShare(harness.one, {
+        title: '无密码不限期', items: [{ kmlId: document.id }],
+        spatialAccess: { mode: 'kml_bounds' }, passwordAccess: { ttlMode: 'unlimited' },
+      }),
+      error => error.code === 'SHARE_UNLIMITED_ACCESS_REQUIRES_PASSWORD'
+    )
+    assert.throws(
+      () => harness.service.createShare(harness.one, {
+        title: '无空间不限期', items: [{ kmlId: document.id }], password: '1234',
+        passwordAccess: { ttlMode: 'unlimited' },
+      }),
+      error => error.code === 'SHARE_UNLIMITED_ACCESS_REQUIRES_SPATIAL'
+    )
+
+    const share = harness.service.createShare(harness.one, {
+      title: '合规不限期', items: [{ kmlId: document.id }], password: '1234',
+      spatialAccess: { mode: 'kml_bounds' }, passwordAccess: { ttlMode: 'unlimited' },
+    })
+    assert.equal(share.passwordAccess.ttlMode, 'unlimited')
+    const authorization = await harness.service.authorizePublicShare(share.publicId, { password: '1234' })
+    assert.equal(authorization.ttlMode, 'unlimited')
+    assert.equal(authorization.expiresAt, null)
+    const session = harness.database.prepare(`
+      SELECT ttl_mode, expires_at, revoked_at FROM share_access_sessions WHERE share_id = ?
+    `).get(share.id)
+    assert.equal(session.ttl_mode, 'unlimited')
+    assert.equal(session.expires_at, null)
+    assert.equal(session.revoked_at, null)
+    assert.equal(harness.service.getPublicShareManifest(share.publicId, { accessToken: authorization.accessToken }).itemCount, 1)
+  } finally {
+    harness.close()
+  }
+})
+
+test('share access session touch is throttled during tile and manifest requests', async () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '触碰节流', features: [point('touch')] })
+    const share = harness.service.createShare(harness.one, {
+      title: '触碰节流', items: [{ kmlId: document.id }], password: '1234',
+    })
+    const authorization = await harness.service.authorizePublicShare(share.publicId, { password: '1234' })
+    const initial = harness.database.prepare(`
+      SELECT last_accessed_at FROM share_access_sessions WHERE share_id = ?
+    `).get(share.id).last_accessed_at
+
+    harness.advance(60 * 1000)
+    assert.equal(harness.service.getPublicShareManifest(share.publicId, { accessToken: authorization.accessToken }).itemCount, 1)
+    const withinWindow = harness.database.prepare(`
+      SELECT last_accessed_at FROM share_access_sessions WHERE share_id = ?
+    `).get(share.id).last_accessed_at
+    assert.equal(withinWindow, initial)
+
+    harness.advance(5 * 60 * 1000)
+    harness.service.getPublicShareManifest(share.publicId, { accessToken: authorization.accessToken })
+    const afterWindow = harness.database.prepare(`
+      SELECT last_accessed_at FROM share_access_sessions WHERE share_id = ?
+    `).get(share.id).last_accessed_at
+    assert.notEqual(afterWindow, initial)
+  } finally {
+    harness.close()
+  }
+})
+
+test('independent spatial shares are readable without a password and never expose internal scope data', () => {
+  const harness = createHarness({ publicAccessPolicy: 'independent' })
+  try {
+    const document = harness.service.createKml(harness.one, { name: '半公开路线', features: [point('semi-public')] })
+    const share = harness.service.createShare(harness.one, {
+      title: '半公开', items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds' },
+    })
+    const manifest = harness.service.getPublicShareManifest(share.publicId)
+    const serialized = JSON.stringify(manifest)
+    assert.equal(manifest.spatialAccess.mode, 'kml_bounds')
+    assert.equal(manifest.passwordProtected, false)
+    assert.equal(serialized.includes('internalScope'), false)
+    assert.equal(serialized.includes('projection'), false)
+    assert.equal(serialized.includes('primitives'), false)
+    assert.equal(serialized.includes('sourceRevisionHash'), false)
+    assert.equal(serialized.includes(document.id), false)
+    assert.equal(harness.service.getShareRuntimeMetrics(harness.admin).items.some(item => (
+      item.shareId === share.id && item.event === 'spatial_scope_cache' && item.decision === 'hit'
+    )), true)
+  } finally {
+    harness.close()
+  }
+})
+
+test('changing a password, rotating a link, or blocking a share revokes existing access sessions', async () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '撤销测试', features: [point('revoke')] })
+    const share = harness.service.createShare(harness.one, { title: '撤销', items: [{ kmlId: document.id }], password: '1234' })
+    const first = await harness.service.authorizePublicShare(share.publicId, { password: '1234' })
+    harness.service.updateShare(harness.one, share.id, { revision: share.revision, password: '5678' })
+    let session = harness.database.prepare('SELECT revoked_at, revoke_reason FROM share_access_sessions LIMIT 1').get()
+    assert.ok(session.revoked_at)
+    assert.equal(session.revoke_reason, 'share.password.update')
+    assert.throws(() => harness.service.getPublicShareManifest(share.publicId, { accessToken: first.accessToken }), error => error.code === 'SHARE_PASSWORD_REQUIRED')
+
+    const current = harness.service.getShare(harness.one, share.id)
+    const second = await harness.service.authorizePublicShare(current.publicId, { password: '5678' })
+    const rotated = harness.service.rotateShareLink(harness.one, share.id)
+    session = harness.database.prepare('SELECT revoked_at, revoke_reason FROM share_access_sessions WHERE token_hash = ?').get(
+      hashToken(second.accessToken)
+    )
+    assert.ok(session.revoked_at)
+    assert.equal(session.revoke_reason, 'share.rotate-link')
+    assert.throws(() => harness.service.getPublicShareManifest(rotated.publicId, { accessToken: second.accessToken }), error => error.code === 'SHARE_PASSWORD_REQUIRED')
+
+    const third = await harness.service.authorizePublicShare(rotated.publicId, { password: '5678' })
+    harness.service.blockShare(harness.admin, share.id, { reason: '策略违规' })
+    session = harness.database.prepare('SELECT revoked_at, revoke_reason FROM share_access_sessions WHERE token_hash = ?').get(
+      hashToken(third.accessToken)
+    )
+    assert.ok(session.revoked_at)
+    assert.equal(session.revoke_reason, 'admin.share.block')
+  } finally {
+    harness.close()
+  }
+})
+
+test('moving KML content beyond unlimited thresholds downgrades and revokes an unlimited share', async () => {
+  const harness = createHarness({
+    share: {
+      spatialMaxAreaKm2: 10000,
+      spatialMaxDiagonalKm: 300,
+      unlimitedAccessMaxAreaKm2: 2000,
+      unlimitedAccessMaxDiagonalKm: 100,
+    },
+  })
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '会扩大路线',
+      features: [{ id: 'moving', type: 'LineString', coordinates: [[113.2644, 23.1291], [113.3, 23.16]] }],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '无限授权', items: [{ kmlId: document.id }], password: '1234',
+      spatialAccess: { mode: 'kml_bounds' }, passwordAccess: { ttlMode: 'unlimited' },
+    })
+    const authorization = await harness.service.authorizePublicShare(share.publicId, { password: '1234' })
+    harness.service.updateKml(harness.one, document.id, {
+      revision: document.revision,
+      features: [{ id: 'moving', type: 'LineString', coordinates: [[113.2, 23.1291], [115.2, 23.16]] }],
+    })
+    const updated = harness.service.getShare(harness.one, share.id)
+    assert.equal(updated.passwordAccess.ttlMode, 'finite')
+    const session = harness.database.prepare('SELECT revoked_at, revoke_reason FROM share_access_sessions LIMIT 1').get()
+    assert.ok(session.revoked_at)
+    assert.equal(session.revoke_reason, 'share.password-access.auto-downgrade')
+    assert.equal(harness.service.getShareRuntimeMetrics(harness.admin).items.some(item => (
+      item.shareId === share.id && item.event === 'spatial_auto_downgrade'
+    )), true)
+    assert.throws(
+      () => harness.service.getPublicShareManifest(share.publicId, { accessToken: authorization.accessToken }),
+      error => error.code === 'SHARE_PASSWORD_REQUIRED'
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('updating spatial share metadata or status preserves the computed KML scope', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '保持范围路线',
+      features: [{ id: 'stable-line', type: 'LineString', coordinates: [[113.2, 23.1], [113.4, 23.3]] }],
+    })
+    const created = harness.service.createShare(harness.one, {
+      title: '原始标题',
+      items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds' },
+    })
+    const initialScope = JSON.parse(harness.database.prepare(
+      'SELECT spatial_scope_json FROM kml_shares WHERE id = ?'
+    ).get(created.id).spatial_scope_json)
+
+    const renamed = harness.service.updateShare(harness.one, created.id, {
+      revision: created.revision,
+      title: '新标题',
+    })
+    assert.equal(renamed.title, '新标题')
+    assert.deepEqual(renamed.spatialAccess.cameraBounds, initialScope.cameraBounds)
+
+    const paused = harness.service.pauseShare(harness.one, created.id)
+    assert.equal(paused.status, 'paused')
+    assert.deepEqual(paused.spatialAccess.cameraBounds, initialScope.cameraBounds)
+
+    const resumed = harness.service.resumeShare(harness.one, created.id)
+    assert.equal(resumed.status, 'active')
+    assert.deepEqual(resumed.spatialAccess.cameraBounds, initialScope.cameraBounds)
+    const finalScope = JSON.parse(harness.database.prepare(
+      'SELECT spatial_scope_json FROM kml_shares WHERE id = ?'
+    ).get(created.id).spatial_scope_json)
+    assert.equal(finalScope.sourceRevisionHash, initialScope.sourceRevisionHash)
+  } finally {
+    harness.close()
+  }
+})
+
+test('spatial recalculation retries when a KML revision changes after computation', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '并发更新路线',
+      features: [{ id: 'moving-line', type: 'LineString', coordinates: [[113.2, 23.1], [113.3, 23.2]] }],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '并发重算',
+      items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds' },
+    })
+    const originalCompute = harness.service.computeSpatialState.bind(harness.service)
+    let changedDuringComputation = false
+    harness.service.computeSpatialState = (items, settings) => {
+      const state = originalCompute(items, settings)
+      harness.advance(25)
+      if (!changedDuringComputation) {
+        changedDuringComputation = true
+        harness.database.prepare(`
+          UPDATE kml_documents
+          SET features_json = ?, feature_count = 1, revision = revision + 1, updated_at = ?
+          WHERE id = ?
+        `).run(JSON.stringify([
+          { id: 'moving-line', type: 'LineString', coordinates: [[120.1, 30.1], [120.3, 30.2]] },
+        ]), '2026-08-05T08:01:00.000Z', document.id)
+      }
+      return state
+    }
+
+    const result = harness.service.revalidateSpatialShare(share.id)
+    assert.equal(result.recalculating, undefined)
+    assert.equal(result.status, 'ready')
+    const recalculateMetric = harness.service.getShareRuntimeMetrics(harness.admin).items.find(item => (
+      item.shareId === share.id && item.event === 'spatial_recalculate' && item.decision === 'ready'
+    ))
+    assert.equal(recalculateMetric.totalDurationMs, 50)
+    assert.equal(recalculateMetric.maxDurationMs, 50)
+    const scope = JSON.parse(harness.database.prepare(
+      'SELECT spatial_scope_json FROM kml_shares WHERE id = ?'
+    ).get(share.id).spatial_scope_json)
+    assert.deepEqual(scope.sourceRevisions, [{ id: document.id, revision: document.revision + 1 }])
+    assert.ok(scope.cameraBounds[0] > 119)
+    assert.ok(scope.cameraBounds[2] < 121)
+  } finally {
+    harness.close()
+  }
+})
+
+test('spatial recalculation records failed computations without exposing inputs', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '失败指标路线',
+      features: [point('metric-failure')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '失败指标',
+      items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds' },
+    })
+    harness.service.computeSpatialState = () => {
+      harness.advance(17)
+      const error = new Error('内部测试失败')
+      error.code = 'SPATIAL_TEST_FAILURE'
+      throw error
+    }
+
+    assert.throws(
+      () => harness.service.revalidateSpatialShare(share.id),
+      error => error.code === 'SPATIAL_TEST_FAILURE'
+    )
+    const metrics = harness.service.getShareRuntimeMetrics(harness.admin)
+    const failure = metrics.items.find(item => (
+      item.shareId === share.id && item.event === 'spatial_recalculate' && item.decision === 'SPATIAL_TEST_FAILURE'
+    ))
+    assert.equal(failure.totalDurationMs, 17)
+    assert.equal(JSON.stringify(failure).includes('内部测试失败'), false)
+  } finally {
+    harness.close()
+  }
+})
+
+test('spatial recalculation fails closed after repeated KML revision conflicts', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '持续变化路线',
+      features: [{ id: 'changing-line', type: 'LineString', coordinates: [[113.2, 23.1], [113.3, 23.2]] }],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '持续冲突',
+      items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds' },
+    })
+    const initialRow = harness.database.prepare(
+      'SELECT revision, spatial_scope_json FROM kml_shares WHERE id = ?'
+    ).get(share.id)
+    const originalCompute = harness.service.computeSpatialState.bind(harness.service)
+    let conflictCount = 0
+    harness.service.computeSpatialState = (items, settings) => {
+      const state = originalCompute(items, settings)
+      conflictCount += 1
+      harness.database.prepare(`
+        UPDATE kml_documents
+        SET features_json = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `).run(JSON.stringify([
+        {
+          id: 'changing-line',
+          type: 'LineString',
+          coordinates: [[120 + conflictCount, 30], [120.2 + conflictCount, 30.2]],
+        },
+      ]), `2026-08-05T08:0${conflictCount}:00.000Z`, document.id)
+      return state
+    }
+
+    const result = harness.service.revalidateSpatialShare(share.id)
+    assert.equal(result.recalculating, true)
+    assert.equal(result.status, 'recalculating')
+    assert.equal(conflictCount, 2)
+    const finalRow = harness.database.prepare(
+      'SELECT revision, spatial_scope_json FROM kml_shares WHERE id = ?'
+    ).get(share.id)
+    assert.equal(finalRow.revision, initialRow.revision)
+    assert.equal(finalRow.spatial_scope_json, initialRow.spatial_scope_json)
+    const metrics = harness.service.getShareRuntimeMetrics(harness.admin)
+    const conflictMetric = metrics.items.find(item => (
+      item.shareId === share.id && item.event === 'spatial_recalculate' && item.decision === 'conflict'
+    ))
+    assert.equal(conflictMetric.count, 1)
+    assert.equal(conflictMetric.totalDurationMs, 0)
+  } finally {
+    harness.close()
+  }
+})
+
+test('public share tile and manifest rate limits isolate shares and IPs and reset after the window', () => {
+  const harness = createHarness({
+    shareTileRateLimit: { maxRequests: 2, windowMs: 1000, maxEntries: 100 },
+    shareManifestRateLimit: { maxRequests: 2, windowMs: 1000, maxEntries: 100 },
+  })
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '限流路线',
+      features: [point('rate-limit')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '限流分享',
+      items: [{ kmlId: document.id }],
+    })
+
+    harness.service.assertPublicShareTileRequest(share.publicId, 'road', { ip: '198.51.100.1' })
+    harness.service.assertPublicShareTileRequest(share.publicId, 'road', { ip: '198.51.100.1' })
+    assert.throws(
+      () => harness.service.assertPublicShareTileRequest(share.publicId, 'road', { ip: '198.51.100.1' }),
+      error => error.statusCode === 429 && error.code === 'SHARE_TILE_RATE_LIMITED'
+    )
+    const metrics = harness.service.getShareRuntimeMetrics(harness.admin)
+    assert.equal(metrics.items.some(item => item.shareId === share.id && item.event === 'tile_rate_limited'), true)
+    assert.equal(JSON.stringify(metrics).includes(share.publicId), false)
+    assert.equal(JSON.stringify(metrics).includes('198.51.100.1'), false)
+    assert.throws(
+      () => harness.service.getShareRuntimeMetrics(harness.one),
+      error => error.statusCode === 403 && error.code === 'PERMISSION_DENIED'
+    )
+    assert.throws(
+      () => harness.service.assertPublicShareTileRequest(share.publicId, 'satellite', { ip: '198.51.100.1' }),
+      error => error.statusCode === 429 && error.code === 'SHARE_TILE_RATE_LIMITED'
+    )
+    assert.doesNotThrow(
+      () => harness.service.assertPublicShareTileRequest(share.publicId, 'road', { ip: '198.51.100.2' })
+    )
+
+    harness.service.getPublicShareManifest(share.publicId, { ip: '203.0.113.1' })
+    harness.service.getPublicShareManifest(share.publicId, { ip: '203.0.113.1' })
+    assert.throws(
+      () => harness.service.getPublicShareManifest(share.publicId, { ip: '203.0.113.1' }),
+      error => error.statusCode === 429 && error.code === 'SHARE_MANIFEST_RATE_LIMITED'
+    )
+    const manifestMetrics = harness.service.getShareRuntimeMetrics(harness.admin)
+    assert.equal(manifestMetrics.items.some(item => (
+      item.shareId === share.id && item.event === 'manifest_rate_limited'
+    )), true)
+    assert.equal(manifestMetrics.summary.totalShares >= 1, true)
+    assert.doesNotThrow(
+      () => harness.service.getPublicShareManifest(share.publicId, { ip: '203.0.113.2' })
+    )
+
+    harness.advance(1000)
+    assert.doesNotThrow(
+      () => harness.service.assertPublicShareTileRequest(share.publicId, 'road', { ip: '198.51.100.1' })
+    )
+    assert.doesNotThrow(
+      () => harness.service.getPublicShareManifest(share.publicId, { ip: '203.0.113.1' })
+    )
+
+    const capacityHarness = createHarness({
+      shareTileRateLimit: { maxRequests: 1000, windowMs: 1000, maxEntries: 100 },
+    })
+    try {
+      const capacityDocument = capacityHarness.service.createKml(capacityHarness.one, {
+        name: '限流容量',
+        features: [point('rate-capacity')],
+      })
+      const capacityShare = capacityHarness.service.createShare(capacityHarness.one, {
+        title: '限流容量',
+        items: [{ kmlId: capacityDocument.id }],
+      })
+      for (let index = 0; index < 105; index += 1) {
+        capacityHarness.service.assertPublicShareTileRequest(
+          capacityShare.publicId,
+          `source-${index}`,
+          { ip: `192.0.2.${(index % 200) + 1}` }
+        )
+      }
+      assert.equal(capacityHarness.service.shareTileLimiter.entries.size, 100)
+    } finally {
+      capacityHarness.close()
+    }
   } finally {
     harness.close()
   }

@@ -11,6 +11,7 @@ import multer from 'multer'
 import utils from './utils/index.js'
 import baseConfig from '../config.js'
 import service from './service.js'
+import { TRANSPARENT_TILE_PNG } from './user/shareSpatialAccess.js'
 import whitelist from './whitelist.js'
 
 const serviceConfig = baseConfig.staticService
@@ -23,6 +24,7 @@ const USER_COOKIE_NAMES = service.getUserSystemConfig()
 const USER_SESSION_COOKIE_NAME = USER_COOKIE_NAMES.sessionCookieName
 const USER_CSRF_COOKIE_NAME = USER_COOKIE_NAMES.csrfCookieName
 const SHARE_COOKIE_PREFIX = USER_COOKIE_NAMES.shareCookiePrefix
+const UNLIMITED_SHARE_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000
 const ACCESS_VERIFY_LIMIT = {
   maxAttempts: 5,
   windowMs: 1000 * 60 * 10,
@@ -397,12 +399,12 @@ function buildOpenApiSpec () {
   }
 }
 
-async function sendRelayResponse (res, relayResult) {
+async function sendRelayResponse (res, relayResult, options = {}) {
   res.status(relayResult.statusCode || 200)
   res.set({
     ...relayResult.headers,
     'Access-Control-Allow-Origin': '*',
-    'Cache-Control': cacheControlHeader(),
+    'Cache-Control': options.cacheControl || cacheControlHeader(),
     'X-Cache': relayResult.cacheStatus || 'UNKNOWN',
   })
 
@@ -418,16 +420,19 @@ async function sendRelayResponse (res, relayResult) {
   relayResult.stream.pipe(res)
 }
 
-async function sendControlledTileSource (req, res) {
+async function sendControlledTileSource (req, res, coordinateOverride = {}, responseOptions = {}) {
   const startTime = Date.now()
   const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
   const userAgent = req.headers['user-agent'] || ''
   const sourceId = req.params.sourceId
+  const coordinates = {
+    z: coordinateOverride.z ?? req.params.z,
+    x: coordinateOverride.x ?? req.params.x,
+    y: coordinateOverride.y ?? req.params.y,
+  }
   try {
     const result = await service.fetchTileSource(sourceId, {
-      z: req.params.z,
-      x: req.params.x,
-      y: req.params.y,
+      ...coordinates,
     }, {
       scale: req.query.scale,
       clientIp,
@@ -437,7 +442,7 @@ async function sendControlledTileSource (req, res) {
         'User-Agent': userAgent || 'Mozilla/5.0',
       },
     })
-    await sendRelayResponse(res, result)
+    await sendRelayResponse(res, result, responseOptions)
   } catch (err) {
     const status = err.statusCode || err.response?.status || 502
     const source = await service.getTileSource(sourceId).catch(() => null)
@@ -449,7 +454,7 @@ async function sendControlledTileSource (req, res) {
         layerId: '',
         clientIp,
         userAgent,
-        coordinates: `Z:${req.params.z || ''} X:${req.params.x || ''} Y:${req.params.y || ''}`,
+        coordinates: `Z:${coordinates.z || ''} X:${coordinates.x || ''} Y:${coordinates.y || ''}`,
         reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
         statusCode: status,
         duration: Date.now() - startTime,
@@ -464,6 +469,17 @@ async function sendControlledTileSource (req, res) {
     }
     throw err
   }
+}
+
+function sendTransparentShareTile (res, decision) {
+  res.status(200)
+  res.set({
+    'Content-Type': 'image/png',
+    'Content-Length': String(TRANSPARENT_TILE_PNG.length),
+    'Cache-Control': 'private, no-store',
+    'X-Kml-Share-Spatial-Decision': String(decision || 'outside'),
+  })
+  res.end(TRANSPARENT_TILE_PNG)
 }
 
 const userApiRoutes = [
@@ -905,6 +921,19 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/kml/shares/spatial-preview',
+    method: 'post',
+    describe: '预检 KML 分享地图范围',
+    tags: ['shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.getUserKmlShareSpatialPreview(
+        requireUser(req, 'share.own.manage'),
+        req.body || {}
+      ))
+    },
+  },
+  {
     path: '/kml/shares/:id',
     method: 'get',
     describe: '获取个人分享包详情',
@@ -1012,12 +1041,26 @@ const userApiRoutes = [
     describe: '按公开分享授权读取受控底图瓦片',
     tags: ['shares', 'tiles'],
     handler: async (req, res) => {
-      await service.assertPublicKmlShareMapSource(
+      // Set the policy before any async validation so auth, catalog, rate
+      // limit and upstream errors cannot be heuristically cached.
+      res.set('Cache-Control', 'private, no-store')
+      const classification = await service.assertPublicKmlShareMapSource(
         req.params.publicId,
         req.params.sourceId,
+        {
+          z: req.params.z,
+          x: req.params.x,
+          y: req.params.y,
+        },
         await publicShareContext(req)
       )
-      await sendControlledTileSource(req, res)
+      if (classification.decision !== 'allow') {
+        sendTransparentShareTile(res, classification.decision)
+        return
+      }
+      await sendControlledTileSource(req, res, classification.tile, {
+        cacheControl: 'private, no-store',
+      })
     },
   },
   {
@@ -1033,14 +1076,17 @@ const userApiRoutes = [
         await publicShareContext(req)
       )
       if (result.accessToken) {
-        const maxAge = Math.max(0, Date.parse(result.expiresAt) - Date.now())
-        res.cookie(shareCookieName(req.params.publicId), result.accessToken, secureCookieOptions(req, {
-          maxAge,
+        const expiresAtMs = result.expiresAt ? Date.parse(result.expiresAt) : Number.NaN
+        const cookieOptions = {
           path: `/api/v1/public/kml-shares/${encodeURIComponent(req.params.publicId)}`,
-        }))
+        }
+        if (Number.isFinite(expiresAtMs)) cookieOptions.maxAge = Math.max(0, expiresAtMs - Date.now())
+        else if (result.ttlMode === 'unlimited') cookieOptions.maxAge = UNLIMITED_SHARE_COOKIE_MAX_AGE_MS
+        res.cookie(shareCookieName(req.params.publicId), result.accessToken, secureCookieOptions(req, cookieOptions))
       }
       res.jsonSuc({
         passwordRequired: result.passwordRequired,
+        ttlMode: result.ttlMode || (result.expiresAt ? 'finite' : 'unlimited'),
         expiresAt: result.expiresAt,
       })
     },
@@ -1229,6 +1275,17 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/admin/user-system/settings/impact-preview',
+    method: 'post',
+    describe: '预览用户体系空间策略变更影响',
+    tags: ['admin-users'],
+    handler: async (req, res) => {
+      noStore(res)
+      const session = requireAnyUserPermission(req, ['admin.registration.manage', 'admin.security.manage'])
+      res.jsonSuc(service.previewUserSystemSettings(session, req.body || {}, requestContext(req)))
+    },
+  },
+  {
     path: '/admin/user-system/settings',
     method: 'get',
     describe: '获取用户系统设置',
@@ -1258,6 +1315,16 @@ const userApiRoutes = [
     handler: async (req, res) => {
       noStore(res)
       res.jsonSuc(service.listAllUserKmlShares(requireAdmin(req, 'admin.share.moderate'), req.query || {}))
+    },
+  },
+  {
+    path: '/admin/kml/shares/runtime-metrics',
+    method: 'get',
+    describe: '读取 KML 分享运行指标',
+    tags: ['admin-shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.getUserKmlShareRuntimeMetrics(requireAdmin(req, 'admin.share.moderate')))
     },
   },
   {

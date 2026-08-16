@@ -39,3 +39,15 @@ test('只写入的瓦片 canvas 不请求高频像素回读优化', () => {
   assert.match(layersSource, /canvas\.getContext\('2d'\)/)
   assert.doesNotMatch(layersSource, /canvas\.getContext\('2d',\s*\{\s*willReadFrequently:\s*true\s*\}\)/)
 })
+
+test('空间受限分享的底图目录失败时不允许使用普通地图兜底，并关闭世界横向环绕', () => {
+  assert.match(layersSource, /strictCatalog = options\.strictCatalog === true/)
+  assert.match(layersSource, /if \(strictCatalog\) throw err/)
+  assert.match(layersSource, /if \(strictCatalog\) \{\s*throw new Error\('分享地图图层目录为空或不可用'\)/)
+  assert.match(layersSource, /noWrap: layerOptions\.noWrap === true/)
+  assert.match(mainSource, /strictCatalog: shareMode/)
+  assert.match(mainSource, /maxBounds: restrictedBounds \|\| undefined/)
+  assert.match(mainSource, /minZoom: restrictedShare \? shareSpatial\.minZoom/)
+  assert.match(mainSource, /分享地图空间范围版本不一致/)
+  assert.match(mainSource, /querySelector\('\[data-action="open3d"\]'\)\?\.closest\('li'\)\?\.setAttribute\('hidden'/)
+})

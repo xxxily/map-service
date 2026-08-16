@@ -1260,6 +1260,7 @@ export class TileCatalogManager {
     this.loaded = false
     this.loadingPromise = null
     this.sources = []
+    this.sourceIndex = new Map()
     this.layers = []
     this.proxyOutbounds = []
     this.proxyPools = []
@@ -1301,6 +1302,7 @@ export class TileCatalogManager {
       this.proxyOutbounds = stores[0].map(item => normalizeProxyOutbound(item))
       this.proxyPools = stores[1].map(item => normalizeProxyPool(item))
       this.sources = stores[2].map(item => normalizeSource(item))
+      this.rebuildSourceIndex()
       this.layers = stores[3].map(item => normalizeLayer(item))
       this.externalPublishes = stores[4].map(item => normalizeExternalPublish(item))
       this.sourcePresets = stores[5].map(item => normalizeSourcePreset(item))
@@ -1328,6 +1330,10 @@ export class TileCatalogManager {
     }
     await this.store.write(name, fallback)
     return clone(fallback)
+  }
+
+  rebuildSourceIndex () {
+    this.sourceIndex = new Map(this.sources.map(source => [source.id, source]))
   }
 
   async loadOrMergeSourcePresets () {
@@ -1746,12 +1752,22 @@ export class TileCatalogManager {
     return sanitizeSource(source)
   }
 
+  async getPublicTileSource (id) {
+    await this.ensureLoaded()
+    const source = this.sourceIndex.get(String(id || ''))
+    if (!source || !source.enabled || source.visibility.scope !== 'system' || !source.permissions.frontendVisible) {
+      return null
+    }
+    return sanitizeSource(source, { public: true })
+  }
+
   async createTileSource (input) {
     await this.ensureLoaded()
     const source = normalizeSource(input)
     if (this.findSource(source.id)) throw createHttpError('图源 ID 已存在')
     this.validateSourceRefs(source)
     this.sources.push(source)
+    this.rebuildSourceIndex()
     await this.writeStore(STORE_SOURCES, this.sources)
     return sanitizeSource(source)
   }
@@ -1763,6 +1779,7 @@ export class TileCatalogManager {
     const source = normalizeSource({ ...input, id }, this.sources[index])
     this.validateSourceRefs(source)
     this.sources[index] = source
+    this.rebuildSourceIndex()
     await this.writeStore(STORE_SOURCES, this.sources)
     return sanitizeSource(source)
   }
@@ -1777,6 +1794,7 @@ export class TileCatalogManager {
       throw createHttpError(`图源仍被引用，不能删除：${[...layerRefs, ...publishRefs].join(', ')}`)
     }
     const [removed] = this.sources.splice(index, 1)
+    this.rebuildSourceIndex()
     await this.writeStore(STORE_SOURCES, this.sources)
     return sanitizeSource(removed)
   }

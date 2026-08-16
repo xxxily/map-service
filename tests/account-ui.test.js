@@ -25,11 +25,15 @@ import {
   isAccountLocation,
   normalizeAccountTab,
   normalizeKmlSort,
+  normalizeSpatialAccess,
+  passwordAccessLabel,
   parseLocalKmlFiles,
   partitionKmlTrashSelection,
   revisionConflictPrompt,
   sanitizeReturnTo,
   shareAccessPolicyLabel,
+  spatialAccessLabel,
+  spatialStatusLabel,
 } from '../src/account/model.js'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -172,6 +176,29 @@ test('分享访问策略与并发冲突提示明确说明重新加载且不覆�
   assert.match(shareConflict.message, /没有覆盖服务器内容.*重新加载/)
 })
 
+test('空间分享摘要保留空值并区分范围、状态和密码授权', () => {
+  assert.deepEqual(normalizeSpatialAccess({
+    spatialAccess: { mode: 'kml_bounds', status: 'ready', areaKm2: null, diagonalKm: '', paddingMeters: undefined },
+  }), {
+    mode: 'kml_bounds',
+    status: 'ready',
+    bbox: null,
+    areaKm2: null,
+    diagonalKm: null,
+    paddingMeters: null,
+    minZoom: null,
+    maxCameraHeight: null,
+    displayGeometry: null,
+    revision: 0,
+    unlimitedAccessEligible: false,
+    reasonCode: null,
+  })
+  assert.equal(spatialAccessLabel({ spatialAccess: { mode: 'kml_bounds' } }), '限制在 KML 区域')
+  assert.equal(spatialStatusLabel({ spatialAccess: { mode: 'kml_bounds', status: 'out_of_policy' } }), '超出策略')
+  assert.equal(passwordAccessLabel({ passwordProtected: true, passwordAccess: { ttlMode: 'unlimited' } }), '不限固定期限')
+  assert.equal(passwordAccessLabel({ passwordProtected: false }), '不适用')
+})
+
 test('本地 KML 迁移只导入明确数据并保留默认文件标识', () => {
   const parsed = parseLocalKmlFiles(JSON.stringify([
     { id: 'default-kml', name: '默认标注', features: [{ id: 'p1' }] },
@@ -217,6 +244,7 @@ test('公开分享地图使用作用域底图接口且不写入访客私有状�
 
 test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑入口', () => {
   const appSource = fs.readFileSync(path.join(projectRoot, 'src/account/app.js'), 'utf8')
+  const apiSource = fs.readFileSync(path.join(projectRoot, 'src/account/api.js'), 'utf8')
   const viewSource = fs.readFileSync(path.join(projectRoot, 'src/account/views.js'), 'utf8')
   const dialogSource = fs.readFileSync(path.join(projectRoot, 'src/account/dialogs.js'), 'utf8')
   const accountSource = `${appSource}\n${viewSource}\n${dialogSource}`
@@ -228,6 +256,10 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.match(appSource, /showAccountShareDialog\(\{ share, documents \}\)/)
   assert.match(dialogSource, /data-account-share-move="up"/)
   assert.match(dialogSource, /data-account-share-visible/)
+  assert.match(dialogSource, /data-account-spatial-preview/)
+  assert.match(dialogSource, /data-account-password-access-field/)
+  assert.match(dialogSource, /form\.elements\.passwordAccessTtlMode\.value = 'finite'/)
+  assert.match(apiSource, /spatialPreview: body => apiRequest/)
   assert.match(dialogSource, /centerLatitude/)
   assert.match(dialogSource, /centerLongitude/)
   assert.match(dialogSource, /name="bearing"/)

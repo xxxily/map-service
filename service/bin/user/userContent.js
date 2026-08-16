@@ -7,6 +7,11 @@ import {
   verifyPassword,
 } from './security.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
+import {
+  computeSpatialScope,
+  publicSpatialScope,
+  spatialPolicyEligibility,
+} from './shareSpatialAccess.js'
 
 const DEFAULT_SETTINGS = Object.freeze({
   quota: {
@@ -20,6 +25,14 @@ const DEFAULT_SETTINGS = Object.freeze({
     publicAccessPolicy: 'inherit_site_access',
     maxFilesPerShare: 20,
     accessTtlMs: 1000 * 60 * 60 * 12,
+    spatialAccessEnabled: true,
+    spatialPaddingMeters: 1000,
+    spatialMaxAreaKm2: 10000,
+    spatialMaxDiagonalKm: 300,
+    unlimitedAccessEnabled: false,
+    unlimitedAccessMaxAreaKm2: 2000,
+    unlimitedAccessMaxDiagonalKm: 100,
+    spatialPolicyRevision: 1,
   },
 })
 
@@ -29,12 +42,27 @@ const KML_THEMES = new Set(['default', 'simple'])
 const FEATURE_TYPES = new Set(['Point', 'LineString', 'Polygon'])
 const FAVORITE_SOURCE_TYPES = new Set(['search', 'map', 'location', 'kml', 'manual'])
 const SHARE_EDITABLE_STATUSES = new Set(['draft', 'active', 'paused'])
+const SPATIAL_ACCESS_MODES = new Set(['unrestricted', 'kml_bounds'])
+const PASSWORD_ACCESS_TTL_MODES = new Set(['finite', 'unlimited'])
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/i
+const SHARE_SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000
 
 const SHARE_PASSWORD_LIMIT = Object.freeze({
   maxAttempts: 5,
   windowMs: 1000 * 60 * 10,
   blockMs: 1000 * 60 * 15,
+})
+
+const SHARE_TILE_RATE_LIMIT = Object.freeze({
+  maxRequests: 600,
+  windowMs: 1000 * 60,
+  maxEntries: 10000,
+})
+
+const SHARE_MANIFEST_RATE_LIMIT = Object.freeze({
+  maxRequests: 120,
+  windowMs: 1000 * 60,
+  maxEntries: 10000,
 })
 
 function parseJson (value, fallback) {
@@ -519,6 +547,49 @@ function normalizeSharePassword (value, currentHash) {
   return hashPasswordSync(password, { allowWeak: true, maxLength: 128 })
 }
 
+function normalizeSpatialAccessMode (value, fallback = 'unrestricted') {
+  if (value === undefined) return fallback
+  const input = requireObject(value, '空间访问设置格式不正确')
+  const forbiddenFields = ['geometry', 'displayGeometry', 'bbox', 'bboxSegments', 'cameraBounds', 'areaKm2', 'diagonalKm']
+  if (forbiddenFields.some(field => Object.hasOwn(input, field))) {
+    throw createHttpError('空间范围只能由服务端根据 KML 计算', 400, 'VALIDATION_FAILED')
+  }
+  const mode = String(input.mode || '')
+  if (!SPATIAL_ACCESS_MODES.has(mode)) {
+    throw createHttpError('空间访问模式不正确', 400, 'SHARE_SPATIAL_MODE_INVALID')
+  }
+  return mode
+}
+
+function normalizePasswordAccessTtlMode (value, fallback = 'finite') {
+  if (value === undefined) return fallback
+  const input = requireObject(value, '密码授权设置格式不正确')
+  const mode = String(input.ttlMode || '')
+  if (!PASSWORD_ACCESS_TTL_MODES.has(mode)) {
+    throw createHttpError('密码授权模式不正确', 400, 'SHARE_PASSWORD_ACCESS_MODE_INVALID')
+  }
+  return mode
+}
+
+function spatialError (reasonCode) {
+  const messages = {
+    SHARE_SPATIAL_DISABLED: '后台未开放空间受限分享',
+    SHARE_SPATIAL_BOUNDS_EMPTY: '分享内没有可计算范围的有效几何',
+    SHARE_SPATIAL_RANGE_TOO_LARGE: 'KML 范围超过空间限制阈值',
+    SHARE_SPATIAL_POLAR_UNSUPPORTED: '当前 KML 接近极区，无法安全限制地图范围',
+    SHARE_SPATIAL_ANTIMERIDIAN_UNSTABLE: '当前 KML 跨越范围过大，无法安全限制地图范围',
+    SHARE_SPATIAL_PADDING_INVALID: '空间边界余量配置不正确',
+    SHARE_SPATIAL_POLICY_INVALID: '空间访问策略配置不正确',
+    SHARE_SPATIAL_RECALCULATING: '分享空间范围正在重新计算',
+    SHARE_UNLIMITED_ACCESS_DISABLED: '后台未开放不限授权',
+    SHARE_UNLIMITED_ACCESS_REQUIRES_PASSWORD: '不限授权需要先设置分享密码',
+    SHARE_UNLIMITED_ACCESS_REQUIRES_SPATIAL: '不限授权需要启用空间范围限制',
+    SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE: 'KML 范围超过不限授权阈值',
+  }
+  const statusCode = reasonCode === 'SHARE_SPATIAL_RECALCULATING' ? 409 : 422
+  return createHttpError(messages[reasonCode] || '分享空间范围暂不可用', statusCode, reasonCode || 'SHARE_SPATIAL_BOUNDS_EMPTY')
+}
+
 class AttemptLimiter {
   constructor (options, clock) {
     this.options = options
@@ -553,6 +624,47 @@ class AttemptLimiter {
   }
 }
 
+class FixedWindowLimiter {
+  constructor (options, clock) {
+    this.options = {
+      maxRequests: Math.max(1, Number(options?.maxRequests) || 1),
+      windowMs: Math.max(1000, Number(options?.windowMs) || 1000),
+      maxEntries: Math.max(100, Number(options?.maxEntries) || 10000),
+    }
+    this.clock = clock
+    this.entries = new Map()
+  }
+
+  prune (now) {
+    for (const [key, entry] of this.entries) {
+      if (now - entry.startedAt >= this.options.windowMs) this.entries.delete(key)
+    }
+    // Keep the in-memory limiter bounded even when all active keys are within
+    // the current window. Map insertion order gives us a deterministic oldest
+    // entry to evict under pressure.
+    while (this.entries.size >= this.options.maxEntries) {
+      const oldest = this.entries.keys().next()
+      if (oldest.done) break
+      this.entries.delete(oldest.value)
+    }
+  }
+
+  consume (key, errorMessage, errorCode) {
+    const now = this.clock()
+    const normalizedKey = String(key || '').slice(0, 320)
+    let entry = this.entries.get(normalizedKey)
+    if (!entry || now - entry.startedAt >= this.options.windowMs) {
+      this.prune(now)
+      entry = { startedAt: now, count: 0 }
+    }
+    if (entry.count >= this.options.maxRequests) {
+      throw createHttpError(errorMessage, 429, errorCode)
+    }
+    entry.count += 1
+    this.entries.set(normalizedKey, entry)
+  }
+}
+
 export class UserContentService {
   constructor (options = {}) {
     if (!options.database) throw new Error('UserContentService requires database')
@@ -562,10 +674,85 @@ export class UserContentService {
     this.clock = options.clock || (() => Date.now())
     this.isSiteAccessEnabled = options.isSiteAccessEnabled || (() => false)
     this.sharePasswordLimiter = new AttemptLimiter(options.sharePasswordLimit || SHARE_PASSWORD_LIMIT, this.clock)
+    this.shareTileLimiter = new FixedWindowLimiter(options.shareTileRateLimit || SHARE_TILE_RATE_LIMIT, this.clock)
+    this.shareManifestLimiter = new FixedWindowLimiter(options.shareManifestRateLimit || SHARE_MANIFEST_RATE_LIMIT, this.clock)
+    this.shareRuntimeMetrics = new Map()
+    this.shareRuntimeMetricLimit = Math.max(100, Number(options.shareRuntimeMetricLimit) || 2000)
   }
 
   nowIso () {
     return new Date(this.clock()).toISOString()
+  }
+
+  recordShareRuntimeMetric (shareId, event, options = {}) {
+    const normalizedShareId = String(shareId || '').slice(0, 160)
+    const normalizedEvent = String(event || '').slice(0, 80)
+    if (!normalizedShareId || !normalizedEvent) return
+    const sourceId = String(options.sourceId || '').slice(0, 120)
+    const decision = String(options.decision || '').slice(0, 80)
+    const durationMs = Number.isFinite(Number(options.durationMs))
+      ? Math.max(0, Math.round(Number(options.durationMs)))
+      : 0
+    const key = `${normalizedShareId}:${normalizedEvent}:${sourceId}:${decision}`
+    const current = this.shareRuntimeMetrics.get(key)
+    if (!current && this.shareRuntimeMetrics.size >= this.shareRuntimeMetricLimit) {
+      const oldest = this.shareRuntimeMetrics.keys().next()
+      if (!oldest.done) this.shareRuntimeMetrics.delete(oldest.value)
+    }
+    const now = this.nowIso()
+    this.shareRuntimeMetrics.set(key, {
+      shareId: normalizedShareId,
+      event: normalizedEvent,
+      sourceId,
+      decision,
+      count: Number(current?.count || 0) + 1,
+      totalDurationMs: Number(current?.totalDurationMs || 0) + durationMs,
+      maxDurationMs: Math.max(Number(current?.maxDurationMs || 0), durationMs),
+      firstAt: current?.firstAt || now,
+      lastAt: now,
+    })
+  }
+
+  getShareRuntimeMetrics (actor) {
+    this.assertPermission(actor, 'admin.share.moderate')
+    const now = this.nowIso()
+    const shareCounts = this.database.prepare(`
+      SELECT
+        COUNT(*) AS total_shares,
+        SUM(CASE WHEN spatial_access_mode = 'kml_bounds' THEN 1 ELSE 0 END) AS spatial_shares,
+        SUM(CASE WHEN spatial_access_mode = 'kml_bounds' AND status = 'active' AND password_hash IS NULL THEN 1 ELSE 0 END) AS passwordless_spatial_shares,
+        SUM(CASE WHEN spatial_access_mode = 'kml_bounds' AND spatial_status = 'ready' THEN 1 ELSE 0 END) AS spatial_ready,
+        SUM(CASE WHEN spatial_access_mode = 'kml_bounds' AND spatial_status = 'out_of_policy' THEN 1 ELSE 0 END) AS spatial_out_of_policy,
+        SUM(CASE WHEN spatial_access_mode = 'kml_bounds' AND spatial_status IN ('empty', 'error') THEN 1 ELSE 0 END) AS spatial_invalid
+      FROM kml_shares
+      WHERE status != 'revoked'
+    `).get() || {}
+    const sessionCounts = this.database.prepare(`
+      SELECT
+        SUM(CASE WHEN ttl_mode = 'finite' AND revoked_at IS NULL AND expires_at > ? THEN 1 ELSE 0 END) AS finite_sessions,
+        SUM(CASE WHEN ttl_mode = 'unlimited' AND revoked_at IS NULL THEN 1 ELSE 0 END) AS unlimited_sessions
+      FROM share_access_sessions
+    `).get(now) || {}
+    const items = [...this.shareRuntimeMetrics.values()]
+      .sort((left, right) => String(right.lastAt).localeCompare(String(left.lastAt)))
+      .map(item => ({ ...item }))
+    return {
+      generatedAt: now,
+      summary: {
+        totalShares: Number(shareCounts.total_shares || 0),
+        spatialShares: Number(shareCounts.spatial_shares || 0),
+        semiPublicShares: this.getSettings().share.publicAccessPolicy === 'independent'
+          ? Number(shareCounts.passwordless_spatial_shares || 0)
+          : 0,
+        spatialReady: Number(shareCounts.spatial_ready || 0),
+        spatialOutOfPolicy: Number(shareCounts.spatial_out_of_policy || 0),
+        spatialInvalid: Number(shareCounts.spatial_invalid || 0),
+        finiteSessions: Number(sessionCounts.finite_sessions || 0),
+        unlimitedSessions: Number(sessionCounts.unlimited_sessions || 0),
+      },
+      itemCount: items.length,
+      items,
+    }
   }
 
   getSettings () {
@@ -574,6 +761,414 @@ export class UserContentService {
       quota: { ...DEFAULT_SETTINGS.quota, ...(settings.quota || {}) },
       share: { ...DEFAULT_SETTINGS.share, ...(settings.share || {}) },
     }
+  }
+
+  spatialSettings (settings = this.getSettings()) {
+    return settings.share || DEFAULT_SETTINGS.share
+  }
+
+  shareItemsForSpatialScope (shareId) {
+    return this.database.prepare(`
+      SELECT i.kml_id, k.revision, k.features_json
+      FROM kml_share_items i
+      JOIN kml_documents k ON k.id = i.kml_id
+      WHERE i.share_id = ? AND k.status = 'active'
+      ORDER BY i.position, i.id
+    `).all(shareId).map(row => ({
+      kmlId: row.kml_id,
+      revision: Number(row.revision),
+      features: parseJson(row.features_json, []),
+    }))
+  }
+
+  shareItemRevisionSnapshot (shareId) {
+    return this.database.prepare(`
+      SELECT i.kml_id, k.revision
+      FROM kml_share_items i
+      JOIN kml_documents k ON k.id = i.kml_id
+      WHERE i.share_id = ? AND k.status = 'active'
+      ORDER BY i.position, i.id
+    `).all(shareId).map(row => ({
+      id: row.kml_id,
+      revision: Number(row.revision),
+    }))
+  }
+
+  spatialSnapshotEqual (left, right) {
+    return JSON.stringify(left || []) === JSON.stringify(right || [])
+  }
+
+  computeSpatialState (items, settings = this.getSettings()) {
+    const shareSettings = this.spatialSettings(settings)
+    const documents = (items || []).map(item => ({
+      features: Array.isArray(item.features) ? item.features : [],
+    }))
+    const result = computeSpatialScope({
+      documents,
+      paddingMeters: shareSettings.spatialPaddingMeters,
+      sourceRevisions: (items || []).map(item => ({ id: item.kmlId, revision: item.revision })),
+      policyRevision: shareSettings.spatialPolicyRevision,
+      computedAt: this.nowIso(),
+    })
+    if (result.status !== 'ready') {
+      return {
+        status: result.status === 'empty' ? 'empty' : 'error',
+        scope: null,
+        eligibility: {
+          spatialAccessEligible: false,
+          unlimitedAccessEligible: false,
+          reasonCode: result.reasonCode,
+        },
+        errorCode: result.reasonCode,
+      }
+    }
+    const eligibility = spatialPolicyEligibility(result.scope, shareSettings)
+    if (!eligibility.spatialAccessEligible) {
+      return {
+        status: 'out_of_policy',
+        scope: result.scope,
+        eligibility,
+        errorCode: eligibility.reasonCode,
+      }
+    }
+    return {
+      status: 'ready',
+      scope: result.scope,
+      eligibility,
+      errorCode: null,
+    }
+  }
+
+  normalizeSpatialPreviewItems (ownerId, value) {
+    return this.normalizeShareItems(ownerId, value, { allowEmpty: true })
+  }
+
+  getSpatialPreview (actor, input = {}) {
+    this.assertPermission(actor, 'share.own.manage')
+    requireObject(input)
+    const ownerId = this.actorUser(actor).id
+    const mode = normalizeSpatialAccessMode(input.spatialAccess, 'unrestricted')
+    if (mode === 'unrestricted') {
+      return {
+        mode,
+        status: 'ready',
+        spatialAccessEligible: false,
+        unlimitedAccessEligible: false,
+        reasonCode: null,
+      }
+    }
+    const settings = this.getSettings()
+    if (settings.share.spatialAccessEnabled !== true) throw spatialError('SHARE_SPATIAL_DISABLED')
+    const items = this.normalizeSpatialPreviewItems(ownerId, input.items)
+    const state = this.computeSpatialState(items, settings)
+    if (state.status !== 'ready') throw spatialError(state.errorCode)
+    return {
+      mode,
+      status: state.status,
+      ...publicSpatialScope(state.scope, 0),
+      spatialAccessEligible: state.eligibility.spatialAccessEligible,
+      unlimitedAccessEligible: state.eligibility.unlimitedAccessEligible,
+      reasonCode: state.eligibility.reasonCode,
+    }
+  }
+
+  resolveShareSpatialState (items, mode, settings, options = {}) {
+    if (mode === 'unrestricted') {
+      return {
+        status: 'ready',
+        scope: null,
+        eligibility: {
+          spatialAccessEligible: false,
+          unlimitedAccessEligible: false,
+          reasonCode: null,
+        },
+        errorCode: null,
+      }
+    }
+    if (settings.share.spatialAccessEnabled !== true && options.allowExisting !== true) {
+      throw spatialError('SHARE_SPATIAL_DISABLED')
+    }
+    const state = this.computeSpatialState(items, settings)
+    if (state.status !== 'ready') throw spatialError(state.errorCode)
+    return state
+  }
+
+  assertPasswordAccessMode (ttlMode, passwordHash, spatialMode, spatialState, settings) {
+    if (ttlMode !== 'unlimited') return
+    if (!passwordHash) throw spatialError('SHARE_UNLIMITED_ACCESS_REQUIRES_PASSWORD')
+    if (spatialMode !== 'kml_bounds') throw spatialError('SHARE_UNLIMITED_ACCESS_REQUIRES_SPATIAL')
+    if (settings.share.unlimitedAccessEnabled !== true) {
+      throw spatialError('SHARE_UNLIMITED_ACCESS_DISABLED')
+    }
+    if (spatialState.status !== 'ready') throw spatialError(spatialState.errorCode)
+    if (!spatialState.eligibility.unlimitedAccessEligible) {
+      throw spatialError(spatialState.eligibility.reasonCode || 'SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE')
+    }
+  }
+
+  shareSpatialView (row, options = {}) {
+    const mode = row.spatial_access_mode || 'unrestricted'
+    const status = row.spatial_status || 'ready'
+    const scope = parseJson(row.spatial_scope_json, null)
+    const result = {
+      mode,
+      status,
+      revision: Number(row.spatial_scope_revision || 0),
+    }
+    if (mode === 'kml_bounds' && scope && status === 'ready') {
+      Object.assign(result, publicSpatialScope(scope, Number(row.spatial_scope_revision || 0)))
+      const eligibility = spatialPolicyEligibility(scope, this.spatialSettings())
+      result.unlimitedAccessEligible = eligibility.unlimitedAccessEligible
+      result.reasonCode = row.spatial_error_code || eligibility.reasonCode || null
+    } else if (mode === 'kml_bounds') {
+      result.reasonCode = row.spatial_error_code || null
+    }
+    if (options.internal === true) result.internalScope = scope
+    return result
+  }
+
+  passwordAccessView (row) {
+    const hasPassword = Boolean(row.password_hash)
+    const ttlMode = hasPassword ? (row.password_access_ttl_mode || 'finite') : 'not_applicable'
+    return {
+      ttlMode,
+      effectiveTtlMs: ttlMode === 'finite' ? Number(this.getSettings().share.accessTtlMs) : null,
+    }
+  }
+
+  revokeShareSessions (shareId, reason = 'revoked', options = {}) {
+    const now = this.nowIso()
+    const where = options.unlimitedOnly ? " AND ttl_mode = 'unlimited'" : ''
+    const result = this.database.prepare(`
+      UPDATE share_access_sessions
+      SET revoked_at = COALESCE(revoked_at, ?), revoke_reason = CASE
+        WHEN revoked_at IS NULL OR revoke_reason = '' THEN ? ELSE revoke_reason END
+      WHERE share_id = ? AND revoked_at IS NULL${where}
+    `).run(now, reason, shareId)
+    return Number(result.changes || 0)
+  }
+
+  revalidateSpatialShare (shareId, settings = this.getSettings(), options = {}) {
+    // 空间计算可能跨越 KML 更新或策略保存；失败时重算，绝不把旧结果写回覆盖新版本。
+    const startedAt = this.clock()
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = this.revalidateSpatialShareOnce(shareId, settings, options)
+        if (!result.recalculating) {
+          this.recordShareRuntimeMetric(shareId, 'spatial_recalculate', {
+            decision: result.status || 'skipped',
+            durationMs: this.clock() - startedAt,
+          })
+          if (result.downgraded) {
+            this.recordShareRuntimeMetric(shareId, 'spatial_auto_downgrade', { decision: result.status || 'unknown' })
+          }
+          return result
+        }
+        settings = this.getSettings()
+      }
+      const result = {
+        affected: false,
+        downgraded: false,
+        revokedUnlimitedSessions: 0,
+        status: 'recalculating',
+        recalculating: true,
+      }
+      this.recordShareRuntimeMetric(shareId, 'spatial_recalculate', {
+        decision: 'conflict',
+        durationMs: this.clock() - startedAt,
+      })
+      return result
+    } catch (error) {
+      this.recordShareRuntimeMetric(shareId, 'spatial_recalculate', {
+        decision: error?.code || 'error',
+        durationMs: this.clock() - startedAt,
+      })
+      throw error
+    }
+  }
+
+  revalidateSpatialShareOnce (shareId, settings = this.getSettings(), options = {}) {
+    const row = this.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(shareId)
+    if (!row || (row.spatial_access_mode || 'unrestricted') !== 'kml_bounds') {
+      return { affected: false, downgraded: false, revokedUnlimitedSessions: 0 }
+    }
+    const items = this.shareItemsForSpatialScope(shareId)
+    const sourceRevisions = items.map(item => ({ id: item.kmlId, revision: Number(item.revision) }))
+    const state = this.computeSpatialState(items, settings)
+    const previousScope = parseJson(row.spatial_scope_json, null)
+    const previousHash = previousScope?.sourceRevisionHash || ''
+    const nextHash = state.scope?.sourceRevisionHash || ''
+    const policyRevision = Number(settings.share.spatialPolicyRevision || 1)
+    const policyChanged = Number(row.access_policy_revision || 1) !== policyRevision ||
+      (options.policyChanged === true && Number(row.access_policy_revision || 1) !== policyRevision)
+    const scopeChanged = previousHash !== nextHash || row.spatial_status !== state.status ||
+      Number(previousScope?.paddingMeters || 0) !== Number(state.scope?.paddingMeters || 0)
+    let ttlMode = row.password_access_ttl_mode || 'finite'
+    const downgraded = ttlMode === 'unlimited' && (!row.password_hash || state.status !== 'ready' ||
+      !state.eligibility.unlimitedAccessEligible)
+    if (downgraded) ttlMode = 'finite'
+    const shouldPause = ['empty', 'error', 'out_of_policy'].includes(state.status) && row.status === 'active'
+    const nextStatus = shouldPause ? 'paused' : row.status
+    const revisionChanged = scopeChanged || policyChanged || downgraded || nextStatus !== row.status
+    let committed = false
+    let revokedUnlimitedSessions = 0
+
+    this.database.transaction(() => {
+      const current = this.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(shareId)
+      if (!current || Number(current.revision) !== Number(row.revision) ||
+          Number(current.access_policy_revision || 1) !== Number(row.access_policy_revision || 1) ||
+          Number(this.getSettings().share.spatialPolicyRevision || 1) !== policyRevision ||
+          !this.spatialSnapshotEqual(this.shareItemRevisionSnapshot(shareId), sourceRevisions)) {
+        return
+      }
+      const result = this.database.prepare(`
+        UPDATE kml_shares SET
+          password_access_ttl_mode = ?, spatial_scope_json = ?, spatial_scope_revision = ?,
+          spatial_status = ?, spatial_error_code = ?, access_policy_revision = ?,
+          status = ?, revision = revision + ?, updated_at = ?
+        WHERE id = ? AND revision = ? AND access_policy_revision = ?
+      `).run(
+        ttlMode,
+        JSON.stringify(state.scope || {}),
+        Number(row.spatial_scope_revision || 0) + (scopeChanged || policyChanged ? 1 : 0),
+        state.status,
+        state.errorCode || '',
+        policyRevision,
+        nextStatus,
+        revisionChanged ? 1 : 0,
+        this.nowIso(),
+        shareId,
+        row.revision,
+        row.access_policy_revision || 1
+      )
+      if (Number(result.changes || 0) !== 1) return
+      committed = true
+      if (downgraded) {
+        revokedUnlimitedSessions = this.revokeShareSessions(shareId, 'share.password-access.auto-downgrade', { unlimitedOnly: true })
+      } else if (ttlMode === 'unlimited' && policyChanged) {
+        revokedUnlimitedSessions = this.revokeShareSessions(shareId, 'admin.share-spatial-policy.update', { unlimitedOnly: true })
+      }
+      if (downgraded) {
+        this.insertAudit({
+          actorUserId: row.owner_id,
+          action: 'share.password-access.auto-downgrade',
+          targetType: 'kml-share',
+          targetId: shareId,
+          metadata: {
+            reasonCode: state.errorCode || state.eligibility.reasonCode || 'SHARE_UNLIMITED_ACCESS_REQUIRES_PASSWORD',
+            areaKm2: state.scope?.areaKm2 || null,
+            diagonalKm: state.scope?.diagonalKm || null,
+            revokedUnlimitedSessions,
+          },
+        })
+      }
+    })
+
+    if (!committed) {
+      return {
+        affected: false,
+        downgraded: false,
+        revokedUnlimitedSessions: 0,
+        status: 'recalculating',
+        recalculating: true,
+      }
+    }
+    return {
+      affected: revisionChanged,
+      downgraded,
+      revokedUnlimitedSessions,
+      status: state.status,
+    }
+  }
+
+  revalidateAllSpatialShares (shareSettings = this.spatialSettings(), previousSettings = null) {
+    const rows = this.database.prepare(`
+      SELECT id FROM kml_shares WHERE spatial_access_mode = 'kml_bounds'
+    `).all()
+    const stats = {
+      affectedShares: 0,
+      downgradedShares: 0,
+      revokedUnlimitedSessions: 0,
+      recalculatedShares: rows.length,
+    }
+    const settings = { share: { ...this.getSettings().share, ...shareSettings } }
+    const policyChanged = Boolean(previousSettings) &&
+      Number(previousSettings.spatialPolicyRevision || 1) !== Number(shareSettings.spatialPolicyRevision || 1)
+    rows.forEach(row => {
+      const result = this.revalidateSpatialShare(row.id, settings, { policyChanged })
+      if (result.affected) stats.affectedShares += 1
+      if (result.downgraded) stats.downgradedShares += 1
+      stats.revokedUnlimitedSessions += result.revokedUnlimitedSessions
+    })
+    return stats
+  }
+
+  previewSpatialPolicyImpact (shareSettings = this.spatialSettings(), previousSettings = null) {
+    const rows = this.database.prepare(`
+      SELECT * FROM kml_shares WHERE spatial_access_mode = 'kml_bounds'
+    `).all()
+    const settings = { share: { ...this.getSettings().share, ...shareSettings } }
+    const policyChanged = Boolean(previousSettings) &&
+      Number(previousSettings.spatialPolicyRevision || 1) !== Number(shareSettings.spatialPolicyRevision || 1)
+    const stats = {
+      affectedShares: 0,
+      downgradedShares: 0,
+      revokedUnlimitedSessions: 0,
+      recalculatedShares: rows.length,
+    }
+
+    rows.forEach(row => {
+      const state = this.computeSpatialState(this.shareItemsForSpatialScope(row.id), settings)
+      const previousScope = parseJson(row.spatial_scope_json, null)
+      const scopeChanged = (previousScope?.sourceRevisionHash || '') !== (state.scope?.sourceRevisionHash || '') ||
+        row.spatial_status !== state.status ||
+        Number(previousScope?.paddingMeters || 0) !== Number(state.scope?.paddingMeters || 0)
+      const downgraded = (row.password_access_ttl_mode || 'finite') === 'unlimited' &&
+        (!row.password_hash || state.status !== 'ready' || !state.eligibility.unlimitedAccessEligible)
+      const revokesUnlimited = (row.password_access_ttl_mode || 'finite') === 'unlimited' &&
+        (downgraded || policyChanged)
+      const nextStatus = ['empty', 'error', 'out_of_policy'].includes(state.status) && row.status === 'active'
+        ? 'paused'
+        : row.status
+
+      if (scopeChanged || policyChanged || downgraded || nextStatus !== row.status) stats.affectedShares += 1
+      if (downgraded) stats.downgradedShares += 1
+      if (revokesUnlimited) {
+        stats.revokedUnlimitedSessions += Number(this.database.prepare(`
+          SELECT COUNT(*) AS count FROM share_access_sessions
+          WHERE share_id = ? AND ttl_mode = 'unlimited' AND revoked_at IS NULL
+        `).get(row.id)?.count || 0)
+      }
+    })
+
+    return stats
+  }
+
+  revalidateSharesForKml (kmlId) {
+    const rows = this.database.prepare(`
+      SELECT DISTINCT share_id FROM kml_share_items WHERE kml_id = ?
+    `).all(kmlId)
+    rows.forEach(row => this.refreshShareAfterContentChange(row.share_id))
+    return rows.length
+  }
+
+  refreshShareAfterContentChange (shareId) {
+    const row = this.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(shareId)
+    if (!row) return null
+    const activeCount = Number(this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM kml_share_items i
+      JOIN kml_documents k ON k.id = i.kml_id
+      WHERE i.share_id = ? AND k.status = 'active'
+    `).get(shareId)?.count || 0)
+    if (activeCount === 0 && row.status === 'active') {
+      this.database.prepare(`
+        UPDATE kml_shares
+        SET status = 'paused', revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `).run(this.nowIso(), shareId)
+    }
+    return this.revalidateSpatialShare(shareId)
   }
 
   actorUser (actor) {
@@ -982,6 +1577,7 @@ export class UserContentService {
         throw createHttpError('KML 已被其他客户端更新，请重新加载', 409, 'KML_REVISION_CONFLICT')
       }
     })
+    this.revalidateSharesForKml(row.id)
     return this.getKml(actor, row.id)
   }
 
@@ -990,24 +1586,7 @@ export class UserContentService {
       SELECT DISTINCT share_id FROM kml_share_items WHERE kml_id = ?
     `).all(kmlId).map(row => row.share_id)
     this.database.prepare('DELETE FROM kml_share_items WHERE kml_id = ?').run(kmlId)
-    const now = this.nowIso()
-    shares.forEach(shareId => {
-      const remaining = Number(this.database.prepare(`
-        SELECT COUNT(*) AS count
-        FROM kml_share_items i
-        JOIN kml_documents k ON k.id = i.kml_id
-        WHERE i.share_id = ? AND k.status = 'active'
-      `).get(shareId)?.count || 0)
-      this.database.prepare(`
-        UPDATE kml_shares
-        SET status = CASE
-              WHEN ? = 0 AND status = 'active' THEN 'paused'
-              ELSE status
-            END,
-            revision = revision + 1, updated_at = ?
-        WHERE id = ?
-      `).run(remaining, now, shareId)
-    })
+    shares.forEach(shareId => this.refreshShareAfterContentChange(shareId))
     return shares.length
   }
 
@@ -1018,8 +1597,10 @@ export class UserContentService {
     }
     if (row.status === 'trashed') return this.kmlViewFromRow(row, { includeFeatures: true })
     const now = this.nowIso()
+    const affectedShares = Number(this.database.prepare(`
+      SELECT COUNT(DISTINCT share_id) AS count FROM kml_share_items WHERE kml_id = ?
+    `).get(row.id)?.count || 0)
     this.database.transaction(() => {
-      const affectedShares = this.removeKmlFromShares(row.id)
       this.database.prepare(`
         UPDATE kml_documents
         SET status = 'trashed', is_default = 0, revision = revision + 1,
@@ -1034,6 +1615,7 @@ export class UserContentService {
         metadata: { affectedShares },
       })
     })
+    this.removeKmlFromShares(row.id)
     return this.getKml(actor, row.id)
   }
 
@@ -1072,6 +1654,7 @@ export class UserContentService {
           updated_at = ?, deleted_at = NULL
       WHERE id = ?
     `).run(now, row.id)
+    this.revalidateSharesForKml(row.id)
     return this.getKml(actor, row.id)
   }
 
@@ -1107,8 +1690,10 @@ export class UserContentService {
     if (row.status !== 'trashed') {
       throw createHttpError('请先将 KML 移入回收站', 409, 'KML_NOT_TRASHED')
     }
+    const shareIds = this.database.prepare(`
+      SELECT DISTINCT share_id FROM kml_share_items WHERE kml_id = ?
+    `).all(row.id).map(item => item.share_id)
     this.database.transaction(() => {
-      this.removeKmlFromShares(row.id)
       this.database.prepare(`
         UPDATE kml_sync_create_keys SET deleted_at = ? WHERE kml_id = ?
       `).run(this.nowIso(), row.id)
@@ -1121,6 +1706,7 @@ export class UserContentService {
         metadata: { featureCount: Number(row.feature_count), byteSize: Number(row.byte_size) },
       })
     })
+    shareIds.forEach(shareId => this.refreshShareAfterContentChange(shareId))
     return { id: row.id, status: 'deleted' }
   }
 
@@ -1493,6 +2079,8 @@ export class UserContentService {
       allowDownload: Boolean(row.allow_download),
       expiresAt: row.expires_at || null,
       viewConfig: parseJson(row.view_config_json, {}),
+      spatialAccess: this.shareSpatialView(row),
+      passwordAccess: this.passwordAccessView(row),
       revision: Number(row.revision),
       blockedReason: row.status === 'blocked' ? row.blocked_reason : '',
       accessCount: Number(row.access_count),
@@ -1545,7 +2133,7 @@ export class UserContentService {
       }
       seen.add(kmlId)
       const document = this.database.prepare(`
-        SELECT id, name FROM kml_documents
+        SELECT id, name, revision, features_json FROM kml_documents
         WHERE id = ? AND owner_id = ? AND status = 'active'
       `).get(kmlId, ownerId)
       if (!document) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
@@ -1557,6 +2145,8 @@ export class UserContentService {
         visibleByDefault: normalizeBoolean(item.visibleByDefault, true),
         displayName: normalizeText(item.displayName, { maxLength: 200 }),
         name: document.name,
+        revision: Number(document.revision),
+        features: parseJson(document.features_json, []),
       }
     }).sort((left, right) => left.requestedPosition - right.requestedPosition || left.sourceIndex - right.sourceIndex)
       .map((item, position) => ({ ...item, position }))
@@ -1582,6 +2172,7 @@ export class UserContentService {
     requireObject(input)
     const ownerId = this.actorUser(actor).id
     const items = this.normalizeShareItems(ownerId, input.items)
+    const settings = this.getSettings()
     const title = normalizeText(input.title, {
       fallback: items.map(item => item.name).join('、').slice(0, 200),
       minLength: 1,
@@ -1594,19 +2185,37 @@ export class UserContentService {
     const expiresAt = normalizeExpiresAt(input.expiresAt)
     const viewConfig = normalizeViewConfig(input.viewConfig)
     const passwordHash = normalizeSharePassword(input.password, null)
+    const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, 'unrestricted')
+    const spatialState = this.resolveShareSpatialState(items, spatialAccessMode, settings)
+    let passwordAccessTtlMode = normalizePasswordAccessTtlMode(input.passwordAccess, 'finite')
+    this.assertPasswordAccessMode(
+      passwordAccessTtlMode,
+      passwordHash,
+      spatialAccessMode,
+      spatialState,
+      settings
+    )
+    if (!passwordHash) passwordAccessTtlMode = 'finite'
     const now = this.nowIso()
     const id = randomId('shr')
     const publicId = randomToken(24)
+    const spatialScopeRevision = spatialAccessMode === 'kml_bounds' ? 1 : 0
+    const accessPolicyRevision = Number(settings.share.spatialPolicyRevision || 1)
     this.database.transaction(() => {
       this.database.prepare(`
         INSERT INTO kml_shares(
           id, public_id, owner_id, title, description, status, access_mode,
           password_hash, allow_download, expires_at, view_config_json, revision,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'public_link', ?, ?, ?, ?, 1, ?, ?)
+          spatial_access_mode, password_access_ttl_mode, spatial_scope_json,
+          spatial_scope_revision, spatial_status, spatial_error_code,
+          password_version, access_policy_revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'public_link', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
       `).run(
         id, publicId, ownerId, title, description, status, passwordHash,
-        allowDownload ? 1 : 0, expiresAt, JSON.stringify(viewConfig), now, now
+        allowDownload ? 1 : 0, expiresAt, JSON.stringify(viewConfig),
+        spatialAccessMode, passwordAccessTtlMode, JSON.stringify(spatialState.scope || {}),
+        spatialScopeRevision, spatialState.status, spatialState.errorCode || '',
+        accessPolicyRevision, now, now
       )
       this.replaceShareItems(id, items)
       this.insertAudit({
@@ -1614,8 +2223,38 @@ export class UserContentService {
         action: 'share.create',
         targetType: 'kml-share',
         targetId: id,
-        metadata: { itemCount: items.length, passwordProtected: Boolean(passwordHash), expiresAt },
+        metadata: {
+          itemCount: items.length,
+          passwordProtected: Boolean(passwordHash),
+          expiresAt,
+          spatialAccessMode,
+          passwordAccessTtlMode: passwordHash ? passwordAccessTtlMode : 'not_applicable',
+          areaKm2: spatialState.scope?.areaKm2 || null,
+          diagonalKm: spatialState.scope?.diagonalKm || null,
+        },
       })
+      if (spatialAccessMode === 'kml_bounds') {
+        this.insertAudit({
+          actorUserId: ownerId,
+          action: 'share.spatial.enable',
+          targetType: 'kml-share',
+          targetId: id,
+          metadata: {
+            spatialScopeRevision,
+            areaKm2: spatialState.scope?.areaKm2 || null,
+            diagonalKm: spatialState.scope?.diagonalKm || null,
+          },
+        })
+      }
+      if (passwordHash && passwordAccessTtlMode === 'unlimited') {
+        this.insertAudit({
+          actorUserId: ownerId,
+          action: 'share.password-access.unlimited.enable',
+          targetType: 'kml-share',
+          targetId: id,
+          metadata: { spatialScopeRevision, accessPolicyRevision },
+        })
+      }
     })
     return this.getShare(actor, id)
   }
@@ -1660,6 +2299,7 @@ export class UserContentService {
       throw createHttpError('分享配置已被其他客户端更新', 409, 'SHARE_REVISION_CONFLICT')
     }
     const current = this.shareViewFromRow(row, { includeItems: true })
+    const settings = this.getSettings()
     const items = input.items === undefined
       ? current.items.map(item => ({
           kmlId: item.kmlId,
@@ -1668,6 +2308,9 @@ export class UserContentService {
           displayName: item.displayName,
         }))
       : this.normalizeShareItems(row.owner_id, input.items, { allowEmpty: true })
+    const spatialItems = input.items === undefined
+      ? this.shareItemsForSpatialScope(row.id)
+      : items
     let status = row.status
     if (input.status !== undefined) {
       if (row.status === 'blocked') {
@@ -1683,27 +2326,95 @@ export class UserContentService {
     const expiresAt = normalizeExpiresAt(input.expiresAt, row.expires_at || null)
     const viewConfig = normalizeViewConfig(input.viewConfig, parseJson(row.view_config_json, {}))
     const passwordHash = normalizeSharePassword(input.password, row.password_hash)
+    const previousSpatialMode = row.spatial_access_mode || 'unrestricted'
+    const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, previousSpatialMode)
+    const spatialState = this.resolveShareSpatialState(spatialItems, spatialAccessMode, settings, {
+      allowExisting: previousSpatialMode === 'kml_bounds' && spatialAccessMode === 'kml_bounds',
+    })
+    let passwordAccessTtlMode = normalizePasswordAccessTtlMode(
+      input.passwordAccess,
+      row.password_access_ttl_mode || 'finite'
+    )
+    if (spatialAccessMode === 'unrestricted' && passwordAccessTtlMode === 'unlimited' &&
+        input.passwordAccess === undefined) {
+      passwordAccessTtlMode = 'finite'
+    }
+    this.assertPasswordAccessMode(
+      passwordAccessTtlMode,
+      passwordHash,
+      spatialAccessMode,
+      spatialState,
+      settings
+    )
+    if (!passwordHash) passwordAccessTtlMode = 'finite'
+    const previousScope = parseJson(row.spatial_scope_json, null)
+    const scopeChanged = previousSpatialMode !== spatialAccessMode ||
+      (previousScope?.sourceRevisionHash || '') !== (spatialState.scope?.sourceRevisionHash || '') ||
+      row.spatial_status !== spatialState.status ||
+      Number(previousScope?.paddingMeters || 0) !== Number(spatialState.scope?.paddingMeters || 0)
+    const spatialScopeRevision = Number(row.spatial_scope_revision || 0) + (scopeChanged ? 1 : 0)
+    const passwordChanged = input.password !== undefined
+    const passwordVersion = Number(row.password_version || 1) + (passwordChanged ? 1 : 0)
+    const accessPolicyRevision = Number(settings.share.spatialPolicyRevision || 1)
+    const unlimitedDisabled = (row.password_access_ttl_mode || 'finite') === 'unlimited' &&
+      passwordAccessTtlMode !== 'unlimited'
     this.database.transaction(() => {
       this.database.prepare(`
         UPDATE kml_shares SET
           title = ?, description = ?, status = ?, password_hash = ?, allow_download = ?,
-          expires_at = ?, view_config_json = ?, revision = revision + 1, updated_at = ?
+          expires_at = ?, view_config_json = ?, spatial_access_mode = ?,
+          password_access_ttl_mode = ?, spatial_scope_json = ?, spatial_scope_revision = ?,
+          spatial_status = ?, spatial_error_code = ?, password_version = ?,
+          access_policy_revision = ?, revision = revision + 1, updated_at = ?
         WHERE id = ?
       `).run(
         title, description, status, passwordHash, allowDownload ? 1 : 0,
-        expiresAt, JSON.stringify(viewConfig), now, row.id
+        expiresAt, JSON.stringify(viewConfig), spatialAccessMode,
+        passwordAccessTtlMode, JSON.stringify(spatialState.scope || {}), spatialScopeRevision,
+        spatialState.status, spatialState.errorCode || '', passwordVersion,
+        accessPolicyRevision, now, row.id
       )
       this.replaceShareItems(row.id, items)
-      if (input.password !== undefined) {
-        this.database.prepare('DELETE FROM share_access_sessions WHERE share_id = ?').run(row.id)
+      if (passwordChanged) this.revokeShareSessions(row.id, 'share.password.update')
+      else if (unlimitedDisabled) {
+        this.revokeShareSessions(row.id, 'share.password-access.unlimited.disable', { unlimitedOnly: true })
       }
       this.insertAudit({
         actorUserId: row.owner_id,
         action: 'share.update',
         targetType: 'kml-share',
         targetId: row.id,
-        metadata: { itemCount: items.length, status, passwordChanged: input.password !== undefined },
+        metadata: {
+          itemCount: items.length,
+          status,
+          passwordChanged,
+          spatialAccessMode,
+          passwordAccessTtlMode: passwordHash ? passwordAccessTtlMode : 'not_applicable',
+          spatialScopeRevision,
+          areaKm2: spatialState.scope?.areaKm2 || null,
+          diagonalKm: spatialState.scope?.diagonalKm || null,
+        },
       })
+      if (previousSpatialMode !== spatialAccessMode) {
+        this.insertAudit({
+          actorUserId: row.owner_id,
+          action: spatialAccessMode === 'kml_bounds' ? 'share.spatial.enable' : 'share.spatial.disable',
+          targetType: 'kml-share',
+          targetId: row.id,
+          metadata: { spatialScopeRevision },
+        })
+      }
+      if ((row.password_access_ttl_mode || 'finite') !== passwordAccessTtlMode) {
+        this.insertAudit({
+          actorUserId: row.owner_id,
+          action: passwordAccessTtlMode === 'unlimited'
+            ? 'share.password-access.unlimited.enable'
+            : 'share.password-access.unlimited.disable',
+          targetType: 'kml-share',
+          targetId: row.id,
+          metadata: { spatialScopeRevision, accessPolicyRevision },
+        })
+      }
     })
     return this.getShare(actor, row.id)
   }
@@ -1735,7 +2446,7 @@ export class UserContentService {
       this.database.prepare(`
         UPDATE kml_shares SET public_id = ?, revision = revision + 1, updated_at = ? WHERE id = ?
       `).run(publicId, now, row.id)
-      this.database.prepare('DELETE FROM share_access_sessions WHERE share_id = ?').run(row.id)
+      this.revokeShareSessions(row.id, 'share.rotate-link')
       this.insertAudit({
         actorUserId: row.owner_id,
         action: 'share.rotate-link',
@@ -1755,7 +2466,7 @@ export class UserContentService {
         UPDATE kml_shares
         SET status = 'revoked', revision = revision + 1, updated_at = ? WHERE id = ?
       `).run(now, row.id)
-      this.database.prepare('DELETE FROM share_access_sessions WHERE share_id = ?').run(row.id)
+      this.revokeShareSessions(row.id, 'share.revoke')
       this.insertAudit({
         actorUserId: row.owner_id,
         action: 'share.revoke',
@@ -1822,7 +2533,7 @@ export class UserContentService {
         SET status = 'blocked', blocked_reason = ?, revision = revision + 1, updated_at = ?
         WHERE id = ?
       `).run(reason, now, row.id)
-      this.database.prepare('DELETE FROM share_access_sessions WHERE share_id = ?').run(row.id)
+      this.revokeShareSessions(row.id, 'admin.share.block')
       this.insertAudit({
         actorUserId: this.actorUser(actor).id,
         action: 'admin.share.block',
@@ -1883,6 +2594,39 @@ export class UserContentService {
     if (status === 'expired') throw createHttpError('分享已过期', 410, 'SHARE_EXPIRED')
   }
 
+  assertPublicSpatialState (row) {
+    if (!row || (row.spatial_access_mode || 'unrestricted') !== 'kml_bounds') return row
+    let current = row
+    const settings = this.getSettings()
+    const policyRevision = Number(settings.share.spatialPolicyRevision || 1)
+    let scope = parseJson(current.spatial_scope_json, null)
+    const sourceRevisions = this.shareItemRevisionSnapshot(current.id)
+    const storedRevisions = Array.isArray(scope?.sourceRevisions) ? scope.sourceRevisions : []
+    const policyStale = Number(current.access_policy_revision || 1) !== policyRevision ||
+      Number(scope?.policyRevision || 0) !== policyRevision
+    const stale = policyStale ||
+      !this.spatialSnapshotEqual(storedRevisions, sourceRevisions)
+    this.recordShareRuntimeMetric(current.id, 'spatial_scope_cache', {
+      decision: stale ? 'stale' : 'hit',
+    })
+    if (stale) {
+      try {
+        const result = this.revalidateSpatialShare(current.id, settings, { policyChanged: policyStale })
+        if (result.recalculating) throw spatialError('SHARE_SPATIAL_RECALCULATING')
+        current = this.publicShareRow(current.public_id)
+        scope = parseJson(current?.spatial_scope_json, null)
+      } catch (error) {
+        if (error?.code === 'SHARE_SPATIAL_RECALCULATING') throw error
+        throw spatialError('SHARE_SPATIAL_RECALCULATING')
+      }
+    }
+    const spatialStatus = current?.spatial_status || 'error'
+    if (spatialStatus !== 'ready' || !scope?.projection || !scope?.primitives) {
+      throw spatialError(current?.spatial_error_code || 'SHARE_SPATIAL_RECALCULATING')
+    }
+    return current
+  }
+
   assertSiteAccess (context = {}) {
     const policy = this.getSettings().share.publicAccessPolicy
     if (policy === 'inherit_site_access' && this.isSiteAccessEnabled() && !context.siteAccessGranted) {
@@ -1892,28 +2636,77 @@ export class UserContentService {
 
   hasShareAccessSession (shareId, accessToken) {
     if (!accessToken) return false
-    return Boolean(this.database.prepare(`
-      SELECT 1 FROM share_access_sessions
-      WHERE share_id = ? AND token_hash = ? AND revoked_at IS NULL AND expires_at > ?
-    `).get(shareId, hashToken(accessToken), this.nowIso()))
+    const row = typeof shareId === 'object' ? shareId : this.database.prepare(
+      'SELECT * FROM kml_shares WHERE id = ?'
+    ).get(shareId)
+    if (!row) return false
+    const session = this.database.prepare(`
+      SELECT * FROM share_access_sessions
+      WHERE share_id = ? AND token_hash = ? AND revoked_at IS NULL
+      LIMIT 1
+    `).get(row.id, hashToken(accessToken))
+    if (!session) return false
+    if (Number(session.password_version || 1) !== Number(row.password_version || 1)) return false
+    const ttlMode = session.ttl_mode || 'finite'
+    if (ttlMode === 'unlimited') {
+      if ((row.password_access_ttl_mode || 'finite') !== 'unlimited' || session.expires_at !== null) return false
+      if ((row.spatial_access_mode || 'unrestricted') !== 'kml_bounds' || row.spatial_status !== 'ready') return false
+      if (Number(session.policy_revision || 1) !== Number(row.access_policy_revision || 1)) return false
+      if (this.getSettings().share.unlimitedAccessEnabled !== true) return false
+    } else {
+      const expiresAt = Date.parse(session.expires_at || '')
+      if (!Number.isFinite(expiresAt) || expiresAt <= this.clock()) return false
+    }
+    const lastAccessedAt = Date.parse(session.last_accessed_at || '')
+    if (!Number.isFinite(lastAccessedAt) || this.clock() - lastAccessedAt >= SHARE_SESSION_TOUCH_INTERVAL_MS) {
+      this.database.prepare(`
+        UPDATE share_access_sessions SET last_accessed_at = ? WHERE id = ?
+      `).run(this.nowIso(), session.id)
+    }
+    return true
   }
 
   assertPublicShareAccess (row, context = {}) {
     this.assertPublicShareState(row)
     this.assertSiteAccess(context)
-    if (row.password_hash && !this.hasShareAccessSession(row.id, context.accessToken)) {
+    row = this.assertPublicSpatialState(row)
+    if (row.password_hash && !this.hasShareAccessSession(row, context.accessToken)) {
       throw createHttpError('分享需要密码验证', 401, 'SHARE_PASSWORD_REQUIRED')
     }
+    return row
   }
 
   assertPublicShareRequest (publicId, context = {}) {
     const row = this.publicShareRow(publicId)
-    this.assertPublicShareAccess(row, context)
-    this.ensurePublicItems(row)
+    const current = this.assertPublicShareAccess(row, context)
+    this.ensurePublicItemCount(current)
     return {
-      id: row.id,
-      publicId: row.public_id,
+      id: current.id,
+      publicId: current.public_id,
+      spatialAccess: this.shareSpatialView(current),
+      spatialScope: parseJson(current.spatial_scope_json, null),
     }
+  }
+
+  assertPublicShareTileRequest (publicId, sourceId, context = {}) {
+    const share = this.assertPublicShareRequest(publicId, context)
+    // Bound the total tile workload for one share and client. Including the
+    // caller-controlled source id here would let a client bypass the limit by
+    // rotating source ids before the catalog validation runs.
+    const limiterKey = `${share.id}:${String(context.ip || '').slice(0, 80)}`
+    try {
+      this.shareTileLimiter.consume(
+        limiterKey,
+        '分享地图请求过于频繁，请稍后再试',
+        'SHARE_TILE_RATE_LIMITED'
+      )
+    } catch (error) {
+      if (error?.code === 'SHARE_TILE_RATE_LIMITED') {
+        this.recordShareRuntimeMetric(share.id, 'tile_rate_limited')
+      }
+      throw error
+    }
+    return share
   }
 
   publicShareItems (shareId) {
@@ -1927,6 +2720,24 @@ export class UserContentService {
       WHERE i.share_id = ? AND k.status = 'active'
       ORDER BY i.position, i.id
     `).all(shareId)
+  }
+
+  ensurePublicItemCount (row) {
+    const count = Number(this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM kml_share_items i
+      JOIN kml_documents k ON k.id = i.kml_id
+      WHERE i.share_id = ? AND k.status = 'active'
+    `).get(row.id)?.count || 0)
+    if (count === 0) {
+      if (row.status === 'active') {
+        this.database.prepare(`
+          UPDATE kml_shares SET status = 'paused', revision = revision + 1, updated_at = ? WHERE id = ?
+        `).run(this.nowIso(), row.id)
+      }
+      throw createHttpError('分享已暂停', 410, 'SHARE_PAUSED')
+    }
+    return count
   }
 
   ensurePublicItems (row) {
@@ -1963,35 +2774,49 @@ export class UserContentService {
 
   getPublicShareManifest (publicId, context = {}) {
     const row = this.publicShareRow(publicId)
-    this.assertPublicShareAccess(row, context)
-    const items = this.ensurePublicItems(row)
+    const current = this.assertPublicShareAccess(row, context)
+    try {
+      this.shareManifestLimiter.consume(
+        `${current.id}:${String(context.ip || '').slice(0, 80)}`,
+        '分享数据请求过于频繁，请稍后再试',
+        'SHARE_MANIFEST_RATE_LIMITED'
+      )
+    } catch (error) {
+      if (error?.code === 'SHARE_MANIFEST_RATE_LIMITED') {
+        this.recordShareRuntimeMetric(current.id, 'manifest_rate_limited')
+      }
+      throw error
+    }
+    const items = this.ensurePublicItems(current)
     const now = this.nowIso()
     this.database.prepare(`
       UPDATE kml_shares
       SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?
-    `).run(now, row.id)
-    const viewConfig = parseJson(row.view_config_json, {})
+    `).run(now, current.id)
+    const viewConfig = parseJson(current.view_config_json, {})
     const result = {
-      publicId: row.public_id,
-      title: row.title,
-      description: row.description,
+      publicId: current.public_id,
+      title: current.title,
+      description: current.description,
       status: 'active',
-      passwordProtected: Boolean(row.password_hash),
-      allowDownload: Boolean(row.allow_download),
-      expiresAt: row.expires_at || null,
+      passwordProtected: Boolean(current.password_hash),
+      allowDownload: Boolean(current.allow_download),
+      expiresAt: current.expires_at || null,
       viewConfig,
+      spatialAccess: this.shareSpatialView(current),
+      passwordAccess: { ttlMode: current.password_hash ? (current.password_access_ttl_mode || 'finite') : 'not_applicable' },
       itemCount: items.length,
       items: items.map(item => this.publicItemSummary(item)),
-      updatedAt: row.updated_at,
+      updatedAt: current.updated_at,
     }
-    if (viewConfig.showOwnerDisplayName === true) result.ownerDisplayName = row.owner_display_name
+    if (viewConfig.showOwnerDisplayName === true) result.ownerDisplayName = current.owner_display_name
     return result
   }
 
   getPublicShareFile (publicId, shareItemId, context = {}) {
     const row = this.publicShareRow(publicId)
-    this.assertPublicShareAccess(row, context)
-    const item = this.publicShareItems(row.id).find(candidate => candidate.share_item_id === String(shareItemId || ''))
+    const current = this.assertPublicShareAccess(row, context)
+    const item = this.publicShareItems(current.id).find(candidate => candidate.share_item_id === String(shareItemId || ''))
     if (!item) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
     return {
       ...this.publicItemSummary(item),
@@ -2001,8 +2826,8 @@ export class UserContentService {
 
   exportPublicShareFile (publicId, shareItemId, context = {}) {
     const row = this.publicShareRow(publicId)
-    this.assertPublicShareAccess(row, context)
-    if (!row.allow_download) {
+    const current = this.assertPublicShareAccess(row, context)
+    if (!current.allow_download) {
       throw createHttpError('该分享不允许下载', 403, 'SHARE_DOWNLOAD_DISABLED')
     }
     const document = this.getPublicShareFile(publicId, shareItemId, context)
@@ -2015,22 +2840,31 @@ export class UserContentService {
 
   async authorizePublicShare (publicId, input, context = {}) {
     const password = isPlainObject(input) ? input.password : input
-    const row = this.publicShareRow(publicId)
+    let row = this.publicShareRow(publicId)
     this.assertPublicShareState(row)
     this.assertSiteAccess(context)
-    if (!row.password_hash) return { passwordRequired: false, accessToken: null, expiresAt: null }
+    row = this.assertPublicSpatialState(row)
+    if (!row.password_hash) {
+      return { passwordRequired: false, ttlMode: 'not_applicable', accessToken: null, expiresAt: null }
+    }
     const limiterKey = `${row.id}:${String(context.ip || '').slice(0, 80)}`
     this.sharePasswordLimiter.assertAllowed(limiterKey)
     if (!await verifyPassword(String(password || ''), row.password_hash)) {
       this.sharePasswordLimiter.recordFailure(limiterKey)
       throw createHttpError('分享密码不正确', 401, 'SHARE_PASSWORD_INVALID')
     }
-    const current = this.publicShareRow(publicId)
-    this.assertPublicShareState(current)
+    const current = this.assertPublicShareRowForAuthorization(publicId)
     this.assertSiteAccess(context)
-    if (current.id !== row.id || current.password_hash !== row.password_hash) {
+    if (current.id !== row.id || current.password_hash !== row.password_hash ||
+        Number(current.password_version || 1) !== Number(row.password_version || 1)) {
       throw createHttpError('分享授权状态已变化，请重新验证', 401, 'SHARE_PASSWORD_REQUIRED')
     }
+    const settings = this.getSettings()
+    const spatialState = current.spatial_access_mode === 'kml_bounds'
+      ? { status: current.spatial_status, scope: parseJson(current.spatial_scope_json, null), eligibility: spatialPolicyEligibility(parseJson(current.spatial_scope_json, null), settings.share) }
+      : { status: 'ready', scope: null, eligibility: { unlimitedAccessEligible: false } }
+    const ttlMode = current.password_access_ttl_mode || 'finite'
+    this.assertPasswordAccessMode(ttlMode, current.password_hash, current.spatial_access_mode || 'unrestricted', spatialState, settings)
     this.sharePasswordLimiter.clear(limiterKey)
     const token = randomToken()
     const now = this.nowIso()
@@ -2038,12 +2872,24 @@ export class UserContentService {
     const ttl = Number.isSafeInteger(configuredTtl) && configuredTtl > 0
       ? Math.max(1000 * 60, configuredTtl)
       : DEFAULT_SETTINGS.share.accessTtlMs
-    const expiresAt = new Date(this.clock() + ttl).toISOString()
+    const expiresAt = ttlMode === 'unlimited' ? null : new Date(this.clock() + ttl).toISOString()
     this.database.prepare(`
-      INSERT INTO share_access_sessions(id, share_id, token_hash, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(randomId('sas'), current.id, hashToken(token), now, expiresAt)
-    return { passwordRequired: true, accessToken: token, expiresAt }
+      INSERT INTO share_access_sessions(
+        id, share_id, token_hash, created_at, ttl_mode, expires_at,
+        password_version, policy_revision, last_accessed_at, revoke_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+    `).run(
+      randomId('sas'), current.id, hashToken(token), now, ttlMode, expiresAt,
+      Number(current.password_version || 1), Number(current.access_policy_revision || 1), now
+    )
+    return { passwordRequired: true, ttlMode, accessToken: token, expiresAt }
+  }
+
+  assertPublicShareRowForAuthorization (publicId) {
+    let current = this.publicShareRow(publicId)
+    this.assertPublicShareState(current)
+    current = this.assertPublicSpatialState(current)
+    return current
   }
 }
 

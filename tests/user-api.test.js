@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { Readable } from 'node:stream'
 import express from 'express'
 import commonMethods from '../service/bin/middleware/commonMethods/index.js'
 import service from '../service/bin/service.js'
@@ -296,6 +297,49 @@ test('private writes require both a valid session and matching CSRF header', asy
   }
 })
 
+test('share spatial preview requires authenticated CSRF-protected owner access', async () => {
+  const session = testSession()
+  let received = null
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? session : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'csrf-token') {
+        const err = new Error('请求安全校验失败')
+        err.statusCode = 403
+        err.code = 'CSRF_INVALID'
+        throw err
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'share.own.manage')
+    },
+    getUserKmlShareSpatialPreview: (current, input) => {
+      received = { current, input }
+      return { mode: 'kml_bounds', status: 'ready', areaKm2: 2.5 }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/kml/shares/spatial-preview', {
+      method: 'POST',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+      },
+      body: JSON.stringify({ spatialAccess: { mode: 'kml_bounds' }, items: [{ kmlId: 'kml-1' }] }),
+    })
+    assert.equal(result.response.status, 200)
+    assert.equal(result.payload.result.areaKm2, 2.5)
+    assert.equal(received.current, session)
+    assert.equal(received.input.items[0].kmlId, 'kml-1')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('two-bulu KML import requires login, CSRF and personal KML write permission', async () => {
   const session = testSession()
   const readonlySession = {
@@ -532,6 +576,45 @@ test('kml.any.manage implies read access at the API permission guard', async () 
   }
 })
 
+test('share runtime metrics require moderation permission and return aggregated data', async () => {
+  const session = {
+    ...testSession(),
+    user: {
+      ...testSession().user,
+      roles: ['share_moderator'],
+      permissions: ['admin.share.moderate'],
+    },
+  }
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'moderator-session' ? session : null,
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'admin.share.moderate')
+    },
+    getUserKmlShareRuntimeMetrics: current => {
+      assert.equal(current, session)
+      return {
+        generatedAt: '2026-08-16T00:00:00.000Z',
+        itemCount: 1,
+        items: [{ shareId: 'shr_internal', event: 'tile_decision', decision: 'outside', count: 3 }],
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/admin/kml/shares/runtime-metrics', {
+      headers: { Cookie: 'map_user_session=moderator-session' },
+    })
+    assert.equal(result.response.status, 200)
+    assert.equal(result.response.headers.get('cache-control'), 'no-store')
+    assert.equal(result.payload.result.items[0].decision, 'outside')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('admin compatibility login, session and logout use the unified cookie session', async () => {
   const session = {
     ...testSession(),
@@ -670,6 +753,36 @@ test('public share password creates a share-scoped HttpOnly cookie and never ret
   }
 })
 
+test('unlimited public share authorization uses a persistent bounded browser cookie', async () => {
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    verifyAccess: async () => false,
+    authorizePublicKmlShare: async () => ({
+      passwordRequired: true,
+      ttlMode: 'unlimited',
+      accessToken: 'unlimited-share-token',
+      expiresAt: null,
+    }),
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const authorization = await requestJson(baseUrl, '/api/v1/public/kml-shares/public-long/access', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'share-password' }),
+    })
+    assert.equal(authorization.response.status, 200)
+    assert.equal(authorization.payload.result.ttlMode, 'unlimited')
+    assert.equal(authorization.payload.result.expiresAt, null)
+    const cookies = cookieHeaders(authorization.response)
+    assert.ok(cookies.some(value => /map_share_access_public-long=.*Max-Age=34560000/i.test(value)))
+    assert.ok(cookies.some(value => /HttpOnly/i.test(value)))
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('public share map catalog reuses share-scoped authorization without requiring a user session', async () => {
   let receivedContext = null
   const restore = withMockedService({
@@ -709,9 +822,10 @@ test('public share tile route rejects sources outside the scoped public catalog 
   let relayCalled = false
   const restore = withMockedService({
     isAccessEnabled: async () => false,
-    assertPublicKmlShareMapSource: async (publicId, sourceId, context) => {
+    assertPublicKmlShareMapSource: async (publicId, sourceId, tile, context) => {
       assert.equal(publicId, 'public-123')
       assert.equal(sourceId, 'private-source')
+      assert.deepEqual(tile, { z: '1', x: '0', y: '0' })
       assert.equal(context.siteAccessGranted, true)
       const error = new Error('分享底图不存在')
       error.statusCode = 404
@@ -733,6 +847,97 @@ test('public share tile route rejects sources outside the scoped public catalog 
     assert.equal(result.response.status, 404)
     assert.equal(result.payload.error.code, 'RESOURCE_NOT_FOUND')
     assert.equal(relayCalled, false)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('public share tile route returns transparent tile for spatially disallowed tile without relay', async () => {
+  let relayCalled = false
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    assertPublicKmlShareMapSource: async (publicId, sourceId, tile) => {
+      assert.equal(publicId, 'public-123')
+      assert.equal(sourceId, 'road')
+      assert.deepEqual(tile, { z: '1', x: '0', y: '0' })
+      return { decision: 'outside' }
+    },
+    fetchTileSource: async () => {
+      relayCalled = true
+      throw new Error('不应发起图源请求')
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/public/kml-shares/public-123/tiles/road/1/0/0`)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'image/png')
+    assert.equal(response.headers.get('x-kml-share-spatial-decision'), 'outside')
+    assert.equal((await response.arrayBuffer()).byteLength, 68)
+    assert.equal(relayCalled, false)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('public share tile route relays the normalized world-wrapped x coordinate', async () => {
+  let receivedTile = null
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    assertPublicKmlShareMapSource: async (publicId, sourceId, tile) => {
+      assert.deepEqual(tile, { z: '2', x: '-1', y: '1' })
+      return { decision: 'allow', tile: { z: 2, x: 3, y: 1 } }
+    },
+    fetchTileSource: async (sourceId, tile) => {
+      receivedTile = { sourceId, tile }
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'image/png' },
+        cacheStatus: 'MISS',
+        stream: Readable.from([Buffer.from('tile')]),
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/public/kml-shares/public-123/tiles/road/2/-1/1`)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('cache-control'), 'private, no-store')
+    assert.deepEqual(receivedTile, { sourceId: 'road', tile: { z: 2, x: 3, y: 1 } })
+    assert.equal(await response.text(), 'tile')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('public share routes preserve manifest and tile rate-limit error codes', async () => {
+  const manifestError = new Error('分享数据请求过于频繁，请稍后再试')
+  manifestError.statusCode = 429
+  manifestError.code = 'SHARE_MANIFEST_RATE_LIMITED'
+  const tileError = new Error('分享地图请求过于频繁，请稍后再试')
+  tileError.statusCode = 429
+  tileError.code = 'SHARE_TILE_RATE_LIMITED'
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    getPublicKmlShareManifest: () => { throw manifestError },
+    assertPublicKmlShareMapSource: async () => { throw tileError },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const manifest = await requestJson(baseUrl, '/api/v1/public/kml-shares/public-123')
+    assert.equal(manifest.response.status, 429)
+    assert.equal(manifest.payload.error.code, 'SHARE_MANIFEST_RATE_LIMITED')
+
+    const tile = await requestJson(baseUrl, '/api/v1/public/kml-shares/public-123/tiles/road/10/1/1')
+    assert.equal(tile.response.status, 429)
+    assert.equal(tile.payload.error.code, 'SHARE_TILE_RATE_LIMITED')
+    assert.equal(tile.response.headers.get('cache-control'), 'private, no-store')
   } finally {
     await new Promise(resolve => server.close(resolve))
     restore()

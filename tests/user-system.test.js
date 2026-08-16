@@ -308,6 +308,123 @@ test('user-system settings and their audit record are committed atomically', asy
   assert.equal(service.getSettings().registration.mode, 'closed')
 })
 
+test('only a recently authenticated super administrator can change spatial share policy', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+  service.createUser(rootSession, {
+    username: 'policy.admin',
+    displayName: '策略管理员',
+    password: 'policy administrator phrase 2026',
+    roles: ['admin'],
+  })
+  const adminLogin = await login(service, 'policy.admin', 'policy administrator phrase 2026')
+  await service.changePassword(adminLogin.session, {
+    currentPassword: 'policy administrator phrase 2026',
+    newPassword: 'policy administrator replacement 2026',
+  })
+  const adminSession = service.verifySession(adminLogin.result.sessionToken)
+
+  assert.throws(
+    () => service.updateSettings(adminSession, {
+      share: { spatialPaddingMeters: 1200 },
+    }),
+    matchesError('PERMISSION_DENIED', 403)
+  )
+  const updated = service.updateSettings(rootSession, {
+    share: { spatialPaddingMeters: 1200 },
+  })
+  assert.equal(updated.share.spatialPaddingMeters, 1200)
+  assert.equal(updated.share.spatialPolicyRevision, 2)
+})
+
+test('spatial share settings reject unlimited thresholds above the overall range limits', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      share: {
+        spatialMaxAreaKm2: 100,
+        unlimitedAccessMaxAreaKm2: 101,
+      },
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      share: {
+        spatialMaxDiagonalKm: 50,
+        unlimitedAccessMaxDiagonalKm: 51,
+      },
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+})
+
+test('spatial policy changes return recalculation impact, increment revision and write a dedicated audit', async t => {
+  const { database, service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+  let received = null
+  service.setSettingsChangeHandler((next, previous) => {
+    received = { next, previous }
+    return {
+      affectedShares: 1,
+      downgradedShares: 1,
+      revokedUnlimitedSessions: 1,
+    }
+  })
+
+  const result = service.updateSettings(rootSession, {
+    share: { unlimitedAccessEnabled: true },
+  }, { ip: '198.51.100.77' })
+  assert.equal(received.previous.spatialPolicyRevision, 1)
+  assert.equal(received.next.spatialPolicyRevision, 2)
+  assert.equal(received.next.unlimitedAccessEnabled, true)
+  assert.deepEqual(result.sharePolicyImpact, {
+    affectedShares: 1,
+    downgradedShares: 1,
+    revokedUnlimitedSessions: 1,
+  })
+  const audit = database.prepare(`
+    SELECT metadata_json FROM audit_logs
+    WHERE action = 'admin.share-spatial-policy.update'
+    ORDER BY created_at DESC LIMIT 1
+  `).get()
+  assert.ok(audit)
+  assert.deepEqual(JSON.parse(audit.metadata_json), {
+    spatialPolicyRevision: 2,
+    affectedShares: 1,
+    downgradedShares: 1,
+    revokedUnlimitedSessions: 1,
+  })
+})
+
+test('spatial policy impact preview validates permissions without persisting settings', async t => {
+  const { database, service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+  service.setSettingsPreviewHandler((next, previous) => ({
+    affectedShares: 4,
+    downgradedShares: 2,
+    revokedUnlimitedSessions: 3,
+    revisions: [previous.spatialPolicyRevision, next.spatialPolicyRevision],
+  }))
+
+  const preview = service.updateSettings(rootSession, {
+    share: { unlimitedAccessEnabled: true },
+  }, {}, { preview: true })
+  assert.equal(preview.preview, true)
+  assert.deepEqual(preview.sharePolicyImpact, {
+    affectedShares: 4,
+    downgradedShares: 2,
+    revokedUnlimitedSessions: 3,
+    revisions: [1, 2],
+  })
+  assert.equal(service.getSettings().share.unlimitedAccessEnabled, false)
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'admin.share-spatial-policy.update'
+  `).get().count, 0)
+})
+
 test('admin-created and reset temporary passwords always satisfy the normal password policy', async t => {
   const { database, service, advance } = createHarness(t)
   const rootLogin = await login(service)

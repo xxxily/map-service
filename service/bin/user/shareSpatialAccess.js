@@ -1,0 +1,560 @@
+import crypto from 'node:crypto'
+
+const EARTH_RADIUS_METERS = 6371008.8
+const WEB_MERCATOR_MAX_LAT = 85.05112878
+const DEG_TO_RAD = Math.PI / 180
+const RAD_TO_DEG = 180 / Math.PI
+const MAX_GRID_AXIS = 256
+const EPSILON = 1e-7
+
+function clamp (value, min, max) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function normalizeLongitude360 (longitude) {
+  const normalized = Number(longitude) % 360
+  return normalized < 0 ? normalized + 360 : normalized
+}
+
+function normalizeLongitude180 (longitude) {
+  const normalized = ((Number(longitude) + 180) % 360 + 360) % 360 - 180
+  return normalized === -180 ? 180 : normalized
+}
+
+function minimalLongitudeArc (longitudes) {
+  const values = longitudes.map(normalizeLongitude360).sort((left, right) => left - right)
+  if (!values.length) return null
+  if (values.length === 1) return { start: values[0], end: values[0], span: 0 }
+  let largestGap = -1
+  let gapIndex = 0
+  for (let index = 0; index < values.length; index += 1) {
+    const current = values[index]
+    const next = index === values.length - 1 ? values[0] + 360 : values[index + 1]
+    const gap = next - current
+    if (gap > largestGap) {
+      largestGap = gap
+      gapIndex = index
+    }
+  }
+  const start = values[(gapIndex + 1) % values.length]
+  const span = 360 - largestGap
+  return { start, end: start + span, span }
+}
+
+function unwrapLongitude (longitude, center) {
+  let value = normalizeLongitude360(longitude)
+  while (value - center > 180 + EPSILON) value -= 360
+  while (center - value > 180 + EPSILON) value += 360
+  return value
+}
+
+function pointSegmentDistanceSquared (point, start, end) {
+  const dx = end[0] - start[0]
+  const dy = end[1] - start[1]
+  if (Math.abs(dx) < EPSILON && Math.abs(dy) < EPSILON) {
+    return (point[0] - start[0]) ** 2 + (point[1] - start[1]) ** 2
+  }
+  const ratio = clamp(
+    ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (dx * dx + dy * dy),
+    0,
+    1
+  )
+  const projected = [start[0] + ratio * dx, start[1] + ratio * dy]
+  return (point[0] - projected[0]) ** 2 + (point[1] - projected[1]) ** 2
+}
+
+function pointInRing (point, ring) {
+  let inside = false
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
+    const currentPoint = ring[index]
+    const previousPoint = ring[previous]
+    const intersects = ((currentPoint[1] > point[1]) !== (previousPoint[1] > point[1])) &&
+      (point[0] < (previousPoint[0] - currentPoint[0]) * (point[1] - currentPoint[1]) /
+        ((previousPoint[1] - currentPoint[1]) || EPSILON) + currentPoint[0])
+    if (intersects) inside = !inside
+  }
+  return inside
+}
+
+function orientation (a, b, c) {
+  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+function onSegment (a, b, point) {
+  return Math.abs(orientation(a, b, point)) <= EPSILON &&
+    point[0] >= Math.min(a[0], b[0]) - EPSILON && point[0] <= Math.max(a[0], b[0]) + EPSILON &&
+    point[1] >= Math.min(a[1], b[1]) - EPSILON && point[1] <= Math.max(a[1], b[1]) + EPSILON
+}
+
+function segmentsIntersect (a, b, c, d) {
+  const abC = orientation(a, b, c)
+  const abD = orientation(a, b, d)
+  const cdA = orientation(c, d, a)
+  const cdB = orientation(c, d, b)
+  if (((abC > EPSILON && abD < -EPSILON) || (abC < -EPSILON && abD > EPSILON)) &&
+      ((cdA > EPSILON && cdB < -EPSILON) || (cdA < -EPSILON && cdB > EPSILON))) return true
+  return (Math.abs(abC) <= EPSILON && onSegment(a, b, c)) ||
+    (Math.abs(abD) <= EPSILON && onSegment(a, b, d)) ||
+    (Math.abs(cdA) <= EPSILON && onSegment(c, d, a)) ||
+    (Math.abs(cdB) <= EPSILON && onSegment(c, d, b))
+}
+
+function distanceToRingSquared (point, ring) {
+  let minimum = Number.POSITIVE_INFINITY
+  for (let index = 1; index < ring.length; index += 1) {
+    minimum = Math.min(minimum, pointSegmentDistanceSquared(point, ring[index - 1], ring[index]))
+  }
+  return minimum
+}
+
+function containsPoint (scope, point, extraPadding = 0) {
+  const padding = Number(scope.paddingMeters || 0) + extraPadding
+  const radiusSquared = padding * padding
+  for (const center of scope.primitives.points) {
+    if ((point[0] - center[0]) ** 2 + (point[1] - center[1]) ** 2 <= radiusSquared + EPSILON) return true
+  }
+  for (const segment of scope.primitives.segments) {
+    if (pointSegmentDistanceSquared(point, segment[0], segment[1]) <= radiusSquared + EPSILON) return true
+  }
+  for (const ring of scope.primitives.polygons) {
+    if (pointInRing(point, ring) || distanceToRingSquared(point, ring) <= radiusSquared + EPSILON) return true
+  }
+  return false
+}
+
+function capsuleContainsRectangle (segment, corners, radiusSquared) {
+  return corners.every(point => pointSegmentDistanceSquared(point, segment[0], segment[1]) <= radiusSquared + EPSILON)
+}
+
+function polygonContainsRectangle (ring, corners) {
+  if (!corners.every(point => pointInRing(point, ring))) return false
+  const rectangleEdges = [
+    [corners[0], corners[1]],
+    [corners[1], corners[2]],
+    [corners[2], corners[3]],
+    [corners[3], corners[0]],
+  ]
+  for (let index = 1; index < ring.length; index += 1) {
+    for (const edge of rectangleEdges) {
+      if (segmentsIntersect(ring[index - 1], ring[index], edge[0], edge[1])) return false
+    }
+  }
+  return true
+}
+
+function containsRectangle (scope, corners) {
+  const radiusSquared = Number(scope.paddingMeters || 0) ** 2
+  for (const center of scope.primitives.points) {
+    if (corners.every(point => (point[0] - center[0]) ** 2 + (point[1] - center[1]) ** 2 <= radiusSquared + EPSILON)) {
+      return true
+    }
+  }
+  for (const segment of scope.primitives.segments) {
+    if (capsuleContainsRectangle(segment, corners, radiusSquared)) return true
+  }
+  for (const ring of scope.primitives.polygons) {
+    if (polygonContainsRectangle(ring, corners)) return true
+    for (let index = 1; index < ring.length; index += 1) {
+      if (capsuleContainsRectangle([ring[index - 1], ring[index]], corners, radiusSquared)) return true
+    }
+  }
+  return false
+}
+
+function projectCoordinate (coordinate, projection) {
+  const longitude = unwrapLongitude(coordinate[0], projection.centerLongitude)
+  return [
+    EARTH_RADIUS_METERS * (longitude - projection.centerLongitude) * DEG_TO_RAD * projection.cosLatitude,
+    EARTH_RADIUS_METERS * (coordinate[1] - projection.referenceLatitude) * DEG_TO_RAD,
+  ]
+}
+
+function unprojectCoordinate (coordinate, projection) {
+  const longitude = projection.centerLongitude + coordinate[0] / (EARTH_RADIUS_METERS * projection.cosLatitude) * RAD_TO_DEG
+  const latitude = projection.referenceLatitude + coordinate[1] / EARTH_RADIUS_METERS * RAD_TO_DEG
+  return [normalizeLongitude180(longitude), clamp(latitude, -90, 90)]
+}
+
+function featureCoordinates (feature) {
+  if (feature?.type === 'Point') return [feature.coordinates]
+  if (feature?.type === 'LineString' || feature?.type === 'Polygon') return feature.coordinates
+  return []
+}
+
+function collectFeatures (documents) {
+  const features = []
+  let invalidFeatureCount = 0
+  for (const document of documents || []) {
+    for (const feature of document.features || []) {
+      if (!['Point', 'LineString', 'Polygon'].includes(feature?.type)) {
+        invalidFeatureCount += 1
+        continue
+      }
+      const coordinates = featureCoordinates(feature)
+      if (!coordinates.length || coordinates.some(coordinate => !Array.isArray(coordinate) ||
+        !Number.isFinite(Number(coordinate[0])) || !Number.isFinite(Number(coordinate[1])) ||
+        Number(coordinate[0]) < -180 || Number(coordinate[0]) > 180 ||
+        Number(coordinate[1]) < -90 || Number(coordinate[1]) > 90)) {
+        invalidFeatureCount += 1
+        continue
+      }
+      features.push({ type: feature.type, coordinates: coordinates.map(coordinate => [Number(coordinate[0]), Number(coordinate[1])]) })
+    }
+  }
+  return { features, invalidFeatureCount }
+}
+
+function buildProjection (features) {
+  const coordinates = features.flatMap(feature => feature.coordinates)
+  if (!coordinates.length) return null
+  if (coordinates.some(coordinate => Math.abs(coordinate[1]) >= WEB_MERCATOR_MAX_LAT)) {
+    return { errorCode: 'SHARE_SPATIAL_POLAR_UNSUPPORTED' }
+  }
+  const arc = minimalLongitudeArc(coordinates.map(coordinate => coordinate[0]))
+  if (!arc || arc.span >= 180 - EPSILON) return { errorCode: 'SHARE_SPATIAL_ANTIMERIDIAN_UNSTABLE' }
+  const referenceLatitude = coordinates.reduce((total, coordinate) => total + coordinate[1], 0) / coordinates.length
+  const cosLatitude = Math.cos(referenceLatitude * DEG_TO_RAD)
+  if (!Number.isFinite(cosLatitude) || Math.abs(cosLatitude) < 0.08) return { errorCode: 'SHARE_SPATIAL_POLAR_UNSUPPORTED' }
+  return {
+    unwrapStart: arc.start,
+    centerLongitude: arc.start + arc.span / 2,
+    referenceLatitude,
+    cosLatitude,
+    crossesAntimeridian: arc.start < 180 && arc.end > 180,
+  }
+}
+
+function buildPrimitives (features, projection) {
+  const primitives = { points: [], segments: [], polygons: [] }
+  for (const feature of features) {
+    const projected = feature.coordinates.map(coordinate => projectCoordinate(coordinate, projection))
+    if (feature.type === 'Point') {
+      primitives.points.push(projected[0])
+      continue
+    }
+    if (feature.type === 'LineString') {
+      for (let index = 1; index < projected.length; index += 1) {
+        primitives.segments.push([projected[index - 1], projected[index]])
+      }
+      continue
+    }
+    if (feature.type === 'Polygon') {
+      const first = projected[0]
+      const last = projected.at(-1)
+      if (first[0] !== last[0] || first[1] !== last[1]) projected.push([...first])
+      primitives.polygons.push(projected)
+    }
+  }
+  return primitives
+}
+
+function primitiveBounds (primitives, paddingMeters) {
+  const points = [
+    ...primitives.points,
+    ...primitives.segments.flat(),
+    ...primitives.polygons.flat(),
+  ]
+  if (!points.length) return null
+  return [
+    Math.min(...points.map(point => point[0])) - paddingMeters,
+    Math.min(...points.map(point => point[1])) - paddingMeters,
+    Math.max(...points.map(point => point[0])) + paddingMeters,
+    Math.max(...points.map(point => point[1])) + paddingMeters,
+  ]
+}
+
+function markGridCell (mask, nx, x, y) {
+  if (x < 0 || y < 0 || x >= nx) return
+  mask[y * nx + x] = 1
+}
+
+function estimateUnionArea (scope) {
+  const [minX, minY, maxX, maxY] = scope.localBounds
+  const width = Math.max(1, maxX - minX)
+  const height = Math.max(1, maxY - minY)
+  const targetCell = Math.max(scope.paddingMeters / 2, Math.max(width, height) / MAX_GRID_AXIS, 25)
+  const nx = clamp(Math.ceil(width / targetCell), 1, MAX_GRID_AXIS)
+  const ny = clamp(Math.ceil(height / targetCell), 1, MAX_GRID_AXIS)
+  const cellWidth = width / nx
+  const cellHeight = height / ny
+  const cellRadius = Math.hypot(cellWidth, cellHeight) / 2
+  const mask = new Uint8Array(nx * ny)
+  const markPrimitive = (bounds, predicate) => {
+    const fromX = clamp(Math.floor((bounds[0] - minX) / cellWidth), 0, nx - 1)
+    const toX = clamp(Math.floor((bounds[2] - minX) / cellWidth), 0, nx - 1)
+    const fromY = clamp(Math.floor((bounds[1] - minY) / cellHeight), 0, ny - 1)
+    const toY = clamp(Math.floor((bounds[3] - minY) / cellHeight), 0, ny - 1)
+    for (let y = fromY; y <= toY; y += 1) {
+      for (let x = fromX; x <= toX; x += 1) {
+        if (mask[y * nx + x]) continue
+        const center = [minX + (x + 0.5) * cellWidth, minY + (y + 0.5) * cellHeight]
+        if (predicate(center, cellRadius)) markGridCell(mask, nx, x, y)
+      }
+    }
+  }
+  for (const point of scope.primitives.points) {
+    const radius = scope.paddingMeters + cellRadius
+    markPrimitive([point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius], center =>
+      (center[0] - point[0]) ** 2 + (center[1] - point[1]) ** 2 <= radius ** 2)
+  }
+  const markSegment = segment => {
+    const radius = scope.paddingMeters + cellRadius
+    markPrimitive([
+      Math.min(segment[0][0], segment[1][0]) - radius,
+      Math.min(segment[0][1], segment[1][1]) - radius,
+      Math.max(segment[0][0], segment[1][0]) + radius,
+      Math.max(segment[0][1], segment[1][1]) + radius,
+    ], center => pointSegmentDistanceSquared(center, segment[0], segment[1]) <= radius ** 2)
+  }
+  scope.primitives.segments.forEach(markSegment)
+  for (const ring of scope.primitives.polygons) {
+    const xs = ring.map(point => point[0])
+    const ys = ring.map(point => point[1])
+    markPrimitive([
+      Math.min(...xs) - scope.paddingMeters - cellRadius,
+      Math.min(...ys) - scope.paddingMeters - cellRadius,
+      Math.max(...xs) + scope.paddingMeters + cellRadius,
+      Math.max(...ys) + scope.paddingMeters + cellRadius,
+    ], (center, extra) => pointInRing(center, ring) || distanceToRingSquared(center, ring) <= (scope.paddingMeters + extra) ** 2)
+  }
+  let occupied = 0
+  for (const value of mask) occupied += value
+  return occupied * cellWidth * cellHeight / 1_000_000
+}
+
+function geographicBounds (localBounds, projection) {
+  const southwest = unprojectCoordinate([localBounds[0], localBounds[1]], projection)
+  const northeast = unprojectCoordinate([localBounds[2], localBounds[3]], projection)
+  const westUnwrapped = projection.centerLongitude + localBounds[0] /
+    (EARTH_RADIUS_METERS * projection.cosLatitude) * RAD_TO_DEG
+  const eastUnwrapped = projection.centerLongitude + localBounds[2] /
+    (EARTH_RADIUS_METERS * projection.cosLatitude) * RAD_TO_DEG
+  const south = southwest[1]
+  const north = northeast[1]
+  const cameraBounds = [westUnwrapped, south, eastUnwrapped, north]
+  const segments = []
+  const startWorld = Math.floor((westUnwrapped + 180) / 360)
+  const endWorld = Math.floor((eastUnwrapped + 180 - EPSILON) / 360)
+  for (let world = startWorld; world <= endWorld; world += 1) {
+    const worldWest = -180 + world * 360
+    const worldEast = 180 + world * 360
+    const segmentWest = Math.max(westUnwrapped, worldWest)
+    const segmentEast = Math.min(eastUnwrapped, worldEast)
+    if (segmentEast > segmentWest) {
+      segments.push([
+        clamp(segmentWest - world * 360, -180, 180),
+        south,
+        clamp(segmentEast - world * 360, -180, 180),
+        north,
+      ])
+    }
+  }
+  if (!segments.length) segments.push([southwest[0], south, northeast[0], north])
+  return { cameraBounds, bbox: segments[0], bboxSegments: segments }
+}
+
+function bboxDisplayGeometry (bboxSegments) {
+  return {
+    type: 'MultiPolygon',
+    coordinates: bboxSegments.map(([west, south, east, north]) => [[
+      [west, south], [east, south], [east, north], [west, north], [west, south],
+    ]]),
+  }
+}
+
+function mercatorLatitude (latitude) {
+  const bounded = clamp(Number(latitude), -WEB_MERCATOR_MAX_LAT, WEB_MERCATOR_MAX_LAT)
+  const radians = bounded * DEG_TO_RAD
+  return (1 - Math.log(Math.tan(Math.PI / 4 + radians / 2)) / Math.PI) / 2
+}
+
+function calculateMinZoom (cameraBounds) {
+  if (!Array.isArray(cameraBounds) || cameraBounds.length !== 4) return 0
+  const longitudeSpan = Math.max(EPSILON, Math.min(360, Number(cameraBounds[2]) - Number(cameraBounds[0])))
+  const latitudeSpan = Math.max(EPSILON, Math.abs(
+    mercatorLatitude(cameraBounds[3]) - mercatorLatitude(cameraBounds[1])
+  ))
+  // Keep the minimum zoom tied to the complete allowed envelope rather than
+  // only the padding width. Long tracks must still fit in the first view;
+  // the server-side tile decision remains the authoritative boundary.
+  const worldFraction = Math.min(1, Math.max(longitudeSpan / 360, latitudeSpan))
+  return clamp(Math.floor(Math.log2(1 / worldFraction)), 0, 22)
+}
+
+function roundMetric (value, digits = 3) {
+  const factor = 10 ** digits
+  return Math.round(Number(value) * factor) / factor
+}
+
+export function computeSpatialScope (options = {}) {
+  const paddingMeters = Number(options.paddingMeters)
+  if (!Number.isFinite(paddingMeters) || paddingMeters <= 0) {
+    return { status: 'error', reasonCode: 'SHARE_SPATIAL_PADDING_INVALID' }
+  }
+  const { features, invalidFeatureCount } = collectFeatures(options.documents || [])
+  if (!features.length) return { status: 'empty', reasonCode: 'SHARE_SPATIAL_BOUNDS_EMPTY', invalidFeatureCount }
+  const projection = buildProjection(features)
+  if (!projection || projection.errorCode) {
+    return { status: 'error', reasonCode: projection?.errorCode || 'SHARE_SPATIAL_BOUNDS_EMPTY', invalidFeatureCount }
+  }
+  const primitives = buildPrimitives(features, projection)
+  const localBounds = primitiveBounds(primitives, paddingMeters)
+  if (!localBounds) return { status: 'empty', reasonCode: 'SHARE_SPATIAL_BOUNDS_EMPTY', invalidFeatureCount }
+  const scope = {
+    version: 1,
+    projection,
+    primitives,
+    localBounds,
+    paddingMeters,
+  }
+  const areaKm2 = estimateUnionArea(scope)
+  const diagonalKm = Math.hypot(localBounds[2] - localBounds[0], localBounds[3] - localBounds[1]) / 1000
+  const bounds = geographicBounds(localBounds, projection)
+  const minZoom = calculateMinZoom(bounds.cameraBounds)
+  const sourceRevisionHash = `sha256:${crypto.createHash('sha256').update(JSON.stringify({
+    sources: options.sourceRevisions || [],
+    paddingMeters,
+    policyRevision: Number(options.policyRevision || 1),
+    primitives,
+  })).digest('hex')}`
+  return {
+    status: 'ready',
+    reasonCode: null,
+    scope: {
+      ...scope,
+      ...bounds,
+      displayGeometry: bboxDisplayGeometry(bounds.bboxSegments),
+      geometryType: 'PrimitiveUnion',
+      rawAreaKm2: areaKm2,
+      rawDiagonalKm: diagonalKm,
+      areaKm2: roundMetric(areaKm2),
+      diagonalKm: roundMetric(diagonalKm),
+      minZoom,
+      maxCameraHeight: Math.max(2000, Math.round(diagonalKm * 2500)),
+      crossesAntimeridian: projection.crossesAntimeridian,
+      sourceRevisions: Array.isArray(options.sourceRevisions) ? options.sourceRevisions : [],
+      sourceRevisionHash,
+      policyRevision: Number(options.policyRevision || 1),
+      computedAt: options.computedAt || new Date().toISOString(),
+      invalidFeatureCount,
+    },
+  }
+}
+
+export function publicSpatialScope (scope, revision = 0) {
+  if (!scope || !Array.isArray(scope.cameraBounds)) return null
+  return {
+    mode: 'kml_bounds',
+    status: 'ready',
+    bbox: scope.bbox,
+    bboxSegments: scope.bboxSegments,
+    cameraBounds: scope.cameraBounds,
+    displayGeometry: scope.displayGeometry,
+    paddingMeters: Number(scope.paddingMeters),
+    areaKm2: Number(scope.areaKm2),
+    diagonalKm: Number(scope.diagonalKm),
+    minZoom: Number(scope.minZoom),
+    maxCameraHeight: Number(scope.maxCameraHeight),
+    crossesAntimeridian: Boolean(scope.crossesAntimeridian),
+    revision: Number(revision || 0),
+  }
+}
+
+function tileLongitude (x, zoom) {
+  return x / (2 ** zoom) * 360 - 180
+}
+
+function tileLatitude (y, zoom) {
+  const mercator = Math.PI * (1 - 2 * y / (2 ** zoom))
+  return Math.atan(Math.sinh(mercator)) * RAD_TO_DEG
+}
+
+export function normalizeTileCoordinates (tile = {}) {
+  const z = Number(tile.z)
+  const x = Number(tile.x)
+  const y = Number(tile.y)
+  if (!Number.isSafeInteger(z) || z < 0 || z > 24 || !Number.isSafeInteger(x) || !Number.isSafeInteger(y)) {
+    return null
+  }
+  const size = 2 ** z
+  if (y < 0 || y >= size) return null
+  return { z, x: ((x % size) + size) % size, y }
+}
+
+export function classifyTileAgainstScope (scope, tile) {
+  const normalized = normalizeTileCoordinates(tile)
+  if (!normalized) return { decision: 'invalid', tile: null }
+  if (!scope || !scope.projection || !scope.primitives) return { decision: 'unavailable', tile: normalized }
+  if (normalized.z < Number(scope.minZoom || 0)) return { decision: 'below_min_zoom', tile: normalized }
+  const west = tileLongitude(normalized.x, normalized.z)
+  const east = tileLongitude(normalized.x + 1, normalized.z)
+  const north = tileLatitude(normalized.y, normalized.z)
+  const south = tileLatitude(normalized.y + 1, normalized.z)
+  const geographicCorners = [[west, north], [east, north], [east, south], [west, south]]
+  const corners = geographicCorners.map(coordinate => projectCoordinate(coordinate, scope.projection))
+  if (containsRectangle(scope, corners)) return { decision: 'allow', tile: normalized }
+  const center = projectCoordinate([(west + east) / 2, (north + south) / 2], scope.projection)
+  const intersects = corners.some(point => containsPoint(scope, point)) || containsPoint(scope, center)
+  return { decision: intersects ? 'boundary' : 'outside', tile: normalized }
+}
+
+export function spatialPolicyEligibility (scope, settings = {}) {
+  if (!scope) return {
+    spatialAccessEligible: false,
+    unlimitedAccessEligible: false,
+    reasonCode: 'SHARE_SPATIAL_BOUNDS_EMPTY',
+  }
+  const areaKm2 = Number.isFinite(Number(scope.rawAreaKm2))
+    ? Number(scope.rawAreaKm2)
+    : Number(scope.areaKm2)
+  const diagonalKm = Number.isFinite(Number(scope.rawDiagonalKm))
+    ? Number(scope.rawDiagonalKm)
+    : Number(scope.diagonalKm)
+  const spatialMaxAreaKm2 = Number(settings.spatialMaxAreaKm2)
+  const spatialMaxDiagonalKm = Number(settings.spatialMaxDiagonalKm)
+  const unlimitedMaxAreaKm2 = Number(settings.unlimitedAccessMaxAreaKm2)
+  const unlimitedMaxDiagonalKm = Number(settings.unlimitedAccessMaxDiagonalKm)
+  if (![areaKm2, diagonalKm, spatialMaxAreaKm2, spatialMaxDiagonalKm].every(Number.isFinite)) {
+    return {
+      spatialAccessEligible: false,
+      unlimitedAccessEligible: false,
+      reasonCode: 'SHARE_SPATIAL_POLICY_INVALID',
+    }
+  }
+  if (areaKm2 > spatialMaxAreaKm2 + EPSILON ||
+      diagonalKm > spatialMaxDiagonalKm + EPSILON) {
+    return {
+      spatialAccessEligible: false,
+      unlimitedAccessEligible: false,
+      reasonCode: 'SHARE_SPATIAL_RANGE_TOO_LARGE',
+    }
+  }
+  if (settings.unlimitedAccessEnabled !== true) {
+    return {
+      spatialAccessEligible: true,
+      unlimitedAccessEligible: false,
+      reasonCode: 'SHARE_UNLIMITED_ACCESS_DISABLED',
+    }
+  }
+  if (![unlimitedMaxAreaKm2, unlimitedMaxDiagonalKm].every(Number.isFinite)) {
+    return {
+      spatialAccessEligible: true,
+      unlimitedAccessEligible: false,
+      reasonCode: 'SHARE_SPATIAL_POLICY_INVALID',
+    }
+  }
+  if (areaKm2 > unlimitedMaxAreaKm2 + EPSILON ||
+      diagonalKm > unlimitedMaxDiagonalKm + EPSILON) {
+    return {
+      spatialAccessEligible: true,
+      unlimitedAccessEligible: false,
+      reasonCode: 'SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE',
+    }
+  }
+  return { spatialAccessEligible: true, unlimitedAccessEligible: true, reasonCode: null }
+}
+
+export const TRANSPARENT_TILE_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+5u0AAAAASUVORK5CYII=',
+  'base64'
+)

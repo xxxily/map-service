@@ -1348,6 +1348,16 @@ body.account-view .app-dialog:not(.account-share-dialog) {
   font-size: 11px !important;
 }
 
+[data-account-spatial-summary] {
+  margin: 10px 0 8px;
+  color: #607577;
+  font-size: 13px;
+}
+
+[data-account-spatial-preview] {
+  width: fit-content;
+}
+
 @media (max-width: 980px) {
   .account-auth-main {
     grid-template-columns: 1fr 420px;

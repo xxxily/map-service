@@ -14,6 +14,30 @@ function statusLabel (status) {
   return SHARE_STATUS_OPTIONS.find(([value]) => value === status)?.[1] || status || '-'
 }
 
+function spatialModeLabel (share) {
+  return share?.spatialAccess?.mode === 'kml_bounds' ? '限制在 KML 区域' : '不限制地图范围'
+}
+
+function spatialStatusLabel (share) {
+  return {
+    ready: '范围正常',
+    empty: '范围为空',
+    error: '范围异常',
+    out_of_policy: '超出策略',
+  }[share?.spatialAccess?.status] || '未启用'
+}
+
+function passwordAccessLabel (share) {
+  if (!share?.passwordProtected) return '无密码'
+  return share.passwordAccess?.ttlMode === 'unlimited' ? '不限授权' : '有限授权'
+}
+
+function spatialMetric (value, suffix) {
+  if (value === null || value === undefined || value === '') return ''
+  const number = Number(value)
+  return Number.isFinite(number) ? `${number.toFixed(1)} ${suffix}` : ''
+}
+
 function filtersForRequest (state, page) {
   return {
     ...state.shareFilters,
@@ -52,7 +76,7 @@ export function renderShareModerationPage (state) {
         </form>
         <div class="admin-table-wrap">
           <table class="admin-table admin-share-table">
-            <thead><tr><th>分享</th><th>所有者</th><th>状态</th><th>访问与期限</th><th>操作</th></tr></thead>
+            <thead><tr><th>分享</th><th>所有者</th><th>状态</th><th>空间与授权</th><th>访问与期限</th><th>操作</th></tr></thead>
             <tbody>
               ${(collection.items || []).map(share => `
                 <tr>
@@ -70,6 +94,14 @@ export function renderShareModerationPage (state) {
                     ${share.blockedReason ? `<small class="admin-warning-text">原因：${escapeHtml(share.blockedReason)}</small>` : ''}
                   </td>
                   <td>
+                    <small class="admin-cell-secondary">地图：${escapeHtml(spatialModeLabel(share))}</small>
+                    <small class="admin-cell-secondary">范围：${escapeHtml(spatialStatusLabel(share))}</small>
+                    ${share.spatialAccess?.mode === 'kml_bounds'
+                      ? `<small class="admin-cell-secondary">${escapeHtml([spatialMetric(share.spatialAccess.areaKm2, 'km²'), spatialMetric(share.spatialAccess.diagonalKm, 'km')].filter(Boolean).join(' · ') || '暂无范围摘要')}</small>`
+                      : ''}
+                    <small class="admin-cell-secondary">密码：${escapeHtml(passwordAccessLabel(share))}</small>
+                  </td>
+                  <td>
                     <small class="admin-cell-secondary">访问 ${Number(share.accessCount || 0)} 次</small>
                     <small class="admin-cell-secondary">最近：${escapeHtml(formatTime(share.lastAccessedAt))}</small>
                     <small class="admin-cell-secondary">到期：${escapeHtml(formatTime(share.expiresAt))}</small>
@@ -84,7 +116,7 @@ export function renderShareModerationPage (state) {
                     </div>
                   </td>
                 </tr>
-              `).join('') || '<tr><td colspan="5" class="admin-empty">没有符合条件的分享</td></tr>'}
+              `).join('') || '<tr><td colspan="6" class="admin-empty">没有符合条件的分享</td></tr>'}
             </tbody>
           </table>
         </div>

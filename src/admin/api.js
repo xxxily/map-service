@@ -122,6 +122,7 @@ export const adminApi = {
   updateRole: (id, body) => requestAdminApi(`/admin/roles/${encodeURIComponent(id)}`, { method: 'PUT', body }),
   deleteRole: (id) => requestAdminApi(`/admin/roles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   getUserSystemSettings: () => requestAdminApi('/admin/user-system/settings'),
+  previewUserSystemSettings: (body) => requestAdminApi('/admin/user-system/settings/impact-preview', { method: 'POST', body }),
   updateUserSystemSettings: (body) => requestAdminApi('/admin/user-system/settings', { method: 'PUT', body }),
   listUserShares: (params = {}) => requestAdminApi(`/admin/kml/shares${queryString(params)}`),
   blockUserShare: (id, reason) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/block`, { method: 'POST', body: { reason } }),

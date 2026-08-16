@@ -109,6 +109,26 @@ test('tile catalog coalesces concurrent initialization', async () => {
   assert.equal(catalogs.every(catalog => catalog.defaultLayerId === 'amap-hybrid'), true)
 })
 
+test('public tile source index follows source visibility updates', async () => {
+  const dataDir = tempDir('tile-catalog-public-index')
+  const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })
+
+  try {
+    const initial = await manager.getPublicTileSource('google-satellite')
+    assert.equal(initial.id, 'google-satellite')
+    assert.equal(Object.hasOwn(initial, 'template'), false)
+
+    await manager.updateTileSource('google-satellite', { enabled: false })
+    assert.equal(await manager.getPublicTileSource('google-satellite'), null)
+
+    await manager.updateTileSource('google-satellite', { enabled: true })
+    assert.equal((await manager.getPublicTileSource('google-satellite')).id, 'google-satellite')
+    assert.equal(await manager.getPublicTileSource('missing-source'), null)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
 test('tile catalog creates proxy pool and resolves source tile request through it', async () => {
   const dataDir = tempDir('tile-catalog-proxy')
   const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })

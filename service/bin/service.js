@@ -23,7 +23,8 @@ import { TwoBuluImportService } from './user/twoBuluImport.js'
 import TwoBuluImportCoordinator from './user/twoBuluImportCoordinator.js'
 import KmlShareLinkResolverService from './user/shareLinkResolver.js'
 import { createHttpError } from './user/security.js'
-import { buildShareMapCatalog, hasShareMapSource } from './user/shareMapCatalog.js'
+import { buildShareMapCatalog, isShareMapSourceAllowed } from './user/shareMapCatalog.js'
+import { classifyTileAgainstScope } from './user/shareSpatialAccess.js'
 import {
   assertKmlMediaPublicAddress,
   validateKmlMediaResponse,
@@ -86,6 +87,12 @@ const userContent = new UserContentService({
   userSystem,
   // 公开分享路由会异步计算站点访问状态并通过 context.siteAccessGranted 传入。
   isSiteAccessEnabled: () => true,
+})
+userSystem.setSettingsChangeHandler((next, previous) => {
+  return userContent.revalidateAllSpatialShares(next, previous)
+})
+userSystem.setSettingsPreviewHandler((next, previous) => {
+  return userContent.previewSpatialPolicyImpact(next, previous)
 })
 const twoBuluImport = new TwoBuluImportService(userSystemConfig.twoBuluImport || {})
 const twoBuluImportCoordinator = new TwoBuluImportCoordinator({
@@ -279,6 +286,10 @@ const service = {
     return userSystem.updateSettings(actor, input, context)
   },
 
+  previewUserSystemSettings (actor, input, context) {
+    return userSystem.updateSettings(actor, input, context, { preview: true })
+  },
+
   createManagedUser (actor, input, context) {
     return userSystem.createUser(actor, input, context)
   },
@@ -415,6 +426,10 @@ const service = {
     return userContent.createShare(actor, input, context)
   },
 
+  getUserKmlShareSpatialPreview (actor, input) {
+    return userContent.getSpatialPreview(actor, input)
+  },
+
   getUserKmlShare (actor, id) {
     return userContent.getShare(actor, id)
   },
@@ -452,17 +467,39 @@ const service = {
   },
 
   async getPublicKmlShareMapCatalog (publicId, options) {
-    userContent.assertPublicShareRequest(publicId, options)
-    return buildShareMapCatalog(await tileCatalogManager.getPublicCatalog(), publicId)
+    const share = userContent.assertPublicShareRequest(publicId, options)
+    const spatialAccess = share.spatialAccess || { mode: 'unrestricted', status: 'ready' }
+    if (spatialAccess.mode === 'kml_bounds' && spatialAccess.status !== 'ready') {
+      throw createHttpError('分享地图范围暂不可用', 410, spatialAccess.reasonCode || 'SHARE_SPATIAL_UNAVAILABLE')
+    }
+    return buildShareMapCatalog(await tileCatalogManager.getPublicCatalog(), publicId, {
+      spatialAccess,
+    })
   },
 
-  async assertPublicKmlShareMapSource (publicId, sourceId, options) {
-    userContent.assertPublicShareRequest(publicId, options)
-    const catalog = buildShareMapCatalog(await tileCatalogManager.getPublicCatalog(), publicId)
-    if (!hasShareMapSource(catalog, sourceId)) {
+  async assertPublicKmlShareMapSource (publicId, sourceId, tile, options) {
+    const share = userContent.assertPublicShareTileRequest(publicId, sourceId, options)
+    const spatialAccess = share.spatialAccess || { mode: 'unrestricted', status: 'ready' }
+    const source = await tileCatalogManager.getPublicTileSource(sourceId)
+    if (!isShareMapSourceAllowed(source, spatialAccess)) {
+      userContent.recordShareRuntimeMetric(share.id, 'tile_source_rejected')
       throw createHttpError('分享底图不存在', 404, 'RESOURCE_NOT_FOUND')
     }
-    return true
+    if (spatialAccess.mode !== 'kml_bounds') {
+      userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: 'allow' })
+      return { decision: 'allow', tile }
+    }
+    const spatialScope = share.spatialScope || spatialAccess.internalScope
+    if (spatialAccess.status !== 'ready' || !spatialScope) {
+      throw createHttpError('分享地图范围暂不可用', 410, spatialAccess.reasonCode || 'SHARE_SPATIAL_UNAVAILABLE')
+    }
+    const classification = classifyTileAgainstScope(spatialScope, tile)
+    if (classification.decision === 'invalid' || classification.decision === 'unavailable') {
+      userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: classification.decision })
+      throw createHttpError('瓦片坐标无效', 400, 'INVALID_TILE_COORDINATES')
+    }
+    userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: classification.decision })
+    return classification
   },
 
   getPublicKmlShareFile (publicId, shareItemId, options) {
@@ -475,6 +512,10 @@ const service = {
 
   listAllUserKmlShares (actor, input) {
     return userContent.listAllShares(actor, input)
+  },
+
+  getUserKmlShareRuntimeMetrics (actor) {
+    return userContent.getShareRuntimeMetrics(actor)
   },
 
   blockUserKmlShare (actor, id, input, context) {

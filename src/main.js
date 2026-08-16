@@ -33,7 +33,7 @@ import { registerServiceWorker } from './pwa.js'
 import { initKmlSupport } from './map/kml.js'
 import { initGuidelines, toggleGuidelineMode } from './map/guidelines.js'
 import { initAfterAccessCheck } from './map/access-control.js'
-import { getActiveShare, isShareLocation, prepareShareView } from './map/share-view.js'
+import { getActiveShare, getShareSpatialConfig, isShareLocation, prepareShareView } from './map/share-view.js'
 import { initFavoriteActions } from './map/favorite-actions.js'
 import {
   MAX_LOCATION_HISTORY_POINTS,
@@ -159,6 +159,11 @@ async function loadAmap () {
 async function initLeafletMap () {
   const shareMode = isShareLocation(window.location)
   const activeShare = getActiveShare()
+  const shareSpatial = shareMode ? getShareSpatialConfig(activeShare?.manifest) : { restricted: false, valid: true }
+  if (!shareSpatial.valid) {
+    throw new Error('分享地图范围暂不可用')
+  }
+  const restrictedShare = shareMode && shareSpatial.restricted
   const shareViewConfig = activeShare?.manifest?.viewConfig || {}
   const defaultView = parseDefaultView()
   const shareCenter = Array.isArray(shareViewConfig.center) && shareViewConfig.center.length === 2 &&
@@ -167,11 +172,21 @@ async function initLeafletMap () {
     : null
   const shareZoom = Number(shareViewConfig.zoom)
   const shareBearing = Number(shareViewConfig.bearing)
-  const AMap = await loadAmap()
+  const AMap = restrictedShare ? null : await loadAmap()
+  const restrictedBounds = restrictedShare
+    ? [[shareSpatial.cameraBounds[1], shareSpatial.cameraBounds[0]], [shareSpatial.cameraBounds[3], shareSpatial.cameraBounds[2]]]
+    : null
+  const restrictedCenter = restrictedBounds
+    ? [(restrictedBounds[0][0] + restrictedBounds[1][0]) / 2, (restrictedBounds[0][1] + restrictedBounds[1][1]) / 2]
+    : null
 
   const map = L.map('map', {
-    center: shareCenter || defaultView.center,
+    center: restrictedCenter || shareCenter || defaultView.center,
     zoom: Number.isFinite(shareZoom) ? shareZoom : defaultView.zoom,
+    minZoom: restrictedShare ? shareSpatial.minZoom : undefined,
+    maxBounds: restrictedBounds || undefined,
+    maxBoundsViscosity: restrictedShare ? 1 : 0,
+    worldCopyJump: false,
     bearing: Number.isFinite(shareBearing) ? shareBearing : (defaultView.bearing || 0),
     rotate: true,
     touchRotate: true,
@@ -179,7 +194,11 @@ async function initLeafletMap () {
     zoomControl: false,
     attributionControl: false,
     keyboardPanDelta: 480,
-  }).setMaxBounds([[-90, 0], [90, 360]])
+  }).setMaxBounds(restrictedBounds || [[-90, 0], [90, 360]])
+
+  if (restrictedShare) {
+    map.fitBounds(restrictedBounds, { animate: false, padding: [24, 24] })
+  }
 
   window.map = map
   initFavoriteActions({
@@ -187,7 +206,7 @@ async function initLeafletMap () {
   })
 
   let amapGeolocation = null
-  if (AMap) {
+  if (AMap && !restrictedShare) {
     amapGeolocation = initAmapGeolocation(AMap)
     initAmapSearch(map, AMap, amapGeolocation)
   }
@@ -199,6 +218,24 @@ async function initLeafletMap () {
     shareViewConfig.layerId || defaultView.layerName,
     {
       persist: !shareMode,
+      strictCatalog: shareMode,
+      noWrap: restrictedShare,
+      validateCatalog: catalog => {
+        const catalogSpatial = catalog?.spatialAccess
+        if (restrictedShare) {
+          if (catalogSpatial?.mode !== 'kml_bounds' || catalogSpatial?.status !== 'ready') {
+            throw new Error('分享地图空间范围校验失败')
+          }
+          const catalogBounds = Array.isArray(catalogSpatial.cameraBounds)
+            ? catalogSpatial.cameraBounds.map(Number)
+            : null
+          const sameBounds = catalogBounds?.length === 4 &&
+            shareSpatial.cameraBounds?.every((value, index) => Math.abs(Number(value) - catalogBounds[index]) < 1e-7)
+          if (!sameBounds || Number(catalogSpatial.minZoom) !== Number(shareSpatial.minZoom)) {
+            throw new Error('分享地图空间范围版本不一致')
+          }
+        }
+      },
       catalogUrl: shareMode && activeShare?.publicId
         ? `/api/v1/public/kml-shares/${encodeURIComponent(activeShare.publicId)}/map/catalog`
         : '/api/v1/map/catalog',
@@ -265,7 +302,10 @@ async function initLeafletMap () {
     toggleGuidelineMode: () => {
       if (!shareMode) toggleGuidelineMode()
     },
-    toggleSearchMode,
+    toggleSearchMode: () => {
+      if (restrictedShare) return
+      toggleSearchMode()
+    },
     updatePosition: () => {
       if (shareMode) return
       if (skipNextClick) {
@@ -287,6 +327,7 @@ async function initLeafletMap () {
       window.location.href = `/account?returnTo=${encodeURIComponent(returnTo)}`
     },
     open3d: () => {
+      if (restrictedShare) return
       const publicId = getActiveShare()?.publicId
       window.location.href = shareMode && publicId
         ? `/3d?share=${encodeURIComponent(publicId)}`
@@ -305,6 +346,13 @@ async function initLeafletMap () {
   if (shareMode) {
     positionBtn?.closest('li')?.setAttribute('hidden', '')
     guidelineBtn?.closest('li')?.setAttribute('hidden', '')
+  }
+  if (restrictedShare) {
+    mapMenu.querySelector('[data-action="toggleSearchMode"]')?.closest('li')?.setAttribute('hidden', '')
+    mapMenu.querySelector('[data-action="open3d"]')?.closest('li')?.setAttribute('hidden', '')
+    document.getElementById('map-search-mod')?.setAttribute('hidden', '')
+    document.getElementById('route-mode-panel')?.setAttribute('hidden', '')
+    document.getElementById('location-history-panel')?.setAttribute('hidden', '')
   }
   let skipNextClick = false
   if (positionBtn && !shareMode) {

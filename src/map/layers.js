@@ -203,7 +203,7 @@ function isLeafletRasterSource (source = {}) {
   return Boolean(tileUrl && !tileUrl.endsWith('.pbf'))
 }
 
-function createRasterLayerFromSource (source, layer, item) {
+function createRasterLayerFromSource (source, layer, item, layerOptions = {}) {
   return createTileLayer(source.tileUrl || `/api/v1/tiles/${encodeURIComponent(source.id)}/{z}/{x}/{y}`, {
     minZoom: source.minZoom ?? layer.minZoom ?? 3,
     maxZoom: layer.maxZoom ?? source.maxZoom ?? 20,
@@ -211,6 +211,7 @@ function createRasterLayerFromSource (source, layer, item) {
     tileSize: source.tileSize || 256,
     opacity: item.opacity ?? 1,
     attribution: source.attribution || '',
+    noWrap: layerOptions.noWrap === true,
   })
 }
 
@@ -252,7 +253,7 @@ function normalizeCatalogPayload (payload) {
   return payload.result
 }
 
-function createLayerFromCatalog (layer, sourceById) {
+function createLayerFromCatalog (layer, sourceById, layerOptions = {}) {
   const tileLayers = (layer.items || [])
     .map((item) => {
       const source = sourceById.get(item.sourceId)
@@ -261,12 +262,12 @@ function createLayerFromCatalog (layer, sourceById) {
         return createMapLibreLayerFromSource(source, item)
       }
       if (isLeafletRasterSource(source)) {
-        return createRasterLayerFromSource(source, layer, item)
+        return createRasterLayerFromSource(source, layer, item, layerOptions)
       }
       const fallbackSourceId = source.rendering?.fallbackRasterSourceId || ''
       const fallbackSource = fallbackSourceId ? sourceById.get(fallbackSourceId) : null
       return isLeafletRasterSource(fallbackSource)
-        ? createRasterLayerFromSource(fallbackSource, layer, item)
+        ? createRasterLayerFromSource(fallbackSource, layer, item, layerOptions)
         : null
     })
     .filter(Boolean)
@@ -281,6 +282,8 @@ function createLayerFromCatalog (layer, sourceById) {
 export async function initLayerControl (map, initialLayerName = '', options = {}) {
   const persistSelection = options.persist !== false
   const catalogUrl = options.catalogUrl || '/api/v1/map/catalog'
+  const strictCatalog = options.strictCatalog === true
+  const layerOptions = { noWrap: options.noWrap === true }
   let savedLayerId = ''
   let savedLayerName = ''
   if (persistSelection) {
@@ -304,6 +307,9 @@ export async function initLayerControl (map, initialLayerName = '', options = {}
       throw new Error(payload?.error?.message || res.statusText || '地图图层目录加载失败')
     }
     const catalog = normalizeCatalogPayload(payload)
+    if (options.validateCatalog instanceof Function) {
+      options.validateCatalog(catalog)
+    }
     const sourceById = new Map((catalog.sources || []).map(source => [source.id, source]))
     const layers = catalog.layers || []
     
@@ -312,7 +318,7 @@ export async function initLayerControl (map, initialLayerName = '', options = {}
 
     const usedNames = new Set()
     catalogLayers.forEach(layer => {
-      const layerGroup = createLayerFromCatalog(layer, sourceById)
+      const layerGroup = createLayerFromCatalog(layer, sourceById, layerOptions)
       if (layerGroup) {
         const controlName = getLayerControlName(layer, usedNames)
         mapLayers[controlName] = layerGroup
@@ -323,14 +329,18 @@ export async function initLayerControl (map, initialLayerName = '', options = {}
       }
     })
   } catch (err) {
+    if (strictCatalog) throw err
     console.error('Failed to fetch map catalog layers, using backend fallback sources', err)
   }
 
   // 兜底底图
   if (Object.keys(mapLayers).length === 0) {
+    if (strictCatalog) {
+      throw new Error('分享地图图层目录为空或不可用')
+    }
     const sourceById = new Map(FALLBACK_CATALOG.sources.map(source => [source.id, source]))
     const fallbackLayer = FALLBACK_CATALOG.layers[0]
-    const fallbackGroup = createLayerFromCatalog(fallbackLayer, sourceById)
+    const fallbackGroup = createLayerFromCatalog(fallbackLayer, sourceById, layerOptions)
     if (fallbackGroup) {
       mapLayers[DEFAULT_LAYER_NAME] = fallbackGroup
       layerByControlName.set(DEFAULT_LAYER_NAME, fallbackLayer)
