@@ -2798,6 +2798,32 @@ body.admin-view #footer-bar {
   transition: all 0.15s ease;
 }
 
+.kml-feature-item.is-draggable {
+  cursor: grab;
+}
+
+.kml-feature-item.is-kml-dragging {
+  opacity: 0.45;
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.kml-feature-item.is-kml-drop-target,
+.kml-file-card.is-kml-drop-target,
+.kml-features-list.is-kml-drop-target {
+  outline: 2px dashed rgba(15, 118, 110, 0.55);
+  outline-offset: -2px;
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.kml-feature-drag-handle {
+  flex: 0 0 16px;
+  color: #94a3b8;
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: -3px;
+  user-select: none;
+}
+
 .kml-feature-item:hover {
   background: rgba(15, 118, 110, 0.04);
 }

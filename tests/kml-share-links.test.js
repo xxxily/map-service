@@ -46,14 +46,14 @@ test('720yun public and official embed URLs are normalized locally without serve
   assert.equal(publicResult.recognized, true)
   assert.equal(publicResult.requiresServerResolution, false)
   assert.equal(publicResult.provider, '720yun')
-  assert.equal(publicResult.sourceUrl, `https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}`)
+  assert.equal(publicResult.sourceUrl, `https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}?utm_source=share#scene`)
   assert.equal(publicResult.item.resourceId, `vr:${SEVEN_TWENTY_VR_ID}`)
   assert.equal(publicResult.item.embedUrl, publicResult.sourceUrl)
   assert.equal(embedResult.item.resourceId, `t:${SEVEN_TWENTY_EMBED_ID}`)
   assert.equal(embedResult.item.embedUrl, `https://www.720yun.com/t/${SEVEN_TWENTY_EMBED_ID}`)
 })
 
-test('trusted embed validation requires exact official origin path and query', () => {
+test('trusted embed validation requires an exact official origin and resource path', () => {
   const trustedEmbed = getTrustedKmlShareEmbed(`https://open.douyin.com/player/video?vid=${VIDEO_ID}`)
   const previewUrl = new URL(trustedEmbed.previewUrl)
   assert.equal(trustedEmbed.provider, 'douyin')
@@ -70,8 +70,32 @@ test('trusted embed validation requires exact official origin path and query', (
   assert.equal(panorama.resourceId, `vr:${SEVEN_TWENTY_VR_ID}`)
   assert.match(panorama.embedPolicy.allow, /gyroscope/)
   assert.equal(panorama.embedPolicy.allowFullscreen, true)
-  assert.equal(getTrustedKmlShareEmbed(`https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}?token=secret`), null)
+  const parameterizedPanorama = getTrustedKmlShareEmbed(`https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}?scene_id=12#scene`)
+  assert.equal(parameterizedPanorama.sourceUrl, `https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}?scene_id=12#scene`)
+  assert.equal(parameterizedPanorama.embedUrl, parameterizedPanorama.sourceUrl)
   assert.equal(getTrustedKmlShareEmbed(`https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}/extra`), null)
+})
+
+test('720yun source parameters survive persisted iframe reconstruction without allowing resource substitution', () => {
+  const sourceUrl = `https://720yun.com/vr/${SEVEN_TWENTY_VR_ID}/?scene_id=12&from=share#view-3`
+  const item = createKmlShareEmbedItem('720yun', `vr:${SEVEN_TWENTY_VR_ID}`, sourceUrl)
+  const description = mergeKmlShareEmbeds('全景记录', [item])
+  const extracted = extractGeneratedKmlShareEmbeds(description)
+
+  assert.equal(item.sourceUrl, `https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}?scene_id=12&from=share#view-3`)
+  assert.equal(item.embedUrl, item.sourceUrl)
+  assert.match(description, /src="https:\/\/www\.720yun\.com\/vr\/f4ejtOsf5y0\?scene_id=12&amp;from=share#view-3"/)
+  assert.equal(extracted.length, 1)
+  assert.equal(extracted[0].sourceUrl, item.sourceUrl)
+  assert.equal(extracted[0].embedUrl, item.embedUrl)
+
+  const mismatched = createKmlShareEmbedItem(
+    '720yun',
+    `vr:${SEVEN_TWENTY_VR_ID}`,
+    `https://www.720yun.com/t/${SEVEN_TWENTY_EMBED_ID}?scene_id=99`
+  )
+  assert.equal(mismatched.sourceUrl, `https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}`)
+  assert.equal(mismatched.embedUrl, mismatched.sourceUrl)
 })
 
 test('generated share iframe is hidden for editing and rebuilt idempotently', () => {
@@ -109,6 +133,6 @@ test('supported URLs in user text are normalized without changing surrounding co
   const text = `视频：https://www.iesdouyin.com/share/video/${VIDEO_ID}/?share_sign=secret&utm_source=copy。全景：https://720yun.com/vr/${SEVEN_TWENTY_VR_ID}?from=copy。`
   const normalized = normalizeKmlShareLinksInText(text)
 
-  assert.equal(normalized, `视频：https://www.douyin.com/video/${VIDEO_ID}。全景：https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}。`)
+  assert.equal(normalized, `视频：https://www.douyin.com/video/${VIDEO_ID}。全景：https://www.720yun.com/vr/${SEVEN_TWENTY_VR_ID}?from=copy。`)
   assert.doesNotMatch(normalized, /secret|utm_source/)
 })

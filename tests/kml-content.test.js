@@ -63,15 +63,16 @@ test('Douyin official player is a built-in trusted iframe with provider policy',
   assert.equal(classified.item.embedPolicy.allowFullscreen, true)
 })
 
-test('720yun public panorama is a built-in trusted iframe with a fixed provider policy', () => {
+test('720yun public panorama preserves trusted query and hash with a fixed provider policy', () => {
   const workId = 'f4ejtOsf5y0'
-  const classified = classifyContentUrl(`https://www.720yun.com/vr/${workId}`)
+  const url = `https://www.720yun.com/vr/${workId}?scene_id=12#view`
+  const classified = classifyContentUrl(url)
 
   assert.equal(classified.accepted, true)
   assert.equal(classified.item.type, 'iframe')
   assert.equal(classified.item.provider, '720yun')
   assert.equal(classified.item.resourceId, `vr:${workId}`)
-  assert.equal(classified.item.url, `https://www.720yun.com/vr/${workId}`)
+  assert.equal(classified.item.url, url)
   assert.equal(classified.item.renderUrl, classified.item.url)
   assert.match(classified.item.embedPolicy.sandbox, /allow-pointer-lock/)
   assert.match(classified.item.embedPolicy.allow, /xr-spatial-tracking/)

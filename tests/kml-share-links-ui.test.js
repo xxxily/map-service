@@ -34,14 +34,15 @@ test('UI enrichment converts canonical Douyin links locally and hides generated 
   assert.equal(getEditableKmlDescription(result.description), `现场视频 https://www.douyin.com/video/${videoId}`)
 })
 
-test('UI enrichment converts a 720yun public URL locally and keeps only the normalized editable URL', async () => {
-  const result = await enrichKmlDescriptionWithShareLinks('全景 https://720yun.com/vr/f4ejtOsf5y0?from=copy')
+test('UI enrichment converts a 720yun public URL locally and preserves its query and hash', async () => {
+  const result = await enrichKmlDescriptionWithShareLinks('全景 https://720yun.com/vr/f4ejtOsf5y0?scene_id=12#view')
 
   assert.equal(result.items.length, 1)
   assert.equal(result.items[0].provider, '720yun')
+  assert.equal(result.items[0].embedUrl, 'https://www.720yun.com/vr/f4ejtOsf5y0?scene_id=12#view')
   assert.equal(result.warnings.length, 0)
   assert.match(result.description, /data-kml-share-provider="720yun"/)
-  assert.equal(getEditableKmlDescription(result.description), '全景 https://www.720yun.com/vr/f4ejtOsf5y0')
+  assert.equal(getEditableKmlDescription(result.description), '全景 https://www.720yun.com/vr/f4ejtOsf5y0?scene_id=12#view')
 })
 
 test('2D and 3D point create/edit flows share enrichment, 720yun guidance and marker picker', () => {

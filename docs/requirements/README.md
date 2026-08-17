@@ -34,6 +34,7 @@
 - [KML 点位富媒体内容展示](./kml-feature-rich-content.md)
 - [KML 点位第三方分享链接识别与嵌入预览](./kml-point-share-link-embed.md)（首期抖音 provider 已实现，待手工验收）
 - [KML 点位 720 云内容与可配置图标](./kml-720yun-and-marker-icons.md)（第二版已实现，待用户验收）
+- [KML 要素组织与受控 URL 参数保留](./kml-feature-organization-and-url-preservation.md)（第一版已实现）
 - [KML 点位富媒体第二阶段：外部内容库与资产库集成规划](./kml-rich-content-phase2-content-library.md)
 - [动态 Feature Layer 视口加载与服务端聚合](./dynamic-feature-layer-loading.md)
 - [访问控制加固](./access-control-hardening.md)

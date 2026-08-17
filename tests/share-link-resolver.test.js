@@ -41,7 +41,7 @@ test('resolver returns direct 720yun panorama items without upstream requests or
     },
   })
 
-  const input = { text: '全景 https://720yun.com/vr/f4ejtOsf5y0?from=copy' }
+  const input = { text: '全景 https://720yun.com/vr/f4ejtOsf5y0?scene_id=12#view' }
   const first = await service.resolve({ user: { id: 'user-720' } }, input)
   const second = await service.resolve({ user: { id: 'user-720' } }, input)
 
@@ -49,7 +49,8 @@ test('resolver returns direct 720yun panorama items without upstream requests or
   assert.deepEqual(first, second)
   assert.equal(first.items[0].provider, '720yun')
   assert.equal(first.items[0].resourceId, 'vr:f4ejtOsf5y0')
-  assert.equal(first.items[0].embedUrl, 'https://www.720yun.com/vr/f4ejtOsf5y0')
+  assert.equal(first.items[0].sourceUrl, 'https://www.720yun.com/vr/f4ejtOsf5y0?scene_id=12#view')
+  assert.equal(first.items[0].embedUrl, first.items[0].sourceUrl)
   assert.deepEqual(first.warnings, [])
 })
 

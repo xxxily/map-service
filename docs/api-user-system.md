@@ -2,7 +2,7 @@
 
 > 状态：已实现，验收中  
 > 基础路径：`/api/v1`  
-> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./requirements/kml-share-spatial-access-and-semi-public-map.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md)、[两步路导入助手用户操作手册](./user-guides/two-bulu-import.md) 和 [KML 空间受限分享使用说明](./user-guides/kml-spatial-sharing.md)
+> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./requirements/kml-share-spatial-access-and-semi-public-map.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[KML 要素组织与受控 URL 参数保留](./requirements/kml-feature-organization-and-url-preservation.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md)、[KML 要素整理使用说明](./user-guides/kml-feature-organization.md)、[两步路导入助手用户操作手册](./user-guides/two-bulu-import.md) 和 [KML 空间受限分享使用说明](./user-guides/kml-spatial-sharing.md)
 
 本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。
 
@@ -259,6 +259,7 @@ KML 写入模型：
 字段规则：
 
 - `type` 只支持 `Point`、`LineString`、`Polygon`。
+- `features` 数组顺序就是管理面板、导出和分享中的要素顺序；文件内拖拽排序只调整数组位置，不新增排序字段。
 - 坐标统一为 WGS84 `[longitude, latitude]`；Polygon 外环会自动闭合。
 - `coordCorrection`：`none` 或 `wgs84-to-gcj02`。
 - `theme`：`default` 或 `simple`。
@@ -313,6 +314,8 @@ KML 写入模型：
 ```
 
 整个批次在事务中执行；任一步失败都会回滚。`create` 缺少有效 `clientId` 返回 `400 VALIDATION_FAILED`；更新 revision 过期返回 `409 KML_REVISION_CONFLICT`。客户端应使用响应中的 `document.id` 和 `revision` 更新快照。
+
+地图端移动或复制要素继续复用此同步接口，不新增独立路由：同文件排序产生一个 `update`；跨文件移动产生源文件和目标文件两个 `update`；跨文件复制只更新目标文件。移动保留要素 ID，复制生成新 ID。多文件操作在同一 `operations` 批次提交，因此任一文件 revision 冲突时整个批次回滚并进入既有 KML 草稿恢复流程。
 
 账号地图端的恢复约定：
 

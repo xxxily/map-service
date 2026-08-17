@@ -97,7 +97,21 @@ function build720yunUrl (resourceId) {
 
 function normalize720yunSourceUrl (parsed) {
   const resource = parse720yunResource(parsed)
-  return resource ? build720yunUrl(resource.resourceId) : ''
+  if (!resource) return ''
+  const normalized = new URL(build720yunUrl(resource.resourceId))
+  normalized.search = parsed.search
+  normalized.hash = parsed.hash
+  return normalized.toString()
+}
+
+function build720yunEmbedUrl (resourceId, sourceUrl = '') {
+  const canonicalUrl = build720yunUrl(resourceId)
+  const parsedSource = normalizeHttpsUrl(sourceUrl)
+  if (!parsedSource) return canonicalUrl
+  const sourceResource = parse720yunResource(parsedSource)
+  return sourceResource?.resourceId === resourceId
+    ? normalize720yunSourceUrl(parsedSource)
+    : canonicalUrl
 }
 
 const DOUYIN_PROVIDER = Object.freeze({
@@ -155,7 +169,7 @@ const SEVEN_TWENTY_PROVIDER = Object.freeze({
   validateResourceId: value => Boolean(split720yunResourceId(value)),
   requiresServerResolution: () => false,
   buildCanonicalUrl: build720yunUrl,
-  buildEmbedUrl: build720yunUrl,
+  buildEmbedUrl: build720yunEmbedUrl,
   embedPolicy: Object.freeze({
     sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-presentation',
     referrerPolicy: 'no-referrer',
@@ -183,7 +197,10 @@ export function createKmlShareEmbedItem (providerId, resourceId, sourceUrl = '')
   let normalizedSourceUrl = canonicalUrl
   const parsedSource = normalizeHttpsUrl(sourceUrl)
   if (parsedSource && provider.match(parsedSource)) {
-    normalizedSourceUrl = provider.normalizeSourceUrl(parsedSource) || canonicalUrl
+    const sourceResourceId = provider.extractResourceId(parsedSource)
+    if (!sourceResourceId || sourceResourceId === id) {
+      normalizedSourceUrl = provider.normalizeSourceUrl(parsedSource) || canonicalUrl
+    }
   }
 
   return {
@@ -194,7 +211,7 @@ export function createKmlShareEmbedItem (providerId, resourceId, sourceUrl = '')
     title: provider.title,
     sourceUrl: normalizedSourceUrl,
     canonicalUrl,
-    embedUrl: provider.buildEmbedUrl(id),
+    embedUrl: provider.buildEmbedUrl(id, normalizedSourceUrl),
   }
 }
 
@@ -312,7 +329,8 @@ export function getTrustedKmlShareEmbed (value) {
   const provider = providerForUrl(parsed)
   if (!provider) return null
   const resourceId = provider.extractResourceId(parsed)
-  const item = createKmlShareEmbedItem(provider.id, resourceId)
+  const sourceUrl = provider.normalizeSourceUrl(parsed)
+  const item = createKmlShareEmbedItem(provider.id, resourceId, sourceUrl)
   if (!item || parsed.toString() !== item.embedUrl) return null
   return {
     ...item,

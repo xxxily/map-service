@@ -1,7 +1,7 @@
 # KML 点位 720 云内容与可配置图标需求
 
 > 状态：第二版已实现，待用户验收  
-> 更新时间：2026-08-11  
+> 更新时间：2026-08-17
 > 关联文档：[KML 点位第三方分享链接识别与嵌入预览](./kml-point-share-link-embed.md)、[KML 点位富媒体内容展示](./kml-feature-rich-content.md)、[KML 导入导出](./kml-import-export.md)、[KML 点位分享链接媒体使用说明](../user-guides/kml-share-link-media.md)
 
 ## 1. 背景
@@ -36,7 +36,7 @@
   - `https://720yun.com/vr/<作品 ID>`
   - `https://www.720yun.com/t/<公开嵌入 ID>`
   - `https://720yun.com/t/<公开嵌入 ID>`
-- 将合法地址规范化到 `https://www.720yun.com/<vr|t>/<ID>`，移除追踪查询参数和片段。
+- 将合法地址的协议、主机和路径规范化到 `https://www.720yun.com/<vr|t>/<ID>`，保留查询参数和片段，以支持作品初始场景、视角及分享上下文。
 - 生成带 `data-kml-share-provider="720yun"` 的受控 iframe 标记，并复用统一媒体预览器。
 - 新增抖音和 720 云 provider 专属点位图标。
 - 新增通用点位图标选择器，提供：经典标记、星标、旗帜、观景、相机、营地、餐饮、住宿、停车、提醒、爱心、住所、饮水、卫生间、医疗、商店、充电、公交、火车、骑行、徒步、山峰和瀑布。
@@ -75,7 +75,7 @@ provider ID 固定为 `720yun`，只接受：
 - ID：6～64 位 ASCII 字母或数字；
 - 不允许用户名、密码、额外路径段、非预期协议或仿冒子域名。
 
-查询参数和 URL 片段不进入持久化 iframe，统一规范化为：
+查询参数和 URL 片段在通过上述 origin、path 和 ID 校验后原样保留；它们只能附着在对应的 720 云受控资源 URL 上，不能改变 provider、主机、路径或资源 ID。无参数地址统一规范化为：
 
 ```text
 https://www.720yun.com/vr/f4ejtOsf5y0
@@ -102,6 +102,8 @@ https://www.720yun.com/vr/f4ejtOsf5y0
   data-kml-share-canonical="https://www.720yun.com/vr/f4ejtOsf5y0">
 </iframe>
 ```
+
+当用户提供 `?scene_id=12#view` 等参数时，规范化后的 `src` 和 `data-kml-share-source` 同步保留这些参数；`data-kml-share-canonical` 仍保存不带参数的稳定资源地址。重新编辑、保存和解析已生成 iframe 时不得丢失参数。
 
 编辑点位时继续隐藏机器生成的 iframe，只展示用户原始说明和规范化后的公开地址。重复保存必须幂等，不得重复添加媒体项。
 
@@ -237,7 +239,7 @@ bicycle, hiking, summit, waterfall
 
 ### 10.1 纯函数与服务测试
 
-- 720 云 `/vr/`、`/t/`、带追踪参数和非 `www` 主机规范化成功。
+- 720 云 `/vr/`、`/t/`、带查询参数/片段和非 `www` 主机规范化成功，保存及 iframe 重建后参数不丢失。
 - HTTP、显式端口、账号密码、仿冒域名、额外路径、非法 ID 被拒绝。
 - 720 云受控 iframe 能被内容解析器识别，原始重复链接不再生成第二个普通链接。
 - 伪造 `data-kml-share-provider`、embed URL 或 canonical 元数据不被信任。

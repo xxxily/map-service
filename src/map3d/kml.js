@@ -21,6 +21,7 @@ import {
   renderKmlFeaturePopupContent,
 } from '../map/kml-content-panel.js'
 import { renderKmlFileOverview } from '../map/kml-file-overview.js'
+import { transferKmlFeature } from '../map/kml-feature-operations.js'
 import { getKmlFeatureDisplayName, getKmlFeatureNamePresentation } from '../map/kml-feature-name.js'
 import { getKmlMediaBillboard, getKmlMediaListIcon } from '../map/kml-media-marker.js'
 import {
@@ -38,7 +39,7 @@ import {
   LIVE_TRACK_RENDER_POINT_LIMIT,
   VIEWPORT_BUFFER_RATIO,
 } from '../map/location-track.js'
-import { showAlert, showConfirm, showEditDialog } from '../ui/dialog.js'
+import { showAlert, showChoiceDialog, showConfirm, showEditDialog } from '../ui/dialog.js'
 import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListeners } from '../ui/controls.js'
 import { flyToLngLat } from './location.js'
 import { apiRequest } from '../auth/api.js'
@@ -119,9 +120,11 @@ let featurePopupElement = null
 let handler = null
 let mediaFeatureActivationTimer = null
 let mobileMediaClickSuppression = null
+let draggedKmlFeature = null
 
 const renderedKmlEntities = new Map()
 const featureEntities = new Map()
+const featureOrderingAvailability = new Map()
 const expandedKmlIds = new Set()
 const kmlUndoStack = []
 const kmlRedoStack = []
@@ -454,6 +457,42 @@ function getFeatureById (kmlId, featureId) {
     kmlFile,
     feature: kmlFile?.features?.find(feature => feature.id === featureId),
   }
+}
+
+function isWritablePersonalKml (kmlFile) {
+  return Boolean(kmlFile && !kmlFile.isPublic && !kmlFile.isShare && canWritePersonalKml() && kmlList.some(item => item.id === kmlFile.id))
+}
+
+function buildFeatureTargetOptions () {
+  if (!canWritePersonalKml()) return []
+  return kmlList
+    .filter(isWritablePersonalKml)
+    .map(kmlFile => ({
+      value: kmlFile.id,
+      label: `${kmlFile.name}${kmlFile.isDefault ? '（默认）' : ''}`,
+    }))
+}
+
+function applyFeatureOperation (options = {}) {
+  const sourceFile = kmlList.find(item => item.id === options.sourceKmlId)
+  const targetFile = kmlList.find(item => item.id === options.targetKmlId)
+  if (!isWritablePersonalKml(sourceFile) || !isWritablePersonalKml(targetFile)) {
+    throw new Error('只能在可写的个人 KML 文件之间移动或复制标注。')
+  }
+
+  const result = transferKmlFeature(kmlList, options)
+  if (!result.changed) return result
+  pushKmlHistory()
+  kmlList = result.files
+  expandedKmlIds.add(options.targetKmlId)
+  rememberTargetKmlId(options.targetKmlId)
+  saveToStorage()
+  const nextSource = kmlList.find(item => item.id === options.sourceKmlId)
+  const nextTarget = kmlList.find(item => item.id === options.targetKmlId)
+  if (nextSource) renderKmlLayers(nextSource)
+  if (nextTarget && nextTarget !== nextSource) renderKmlLayers(nextTarget)
+  updateKmlPanelUI()
+  return result
 }
 
 function getFeatureEntityKey (kmlId, featureId) {
@@ -805,27 +844,41 @@ async function handleEditFeature (kmlId, featureId) {
     return
   }
 
+  const canTransfer = isWritablePersonalKml(kmlFile)
+  const fields = [
+    {
+      name: 'name',
+      label: '名称',
+      type: 'text',
+      required: false,
+    },
+    ...(feature.type === 'Point' ? [buildKmlMarkerIconField(getEditableKmlMarkerIcon(feature))] : []),
+    {
+      name: 'description',
+      label: '描述',
+      type: 'textarea',
+      hint: '可粘贴受支持的公开分享链接。',
+    },
+  ]
+  if (canTransfer && buildFeatureTargetOptions().length > 1) {
+    fields.push(
+      {
+        name: 'targetKmlId',
+        label: '所属 KML',
+        type: 'select',
+        options: buildFeatureTargetOptions(),
+      },
+    )
+  }
+
   const result = await showEditDialog({
     title: '修改标注属性',
-    fields: [
-      {
-        name: 'name',
-        label: '名称',
-        type: 'text',
-        required: false,
-      },
-      buildKmlMarkerIconField(getEditableKmlMarkerIcon(feature)),
-      {
-        name: 'description',
-        label: '描述',
-        type: 'textarea',
-        hint: '可粘贴受支持的公开分享链接。',
-      },
-    ],
+    fields,
     values: {
       name: feature.name,
       markerIcon: getEditableKmlMarkerIcon(feature),
       description: getEditableKmlDescription(feature.description),
+      targetKmlId: kmlFile.id,
     },
   })
 
@@ -833,17 +886,62 @@ async function handleEditFeature (kmlId, featureId) {
   const enriched = await enrichKmlDescriptionWithShareLinks(result.description, {
     previousDescription: feature.description,
   })
-  pushKmlHistory()
-  feature.name = result.name.trim()
-  feature.description = enriched.description.trim()
-  applyKmlMarkerIconSelection(feature, result.markerIcon)
-  saveKmlChanges(kmlFile)
-  recordKmlMarkerRecentIcon(result.markerIcon)
-  renderKmlLayers(kmlFile)
-  updateKmlPanelUI()
-  showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
+  const editedFeature = {
+    ...feature,
+    name: result.name.trim(),
+    description: enriched.description.trim(),
+  }
+  if (feature.type === 'Point') applyKmlMarkerIconSelection(editedFeature, result.markerIcon)
+  else delete editedFeature.markerIcon
+  const targetKmlId = String(result.targetKmlId || kmlId)
+
+  if (canTransfer && targetKmlId !== kmlId) {
+    const targetKmlFile = kmlList.find(item => item.id === targetKmlId)
+    if (!isWritablePersonalKml(targetKmlFile)) {
+      await showAlert('目标 KML 当前为只读，不能保存标注。')
+      return
+    }
+    const mode = await showChoiceDialog({
+      title: '保存到其他 KML',
+      message: `将此标注移动或复制到“${targetKmlFile.name}”？`,
+      choices: [
+        { text: '移动', value: 'move', class: 'app-dialog-primary' },
+        { text: '复制', value: 'copy', class: 'app-dialog-secondary' },
+      ],
+    })
+    if (!['move', 'copy'].includes(mode)) return
+    const featurePatch = {
+      name: editedFeature.name,
+      description: editedFeature.description,
+    }
+    if (feature.type === 'Point') featurePatch.markerIcon = editedFeature.markerIcon
+    try {
+      applyFeatureOperation({
+        sourceKmlId: kmlId,
+        targetKmlId,
+        featureId,
+        mode,
+        featurePatch,
+      })
+      closeFeaturePopup()
+    } catch (err) {
+      await showAlert(err.message || '标注移动或复制失败。')
+      return
+    }
+  } else {
+    pushKmlHistory()
+    feature.name = editedFeature.name
+    feature.description = editedFeature.description
+    if (feature.type === 'Point') applyKmlMarkerIconSelection(feature, result.markerIcon)
+    else delete feature.markerIcon
+    saveKmlChanges(kmlFile)
+    renderKmlLayers(kmlFile)
+    updateKmlPanelUI()
+    showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
+  }
+  if (feature.type === 'Point') recordKmlMarkerRecentIcon(result.markerIcon)
   if (enriched.warnings.length) {
-    await showAlert(enriched.warnings.join('；'), { title: '点位已保存' })
+    await showAlert(enriched.warnings.join('；'), { title: '标注已保存' })
   }
 }
 
@@ -1343,9 +1441,11 @@ function renderFeatureItem (kmlFile, feature, editable) {
       : '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
   const iconSvg = getKmlMediaListIcon(feature) || geometryIconSvg
   const { displayName, accessibleName } = getKmlFeatureNamePresentation(feature)
+  const featureOrderingAvailable = featureOrderingAvailability.get(kmlFile.id) === true
 
   return `
-    <div class="kml-feature-item" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}">
+    <div class="kml-feature-item${featureOrderingAvailable ? ' is-draggable' : ''}" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" ${featureOrderingAvailable ? 'draggable="true" data-kml-draggable="true" data-kml-drop-target="feature"' : ''}>
+      ${featureOrderingAvailable ? '<span class="kml-feature-drag-handle" aria-hidden="true" title="拖动排序或移至其他 KML">⋮⋮</span>' : ''}
       <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" aria-label="定位到${escapeHtml(accessibleName)}">
         <span class="kml-feature-icon">${iconSvg}</span>
         ${displayName ? `<span class="kml-feature-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>` : ''}
@@ -1363,6 +1463,9 @@ function renderKmlCard (kmlFile) {
     ? (kmlFile.features || [])
     : getTrackDisplayFeatures(kmlFile, getViewportOptions3d())
   const editable = isKmlEditable(kmlFile)
+  const transferable = isWritablePersonalKml(kmlFile)
+  const featureOrderingAvailable = transferable && displayFeatures.length === (kmlFile.features || []).length
+  featureOrderingAvailability.set(kmlFile.id, featureOrderingAvailable)
   const personalReadOnly = !kmlFile.isPublic && !editable
   const styleEditable = (kmlFile.isPublic && !kmlFile.isShare) || editable
   const visibilityTitle = enabled ? `隐藏此${kmlFile.isPublic ? '公共' : ''}图层` : `显示此${kmlFile.isPublic ? '公共' : ''}图层`
@@ -1389,7 +1492,7 @@ function renderKmlCard (kmlFile) {
     : `<button type="button" class="kml-file-btn" data-kml-action="rename-file" data-kml-id="${safeKmlId}" aria-label="重命名 KML 文件" title="重命名 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z"/></svg></button>`
 
   return `
-    <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${safeKmlId}">
+    <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${safeKmlId}" ${featureOrderingAvailable ? `data-kml-drop-target="file" data-kml-id="${safeKmlId}"` : ''}>
       <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${safeKmlId}" aria-expanded="${expanded}" title="点击展开 KML 详情、操作和要素">
         <div class="kml-file-title">
           <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
@@ -1444,7 +1547,7 @@ function renderKmlCard (kmlFile) {
             ${deleteButton}
           </div>
         </div>
-        <div class="kml-features-list">
+        <div class="kml-features-list" ${featureOrderingAvailable ? `data-kml-drop-target="list" data-kml-id="${safeKmlId}"` : ''}>
           ${displayFeatures.length < (kmlFile.features || []).length ? `<div class="kml-feature-limit-note">已按当前视口和缩放级别过滤显示，共 ${(kmlFile.features || []).length} 个记录点中展示 ${displayFeatures.length} 个；导出仍包含全部记录。</div>` : ''}
           ${displayFeatures.map(feature => renderFeatureItem(kmlFile, feature, editable)).join('')}
         </div>
@@ -1508,6 +1611,103 @@ function bindPanelEvents () {
   if (!panel || !fileInput || !dropzone) return
   const createButton = panel.querySelector('[data-kml-action="create-file"]')
   const correctionOption = panel.querySelector('.kml-import-option')
+
+  const clearKmlDropState = () => {
+    panel.querySelectorAll('.is-kml-drop-target').forEach(element => element.classList.remove('is-kml-drop-target'))
+    panel.querySelectorAll('.is-kml-dragging').forEach(element => element.classList.remove('is-kml-dragging'))
+  }
+
+  const resolveKmlDropTarget = (event) => {
+    const element = event.target.closest?.('[data-kml-drop-target]')
+    if (!element || !panel.contains(element)) return null
+    const targetKmlId = String(element.dataset.kmlId || '')
+    const targetFile = kmlList.find(kmlFile => kmlFile.id === targetKmlId)
+    if (!isWritablePersonalKml(targetFile)) return null
+    return {
+      element,
+      targetFile,
+      targetKmlId,
+      beforeFeatureId: element.dataset.kmlDropTarget === 'feature'
+        ? String(element.dataset.featureId || '')
+        : '',
+    }
+  }
+
+  panel.addEventListener('dragstart', (event) => {
+    const item = event.target.closest?.('[data-kml-draggable="true"]')
+    if (!item) return
+    const sourceKmlId = item.dataset.kmlId
+    const featureId = item.dataset.featureId
+    const sourceFile = kmlList.find(kmlFile => kmlFile.id === sourceKmlId)
+    if (!isWritablePersonalKml(sourceFile)) return
+    draggedKmlFeature = { sourceKmlId, featureId }
+    item.classList.add('is-kml-dragging')
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'copyMove'
+      event.dataTransfer.setData('application/x-map-service-kml-feature', JSON.stringify(draggedKmlFeature))
+      event.dataTransfer.setData('text/plain', featureId)
+    }
+  })
+
+  panel.addEventListener('dragover', (event) => {
+    if (!draggedKmlFeature) return
+    const dropTarget = resolveKmlDropTarget(event)
+    if (!dropTarget) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+    panel.querySelectorAll('.is-kml-drop-target').forEach(element => element.classList.remove('is-kml-drop-target'))
+    dropTarget.element.classList.add('is-kml-drop-target')
+  })
+
+  panel.addEventListener('dragleave', (event) => {
+    const dropTarget = event.target.closest?.('[data-kml-drop-target]')
+    if (dropTarget && !dropTarget.contains(event.relatedTarget)) dropTarget.classList.remove('is-kml-drop-target')
+  })
+
+  panel.addEventListener('drop', async (event) => {
+    if (!draggedKmlFeature) return
+    const dropTarget = resolveKmlDropTarget(event)
+    event.preventDefault()
+    event.stopPropagation()
+    const drag = draggedKmlFeature
+    draggedKmlFeature = null
+    clearKmlDropState()
+    if (!dropTarget) return
+    const targetKmlId = dropTarget.targetKmlId
+    const sourceFile = kmlList.find(kmlFile => kmlFile.id === drag.sourceKmlId)
+    const targetFile = dropTarget.targetFile
+    if (!isWritablePersonalKml(sourceFile) || !isWritablePersonalKml(targetFile)) return
+
+    let mode = 'move'
+    if (drag.sourceKmlId !== targetKmlId) {
+      mode = await showChoiceDialog({
+        title: '整理 KML 要素',
+        message: `将此标注移动或复制到“${targetFile.name}”？`,
+        choices: [
+          { text: '移动', value: 'move', class: 'app-dialog-primary' },
+          { text: '复制', value: 'copy' },
+        ],
+      })
+      if (!['move', 'copy'].includes(mode)) return
+    }
+    try {
+      applyFeatureOperation({
+        sourceKmlId: drag.sourceKmlId,
+        targetKmlId,
+        featureId: drag.featureId,
+        mode,
+        beforeFeatureId: dropTarget.beforeFeatureId,
+      })
+    } catch (err) {
+      await showAlert(err.message || '标注移动或复制失败。')
+    }
+  })
+
+  panel.addEventListener('dragend', (event) => {
+    event.target.closest?.('.kml-feature-item')?.classList.remove('is-kml-dragging')
+    clearKmlDropState()
+    draggedKmlFeature = null
+  })
   if (!canWritePersonalKml()) {
     dropzone.hidden = true
     if (createButton) createButton.hidden = true
