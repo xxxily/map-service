@@ -2423,6 +2423,18 @@ body.admin-view #footer-bar {
   color: #b45309;
 }
 
+.kml-sync-status[data-state="share-pending"] {
+  border-color: rgba(217, 119, 6, .38);
+  background: rgba(255, 247, 237, .94);
+  color: #9a3412;
+}
+
+.kml-sync-status[data-state="auth-required"] {
+  border-color: rgba(37, 99, 235, .28);
+  background: rgba(219, 234, 254, .94);
+  color: #1d4ed8;
+}
+
 .kml-sync-status[data-state="error"],
 .kml-sync-status[data-state="conflict"] {
   border-color: rgba(220, 38, 38, 0.22);
@@ -3780,6 +3792,10 @@ body.media-preview-open {
   color: #b3d9d2;
   cursor: pointer;
 }
+.media-preview-track-item.has-feature-name {
+  width: 112px;
+  flex-basis: 112px;
+}
 .media-preview-track-item:hover,
 .media-preview-track-item:focus-visible,
 .media-preview-track-item.is-active {
@@ -3809,12 +3825,24 @@ body.media-preview-open {
   position: absolute;
   right: 3px;
   bottom: 2px;
+  max-width: calc(100% - 6px);
+  box-sizing: border-box;
+  overflow: hidden;
   border-radius: 4px;
   padding: 1px 3px;
   background: rgba(0, 0, 0, .62);
   color: #d4eeea;
   font-size: 8px;
   font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-preview-track-item.has-feature-name .media-preview-track-marker {
+  left: 3px;
+  right: 3px;
+  font-size: 10px;
+  text-align: left;
 }
 
 .media-preview-track-item.is-load-error::before {
@@ -4125,8 +4153,11 @@ body.media-preview-open {
     position: absolute;
     top: max(8px, var(--safe-area-top));
     right: max(8px, var(--safe-area-right));
+    left: max(8px, var(--safe-area-left));
     z-index: 5;
     min-height: 0;
+    align-items: center;
+    gap: 8px;
     border: 0;
     padding: 0;
     background: transparent;
@@ -4135,7 +4166,21 @@ body.media-preview-open {
   }
 
   .media-preview-heading {
-    display: none;
+    display: grid;
+    min-width: 0;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid rgba(219, 238, 235, .14);
+    border-radius: 6px;
+    padding: 7px 9px;
+    background: rgba(8, 18, 19, .78);
+    pointer-events: none;
+  }
+
+  .media-preview-heading h2 {
+    font-size: 13px;
   }
 
   .media-preview-collection {
@@ -4208,6 +4253,11 @@ body.media-preview-open {
     width: 46px;
     height: 42px;
     flex-basis: 46px;
+  }
+
+  .media-preview-track-item.has-feature-name {
+    width: 96px;
+    flex-basis: 96px;
   }
 
   .media-preview-root.is-minimized {

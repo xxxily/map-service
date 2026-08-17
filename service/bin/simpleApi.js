@@ -23,6 +23,8 @@ const ACCESS_COOKIE_NAME = 'map_access_token'
 const USER_COOKIE_NAMES = service.getUserSystemConfig()
 const USER_SESSION_COOKIE_NAME = USER_COOKIE_NAMES.sessionCookieName
 const USER_CSRF_COOKIE_NAME = USER_COOKIE_NAMES.csrfCookieName
+const USER_EMBED_SESSION_COOKIE_NAME = `${USER_SESSION_COOKIE_NAME}_embed`
+const USER_EMBED_CSRF_COOKIE_NAME = `${USER_CSRF_COOKIE_NAME}_embed`
 const SHARE_COOKIE_PREFIX = USER_COOKIE_NAMES.shareCookiePrefix
 const UNLIMITED_SHARE_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000
 const ACCESS_VERIFY_LIMIT = {
@@ -102,6 +104,7 @@ function assertSameOriginCredentialRequest (req) {
   const fetchSite = String(req.get('sec-fetch-site') || '').trim().toLowerCase()
   const origin = String(req.get('origin') || '').trim()
   const referer = String(req.get('referer') || '').trim()
+  const embedded = String(req.get('x-map-embed-context') || '').trim().toLowerCase() === 'iframe'
 
   // Fetch Metadata 是浏览器控制的来源信号；旧客户端缺失该头时再回退到 Origin/Referer。
   if (fetchSite === 'same-origin') return
@@ -122,12 +125,17 @@ function assertSameOriginCredentialRequest (req) {
   } catch {
     expectedOrigin = '__invalid__'
   }
+  if (embedded && sourceOrigin && sourceOrigin === expectedOrigin) return
   if (fetchSite === 'cross-site' || fetchSite === 'same-site' || (sourceOrigin && sourceOrigin !== expectedOrigin)) {
     const err = new Error('登录请求来源校验失败')
     err.statusCode = 403
     err.code = 'CSRF_INVALID'
     throw err
   }
+}
+
+function isEmbeddedRequest (req) {
+  return String(req.get('x-map-embed-context') || '').trim().toLowerCase() === 'iframe'
 }
 
 function secureCookieOptions (req, options = {}) {
@@ -140,17 +148,38 @@ function secureCookieOptions (req, options = {}) {
   }
 }
 
+function embeddedCookieOptions (options = {}) {
+  return {
+    path: options.path || '/',
+    httpOnly: options.httpOnly !== false,
+    sameSite: 'none',
+    secure: true,
+    partitioned: true,
+    priority: 'high',
+    ...(options.maxAge ? { maxAge: options.maxAge } : {}),
+  }
+}
+
 function setUserSessionCookies (req, res, login) {
   res.cookie(USER_SESSION_COOKIE_NAME, login.sessionToken, secureCookieOptions(req, { maxAge: login.maxAge }))
   res.cookie(USER_CSRF_COOKIE_NAME, login.csrfToken, secureCookieOptions(req, {
     httpOnly: false,
     maxAge: login.maxAge,
   }))
+  if (isEmbeddedRequest(req)) {
+    res.cookie(USER_EMBED_SESSION_COOKIE_NAME, login.sessionToken, embeddedCookieOptions({ maxAge: login.maxAge }))
+    res.cookie(USER_EMBED_CSRF_COOKIE_NAME, login.csrfToken, embeddedCookieOptions({
+      httpOnly: false,
+      maxAge: login.maxAge,
+    }))
+  }
 }
 
 function clearUserSessionCookies (req, res) {
   res.clearCookie(USER_SESSION_COOKIE_NAME, secureCookieOptions(req))
   res.clearCookie(USER_CSRF_COOKIE_NAME, secureCookieOptions(req, { httpOnly: false }))
+  res.clearCookie(USER_EMBED_SESSION_COOKIE_NAME, embeddedCookieOptions())
+  res.clearCookie(USER_EMBED_CSRF_COOKIE_NAME, embeddedCookieOptions({ httpOnly: false }))
 }
 
 function publicLoginResult (login) {
@@ -162,7 +191,12 @@ function publicLoginResult (login) {
 
 function sessionFromRequest (req) {
   if (req.userSession !== undefined) return req.userSession
-  req.userSession = service.verifyUserSession(getCookie(req, USER_SESSION_COOKIE_NAME))
+  const preferredNames = isEmbeddedRequest(req)
+    ? [USER_EMBED_SESSION_COOKIE_NAME, USER_SESSION_COOKIE_NAME]
+    : [USER_SESSION_COOKIE_NAME, USER_EMBED_SESSION_COOKIE_NAME]
+  req.userSession = preferredNames.reduce((session, cookieName) => (
+    session || service.verifyUserSession(getCookie(req, cookieName))
+  ), null)
   return req.userSession
 }
 
@@ -968,6 +1002,21 @@ const userApiRoutes = [
       res.jsonSuc(service.pauseUserKmlShare(
         requireUser(req, 'share.own.manage'),
         req.params.id,
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/kml/shares/:id/sync',
+    method: 'post',
+    describe: '发布个人分享包的最新 KML 内容',
+    tags: ['shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.syncUserKmlShareContent(
+        requireUser(req, 'share.own.manage'),
+        req.params.id,
+        req.body || {},
         requestContext(req)
       ))
     },

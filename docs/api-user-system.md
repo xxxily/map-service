@@ -2,7 +2,7 @@
 
 > 状态：已实现，验收中  
 > 基础路径：`/api/v1`  
-> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./requirements/kml-share-spatial-access-and-semi-public-map.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[KML 要素组织与受控 URL 参数保留](./requirements/kml-feature-organization-and-url-preservation.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md)、[KML 要素整理使用说明](./user-guides/kml-feature-organization.md)、[两步路导入助手用户操作手册](./user-guides/two-bulu-import.md) 和 [KML 空间受限分享使用说明](./user-guides/kml-spatial-sharing.md)
+> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./requirements/kml-share-spatial-access-and-semi-public-map.md)、[KML 分享发布控制与地图交互性能需求](./requirements/kml-share-publishing-and-map-interaction.md)、[SidePanel 嵌入式 KML 双屏编辑需求](./requirements/sidepanel-embedded-kml-editing.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[KML 要素组织与受控 URL 参数保留](./requirements/kml-feature-organization-and-url-preservation.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [SidePanel 双屏 KML 编辑使用说明](./user-guides/sidepanel-kml-editing.md)、[KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md)、[KML 要素整理使用说明](./user-guides/kml-feature-organization.md)、[两步路导入助手用户操作手册](./user-guides/two-bulu-import.md) 和 [KML 空间受限分享使用说明](./user-guides/kml-spatial-sharing.md)
 
 本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。
 
@@ -37,15 +37,17 @@
 
 ### 1.2 Cookie 会话与 CSRF
 
-登录成功后写入两个同源 Cookie；注册接口不自动登录：
+普通标签页登录成功后写入两个同源 Cookie；注册接口不自动登录：
 
 - `map_user_session`：不透明会话令牌，`HttpOnly`，服务端只保存哈希。
 - `map_csrf_token`：前端可读的 CSRF Token。
 
+当 map-service 被 SidePanel 类扩展页面嵌入时，登录请求携带 `X-Map-Embed-Context: iframe`，服务端额外写入 `map_user_session_embed` 和 `map_csrf_token_embed`。两者使用 `SameSite=None; Secure; Partitioned; Priority=High`，其中会话 Cookie 仍为 `HttpOnly`。嵌入请求优先使用分区 Cookie，普通标签页继续优先使用原 Cookie；API 响应不返回任何 Token 明文。
+
 所有非 `GET`、`HEAD`、`OPTIONS` 的登录态写请求必须同时满足：
 
-1. 携带 `map_user_session` Cookie。
-2. 请求头 `X-CSRF-Token` 的值与 `map_csrf_token` Cookie一致。
+1. 携带当前上下文对应的会话 Cookie。
+2. 请求头 `X-CSRF-Token` 的值与当前上下文对应的 CSRF Cookie 一致。
 
 浏览器请求示例：
 
@@ -63,7 +65,7 @@ await fetch('/api/v1/kml/files', {
 
 用户会话、站点访问 Cookie `map_access_token` 和分享密码授权 Cookie `map_share_access_<publicId>` 是三套独立授权，不得互相替代。
 
-登录、管理后台登录和自助注册在尚无会话 CSRF Token 时执行同源来源校验。浏览器提供 `Sec-Fetch-Site` 时优先使用 Fetch Metadata：`same-origin` 允许，`same-site` 和 `cross-site` 返回 `403 CSRF_INVALID`；旧浏览器或受控客户端未提供该头时，再严格比对 `Origin` 或 `Referer` 与当前站点。该优先级可兼容本机浏览器扩展把回环地址 `Origin` 的非默认端口错误移除的情况，同时不接受浏览器明确标记的跨站或同站跨源请求。不携带浏览器来源头的受控 CLI/服务端客户端保持兼容，但仍受认证限流约束。
+登录、管理后台登录和自助注册在尚无会话 CSRF Token 时执行来源校验。普通页面仍优先使用 Fetch Metadata：`same-origin` 允许，`same-site` 和 `cross-site` 返回 `403 CSRF_INVALID`；旧浏览器或受控客户端缺失该头时，再严格比对 `Origin` 或 `Referer`。SidePanel iframe 的请求可能被标记为 `cross-site`，只有携带嵌入上下文头且 `Origin` / `Referer` 仍与当前 map-service 来源完全一致时才允许；攻击者来源即使伪造嵌入头仍被拒绝。不携带浏览器来源头的受控 CLI/服务端客户端保持兼容，但仍受认证限流约束。
 
 ### 1.3 权限规则
 
@@ -322,10 +324,10 @@ KML 写入模型：
 - 每次进入待保存状态时，客户端立即按用户 ID 保存恢复草稿；草稿包含工作文件、服务端快照、普通删除意图、尚未确认创建项的 `deletedClientIds` 墓碑、已发出但尚未确认结果的 `pendingOperations` 精确批次和递增代次。
 - 新批次调用同步接口前，客户端必须先保存 `pendingOperations` 并等待 IndexedDB 完整草稿写入成功；写入失败时不得发送请求。成功响应先清空在途批次再归并结果；明确收到 HTTP 错误时批次事务未提交，应清空在途批次；网络中断等没有 HTTP 状态的错误保留原批次，后续同步优先原样重放，再计算用户在请求期间产生的后续修改。
 - 页面恢复 pending `trash` / `restore` 时，客户端通过草稿 `clientId` 或快照的 `serverId -> localId` 找回目标，以草稿 `files` 判断用户最新的存在性意图，并保留原快照后再重放。服务器 active 清单只提供当前服务端视图，不能把用户在请求期间已经 undo 的文件删掉，也不能把已经 redo 删除的文件重新加入。处理其他 revision 冲突时，已选择加载服务器版本或另存副本的冲突项旧 update 不再重放，其余非冲突在途操作继续保留。
-- 浏览器只在 IndexedDB 保存完整草稿；`localStorage` 同步保存轻量代次元数据和删除墓碑，避免大 KML 每次编辑都阻塞主线程。旧版本已写入的完整 `localStorage` 草稿仍可读取并迁移。
+- 浏览器在 IndexedDB 保存完整草稿；序列化长度不超过 750000 字符的小型草稿会同步保存一份完整 localStorage 副本，以覆盖 SidePanel 快速销毁 iframe 时异步写入未完成的情况。更大的草稿只同步保存轻量代次元数据和删除墓碑，完整内容仍由 IndexedDB 承担。旧版本完整 localStorage 草稿继续兼容。
 - 如果轻量元数据的代次高于 IndexedDB 中的完整草稿，说明最后一次异步写入可能被浏览器终止；客户端回退到最近完整草稿、沿用更高代次继续写入，并在恢复对话框明确提示最后一批修改可能未完整落盘。
 - 页面隐藏、`pagehide` 和会话失效时必须先保存当前账号草稿，再清理账号内存状态或切回访客数据。
-- 2D/3D 都必须在初始账号加载和恢复对话框之前绑定会话失效监听；恢复请求发生 401 时立即保存草稿、挂起账号同步并切回访客数据，不再继续使用已加载的私有数据。其他恢复异常使用统一 Dialog 提示，保留已加载服务器版本并继续地图初始化。
+- 2D/3D 都必须在初始账号加载和恢复对话框之前绑定会话失效监听；恢复请求发生 401 时立即保存草稿、挂起账号同步并停止使用已加载的私有数据。普通顶层页面可切回访客数据；嵌入页面必须进入登录门禁且不得加载访客 KML。其他恢复异常使用统一 Dialog 提示，保留已加载服务器版本并继续地图初始化。
 - `409 KML_REVISION_CONFLICT` 后自动同步暂停，不得自动覆盖或无限重试。用户可加载服务器冲突版本、把本地冲突版本另存为非默认 KML，或保留草稿稍后处理。
 - `create` 响应丢失后若用户删除本地项，客户端不得因缺少服务端快照而清空草稿；必须保留 `clientId` 删除墓碑，直至服务端确认已移入回收站或该创建从未提交。
 - 已确认的 `trash` 不得删除客户端快照，而应把快照标为 `trashed`；本地文件重新出现时生成按 `kmlId` 或 `clientId` 的 `restore`，本地仍不存在时不重复发送删除。取消墓碑的 `restore(clientId)` 返回 absent 后，应以响应到达时的工作文件为准：文件仍存在则续发 create，文件已被重做删除则续发 `trash(clientId)`。恢复或取消墓碑后若仍有操作，客户端自动继续下一轮同步，无需用户再次编辑触发。
@@ -594,6 +596,7 @@ Content-Type: application/json
 | `POST` | `/kml/shares` | `share.own.manage` | 创建分享包 |
 | `GET` | `/kml/shares/:id` | `share.own.manage` | 获取完整配置 |
 | `PUT` | `/kml/shares/:id` | `share.own.manage` | 编辑文件、顺序、显隐和视图 |
+| `POST` | `/kml/shares/:id/sync` | `share.own.manage` | 发布当前 KML 内容快照并重新计算分享范围 |
 | `POST` | `/kml/shares/:id/pause` | `share.own.manage` | 暂停分享 |
 | `POST` | `/kml/shares/:id/resume` | `share.own.manage` | 恢复分享 |
 | `POST` | `/kml/shares/:id/rotate-link` | `share.own.manage` + 最近再验证 | 生成新 publicId，旧链接立即失效 |
@@ -635,12 +638,21 @@ Content-Type: application/json
 - 每个分享包包含 1～20 个归属当前用户且处于 active 状态的 KML；实际上限可由后台下调。
 - `publicId` 是不可枚举的稳定链接标识，内部 `id` 和 KML ID不会暴露给公开清单。
 - 更新时可携带 `revision`；冲突返回 `SHARE_REVISION_CONFLICT`。
+- 分享公开内容使用已发布快照。个人 KML 修改不会自动改变公开链接；所有者视图返回 `syncStatus`、`pendingSyncItemCount`，分享项返回 `sourceRevision`、`publishedRevision`、`syncStatus` 和 `publishedAt`。
 - `password` 省略表示保持现状，空字符串或 `null` 表示移除密码。
 - `spatialAccess.mode` 支持 `unrestricted` 和 `kml_bounds`；省略时创建默认为 `unrestricted`，更新时保持现状。`kml_bounds` 的范围、面积和对角线只能由服务端根据分享内 active KML 计算。
 - `passwordAccess.ttlMode` 支持 `finite` 和 `unlimited`；无密码时公开视图为 `not_applicable`。`unlimited` 仅在空间受限、范围合规且后台允许时可用，服务端保存时会重新计算，不信任前端预检。
 - 非空分享密码采用独立访问口令规则，长度为 4～128 位；不沿用账号密码的 12 位和常见密码限制，但仍仅保存安全哈希并受独立尝试限流保护。
 - active 分享删除到没有有效文件时会自动暂停。
 - `revoked` 不可恢复；`blocked` 只能由管理员解封。
+
+内容同步请求：
+
+```json
+{ "revision": 4 }
+```
+
+服务端在同一事务内更新全部分享项快照、内容版本和空间范围。若 revision 冲突或新范围不符合当前空间访问策略，接口失败且旧公开快照保持可用；成功响应返回更新后的分享详情。公开 manifest、分享文件和导出只读取已发布快照，不暴露源 KML revision 或待同步状态。
 
 ### 5.2 公开访问接口
 

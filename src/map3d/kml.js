@@ -49,6 +49,7 @@ import {
   initializeKmlAccountMode,
   isAccountKmlMode,
   isAccountKmlWritable,
+  isEmbeddedKmlAuthRequired,
   scheduleKmlAccountSync,
   suspendKmlAccountSync,
 } from '../map/kml-account-sync.js'
@@ -121,6 +122,7 @@ let handler = null
 let mediaFeatureActivationTimer = null
 let mobileMediaClickSuppression = null
 let draggedKmlFeature = null
+let featureFocusRequestId = 0
 
 const renderedKmlEntities = new Map()
 const featureEntities = new Map()
@@ -160,7 +162,7 @@ function isAdminLoggedIn () {
 }
 
 function canWritePersonalKml () {
-  return !isAccountKmlMode() || isAccountKmlWritable()
+  return !isEmbeddedKmlAuthRequired() && (!isAccountKmlMode() || isAccountKmlWritable())
 }
 
 function canManagePersonalShares () {
@@ -216,13 +218,17 @@ async function loadInitialKmlFiles () {
       showAlert(`账号 KML 加载失败，当前不会读取或上传浏览器本地 KML。请稍后刷新重试：${account.error.message}`)
       return
     }
-    if (account.canWrite && ensureDefaultKmlFile()) saveToStorage()
     if (account.recovery) {
       await promptKmlAccountRecovery(account.recovery, files => {
         kmlList = files.map(normalizeKmlFile)
         return kmlList
       })
     }
+    if (account.canWrite && ensureDefaultKmlFile()) saveToStorage()
+    return
+  }
+  if (account.mode === 'embedded-auth-required') {
+    kmlList = []
     return
   }
   loadFromStorage()
@@ -672,10 +678,13 @@ function bindAccountSessionExpiry3d () {
   window.addEventListener('map-auth-session-expired', () => {
     if (!isAccountKmlMode()) return
     suspendKmlAccountSync({ preserveDraft: true, reason: 'session-expired' })
-    loadFromStorage()
+    if (!isEmbeddedKmlAuthRequired()) loadFromStorage()
+    else kmlList = []
     renderAllKmls()
     updateKmlPanelUI()
-    showAlert('登录已失效，未同步的账号 KML 已保存在该用户专属恢复草稿中。当前页面已切换回访客本地 KML，请重新登录同一账号后恢复。')
+    showAlert(isEmbeddedKmlAuthRequired()
+      ? '登录已失效，未同步的账号 KML 已保存在该用户专属恢复草稿中。请重新登录同一账号后恢复。'
+      : '登录已失效，未同步的账号 KML 已保存在该用户专属恢复草稿中。当前页面已切换回访客本地 KML，请重新登录同一账号后恢复。')
   })
 }
 
@@ -799,19 +808,31 @@ function focusFeature (kmlId, featureId) {
   const rendered = featureEntities.get(getFeatureEntityKey(kmlId, featureId))
   if (!rendered) return
 
+  const focusRequestId = ++featureFocusRequestId
+  viewerRef.camera.cancelFlight?.()
+  closeFeaturePopup()
+  const showFocusedFeature = () => {
+    if (focusRequestId !== featureFocusRequestId) return
+    showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
+  }
+
   if (feature.type === 'Point') {
     const point = getPointLatLng(kmlFile, feature)
-    flyToLngLat(viewerRef, point.lng, point.lat, { height: 1500, duration: 0.8 })
-    setTimeout(() => {
-      showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
-    }, 850)
+    viewerRef.camera.flyTo({
+      destination: Cartesian3.fromDegrees(point.lng, point.lat, 1500),
+      orientation: {
+        heading: 0,
+        pitch: CesiumMath.toRadians(-90),
+        roll: 0,
+      },
+      duration: 0.28,
+      complete: showFocusedFeature,
+    })
   } else {
     viewerRef.flyTo(rendered.entities, {
-      duration: 0.8,
+      duration: 0.28,
       offset: undefined,
-    }).then(() => {
-      showFeaturePopup(kmlId, featureId, new Cartesian2(window.innerWidth / 2, window.innerHeight / 2))
-    }).catch(() => {})
+    }).then(showFocusedFeature).catch(() => {})
   }
 }
 
@@ -1102,7 +1123,6 @@ async function createPointAtLatLng (latlng, options = {}) {
   recordKmlMarkerRecentIcon(result.markerIcon)
   renderKmlLayers(kmlFile)
   updateKmlPanelUI()
-  focusFeature(kmlFile.id, newFeature.id)
   if (enriched.warnings.length) {
     await showAlert(enriched.warnings.join('；'), { title: '点位已保存' })
   }
@@ -1575,12 +1595,24 @@ function updateKmlPanelUI () {
     return
   }
 
-  if (canWritePersonalKml()) ensureDefaultKmlFile()
+  const panel = document.getElementById('kml-panel')
+  const personalKmlWritable = canWritePersonalKml()
+  const dropzone = document.getElementById('kml-import-dropzone')
+  const createButton = panel?.querySelector('[data-kml-action="create-file"]')
+  const correctionOption = panel?.querySelector('.kml-import-option')
+  if (dropzone) dropzone.hidden = !personalKmlWritable
+  if (createButton) createButton.hidden = !personalKmlWritable
+  if (correctionOption) correctionOption.hidden = !personalKmlWritable
+  if (personalKmlWritable) ensureDefaultKmlFile()
 
   const personalExpanded = !expandedKmlIds.has('personal-section')
   const publicExpanded = !expandedKmlIds.has('public-section')
+  const authRequiredNotice = isEmbeddedKmlAuthRequired()
+    ? '<div class="kml-empty kml-embedded-auth-required">请先登录，再编辑账号 KML</div>'
+    : ''
 
   container.innerHTML = `
+    ${authRequiredNotice}
     <div class="kml-section-header" data-kml-action="toggle-section" data-section-id="personal-section">
       <span>个人图层 (${kmlList.length})</span>
       <span>${personalExpanded ? '▲' : '▼'}</span>

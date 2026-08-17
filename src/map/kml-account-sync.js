@@ -1,9 +1,11 @@
 import { apiRequest } from '../auth/api.js'
+import { isEmbeddedDocument } from '../auth/embed-context.js'
 import { hasPermission, refreshAuthSession } from '../auth/session.js'
 import { getKmlAccountDraftStore } from './kml-account-draft-store.js'
 
 let accountMode = false
 let accountCanWrite = false
+let accountCanManageShares = false
 let accountUserId = ''
 let snapshots = new Map()
 let unconfirmedCreateIds = new Set()
@@ -20,6 +22,7 @@ let activeDraft = null
 let pendingConflict = null
 let lifecycleBound = false
 let latestSyncState = { state: 'guest', detail: {} }
+let embeddedAuthRequired = false
 let latestDraftWrite = Promise.resolve(true)
 const KML_RECOVERY_STRATEGIES = new Set([
   'discard',
@@ -41,6 +44,20 @@ export function getKmlSyncStatusView (state, detail = {}) {
     saving: { visible: true, label: '保存中…', tone: 'saving', title: '正在同步到账号' },
     saved: { visible: true, label: '已保存', tone: 'saved', title: '账号 KML 已同步' },
     loaded: { visible: true, label: '已保存', tone: 'saved', title: '已加载账号 KML' },
+    'share-pending': {
+      visible: true,
+      label: '分享待同步',
+      tone: 'share-pending',
+      title: Number(detail.pendingShareReferenceCount || 0) > 0
+        ? `有 ${Number(detail.pendingShareReferenceCount)} 个分享引用仍使用旧内容，点击前往同步`
+        : '分享仍使用旧内容，点击前往同步',
+    },
+    'auth-required': {
+      visible: true,
+      label: '请先登录',
+      tone: 'auth-required',
+      title: '侧栏编辑需要在当前窗口先登录账号，点击此处打开登录页',
+    },
     readonly: { visible: true, label: '只读', tone: 'readonly', title: '当前账号只能查看 KML' },
     conflict: {
       visible: true,
@@ -63,9 +80,10 @@ function renderSyncStatusElement (element, syncState = latestSyncState) {
   element.hidden = !view.visible
   element.textContent = view.label
   element.dataset.state = view.tone
-  element.dataset.actionable = syncState.state === 'conflict' ? 'true' : 'false'
+  const actionable = syncState.state === 'conflict' || syncState.state === 'share-pending' || syncState.state === 'auth-required'
+  element.dataset.actionable = actionable ? 'true' : 'false'
   element.title = view.title
-  if ('disabled' in element) element.disabled = syncState.state !== 'conflict'
+  if ('disabled' in element) element.disabled = !actionable
 }
 
 function dispatchResolutionRequest (source = 'automatic') {
@@ -88,6 +106,11 @@ export function bindKmlAccountSyncStatus (elementId = 'kml-sync-status') {
   }
   const onActivate = () => {
     if (latestSyncState.state === 'conflict') dispatchResolutionRequest('status')
+    if (latestSyncState.state === 'share-pending') window.location.assign('/account/#shares')
+    if (latestSyncState.state === 'auth-required') {
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
+      window.location.assign(`/account?returnTo=${encodeURIComponent(returnTo)}`)
+    }
   }
   window.addEventListener('map-kml-sync-state', onStateChange)
   element.addEventListener('click', onActivate)
@@ -104,6 +127,27 @@ function dispatchSyncState (state, detail = {}) {
   window.dispatchEvent(new CustomEvent('map-kml-sync-state', {
     detail: { state, ...detail },
   }))
+}
+
+export function resolveKmlAccountMode (auth, options = {}) {
+  if (auth?.authenticated) return 'account'
+  return options.embedded ? 'embedded-auth-required' : 'guest'
+}
+
+export function getPendingShareReferenceCount (files) {
+  return (Array.isArray(files) ? files : []).reduce((total, file) => (
+    total + Math.max(0, Number(file?.outdatedShareReferenceCount || 0))
+  ), 0)
+}
+
+function dispatchSettledSyncState (state, detail = {}) {
+  const pendingShareReferenceCount = accountCanManageShares
+    ? getPendingShareReferenceCount(latestFiles)
+    : 0
+  dispatchSyncState(pendingShareReferenceCount > 0 ? 'share-pending' : state, {
+    ...detail,
+    pendingShareReferenceCount,
+  })
 }
 
 function serializableKml (file) {
@@ -670,6 +714,7 @@ export async function initializeKmlAccountMode () {
   const initializationEpoch = ++syncEpoch
   accountMode = false
   accountCanWrite = false
+  accountCanManageShares = false
   accountUserId = ''
   snapshots = new Map()
   unconfirmedCreateIds = new Set()
@@ -681,18 +726,26 @@ export async function initializeKmlAccountMode () {
   syncBlockedByConflict = false
   activeDraft = null
   pendingConflict = null
+  embeddedAuthRequired = false
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = null
   bindDraftLifecycle()
 
   const auth = await refreshAuthSession()
   if (initializationEpoch !== syncEpoch) return { mode: 'guest', files: [] }
-  accountMode = Boolean(auth.authenticated && hasPermission('kml.own.read', auth))
+  const resolvedMode = resolveKmlAccountMode(auth, { embedded: isEmbeddedDocument() })
+  embeddedAuthRequired = resolvedMode === 'embedded-auth-required'
+  accountMode = Boolean(resolvedMode === 'account' && hasPermission('kml.own.read', auth))
   accountCanWrite = Boolean(accountMode && hasPermission('kml.own.write', auth))
+  accountCanManageShares = Boolean(accountMode && hasPermission('share.own.manage', auth))
   accountUserId = accountMode ? String(auth.user?.id || '') : ''
   if (!accountMode) {
-    dispatchSyncState('guest')
-    return { mode: 'guest', files: [] }
+    dispatchSyncState(embeddedAuthRequired ? 'auth-required' : 'guest')
+    return {
+      mode: embeddedAuthRequired ? 'embedded-auth-required' : 'guest',
+      files: [],
+      embeddedAuthRequired,
+    }
   }
 
   try {
@@ -726,10 +779,10 @@ export async function initializeKmlAccountMode () {
         message: `无法读取本机恢复草稿：${recoveryError.message}`,
       })
     } else {
-      dispatchSyncState(accountCanWrite ? 'loaded' : 'readonly', {
+      if (accountCanWrite) dispatchSettledSyncState('loaded', {
         count: loaded.files.length,
-        readOnly: !accountCanWrite,
       })
+      else dispatchSyncState('readonly', { count: loaded.files.length, readOnly: true })
     }
     return {
       mode: 'account',
@@ -749,6 +802,10 @@ export async function initializeKmlAccountMode () {
 
 export function isAccountKmlMode () {
   return accountMode
+}
+
+export function isEmbeddedKmlAuthRequired () {
+  return embeddedAuthRequired
 }
 
 export function isAccountKmlWritable () {
@@ -801,6 +858,8 @@ function applySyncResult (result, files) {
         file.serverId = entry.document.id
         file.revision = entry.document.revision
         file.updatedAt = entry.document.updatedAt
+        file.shareReferenceCount = Number(entry.document.shareReferenceCount || 0)
+        file.outdatedShareReferenceCount = Number(entry.document.outdatedShareReferenceCount || 0)
       }
       return
     }
@@ -811,6 +870,8 @@ function applySyncResult (result, files) {
       if (file) {
         file.revision = entry.document.revision
         file.updatedAt = entry.document.updatedAt
+        file.shareReferenceCount = Number(entry.document.shareReferenceCount || 0)
+        file.outdatedShareReferenceCount = Number(entry.document.outdatedShareReferenceCount || 0)
       }
     }
   })
@@ -828,7 +889,7 @@ async function flushSync () {
     : buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes)
   if (!operations.length) {
     clearRecoveryDraft()
-    dispatchSyncState('saved')
+    dispatchSettledSyncState('saved')
     return
   }
 
@@ -858,7 +919,7 @@ async function flushSync () {
     const remainingOperations = buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes)
     if (remainingOperations.length === 0) {
       clearRecoveryDraft()
-      dispatchSyncState('saved', { syncedAt: result.syncedAt })
+      dispatchSettledSyncState('saved', { syncedAt: result.syncedAt })
     } else {
       persistCurrentDraft('dirty')
       dispatchSyncState('dirty', { operationCount: remainingOperations.length })
@@ -984,7 +1045,7 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
 
   if (normalizedStrategy === 'discard') {
     clearRecoveryDraft()
-    dispatchSyncState('loaded', { count: result.files.length })
+    dispatchSettledSyncState('loaded', { count: result.files.length })
   } else if (result.blockedByConflict) {
     persistCurrentDraft('conflict')
     dispatchSyncState('conflict', {
@@ -997,7 +1058,7 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
     dispatchSyncState('dirty')
   } else {
     clearRecoveryDraft()
-    dispatchSyncState('loaded', { count: result.files.length })
+    dispatchSettledSyncState('loaded', { count: result.files.length })
   }
 
   return result
@@ -1020,6 +1081,7 @@ export function suspendKmlAccountSync (options = {}) {
   syncEpoch += 1
   accountMode = false
   accountCanWrite = false
+  accountCanManageShares = false
   accountUserId = ''
   snapshots = new Map()
   unconfirmedCreateIds = new Set()
@@ -1031,9 +1093,10 @@ export function suspendKmlAccountSync (options = {}) {
   syncBlockedByConflict = false
   activeDraft = null
   pendingConflict = null
+  embeddedAuthRequired = isEmbeddedDocument()
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = null
-  dispatchSyncState('guest')
+  dispatchSyncState(embeddedAuthRequired ? 'auth-required' : 'guest')
 }
 
 export function resetKmlAccountSync () {

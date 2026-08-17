@@ -47,6 +47,7 @@ import {
   initializeKmlAccountMode,
   isAccountKmlMode,
   isAccountKmlWritable,
+  isEmbeddedKmlAuthRequired,
   registerKmlAccountDocument,
   scheduleKmlAccountSync,
   suspendKmlAccountSync,
@@ -147,7 +148,7 @@ function isAdminLoggedIn () {
 }
 
 function canWritePersonalKml () {
-  return !isAccountKmlMode() || isAccountKmlWritable()
+  return !isEmbeddedKmlAuthRequired() && (!isAccountKmlMode() || isAccountKmlWritable())
 }
 
 function canImportTwoBuluKml () {
@@ -363,13 +364,17 @@ async function loadInitialKmlFiles () {
       showAlert(`账号 KML 加载失败，当前不会读取或上传浏览器本地 KML。请稍后刷新重试：${account.error.message}`)
       return
     }
-    if (account.canWrite && ensureDefaultKmlFile()) saveToStorage()
     if (account.recovery) {
       await promptKmlAccountRecovery(account.recovery, files => {
         kmlList = files.map(normalizeKmlFile)
         return kmlList
       })
     }
+    if (account.canWrite && ensureDefaultKmlFile()) saveToStorage()
+    return
+  }
+  if (account.mode === 'embedded-auth-required') {
+    kmlList = []
     return
   }
   loadFromStorage()
@@ -441,8 +446,7 @@ function ensureDefaultKmlFile () {
     previousDefault.name !== defaultFile.name ||
     previousDefault.isDefault !== defaultFile.isDefault ||
     previousDefault.coordCorrection !== defaultFile.coordCorrection ||
-    previousDefault.enabled !== defaultFile.enabled ||
-    previousDefault.features !== defaultFile.features
+    previousDefault.enabled !== defaultFile.enabled
 
   kmlList.splice(defaultIndex, 1)
   kmlList.unshift(defaultFile)
@@ -851,21 +855,36 @@ function bindAccountSessionExpiry (map) {
   window.addEventListener('map-auth-session-expired', () => {
     if (!isAccountKmlMode()) return
     suspendKmlAccountSync({ preserveDraft: true, reason: 'session-expired' })
-    loadFromStorage()
+    if (!isEmbeddedKmlAuthRequired()) loadFromStorage()
+    else kmlList = []
     renderAllKmls(map)
     updateKmlPanelUI(map)
-    showAlert('登录已失效，未同步的账号 KML 已保存在该用户专属恢复草稿中。当前页面已切换回访客本地 KML，请重新登录同一账号后恢复。')
+    showAlert(isEmbeddedKmlAuthRequired()
+      ? '登录已失效，未同步的账号 KML 已保存在该用户专属恢复草稿中。请重新登录同一账号后恢复。'
+      : '登录已失效，未同步的账号 KML 已保存在该用户专属恢复草稿中。当前页面已切换回访客本地 KML，请重新登录同一账号后恢复。')
   })
 }
 
 function updateKmlPanelUI (map) {
   const twoBuluImportButton = document.getElementById('kml-import-2bulu')
   if (twoBuluImportButton) twoBuluImportButton.hidden = !canImportTwoBuluKml()
-  if (canWritePersonalKml()) ensureDefaultKmlFile()
+  const panel = document.getElementById('kml-panel')
+  const personalKmlWritable = canWritePersonalKml()
+  const dropzone = document.getElementById('kml-import-dropzone')
+  const createButton = panel?.querySelector('[data-kml-action="create-file"]')
+  const correctionOption = panel?.querySelector('.kml-import-option')
+  if (dropzone) dropzone.hidden = !personalKmlWritable
+  if (createButton) createButton.hidden = !personalKmlWritable
+  if (correctionOption) correctionOption.hidden = !personalKmlWritable
+  if (personalKmlWritable) ensureDefaultKmlFile()
   const container = document.getElementById('kml-files-list')
   if (!container) return
 
   let html = ''
+
+  if (isEmbeddedKmlAuthRequired()) {
+    html += '<div class="kml-empty kml-embedded-auth-required">请先登录，再编辑账号 KML</div>'
+  }
 
   // 1. 个人图层分区
   const personalExpanded = !expandedKmlIds.has('personal-section')

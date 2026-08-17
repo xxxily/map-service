@@ -545,6 +545,151 @@ test('multi-KML shares expose only public item IDs and detach trashed files', ()
   }
 })
 
+test('shared KML edits remain private until an atomic manual content sync publishes them', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '待发布路线',
+      features: [point('published-point', 113.2, 23.1)],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '手动发布分享',
+      items: [{ kmlId: document.id }],
+    })
+    const before = harness.service.getPublicShareManifest(share.publicId)
+    const shareItemId = before.items[0].shareItemId
+    const initialFile = harness.service.getPublicShareFile(share.publicId, shareItemId)
+
+    const updatedDocument = harness.service.updateKml(harness.one, document.id, {
+      revision: document.revision,
+      name: '草稿路线',
+      features: [point('draft-point', 114.2, 24.1)],
+    })
+    const newlyAddedDocument = harness.service.createKml(harness.one, {
+      name: '新增公开路线',
+      features: [point('newly-published-point', 115.2, 25.1)],
+    })
+    const pending = harness.service.getShare(harness.one, share.id)
+    assert.equal(pending.syncStatus, 'pending')
+    assert.equal(pending.pendingSyncItemCount, 1)
+    assert.equal(pending.items[0].publishedRevision, document.revision)
+    assert.equal(pending.items[0].sourceRevision, updatedDocument.revision)
+    assert.equal(pending.items[0].syncStatus, 'pending')
+    assert.deepEqual(
+      harness.service.getPublicShareFile(share.publicId, shareItemId).features,
+      initialFile.features
+    )
+    const pendingDocument = harness.service.getKml(harness.one, document.id)
+    assert.equal(pendingDocument.shareReferenceCount, 1)
+    assert.equal(pendingDocument.outdatedShareReferenceCount, 1)
+
+    const configured = harness.service.updateShare(harness.one, share.id, {
+      revision: pending.revision,
+      items: [{
+        kmlId: document.id,
+        position: 0,
+        visibleByDefault: false,
+        displayName: '审核中的路线',
+      }, {
+        kmlId: newlyAddedDocument.id,
+        position: 1,
+        visibleByDefault: true,
+      }],
+    })
+    assert.equal(configured.syncStatus, 'pending')
+    assert.equal(configured.pendingSyncItemCount, 1)
+    const configuredExistingItem = configured.items.find(item => item.kmlId === document.id)
+    const configuredNewItem = configured.items.find(item => item.kmlId === newlyAddedDocument.id)
+    assert.equal(configuredExistingItem.publishedRevision, document.revision)
+    assert.equal(configuredExistingItem.sourceRevision, updatedDocument.revision)
+    assert.equal(configuredExistingItem.visibleByDefault, false)
+    assert.equal(configuredExistingItem.displayName, '审核中的路线')
+    assert.equal(configuredNewItem.publishedRevision, newlyAddedDocument.revision)
+    assert.equal(configuredNewItem.syncStatus, 'synced')
+    const configuredManifest = harness.service.getPublicShareManifest(share.publicId)
+    assert.deepEqual(
+      harness.service.getPublicShareFile(
+        share.publicId,
+        configuredManifest.items.find(item => item.shareItemId === configuredExistingItem.id).shareItemId
+      ).features,
+      initialFile.features
+    )
+    assert.equal(
+      harness.service.getPublicShareFile(share.publicId, configuredNewItem.id).features[0].id,
+      'newly-published-point'
+    )
+    assert.throws(
+      () => harness.service.syncShareContent(harness.two, share.id, { revision: configured.revision }),
+      error => error.statusCode === 404 && error.code === 'RESOURCE_NOT_FOUND'
+    )
+    assert.throws(
+      () => harness.service.syncShareContent(harness.one, share.id, {}),
+      error => error.statusCode === 400 && error.code === 'VALIDATION_FAILED'
+    )
+    assert.throws(
+      () => harness.service.syncShareContent(harness.one, share.id, { revision: configured.revision + 1 }),
+      error => error.statusCode === 409 && error.code === 'SHARE_REVISION_CONFLICT'
+    )
+
+    harness.advance(1000)
+    const synced = harness.service.syncShareContent(harness.one, share.id, {
+      revision: configured.revision,
+    })
+    assert.equal(synced.syncStatus, 'synced')
+    assert.equal(synced.pendingSyncItemCount, 0)
+    assert.equal(synced.contentRevision, configured.contentRevision + 1)
+    assert.equal(synced.items[0].id, shareItemId)
+    assert.equal(synced.items[0].publishedRevision, updatedDocument.revision)
+    const published = harness.service.getPublicShareFile(share.publicId, shareItemId)
+    assert.equal(published.name, '审核中的路线')
+    assert.equal(published.features[0].id, 'draft-point')
+    assert.equal(harness.service.getKml(harness.one, document.id).outdatedShareReferenceCount, 0)
+    assert.equal(harness.database.prepare(`
+      SELECT COUNT(*) AS count FROM audit_logs
+      WHERE action = 'share.content.sync' AND target_id = ?
+    `).get(share.id).count, 1)
+  } finally {
+    harness.close()
+  }
+})
+
+test('share item configuration changes preserve stale published snapshots and spatial bounds', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '范围内路线',
+      features: [{ id: 'published-line', type: 'LineString', coordinates: [[113.2, 23.1], [113.3, 23.2]] }],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '配置更新不发布草稿',
+      items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds' },
+    })
+    const initialBounds = share.spatialAccess.cameraBounds
+    const initialManifest = harness.service.getPublicShareManifest(share.publicId)
+
+    harness.service.updateKml(harness.one, document.id, {
+      revision: document.revision,
+      features: [{ id: 'draft-line', type: 'LineString', coordinates: [[120.1, 30.1], [121.1, 31.1]] }],
+    })
+    const updated = harness.service.updateShare(harness.one, share.id, {
+      revision: share.revision,
+      items: [{ kmlId: document.id, visibleByDefault: false }],
+    })
+
+    assert.equal(updated.syncStatus, 'pending')
+    assert.deepEqual(updated.spatialAccess.cameraBounds, initialBounds)
+    const manifest = harness.service.getPublicShareManifest(share.publicId)
+    assert.deepEqual(manifest.spatialAccess.cameraBounds, initialManifest.spatialAccess.cameraBounds)
+    assert.equal(
+      harness.service.getPublicShareFile(share.publicId, manifest.items[0].shareItemId).features[0].id,
+      'published-line'
+    )
+  } finally {
+    harness.close()
+  }
+})
+
 test('share passwords, pause, rotation and revoke invalidate public access immediately', async () => {
   const harness = createHarness()
   try {
@@ -853,7 +998,7 @@ test('changing a password, rotating a link, or blocking a share revokes existing
   }
 })
 
-test('moving KML content beyond unlimited thresholds downgrades and revokes an unlimited share', async () => {
+test('manual sync rejects oversized unlimited content and preserves the published snapshot and access session', async () => {
   const harness = createHarness({
     share: {
       spatialMaxAreaKm2: 10000,
@@ -876,18 +1021,24 @@ test('moving KML content beyond unlimited thresholds downgrades and revokes an u
       revision: document.revision,
       features: [{ id: 'moving', type: 'LineString', coordinates: [[113.2, 23.1291], [115.2, 23.16]] }],
     })
-    const updated = harness.service.getShare(harness.one, share.id)
-    assert.equal(updated.passwordAccess.ttlMode, 'finite')
-    const session = harness.database.prepare('SELECT revoked_at, revoke_reason FROM share_access_sessions LIMIT 1').get()
-    assert.ok(session.revoked_at)
-    assert.equal(session.revoke_reason, 'share.password-access.auto-downgrade')
-    assert.equal(harness.service.getShareRuntimeMetrics(harness.admin).items.some(item => (
-      item.shareId === share.id && item.event === 'spatial_auto_downgrade'
-    )), true)
+    const pending = harness.service.getShare(harness.one, share.id)
+    assert.equal(pending.passwordAccess.ttlMode, 'unlimited')
+    assert.equal(pending.syncStatus, 'pending')
+    const originalManifest = harness.service.getPublicShareManifest(share.publicId, {
+      accessToken: authorization.accessToken,
+    })
     assert.throws(
-      () => harness.service.getPublicShareManifest(share.publicId, { accessToken: authorization.accessToken }),
-      error => error.code === 'SHARE_PASSWORD_REQUIRED'
+      () => harness.service.syncShareContent(harness.one, share.id, { revision: pending.revision }),
+      error => error.code === 'SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE'
     )
+    const session = harness.database.prepare('SELECT revoked_at, revoke_reason FROM share_access_sessions LIMIT 1').get()
+    assert.equal(session.revoked_at, null)
+    assert.equal(session.revoke_reason, '')
+    const afterFailure = harness.service.getPublicShareManifest(share.publicId, {
+      accessToken: authorization.accessToken,
+    })
+    assert.deepEqual(afterFailure.spatialAccess.cameraBounds, originalManifest.spatialAccess.cameraBounds)
+    assert.equal(harness.service.getShare(harness.one, share.id).syncStatus, 'pending')
   } finally {
     harness.close()
   }
@@ -952,12 +1103,17 @@ test('spatial recalculation retries when a KML revision changes after computatio
       if (!changedDuringComputation) {
         changedDuringComputation = true
         harness.database.prepare(`
-          UPDATE kml_documents
-          SET features_json = ?, feature_count = 1, revision = revision + 1, updated_at = ?
-          WHERE id = ?
-        `).run(JSON.stringify([
-          { id: 'moving-line', type: 'LineString', coordinates: [[120.1, 30.1], [120.3, 30.2]] },
-        ]), '2026-08-05T08:01:00.000Z', document.id)
+          UPDATE kml_share_items
+          SET published_snapshot_json = ?, published_revision = published_revision + 1,
+              published_at = ?
+          WHERE share_id = ?
+        `).run(JSON.stringify({
+          name: '并发更新路线',
+          features: [{ id: 'moving-line', type: 'LineString', coordinates: [[120.1, 30.1], [120.3, 30.2]] }],
+          featureCount: 1,
+          revision: document.revision + 1,
+          updatedAt: '2026-08-05T08:01:00.000Z',
+        }), '2026-08-05T08:01:00.000Z', share.id)
       }
       return state
     }
@@ -1036,16 +1192,21 @@ test('spatial recalculation fails closed after repeated KML revision conflicts',
       const state = originalCompute(items, settings)
       conflictCount += 1
       harness.database.prepare(`
-        UPDATE kml_documents
-        SET features_json = ?, revision = revision + 1, updated_at = ?
-        WHERE id = ?
-      `).run(JSON.stringify([
-        {
+        UPDATE kml_share_items
+        SET published_snapshot_json = ?, published_revision = published_revision + 1,
+            published_at = ?
+        WHERE share_id = ?
+      `).run(JSON.stringify({
+        name: '持续变化路线',
+        features: [{
           id: 'changing-line',
           type: 'LineString',
           coordinates: [[120 + conflictCount, 30], [120.2 + conflictCount, 30.2]],
-        },
-      ]), `2026-08-05T08:0${conflictCount}:00.000Z`, document.id)
+        }],
+        featureCount: 1,
+        revision: document.revision + conflictCount,
+        updatedAt: `2026-08-05T08:0${conflictCount}:00.000Z`,
+      }), `2026-08-05T08:0${conflictCount}:00.000Z`, share.id)
       return state
     }
 

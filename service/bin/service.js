@@ -438,6 +438,10 @@ const service = {
     return userContent.updateShare(actor, id, input, context)
   },
 
+  syncUserKmlShareContent (actor, id, input, context) {
+    return userContent.syncShareContent(actor, id, input, context)
+  },
+
   pauseUserKmlShare (actor, id, context) {
     return userContent.pauseShare(actor, id, context)
   },

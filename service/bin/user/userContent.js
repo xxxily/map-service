@@ -769,28 +769,26 @@ export class UserContentService {
 
   shareItemsForSpatialScope (shareId) {
     return this.database.prepare(`
-      SELECT i.kml_id, k.revision, k.features_json
+      SELECT i.kml_id, i.published_revision, i.published_snapshot_json
       FROM kml_share_items i
-      JOIN kml_documents k ON k.id = i.kml_id
-      WHERE i.share_id = ? AND k.status = 'active'
+      WHERE i.share_id = ?
       ORDER BY i.position, i.id
     `).all(shareId).map(row => ({
       kmlId: row.kml_id,
-      revision: Number(row.revision),
-      features: parseJson(row.features_json, []),
+      revision: Number(row.published_revision),
+      features: parseJson(row.published_snapshot_json, {}).features || [],
     }))
   }
 
   shareItemRevisionSnapshot (shareId) {
     return this.database.prepare(`
-      SELECT i.kml_id, k.revision
+      SELECT i.kml_id, i.published_revision
       FROM kml_share_items i
-      JOIN kml_documents k ON k.id = i.kml_id
-      WHERE i.share_id = ? AND k.status = 'active'
+      WHERE i.share_id = ?
       ORDER BY i.position, i.id
     `).all(shareId).map(row => ({
       id: row.kml_id,
-      revision: Number(row.revision),
+      revision: Number(row.published_revision),
     }))
   }
 
@@ -1272,6 +1270,15 @@ export class UserContentService {
     `).get(kmlId)?.count || 0)
   }
 
+  outdatedShareReferenceCount (kmlId) {
+    return Number(this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM kml_share_items i
+      JOIN kml_documents k ON k.id = i.kml_id
+      WHERE i.kml_id = ? AND i.published_revision != k.revision
+    `).get(kmlId)?.count || 0)
+  }
+
   kmlViewFromRow (row, options = {}) {
     if (!row) return null
     const result = {
@@ -1292,6 +1299,7 @@ export class UserContentService {
       revision: Number(row.revision),
       sourceType: row.source_type,
       shareReferenceCount: this.shareReferenceCount(row.id),
+      outdatedShareReferenceCount: this.outdatedShareReferenceCount(row.id),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       deletedAt: row.deleted_at || null,
@@ -1577,7 +1585,6 @@ export class UserContentService {
         throw createHttpError('KML 已被其他客户端更新，请重新加载', 409, 'KML_REVISION_CONFLICT')
       }
     })
-    this.revalidateSharesForKml(row.id)
     return this.getKml(actor, row.id)
   }
 
@@ -1586,7 +1593,16 @@ export class UserContentService {
       SELECT DISTINCT share_id FROM kml_share_items WHERE kml_id = ?
     `).all(kmlId).map(row => row.share_id)
     this.database.prepare('DELETE FROM kml_share_items WHERE kml_id = ?').run(kmlId)
-    shares.forEach(shareId => this.refreshShareAfterContentChange(shareId))
+    const now = this.nowIso()
+    shares.forEach(shareId => {
+      this.database.prepare(`
+        UPDATE kml_shares
+        SET content_revision = content_revision + 1, content_published_at = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(now, now, shareId)
+      this.refreshShareAfterContentChange(shareId)
+    })
     return shares.length
   }
 
@@ -1654,7 +1670,6 @@ export class UserContentService {
           updated_at = ?, deleted_at = NULL
       WHERE id = ?
     `).run(now, row.id)
-    this.revalidateSharesForKml(row.id)
     return this.getKml(actor, row.id)
   }
 
@@ -2051,18 +2066,26 @@ export class UserContentService {
       JOIN kml_documents k ON k.id = i.kml_id
       WHERE i.share_id = ?
       ORDER BY i.position, i.id
-    `).all(shareId).map(row => ({
-      id: row.id,
-      kmlId: row.kml_id,
-      position: Number(row.position),
-      visibleByDefault: Boolean(row.visible_by_default),
-      displayName: row.display_name || '',
-      name: row.kml_name,
-      status: row.kml_status,
-      featureCount: Number(row.feature_count),
-      byteSize: Number(row.byte_size),
-      revision: Number(row.revision),
-    }))
+    `).all(shareId).map(row => {
+      const publishedRevision = Number(row.published_revision || 0)
+      const sourceRevision = Number(row.revision || 0)
+      return {
+        id: row.id,
+        kmlId: row.kml_id,
+        position: Number(row.position),
+        visibleByDefault: Boolean(row.visible_by_default),
+        displayName: row.display_name || '',
+        name: row.kml_name,
+        status: row.kml_status,
+        featureCount: Number(row.feature_count),
+        byteSize: Number(row.byte_size),
+        revision: sourceRevision,
+        sourceRevision,
+        publishedRevision,
+        publishedAt: row.published_at || null,
+        syncStatus: publishedRevision === sourceRevision ? 'synced' : 'pending',
+      }
+    })
   }
 
   shareViewFromRow (row, options = {}) {
@@ -2082,6 +2105,8 @@ export class UserContentService {
       spatialAccess: this.shareSpatialView(row),
       passwordAccess: this.passwordAccessView(row),
       revision: Number(row.revision),
+      contentRevision: Number(row.content_revision || 1),
+      contentPublishedAt: row.content_published_at || null,
       blockedReason: row.status === 'blocked' ? row.blocked_reason : '',
       accessCount: Number(row.access_count),
       shareUrl: `/share/${row.public_id}`,
@@ -2093,6 +2118,15 @@ export class UserContentService {
     result.itemCount = options.includeItems
       ? result.items.length
       : Number(this.database.prepare('SELECT COUNT(*) AS count FROM kml_share_items WHERE share_id = ?').get(row.id)?.count || 0)
+    result.pendingSyncItemCount = options.includeItems
+      ? result.items.filter(item => item.syncStatus === 'pending').length
+      : Number(this.database.prepare(`
+          SELECT COUNT(*) AS count
+          FROM kml_share_items i
+          JOIN kml_documents k ON k.id = i.kml_id
+          WHERE i.share_id = ? AND i.published_revision != k.revision
+        `).get(row.id)?.count || 0)
+    result.syncStatus = result.pendingSyncItemCount > 0 ? 'pending' : 'synced'
     return result
   }
 
@@ -2133,7 +2167,10 @@ export class UserContentService {
       }
       seen.add(kmlId)
       const document = this.database.prepare(`
-        SELECT id, name, revision, features_json FROM kml_documents
+        SELECT id, name, description, coord_correction, theme, color,
+               lock_drag, enabled, is_live_track, features_json,
+               feature_count, byte_size, revision, updated_at
+        FROM kml_documents
         WHERE id = ? AND owner_id = ? AND status = 'active'
       `).get(kmlId, ownerId)
       if (!document) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
@@ -2147,22 +2184,45 @@ export class UserContentService {
         name: document.name,
         revision: Number(document.revision),
         features: parseJson(document.features_json, []),
+        publishedSnapshot: this.publishedSnapshotFromDocument(document),
       }
     }).sort((left, right) => left.requestedPosition - right.requestedPosition || left.sourceIndex - right.sourceIndex)
       .map((item, position) => ({ ...item, position }))
   }
 
-  replaceShareItems (shareId, items) {
+  publishedSnapshotFromDocument (row) {
+    return {
+      name: row.name,
+      description: row.description || '',
+      coordCorrection: row.coord_correction,
+      theme: row.theme,
+      color: row.color,
+      lockDrag: Boolean(row.lock_drag),
+      enabled: Boolean(row.enabled),
+      isLiveTrack: Boolean(row.is_live_track),
+      features: parseJson(row.features_json, []),
+      featureCount: Number(row.feature_count || 0),
+      byteSize: Number(row.byte_size || 0),
+      revision: Number(row.revision || 0),
+      updatedAt: row.updated_at,
+    }
+  }
+
+  replaceShareItems (shareId, items, publishedAt = this.nowIso()) {
     this.database.prepare('DELETE FROM kml_share_items WHERE share_id = ?').run(shareId)
     const insert = this.database.prepare(`
       INSERT INTO kml_share_items(
-        id, share_id, kml_id, position, visible_by_default, display_name
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        id, share_id, kml_id, position, visible_by_default, display_name,
+        published_revision, published_snapshot_json, published_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     items.forEach(item => {
       insert.run(
-        randomId('shi'), shareId, item.kmlId, item.position,
-        item.visibleByDefault ? 1 : 0, item.displayName
+        item.id || randomId('shi'), shareId, item.kmlId, item.position,
+        item.visibleByDefault ? 1 : 0, item.displayName,
+        item.publishedRevision ?? item.revision,
+        JSON.stringify(item.publishedSnapshot),
+        item.publishedAt || publishedAt
       )
     })
   }
@@ -2208,16 +2268,17 @@ export class UserContentService {
           password_hash, allow_download, expires_at, view_config_json, revision,
           spatial_access_mode, password_access_ttl_mode, spatial_scope_json,
           spatial_scope_revision, spatial_status, spatial_error_code,
-          password_version, access_policy_revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'public_link', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          password_version, access_policy_revision, content_revision, content_published_at,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'public_link', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?)
       `).run(
         id, publicId, ownerId, title, description, status, passwordHash,
         allowDownload ? 1 : 0, expiresAt, JSON.stringify(viewConfig),
         spatialAccessMode, passwordAccessTtlMode, JSON.stringify(spatialState.scope || {}),
         spatialScopeRevision, spatialState.status, spatialState.errorCode || '',
-        accessPolicyRevision, now, now
+        accessPolicyRevision, now, now, now
       )
-      this.replaceShareItems(id, items)
+      this.replaceShareItems(id, items, now)
       this.insertAudit({
         actorUserId: ownerId,
         action: 'share.create',
@@ -2300,7 +2361,7 @@ export class UserContentService {
     }
     const current = this.shareViewFromRow(row, { includeItems: true })
     const settings = this.getSettings()
-    const items = input.items === undefined
+    let items = input.items === undefined
       ? current.items.map(item => ({
           kmlId: item.kmlId,
           position: item.position,
@@ -2308,9 +2369,33 @@ export class UserContentService {
           displayName: item.displayName,
         }))
       : this.normalizeShareItems(row.owner_id, input.items, { allowEmpty: true })
+    if (input.items !== undefined && items.length > 0) {
+      const publishedRows = this.database.prepare(`
+        SELECT id, kml_id, published_revision, published_snapshot_json, published_at
+        FROM kml_share_items WHERE share_id = ?
+      `).all(row.id)
+      const publishedByKmlId = new Map(publishedRows.map(item => [item.kml_id, item]))
+      items = items.map(item => {
+        const existing = publishedByKmlId.get(item.kmlId)
+        if (!existing) return item
+        return {
+          ...item,
+          id: existing.id,
+          publishedRevision: Number(existing.published_revision || 0),
+          publishedSnapshot: parseJson(existing.published_snapshot_json, item.publishedSnapshot),
+          publishedAt: existing.published_at || null,
+        }
+      })
+    }
     const spatialItems = input.items === undefined
       ? this.shareItemsForSpatialScope(row.id)
-      : items
+      : items.map(item => ({
+          kmlId: item.kmlId,
+          revision: item.publishedRevision ?? item.revision,
+          features: Array.isArray(item.publishedSnapshot?.features)
+            ? item.publishedSnapshot.features
+            : [],
+        }))
     let status = row.status
     if (input.status !== undefined) {
       if (row.status === 'blocked') {
@@ -2358,6 +2443,9 @@ export class UserContentService {
     const accessPolicyRevision = Number(settings.share.spatialPolicyRevision || 1)
     const unlimitedDisabled = (row.password_access_ttl_mode || 'finite') === 'unlimited' &&
       passwordAccessTtlMode !== 'unlimited'
+    const contentChanged = input.items !== undefined
+    const contentRevision = Number(row.content_revision || 1) + (contentChanged ? 1 : 0)
+    const contentPublishedAt = contentChanged ? now : row.content_published_at
     this.database.transaction(() => {
       this.database.prepare(`
         UPDATE kml_shares SET
@@ -2365,16 +2453,17 @@ export class UserContentService {
           expires_at = ?, view_config_json = ?, spatial_access_mode = ?,
           password_access_ttl_mode = ?, spatial_scope_json = ?, spatial_scope_revision = ?,
           spatial_status = ?, spatial_error_code = ?, password_version = ?,
-          access_policy_revision = ?, revision = revision + 1, updated_at = ?
+          access_policy_revision = ?, content_revision = ?, content_published_at = ?,
+          revision = revision + 1, updated_at = ?
         WHERE id = ?
       `).run(
         title, description, status, passwordHash, allowDownload ? 1 : 0,
         expiresAt, JSON.stringify(viewConfig), spatialAccessMode,
         passwordAccessTtlMode, JSON.stringify(spatialState.scope || {}), spatialScopeRevision,
         spatialState.status, spatialState.errorCode || '', passwordVersion,
-        accessPolicyRevision, now, row.id
+        accessPolicyRevision, contentRevision, contentPublishedAt, now, row.id
       )
-      this.replaceShareItems(row.id, items)
+      if (contentChanged) this.replaceShareItems(row.id, items, now)
       if (passwordChanged) this.revokeShareSessions(row.id, 'share.password.update')
       else if (unlimitedDisabled) {
         this.revokeShareSessions(row.id, 'share.password-access.unlimited.disable', { unlimitedOnly: true })
@@ -2415,6 +2504,116 @@ export class UserContentService {
           metadata: { spatialScopeRevision, accessPolicyRevision },
         })
       }
+    })
+    return this.getShare(actor, row.id)
+  }
+
+  syncShareContent (actor, shareId, input = {}) {
+    const row = this.requireOwnedShare(actor, shareId)
+    requireObject(input)
+    const requestedRevision = normalizeRevision(input.revision)
+    if (requestedRevision !== Number(row.revision)) {
+      throw createHttpError('分享配置已被其他客户端更新', 409, 'SHARE_REVISION_CONFLICT')
+    }
+    if (row.status === 'revoked') {
+      throw createHttpError('已撤销的分享不能同步', 409, 'SHARE_REVOKED')
+    }
+
+    const sourceItems = this.database.prepare(`
+      SELECT i.id, i.kml_id, i.position, i.visible_by_default, i.display_name,
+             k.name, k.description, k.coord_correction, k.theme, k.color,
+             k.lock_drag, k.enabled, k.is_live_track, k.features_json,
+             k.feature_count, k.byte_size, k.revision, k.updated_at
+      FROM kml_share_items i
+      JOIN kml_documents k ON k.id = i.kml_id
+      WHERE i.share_id = ? AND k.status = 'active'
+      ORDER BY i.position, i.id
+    `).all(row.id)
+    if (sourceItems.length === 0) throw createHttpError('分享包没有可用 KML', 409, 'SHARE_EMPTY')
+
+    const items = sourceItems.map(item => ({
+      id: item.id,
+      kmlId: item.kml_id,
+      revision: Number(item.revision),
+      features: parseJson(item.features_json, []),
+      position: Number(item.position),
+      visibleByDefault: Boolean(item.visible_by_default),
+      displayName: item.display_name || '',
+      publishedSnapshot: this.publishedSnapshotFromDocument(item),
+    }))
+    const settings = this.getSettings()
+    const spatialMode = row.spatial_access_mode || 'unrestricted'
+    const spatialState = this.resolveShareSpatialState(items, spatialMode, settings, {
+      allowExisting: spatialMode === 'kml_bounds',
+    })
+    const passwordHash = row.password_hash
+    const ttlMode = row.password_access_ttl_mode || 'finite'
+    this.assertPasswordAccessMode(ttlMode, passwordHash, spatialMode, spatialState, settings)
+    const previousScope = parseJson(row.spatial_scope_json, null)
+    const scopeChanged = spatialMode === 'kml_bounds' && (
+      (previousScope?.sourceRevisionHash || '') !== (spatialState.scope?.sourceRevisionHash || '') ||
+      row.spatial_status !== spatialState.status ||
+      Number(previousScope?.paddingMeters || 0) !== Number(spatialState.scope?.paddingMeters || 0)
+    )
+    const now = this.nowIso()
+    const policyRevision = Number(settings.share.spatialPolicyRevision || 1)
+    this.database.transaction(() => {
+      const current = this.database.prepare('SELECT revision FROM kml_shares WHERE id = ?').get(row.id)
+      if (!current || Number(current.revision) !== requestedRevision) {
+        throw createHttpError('分享配置已被其他客户端更新', 409, 'SHARE_REVISION_CONFLICT')
+      }
+      const currentRevisions = this.database.prepare(`
+        SELECT i.kml_id, k.revision
+        FROM kml_share_items i JOIN kml_documents k ON k.id = i.kml_id
+        WHERE i.share_id = ? AND k.status = 'active'
+        ORDER BY i.position, i.id
+      `).all(row.id).map(item => ({ id: item.kml_id, revision: Number(item.revision) }))
+      const sourceRevisions = items.map(item => ({ id: item.kmlId, revision: item.revision }))
+      if (!this.spatialSnapshotEqual(currentRevisions, sourceRevisions)) {
+        throw createHttpError('KML 内容已发生变化，请重新加载后同步', 409, 'KML_REVISION_CONFLICT')
+      }
+      const updateSnapshot = this.database.prepare(`
+        UPDATE kml_share_items SET
+          published_revision = ?, published_snapshot_json = ?, published_at = ?
+        WHERE id = ? AND share_id = ?
+      `)
+      items.forEach(item => {
+        updateSnapshot.run(
+          item.revision,
+          JSON.stringify(item.publishedSnapshot),
+          now,
+          item.id,
+          row.id
+        )
+      })
+      this.database.prepare(`
+        UPDATE kml_shares SET
+          spatial_scope_json = ?, spatial_scope_revision = ?, spatial_status = ?,
+          spatial_error_code = ?, access_policy_revision = ?, content_revision = content_revision + 1,
+          content_published_at = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ? AND revision = ?
+      `).run(
+        JSON.stringify(spatialState.scope || {}),
+        Number(row.spatial_scope_revision || 0) + (scopeChanged ? 1 : 0),
+        spatialState.status,
+        spatialState.errorCode || '',
+        policyRevision,
+        now,
+        now,
+        row.id,
+        requestedRevision
+      )
+      this.insertAudit({
+        actorUserId: row.owner_id,
+        action: 'share.content.sync',
+        targetType: 'kml-share',
+        targetId: row.id,
+        metadata: {
+          itemCount: items.length,
+          contentRevision: Number(row.content_revision || 1) + 1,
+          spatialScopeRevision: Number(row.spatial_scope_revision || 0) + (scopeChanged ? 1 : 0),
+        },
+      })
     })
     return this.getShare(actor, row.id)
   }
@@ -2712,22 +2911,21 @@ export class UserContentService {
   publicShareItems (shareId) {
     return this.database.prepare(`
       SELECT i.id AS share_item_id, i.position, i.visible_by_default, i.display_name,
-             k.name, k.description, k.coord_correction, k.theme, k.color,
-             k.lock_drag, k.enabled, k.is_live_track, k.features_json,
-             k.feature_count, k.byte_size, k.revision, k.updated_at
+             i.published_revision, i.published_snapshot_json, i.published_at
       FROM kml_share_items i
-      JOIN kml_documents k ON k.id = i.kml_id
-      WHERE i.share_id = ? AND k.status = 'active'
+      WHERE i.share_id = ?
       ORDER BY i.position, i.id
-    `).all(shareId)
+    `).all(shareId).map(row => ({
+      ...row,
+      snapshot: parseJson(row.published_snapshot_json, {}),
+    }))
   }
 
   ensurePublicItemCount (row) {
     const count = Number(this.database.prepare(`
       SELECT COUNT(*) AS count
       FROM kml_share_items i
-      JOIN kml_documents k ON k.id = i.kml_id
-      WHERE i.share_id = ? AND k.status = 'active'
+      WHERE i.share_id = ?
     `).get(row.id)?.count || 0)
     if (count === 0) {
       if (row.status === 'active') {
@@ -2754,21 +2952,22 @@ export class UserContentService {
   }
 
   publicItemSummary (row) {
+    const snapshot = row.snapshot || {}
     return {
       shareItemId: row.share_item_id,
       position: Number(row.position),
       visibleByDefault: Boolean(row.visible_by_default),
-      name: row.display_name || row.name,
-      description: row.description,
-      coordCorrection: row.coord_correction,
-      theme: row.theme,
-      color: row.color,
+      name: row.display_name || snapshot.name || '',
+      description: snapshot.description || '',
+      coordCorrection: snapshot.coordCorrection,
+      theme: snapshot.theme,
+      color: snapshot.color,
       lockDrag: true,
       enabled: true,
-      isLiveTrack: Boolean(row.is_live_track),
-      featureCount: Number(row.feature_count),
-      revision: Number(row.revision),
-      updatedAt: row.updated_at,
+      isLiveTrack: Boolean(snapshot.isLiveTrack),
+      featureCount: Number(snapshot.featureCount || 0),
+      revision: Number(row.published_revision || snapshot.revision || 0),
+      updatedAt: snapshot.updatedAt || row.published_at,
     }
   }
 
@@ -2820,7 +3019,7 @@ export class UserContentService {
     if (!item) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
     return {
       ...this.publicItemSummary(item),
-      features: parseJson(item.features_json, []),
+      features: Array.isArray(item.snapshot?.features) ? item.snapshot.features : [],
     }
   }
 

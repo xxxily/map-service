@@ -10,6 +10,12 @@ import {
   parseCookieString,
   shouldAttachCsrf,
 } from '../src/auth/api.js'
+import {
+  applyEmbeddedRequestContext,
+  EMBED_CONTEXT_HEADER,
+  EMBED_CONTEXT_VALUE,
+  isEmbeddedDocument,
+} from '../src/auth/embed-context.js'
 import { normalizeSessionResult } from '../src/auth/session.js'
 import {
   clearTwoBuluImportRequest,
@@ -42,9 +48,26 @@ test('认证客户端从可读 Cookie 获取 CSRF Token 且仅修改请求携带
   const cookies = parseCookieString('map_user_session=hidden; map_csrf_token=a%2Bb%3D%3D; theme=dark')
   assert.equal(cookies.map_user_session, 'hidden')
   assert.equal(getCsrfToken('map_csrf_token=a%2Bb%3D%3D'), 'a+b==')
+  assert.equal(getCsrfToken('map_csrf_token=normal; map_csrf_token_embed=partitioned', { embedded: true }), 'partitioned')
+  assert.equal(getCsrfToken('map_csrf_token=normal; map_csrf_token_embed=partitioned', { embedded: false }), 'normal')
   assert.equal(shouldAttachCsrf('GET'), false)
   assert.equal(shouldAttachCsrf('POST'), true)
   assert.equal(shouldAttachCsrf('delete'), true)
+})
+
+test('嵌入页面请求携带受控上下文标记且普通标签页不携带', () => {
+  const topWindow = {}
+  topWindow.self = topWindow
+  topWindow.top = topWindow
+  const embeddedWindow = { self: {}, top: {} }
+
+  assert.equal(isEmbeddedDocument(topWindow), false)
+  assert.equal(isEmbeddedDocument(embeddedWindow), true)
+
+  const embeddedHeaders = applyEmbeddedRequestContext(new Headers(), embeddedWindow)
+  assert.equal(embeddedHeaders.get(EMBED_CONTEXT_HEADER), EMBED_CONTEXT_VALUE)
+  const topHeaders = applyEmbeddedRequestContext(new Headers(), topWindow)
+  assert.equal(topHeaders.has(EMBED_CONTEXT_HEADER), false)
 })
 
 test('API URL 只生成 /api/v1 同源路径并忽略空查询值', () => {
@@ -260,6 +283,12 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.match(dialogSource, /data-account-password-access-field/)
   assert.match(dialogSource, /form\.elements\.passwordAccessTtlMode\.value = 'finite'/)
   assert.match(apiSource, /spatialPreview: body => apiRequest/)
+  assert.match(apiSource, /syncShare: \(id, body\) => apiRequest\(`\/kml\/shares\/\$\{pathId\(id\)\}\/sync`/)
+  assert.match(viewSource, /data-account-action="sync-share"/)
+  assert.match(viewSource, /个 KML 待同步/)
+  assert.match(viewSource, /outdatedShareReferenceCount/)
+  assert.match(appSource, /showConfirm\('将当前 KML 内容发布到此分享链接/)
+  assert.match(appSource, /accountApi\.syncShare\(id, \{ revision \}\)/)
   assert.match(dialogSource, /centerLatitude/)
   assert.match(dialogSource, /centerLongitude/)
   assert.match(dialogSource, /name="bearing"/)

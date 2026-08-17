@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 5
+export const USER_DATABASE_VERSION = 6
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -145,6 +145,8 @@ CREATE TABLE IF NOT EXISTS kml_shares (
   revision INTEGER NOT NULL DEFAULT 1,
   blocked_reason TEXT NOT NULL DEFAULT '',
   access_count INTEGER NOT NULL DEFAULT 0,
+  content_revision INTEGER NOT NULL DEFAULT 1,
+  content_published_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_accessed_at TEXT,
@@ -158,6 +160,9 @@ CREATE TABLE IF NOT EXISTS kml_share_items (
   position INTEGER NOT NULL DEFAULT 0,
   visible_by_default INTEGER NOT NULL DEFAULT 1 CHECK (visible_by_default IN (0, 1)),
   display_name TEXT NOT NULL DEFAULT '',
+  published_revision INTEGER NOT NULL DEFAULT 0,
+  published_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  published_at TEXT,
   UNIQUE (share_id, kml_id),
   FOREIGN KEY (share_id) REFERENCES kml_shares(id) ON DELETE CASCADE,
   FOREIGN KEY (kml_id) REFERENCES kml_documents(id) ON DELETE CASCADE
@@ -401,6 +406,86 @@ export class UserDatabase {
         }
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(5, new Date().toISOString())
+      })
+    }
+
+    if (current < 6) {
+      this.transaction(() => {
+        const tableExists = (tableName) => Boolean(this.database.prepare(`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+        `).get(tableName))
+        const columnsOf = (tableName) => tableExists(tableName)
+          ? this.database.prepare(`PRAGMA table_info(${tableName})`).all().map(column => column.name)
+          : []
+        const addColumn = (tableName, columnName, definition) => {
+          if (!columnsOf(tableName).includes(columnName)) {
+            this.database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+          }
+        }
+        const now = new Date().toISOString()
+
+        if (tableExists('kml_shares')) {
+          addColumn('kml_shares', 'content_revision', 'INTEGER NOT NULL DEFAULT 1')
+          addColumn('kml_shares', 'content_published_at', 'TEXT')
+          this.database.prepare(`
+            UPDATE kml_shares
+            SET content_published_at = COALESCE(content_published_at, updated_at, created_at, ?)
+          `).run(now)
+        }
+
+        if (tableExists('kml_share_items')) {
+          addColumn('kml_share_items', 'published_revision', 'INTEGER NOT NULL DEFAULT 0')
+          addColumn('kml_share_items', 'published_snapshot_json', "TEXT NOT NULL DEFAULT '{}'")
+          addColumn('kml_share_items', 'published_at', 'TEXT')
+
+          if (tableExists('kml_documents')) {
+            const rows = this.database.prepare(`
+              SELECT i.id AS share_item_id, s.content_published_at,
+                     k.name, k.description, k.coord_correction, k.theme, k.color,
+                     k.lock_drag, k.enabled, k.is_live_track, k.features_json,
+                     k.feature_count, k.byte_size, k.revision, k.updated_at
+              FROM kml_share_items i
+              JOIN kml_shares s ON s.id = i.share_id
+              JOIN kml_documents k ON k.id = i.kml_id
+            `).all()
+            const update = this.database.prepare(`
+              UPDATE kml_share_items SET
+                published_revision = ?, published_snapshot_json = ?, published_at = ?
+              WHERE id = ?
+            `)
+            rows.forEach(row => {
+              let features = []
+              try {
+                const parsed = JSON.parse(row.features_json || '[]')
+                if (Array.isArray(parsed)) features = parsed
+              } catch {}
+              const snapshot = {
+                name: row.name,
+                description: row.description,
+                coordCorrection: row.coord_correction,
+                theme: row.theme,
+                color: row.color,
+                lockDrag: Boolean(row.lock_drag),
+                enabled: Boolean(row.enabled),
+                isLiveTrack: Boolean(row.is_live_track),
+                features,
+                featureCount: Number(row.feature_count || 0),
+                byteSize: Number(row.byte_size || 0),
+                revision: Number(row.revision || 0),
+                updatedAt: row.updated_at,
+              }
+              update.run(
+                Number(row.revision || 0),
+                JSON.stringify(snapshot),
+                row.content_published_at || now,
+                row.share_item_id
+              )
+            })
+          }
+        }
+
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(6, now)
       })
     }
 

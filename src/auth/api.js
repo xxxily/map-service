@@ -1,5 +1,8 @@
+import { applyEmbeddedRequestContext, isEmbeddedDocument } from './embed-context.js'
+
 const API_BASE = '/api/v1'
 const CSRF_COOKIE_NAME = 'map_csrf_token'
+const EMBEDDED_CSRF_COOKIE_NAME = `${CSRF_COOKIE_NAME}_embed`
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 export class ApiError extends Error {
@@ -31,11 +34,17 @@ export function parseCookieString (cookieString = '') {
     }, {})
 }
 
-export function getCsrfToken (cookieString) {
+export function getCsrfToken (cookieString, options = {}) {
   const source = cookieString === undefined && typeof document !== 'undefined'
     ? document.cookie
     : cookieString
-  return parseCookieString(source)[CSRF_COOKIE_NAME] || ''
+  const cookies = parseCookieString(source)
+  const embedded = options.embedded === undefined
+    ? (cookieString === undefined && isEmbeddedDocument())
+    : options.embedded === true
+  return embedded
+    ? (cookies[EMBEDDED_CSRF_COOKIE_NAME] || cookies[CSRF_COOKIE_NAME] || '')
+    : (cookies[CSRF_COOKIE_NAME] || cookies[EMBEDDED_CSRF_COOKIE_NAME] || '')
 }
 
 export function shouldAttachCsrf (method) {
@@ -84,6 +93,7 @@ export async function apiRequest (path, options = {}) {
   const method = String(options.method || 'GET').toUpperCase()
   const headers = new Headers(options.headers || {})
   headers.set('Accept', 'application/json')
+  applyEmbeddedRequestContext(headers)
 
   let body
   if (options.body !== undefined) {
@@ -122,6 +132,7 @@ export async function apiDownload (path, options = {}) {
   const method = String(options.method || 'GET').toUpperCase()
   const headers = new Headers(options.headers || {})
   headers.set('Accept', options.accept || 'application/octet-stream')
+  applyEmbeddedRequestContext(headers)
   if (shouldAttachCsrf(method) && options.csrf !== false) {
     const csrfToken = getCsrfToken()
     if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
@@ -147,4 +158,4 @@ export async function apiDownload (path, options = {}) {
   }
 }
 
-export { API_BASE, CSRF_COOKIE_NAME }
+export { API_BASE, CSRF_COOKIE_NAME, EMBEDDED_CSRF_COOKIE_NAME }

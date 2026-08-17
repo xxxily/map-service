@@ -2,6 +2,9 @@ import Panzoom from '@panzoom/panzoom/dist/panzoom.es.js'
 import {
   clampMediaPreviewScale,
   getDefaultMediaPreviewTrackExpanded,
+  getMediaPreviewFeatureName,
+  getMediaPreviewHeadingTitle,
+  getMediaPreviewTrackLabel,
   getWrappedMediaIndex,
   MEDIA_PREVIEW_MAX_SCALE,
   MEDIA_PREVIEW_MIN_SCALE,
@@ -350,7 +353,11 @@ function renderMediaTrack () {
   const track = getPreviewElement('[data-media-preview-track]')
   if (!track) return
   cleanupTrackObserver()
-  const signature = activeItems.map(item => item.galleryId || `${item.type}:${item.url}`).join('|')
+  const signature = activeItems.map(item => [
+    item.galleryId || `${item.type}:${item.url}`,
+    getMediaPreviewFeatureName(item),
+    String(item.title || '').trim(),
+  ].join(':')).join('|')
   const needsBuild = track.children.length !== activeItems.length || track.dataset.signature !== signature
   if (needsBuild) {
     track.replaceChildren()
@@ -373,8 +380,13 @@ function renderMediaTrack () {
     button.dataset.mediaPreviewIndex = String(index)
     button.tabIndex = index === activeIndex ? 0 : -1
     button.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')
-    button.setAttribute('aria-label', `查看第 ${index + 1} 项，${TYPE_LABELS[item.type] || '媒体'}：${getItemTitle(item)}`)
-    button.title = `${getItemTitle(item)} · ${item.featureName || ''}`
+    const featureName = getMediaPreviewFeatureName(item)
+    const trackLabel = getMediaPreviewTrackLabel(item, index)
+    button.classList.toggle('has-feature-name', Boolean(featureName))
+    button.setAttribute('aria-label', featureName
+      ? `查看${featureName}的第 ${index + 1} 项${TYPE_LABELS[item.type] || '媒体'}`
+      : `查看第 ${index + 1} 项，${TYPE_LABELS[item.type] || '媒体'}：${getItemTitle(item)}`)
+    button.title = featureName || getItemTitle(item)
     if (item.type === 'image') {
       const image = document.createElement('img')
       const imageUrl = String(item.thumbnailUrl || item.renderUrl || item.url || '')
@@ -397,7 +409,7 @@ function renderMediaTrack () {
     }
     const marker = document.createElement('span')
     marker.className = 'media-preview-track-marker'
-    marker.textContent = String(index + 1).padStart(2, '0')
+    marker.textContent = trackLabel
     button.appendChild(marker)
     track.appendChild(button)
   })
@@ -451,12 +463,13 @@ function renderActiveItem () {
   const zoomControls = getPreviewElement('[data-media-preview-zoom-controls]')
   const typeLabel = TYPE_LABELS[item.type] || '媒体'
   const title = getItemTitle(item)
+  const headingTitle = getMediaPreviewHeadingTitle(item)
 
   root.dataset.mediaType = item.type
   root.dataset.mediaIndex = String(activeIndex)
   setText('[data-media-preview-kind]', typeLabel)
   setText('[data-media-preview-collection]', activeCollectionTitle || item.kmlName || '媒体预览')
-  setText('[data-media-preview-title]', title)
+  setText('[data-media-preview-title]', headingTitle)
   setText('[data-media-preview-position]', activeItems.length > 1 ? `${activeIndex + 1} / ${activeItems.length}` : '单项')
   setText('[data-media-preview-caption]', title)
   setText('[data-media-preview-url]', getDisplayUrl(item))

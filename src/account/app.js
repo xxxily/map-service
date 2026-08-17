@@ -48,7 +48,7 @@ const KML_WRITE_ACTIONS = new Set([
 ])
 const SHARE_ACTIONS = new Set([
   'create-share', 'go-kml-share', 'copy-share', 'edit-share', 'toggle-share',
-  'rotate-share', 'revoke-share',
+  'sync-share', 'rotate-share', 'revoke-share',
 ])
 const FAVORITE_ACTIONS = new Set(['edit-favorite', 'cancel-favorite-edit', 'delete-favorite'])
 const SESSION_ACTIONS = new Set(['revoke-session', 'logout-other-sessions'])
@@ -732,6 +732,21 @@ async function rotateShare (id) {
   render()
 }
 
+async function syncShareContent (id, revision) {
+  if (!requireCapability('canManageShares')) return
+  const confirmed = await showConfirm('将当前 KML 内容发布到此分享链接，并重新计算可查看地图范围。同步失败时外部链接仍保留原内容。', {
+    title: '同步分享内容',
+    confirmText: '同步内容',
+  })
+  if (!confirmed) return
+  const result = await runAction(() => accountApi.syncShare(id, { revision }), {
+    progress: '正在同步分享内容…',
+    success: '分享内容已同步',
+  })
+  if (result) await loadShares()
+  render()
+}
+
 async function copyShareUrl (value) {
   const url = new URL(value, window.location.origin).href
   try {
@@ -838,6 +853,8 @@ async function handleClick (event) {
     await copyShareUrl(target.dataset.url)
   } else if (action === 'edit-share') {
     await editShare(id)
+  } else if (action === 'sync-share') {
+    await syncShareContent(id, Number(target.dataset.revision || 0))
   } else if (action === 'toggle-share') {
     const result = await runAction(() => accountApi.updateShare(id, {
       revision: Number(target.dataset.revision),

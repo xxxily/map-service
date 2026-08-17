@@ -37,3 +37,32 @@ test('3D editing refreshes or closes the popup without moving the camera', () =>
   assert.match(editFlow, /showFeaturePopup\(kmlId, featureId/)
   assert.doesNotMatch(editFlow, /focusFeature\(/)
 })
+
+test('3D panel feature focus replaces older flights and opens content after a short arrival', () => {
+  const map3d = readSource('../src/map3d/kml.js')
+  const focusFlow = map3d.slice(
+    map3d.indexOf('function focusFeature'),
+    map3d.indexOf('function activateFeatureForMedia'),
+  )
+
+  assert.match(focusFlow, /viewerRef\.camera\.cancelFlight\?\.\(\)/)
+  assert.match(focusFlow, /const focusRequestId = \+\+featureFocusRequestId/)
+  assert.match(focusFlow, /duration: 0\.28/)
+  assert.match(focusFlow, /complete: showFocusedFeature/)
+  assert.match(focusFlow, /if \(focusRequestId !== featureFocusRequestId\) return/)
+  assert.doesNotMatch(focusFlow, /duration: 0\.8/)
+  assert.doesNotMatch(focusFlow, /850/)
+})
+
+test('3D point creation preserves the current camera after saving', () => {
+  const map3d = readSource('../src/map3d/kml.js')
+  const createFlow = map3d.slice(
+    map3d.indexOf('async function createPointAtLatLng'),
+    map3d.indexOf('function togglePickupMode'),
+  )
+
+  assert.match(createFlow, /renderKmlLayers\(kmlFile\)/)
+  assert.match(createFlow, /updateKmlPanelUI\(\)/)
+  assert.doesNotMatch(createFlow, /focusFeature\(/)
+  assert.doesNotMatch(createFlow, /flyTo/)
+})

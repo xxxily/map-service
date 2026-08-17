@@ -1,4 +1,5 @@
-import { apiRequest } from './api.js'
+import { ApiError, apiRequest } from './api.js'
+import { isEmbeddedDocument } from './embed-context.js'
 
 const listeners = new Set()
 
@@ -99,7 +100,14 @@ export async function login (credentials) {
     body: credentials,
     csrf: false,
   })
-  return refreshAuthSession()
+  const auth = await refreshAuthSession()
+  if (isEmbeddedDocument() && !auth.authenticated) {
+    throw new ApiError('当前浏览器未能建立侧栏登录会话，请确认使用最新版 Chrome，并允许此站点保存网站数据。', {
+      status: 401,
+      code: 'EMBEDDED_SESSION_UNAVAILABLE',
+    })
+  }
+  return auth
 }
 
 export async function register (registration) {

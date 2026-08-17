@@ -136,6 +136,90 @@ test('user login uses HttpOnly session cookie and readable CSRF cookie without r
   }
 })
 
+test('SidePanel iframe login issues partitioned cookies and supports authenticated KML writes', async () => {
+  const session = testSession()
+  let created = 0
+  const restore = withMockedService({
+    loginUser: async () => ({
+      sessionToken: 'embedded-session-token',
+      csrfToken: 'embedded-csrf-token',
+      maxAge: 3600000,
+      expiresAt: '2030-01-01T00:00:00.000Z',
+      user: session.user,
+    }),
+    verifyUserSession: token => token === 'embedded-session-token' ? session : null,
+    getUserSessionView: current => ({ authenticated: Boolean(current), user: current?.user || null }),
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'embedded-csrf-token') {
+        const err = new Error('请求安全校验失败')
+        err.statusCode = 403
+        err.code = 'CSRF_INVALID'
+        throw err
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'kml.own.write')
+    },
+    createUserKml: () => {
+      created += 1
+      return { id: 'kml_sidepanel', revision: 1 }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+  const embeddedHeaders = {
+    Origin: baseUrl,
+    Referer: `${baseUrl}/`,
+    'Sec-Fetch-Site': 'cross-site',
+    'X-Map-Embed-Context': 'iframe',
+  }
+
+  try {
+    const login = await requestJson(baseUrl, '/api/v1/auth/login', {
+      method: 'POST',
+      headers: embeddedHeaders,
+      body: JSON.stringify({ username: 'map-user', password: 'long-passphrase' }),
+    })
+    assert.equal(login.response.status, 200)
+    const cookies = cookieHeaders(login.response)
+    const cookieText = cookies.join('\n')
+    const embeddedSessionCookie = cookiePair(cookies, 'map_user_session_embed')
+    assert.ok(embeddedSessionCookie)
+    assert.match(cookieText, /map_user_session_embed=embedded-session-token/i)
+    assert.match(cookieText, /map_user_session_embed=[\s\S]*?HttpOnly/i)
+    assert.match(cookieText, /map_user_session_embed=[\s\S]*?Secure/i)
+    assert.match(cookieText, /map_user_session_embed=[\s\S]*?Partitioned/i)
+    assert.match(cookieText, /map_user_session_embed=[\s\S]*?Priority=High/i)
+    assert.match(cookieText, /map_user_session_embed=[\s\S]*?SameSite=None/i)
+    assert.match(cookieText, /map_csrf_token_embed=embedded-csrf-token/i)
+
+    const current = await requestJson(baseUrl, '/api/v1/auth/session', {
+      headers: {
+        Cookie: embeddedSessionCookie,
+        'X-Map-Embed-Context': 'iframe',
+      },
+    })
+    assert.equal(current.response.status, 200)
+    assert.equal(current.payload.result.authenticated, true)
+
+    const createdKml = await requestJson(baseUrl, '/api/v1/kml/files', {
+      method: 'POST',
+      headers: {
+        Cookie: embeddedSessionCookie,
+        'X-CSRF-Token': 'embedded-csrf-token',
+        'X-Map-Embed-Context': 'iframe',
+      },
+      body: JSON.stringify({ name: '侧栏 KML' }),
+    })
+    assert.equal(createdKml.response.status, 201)
+    assert.equal(createdKml.payload.result.id, 'kml_sidepanel')
+    assert.equal(created, 1)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('browser login and registration reject cross-site credential requests', async () => {
   let loginCalls = 0
   let registerCalls = 0
@@ -156,6 +240,11 @@ test('browser login and registration reject cross-site credential requests', asy
       for (const headers of [
         { Origin: 'https://attacker.example', 'Sec-Fetch-Site': 'cross-site' },
         { 'Sec-Fetch-Site': 'same-site' },
+        {
+          Origin: 'https://attacker.example',
+          'Sec-Fetch-Site': 'cross-site',
+          'X-Map-Embed-Context': 'iframe',
+        },
       ]) {
         const result = await requestJson(baseUrl, path, {
           method: 'POST',
@@ -334,6 +423,61 @@ test('share spatial preview requires authenticated CSRF-protected owner access',
     assert.equal(result.payload.result.areaKm2, 2.5)
     assert.equal(received.current, session)
     assert.equal(received.input.items[0].kmlId, 'kml-1')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('manual share content sync requires authenticated CSRF-protected owner access', async () => {
+  const session = testSession()
+  let received = null
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? session : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'csrf-token') {
+        const err = new Error('请求安全校验失败')
+        err.statusCode = 403
+        err.code = 'CSRF_INVALID'
+        throw err
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'share.own.manage')
+    },
+    syncUserKmlShareContent: (current, id, input) => {
+      received = { current, id, input }
+      return { id, revision: input.revision + 1, syncStatus: 'synced' }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    let result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_test/sync', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token' },
+      body: JSON.stringify({ revision: 3 }),
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'CSRF_INVALID')
+    assert.equal(received, null)
+
+    result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_test/sync', {
+      method: 'POST',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+      },
+      body: JSON.stringify({ revision: 3 }),
+    })
+    assert.equal(result.response.status, 200)
+    assert.equal(result.payload.result.syncStatus, 'synced')
+    assert.deepEqual(received, {
+      current: session,
+      id: 'shr_test',
+      input: { revision: 3 },
+    })
   } finally {
     await new Promise(resolve => server.close(resolve))
     restore()

@@ -4,6 +4,9 @@ import { test } from 'node:test'
 import {
   clampMediaPreviewScale,
   getDefaultMediaPreviewTrackExpanded,
+  getMediaPreviewFeatureName,
+  getMediaPreviewHeadingTitle,
+  getMediaPreviewTrackLabel,
   getWrappedMediaIndex,
   normalizeMediaPreviewItems,
 } from '../src/ui/media-preview-state.js'
@@ -19,6 +22,18 @@ test('media preview wraps gallery navigation and clamps image scale', () => {
   assert.equal(getDefaultMediaPreviewTrackExpanded(3, false), true)
   assert.equal(getDefaultMediaPreviewTrackExpanded(3, true), false)
   assert.equal(getDefaultMediaPreviewTrackExpanded(1, false), false)
+})
+
+test('media preview prefers point names and falls back to stable track numbers', () => {
+  const named = { type: 'image', title: '入口照片', featureName: '北门入口' }
+  const unnamed = { type: 'iframe', title: '' }
+
+  assert.equal(getMediaPreviewFeatureName(named), '北门入口')
+  assert.equal(getMediaPreviewHeadingTitle(named), '北门入口')
+  assert.equal(getMediaPreviewTrackLabel(named, 4), '北门入口')
+  assert.equal(getMediaPreviewFeatureName(unnamed), '')
+  assert.equal(getMediaPreviewHeadingTitle(unnamed), '页面')
+  assert.equal(getMediaPreviewTrackLabel(unnamed, 4), '05')
 })
 
 test('media preview only accepts supported HTTPS media items', () => {
@@ -44,6 +59,9 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.match(previewSource, /item\?\.renderUrl \|\| item\?\.url/)
   assert.match(previewSource, /source\.href = getOriginalContentUrl\(item\)/)
   assert.match(previewSource, /data-media-preview-track/)
+  assert.match(previewSource, /getMediaPreviewHeadingTitle/)
+  assert.match(previewSource, /getMediaPreviewTrackLabel/)
+  assert.match(stylesSource, /\.media-preview-track-item\.has-feature-name/)
   assert.match(previewSource, /data-media-preview-action="toggle-track"/)
   assert.match(previewSource, /createMediaPreviewHistoryGuard/)
   assert.match(previewSource, /data-media-preview-action="minimize"/)

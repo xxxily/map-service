@@ -152,7 +152,7 @@ function renderKmlRows (state) {
         <div class="account-row-main">
           <div class="account-row-title"><strong>${escapeHtml(item.name)}</strong>${item.isDefault ? '<span class="account-badge">默认</span>' : ''}<span class="account-badge is-muted">${kmlStatusLabel(item.status)}</span>${item.enabled === false ? '<span class="account-badge is-muted">已禁用</span>' : ''}</div>
           <p>${escapeHtml(getFeatureDescriptionText(item.description) || '暂无描述')}</p>
-          <div class="account-row-meta"><span>${Number(item.featureCount || 0).toLocaleString()} 个要素</span><span>${formatBytes(item.byteSize)}</span><span>${Number(item.shareReferenceCount || 0)} 个分享引用</span><span>${formatDateTime(item.updatedAt)}</span></div>
+          <div class="account-row-meta"><span>${Number(item.featureCount || 0).toLocaleString()} 个要素</span><span>${formatBytes(item.byteSize)}</span><span>${Number(item.shareReferenceCount || 0)} 个分享引用${Number(item.outdatedShareReferenceCount || 0) > 0 ? `（${Number(item.outdatedShareReferenceCount)} 待同步）` : ''}</span><span>${formatDateTime(item.updatedAt)}</span></div>
         </div>
         <div class="account-row-actions">
           ${item.status === 'active' ? `
@@ -250,11 +250,15 @@ function renderShares (state) {
     <section class="account-panel-section">
       <div class="account-section-heading"><div><p class="account-eyebrow">链接分享</p><h2>我的分享</h2><p>分享包可以包含 1～20 个 KML，可随时暂停、轮换链接或撤销。</p></div>${capabilities.canReadKml ? '<button type="button" class="account-secondary-button" data-account-action="go-kml-share">从 KML 创建分享</button>' : ''}</div>
       <form data-account-form="share-filter" class="account-search-form"><input name="search" value="${escapeHtml(state.shares.search)}" placeholder="搜索分享标题"><select name="status"><option value="">全部状态</option>${['active', 'paused', 'expired', 'revoked', 'blocked'].map(status => `<option value="${status}" ${state.shares.status === status ? 'selected' : ''}>${shareStatusLabel(status)}</option>`).join('')}</select><button type="submit">查询</button></form>
-      ${state.shares.items.length ? `<div class="account-share-grid">${state.shares.items.map(item => `
+      ${state.shares.items.length ? `<div class="account-share-grid">${state.shares.items.map(item => {
+        const pendingSyncItemCount = Math.max(0, Number(item.pendingSyncItemCount || 0))
+        const contentPending = item.syncStatus === 'pending' || pendingSyncItemCount > 0
+        const canSyncContent = !['revoked', 'blocked'].includes(item.status)
+        return `
         <article class="account-card account-share-card">
           <div class="account-share-heading"><div><span class="account-status is-${escapeHtml(item.status)}">${shareStatusLabel(item.status)}</span><h3>${escapeHtml(item.title)}</h3></div><strong>${Number(item.itemCount || 0)}<small> KML</small></strong></div>
           <p>${escapeHtml(item.description || '暂无描述')}</p>
-          <dl><div><dt>访问次数</dt><dd>${Number(item.accessCount || 0).toLocaleString()} 次</dd></div><div><dt>访问策略</dt><dd>${escapeHtml(shareAccessPolicyLabel(item))}</dd></div><div><dt>地图范围</dt><dd>${escapeHtml(spatialAccessLabel(item))}</dd></div><div><dt>范围状态</dt><dd>${escapeHtml(spatialStatusLabel(item))}</dd></div><div><dt>密码授权</dt><dd>${escapeHtml(passwordAccessLabel(item))}</dd></div><div><dt>下载</dt><dd>${item.allowDownload ? '允许' : '禁止'}</dd></div><div><dt>密码</dt><dd>${item.passwordProtected ? '已设置' : '无'}</dd></div><div><dt>过期时间</dt><dd>${item.expiresAt ? formatDateTime(item.expiresAt) : '永不'}</dd></div><div><dt>创建时间</dt><dd>${formatDateTime(item.createdAt)}</dd></div><div><dt>最近访问</dt><dd>${item.lastAccessedAt ? formatDateTime(item.lastAccessedAt) : '尚无访问'}</dd></div></dl>
+          <dl><div><dt>内容状态</dt><dd>${contentPending ? `${pendingSyncItemCount || 1} 个 KML 待同步` : '内容已同步'}</dd></div><div><dt>访问次数</dt><dd>${Number(item.accessCount || 0).toLocaleString()} 次</dd></div><div><dt>访问策略</dt><dd>${escapeHtml(shareAccessPolicyLabel(item))}</dd></div><div><dt>地图范围</dt><dd>${escapeHtml(spatialAccessLabel(item))}</dd></div><div><dt>范围状态</dt><dd>${escapeHtml(spatialStatusLabel(item))}</dd></div><div><dt>密码授权</dt><dd>${escapeHtml(passwordAccessLabel(item))}</dd></div><div><dt>下载</dt><dd>${item.allowDownload ? '允许' : '禁止'}</dd></div><div><dt>密码</dt><dd>${item.passwordProtected ? '已设置' : '无'}</dd></div><div><dt>过期时间</dt><dd>${item.expiresAt ? formatDateTime(item.expiresAt) : '永不'}</dd></div><div><dt>创建时间</dt><dd>${formatDateTime(item.createdAt)}</dd></div><div><dt>最近访问</dt><dd>${item.lastAccessedAt ? formatDateTime(item.lastAccessedAt) : '尚无访问'}</dd></div></dl>
           ${item.status === 'blocked' ? `<div class="account-share-blocked-reason"><strong>封禁原因</strong><span>${escapeHtml(item.blockedReason || '管理员未填写原因')}</span></div>` : ''}
           <code>${escapeHtml(item.shareUrl || `/share/${item.publicId}`)}</code>
           <small>更新于 ${formatDateTime(item.updatedAt)}</small>
@@ -262,12 +266,13 @@ function renderShares (state) {
             <a href="${escapeHtml(item.shareUrl || `/share/${item.publicId}`)}" target="_blank" rel="noopener">查看</a>
             <button type="button" data-account-action="copy-share" data-url="${escapeHtml(item.shareUrl || `/share/${item.publicId}`)}">复制链接</button>
             ${!['revoked', 'blocked'].includes(item.status) ? `<button type="button" data-account-action="edit-share" data-id="${escapeHtml(item.id)}">编辑</button>` : ''}
+            ${canSyncContent ? `<button type="button" data-account-action="sync-share" data-id="${escapeHtml(item.id)}" data-revision="${Number(item.revision || 0)}" ${contentPending ? '' : 'disabled'}>同步内容</button>` : ''}
             ${item.status === 'active' ? `<button type="button" data-account-action="toggle-share" data-id="${escapeHtml(item.id)}" data-status="paused" data-revision="${Number(item.revision || 0)}">暂停</button>` : ''}
             ${item.status === 'paused' ? `<button type="button" data-account-action="toggle-share" data-id="${escapeHtml(item.id)}" data-status="active" data-revision="${Number(item.revision || 0)}">恢复</button>` : ''}
             ${!['revoked', 'blocked'].includes(item.status) ? `<button type="button" data-account-action="rotate-share" data-id="${escapeHtml(item.id)}">轮换链接</button><button type="button" class="is-danger" data-account-action="revoke-share" data-id="${escapeHtml(item.id)}">撤销</button>` : ''}
           </div>
         </article>
-      `).join('')}</div>` : '<div class="account-empty"><strong>暂无分享</strong><p>进入“我的 KML”多选文件，即可生成稳定的只读分享链接。</p></div>'}
+      `}).join('')}</div>` : '<div class="account-empty"><strong>暂无分享</strong><p>进入“我的 KML”多选文件，即可生成稳定的只读分享链接。</p></div>'}
     </section>
   `
 }

@@ -34,6 +34,7 @@ export const accountApi = {
   getShare: id => apiRequest(`/kml/shares/${pathId(id)}`),
   createShare: body => apiRequest('/kml/shares', { method: 'POST', body }),
   updateShare: (id, body) => apiRequest(`/kml/shares/${pathId(id)}`, { method: 'PUT', body }),
+  syncShare: (id, body) => apiRequest(`/kml/shares/${pathId(id)}/sync`, { method: 'POST', body }),
   rotateShareLink: id => apiRequest(`/kml/shares/${pathId(id)}/rotate-link`, { method: 'POST' }),
   revokeShare: id => apiRequest(`/kml/shares/${pathId(id)}/revoke`, { method: 'POST' }),
   reauthenticate: password => apiRequest('/auth/reauth', { method: 'POST', body: { password } }),

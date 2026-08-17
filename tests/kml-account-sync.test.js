@@ -6,9 +6,11 @@ import {
   buildKmlRecoveryResolution,
   buildKmlSyncOperations,
   getKmlSyncStatusView,
+  getPendingShareReferenceCount,
   kmlFingerprint,
   registerKmlAccountDocumentSnapshot,
   reduceKmlSyncResult,
+  resolveKmlAccountMode,
 } from '../src/map/kml-account-sync.js'
 import {
   createBrowserKmlAccountDraftStore,
@@ -261,7 +263,25 @@ test('KML account sync exposes visible save, failure and conflict states', () =>
   assert.equal(getKmlSyncStatusView('error').label, '保存失败')
   assert.equal(getKmlSyncStatusView('conflict', { message: '版本冲突' }).title, '版本冲突')
   assert.equal(getKmlSyncStatusView('readonly').label, '只读')
+  assert.equal(getKmlSyncStatusView('share-pending', { pendingShareReferenceCount: 2 }).label, '分享待同步')
+  assert.match(getKmlSyncStatusView('share-pending', { pendingShareReferenceCount: 2 }).title, /2 个分享引用/)
+  assert.equal(getKmlSyncStatusView('auth-required').label, '请先登录')
   assert.equal(getKmlSyncStatusView('guest').visible, false)
+})
+
+test('iframe 未登录时要求账号认证而不是回退访客 KML', () => {
+  assert.equal(resolveKmlAccountMode({ authenticated: true }), 'account')
+  assert.equal(resolveKmlAccountMode({ authenticated: false }, { embedded: false }), 'guest')
+  assert.equal(resolveKmlAccountMode({ authenticated: false }, { embedded: true }), 'embedded-auth-required')
+})
+
+test('KML account sync totals only outdated share references', () => {
+  assert.equal(getPendingShareReferenceCount([
+    { outdatedShareReferenceCount: 2 },
+    { outdatedShareReferenceCount: 1 },
+    { outdatedShareReferenceCount: 0 },
+  ]), 3)
+  assert.equal(getPendingShareReferenceCount(null), 0)
 })
 
 test('KML recovery draft keeps create, update and delete intent with user isolation', async () => {
@@ -302,7 +322,11 @@ test('KML recovery tombstones prevent stale drafts from resurfacing', async () =
     getItem: key => values.get(key) || null,
     setItem: (key, value) => values.set(key, value),
   }
-  const store = createBrowserKmlAccountDraftStore({ indexedDB: {}, localStorage })
+  const store = createBrowserKmlAccountDraftStore({
+    indexedDB: {},
+    localStorage,
+    localFullRecordMaxChars: 1,
+  })
   const draft = generation => buildKmlRecoveryDraft('user-a', [
     { id: 'local-a', name: `草稿 ${generation}`, features: [] },
   ], new Map(), {
@@ -324,6 +348,27 @@ test('KML recovery tombstones prevent stale drafts from resurfacing', async () =
   assert.equal(latestMetadata.generation, 5)
   assert.equal(latestMetadata.metadataOnly, true)
   await assert.rejects(store.get('user-a'), /无法读取完整 KML 恢复草稿/)
+})
+
+test('小型 KML 草稿在 IndexedDB 不可用时仍从同步 localStorage 副本恢复', async () => {
+  const values = new Map()
+  const localStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  }
+  const store = createBrowserKmlAccountDraftStore({ indexedDB: {}, localStorage })
+  const draft = buildKmlRecoveryDraft('user-sidepanel', [
+    { id: 'local-a', name: '侧栏关闭前草稿', features: [] },
+  ], new Map(), {
+    generation: 7,
+    updatedAt: '2026-08-17T10:00:00.000Z',
+  })
+
+  assert.deepEqual(await store.put(draft), { persistent: 'localstorage' })
+  const stored = JSON.parse(values.get(kmlAccountDraftStorageKey('user-sidepanel')))
+  assert.equal(stored.metadataOnly, undefined)
+  assert.equal(stored.files[0].name, '侧栏关闭前草稿')
+  assert.equal((await store.get('user-sidepanel')).generation, 7)
 })
 
 test('KML recovery keeps compatibility with legacy full localStorage drafts', async () => {
@@ -651,6 +696,21 @@ test('2D and 3D KML panels bind session expiry before account recovery and expos
   assert.match(map3dSource, /bindKmlAccountSyncStatus\(\)/)
   assert.match(mapSource, /isAccountKmlWritable\(\)/)
   assert.match(map3dSource, /isAccountKmlWritable\(\)/)
+  assert.match(mapSource, /isEmbeddedKmlAuthRequired\(\)/)
+  assert.match(map3dSource, /isEmbeddedKmlAuthRequired\(\)/)
+  assert.match(mapSource, /account\.mode === 'embedded-auth-required'/)
+  assert.match(map3dSource, /account\.mode === 'embedded-auth-required'/)
+  const mapInitialLoad = mapSource.slice(
+    mapSource.indexOf('async function loadInitialKmlFiles'),
+    mapSource.indexOf('function saveToStorage'),
+  )
+  const map3dInitialLoad = map3dSource.slice(
+    map3dSource.indexOf('async function loadInitialKmlFiles'),
+    map3dSource.indexOf('function saveToStorage'),
+  )
+  assert.ok(mapInitialLoad.indexOf('promptKmlAccountRecovery') < mapInitialLoad.indexOf('ensureDefaultKmlFile'))
+  assert.ok(map3dInitialLoad.indexOf('promptKmlAccountRecovery') < map3dInitialLoad.indexOf('ensureDefaultKmlFile'))
+  assert.doesNotMatch(mapSource, /previousDefault\.features !== defaultFile\.features/)
   assert.match(mapSource, /bindKmlAccountConflictRecovery/)
   assert.match(map3dSource, /bindKmlAccountConflictRecovery/)
   const mapDeleteHandler = mapSource.slice(
@@ -664,4 +724,6 @@ test('2D and 3D KML panels bind session expiry before account recovery and expos
   assert.ok(map3dInit.indexOf('bindAccountSessionExpiry3d()') < map3dInit.indexOf('await loadInitialKmlFiles()'))
   assert.match(recoverySource, /catch \(error\) \{\s+if \(!isAccountKmlMode\(\)\) return null/)
   assert.match(styles, /\.kml-sync-status\[data-state="conflict"\]/)
+  assert.match(styles, /\.kml-sync-status\[data-state="share-pending"\]/)
+  assert.match(styles, /\.kml-sync-status\[data-state="auth-required"\]/)
 })

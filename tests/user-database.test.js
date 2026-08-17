@@ -300,3 +300,72 @@ test('UserDatabase v5 adds spatial share fields and nullable unlimited sessions'
     database.close()
   }
 })
+
+test('UserDatabase v6 backfills published KML snapshots for existing shares', () => {
+  const rawDatabase = new DatabaseSync(':memory:')
+  rawDatabase.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations(version, applied_at) VALUES (5, '2026-08-16T00:00:00.000Z');
+    CREATE TABLE users (id TEXT PRIMARY KEY);
+    INSERT INTO users(id) VALUES ('usr_one');
+    CREATE TABLE kml_documents (
+      id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '', coord_correction TEXT NOT NULL DEFAULT 'none',
+      theme TEXT NOT NULL DEFAULT 'default', color TEXT NOT NULL DEFAULT '#0f766e',
+      lock_drag INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
+      is_live_track INTEGER NOT NULL DEFAULT 0, features_json TEXT NOT NULL DEFAULT '[]',
+      feature_count INTEGER NOT NULL DEFAULT 0, byte_size INTEGER NOT NULL DEFAULT 0,
+      revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL,
+      FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    INSERT INTO kml_documents(
+      id, owner_id, name, description, features_json, feature_count, byte_size, revision, updated_at
+    ) VALUES (
+      'kml_one', 'usr_one', '旧路线', '迁移说明',
+      '[{"id":"point-one","type":"Point","coordinates":[113.2,23.1]}]', 1, 88, 7,
+      '2026-08-16T00:01:00.000Z'
+    );
+    CREATE TABLE kml_shares (
+      id TEXT PRIMARY KEY, public_id TEXT NOT NULL UNIQUE, owner_id TEXT NOT NULL,
+      title TEXT NOT NULL, updated_at TEXT NOT NULL, created_at TEXT NOT NULL,
+      FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    INSERT INTO kml_shares(id, public_id, owner_id, title, updated_at, created_at)
+    VALUES ('shr_one', 'public-one', 'usr_one', '旧分享',
+      '2026-08-16T00:02:00.000Z', '2026-08-16T00:00:00.000Z');
+    CREATE TABLE kml_share_items (
+      id TEXT PRIMARY KEY, share_id TEXT NOT NULL, kml_id TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0, visible_by_default INTEGER NOT NULL DEFAULT 1,
+      display_name TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (share_id) REFERENCES kml_shares(id) ON DELETE CASCADE,
+      FOREIGN KEY (kml_id) REFERENCES kml_documents(id) ON DELETE CASCADE
+    );
+    INSERT INTO kml_share_items(id, share_id, kml_id)
+    VALUES ('shi_one', 'shr_one', 'kml_one');
+  `)
+
+  const database = new UserDatabase({ filePath: ':memory:', database: rawDatabase })
+  try {
+    const share = database.prepare(`
+      SELECT content_revision, content_published_at FROM kml_shares WHERE id = 'shr_one'
+    `).get()
+    assert.deepEqual({ ...share }, {
+      content_revision: 1,
+      content_published_at: '2026-08-16T00:02:00.000Z',
+    })
+    const item = database.prepare(`
+      SELECT published_revision, published_snapshot_json, published_at
+      FROM kml_share_items WHERE id = 'shi_one'
+    `).get()
+    assert.equal(item.published_revision, 7)
+    assert.equal(item.published_at, '2026-08-16T00:02:00.000Z')
+    const snapshot = JSON.parse(item.published_snapshot_json)
+    assert.equal(snapshot.name, '旧路线')
+    assert.equal(snapshot.description, '迁移说明')
+    assert.equal(snapshot.features[0].id, 'point-one')
+    assert.equal(snapshot.revision, 7)
+  } finally {
+    database.close()
+  }
+})

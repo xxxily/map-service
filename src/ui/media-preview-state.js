@@ -2,6 +2,24 @@ export const MEDIA_PREVIEW_MIN_SCALE = 1
 export const MEDIA_PREVIEW_MAX_SCALE = 6
 
 const PREVIEWABLE_TYPES = new Set(['image', 'video', 'audio', 'iframe'])
+const MEDIA_TYPE_LABELS = {
+  image: '图片',
+  video: '视频',
+  audio: '音频',
+  iframe: '页面',
+}
+
+export function getMediaPreviewFeatureName (item) {
+  return String(item?.featureName || '').trim()
+}
+
+export function getMediaPreviewHeadingTitle (item) {
+  return getMediaPreviewFeatureName(item) || String(item?.title || '').trim() || MEDIA_TYPE_LABELS[item?.type] || '媒体预览'
+}
+
+export function getMediaPreviewTrackLabel (item, index) {
+  return getMediaPreviewFeatureName(item) || String((Number.parseInt(index, 10) || 0) + 1).padStart(2, '0')
+}
 
 export function getMediaPreviewPointKey (item) {
   const kmlId = String(item?.kmlId || '')

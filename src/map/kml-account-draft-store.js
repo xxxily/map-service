@@ -2,6 +2,7 @@ const DB_NAME = 'map-service-kml-recovery'
 const DB_VERSION = 1
 const STORE_NAME = 'kml-account-drafts'
 const LOCAL_PREFIX = 'map_kml_account_recovery_v1:'
+const DEFAULT_LOCAL_FULL_RECORD_MAX_CHARS = 750000
 
 function storageKey (userId) {
   return `${LOCAL_PREFIX}${encodeURIComponent(String(userId || ''))}`
@@ -88,6 +89,11 @@ function writeLocalNewest (storage, record) {
   if (!current || isNewer(record, current)) writeLocal(storage, record)
 }
 
+function localRecordForStorage (record, maxChars) {
+  const serialized = JSON.stringify(record)
+  return serialized.length <= maxChars ? record : localMetadata(record)
+}
+
 function openDatabase (indexedDBLike) {
   return new Promise((resolve, reject) => {
     const request = indexedDBLike.open(DB_NAME, DB_VERSION)
@@ -171,6 +177,10 @@ export function createMemoryKmlAccountDraftStore () {
 export function createBrowserKmlAccountDraftStore (options = {}) {
   const indexedDBLike = options.indexedDB || globalThis.indexedDB
   const localStorageLike = options.localStorage || globalThis.localStorage
+  const localFullRecordMaxChars = Math.max(
+    0,
+    Number(options.localFullRecordMaxChars ?? DEFAULT_LOCAL_FULL_RECORD_MAX_CHARS),
+  )
   let databasePromise = null
 
   const getDatabase = () => {
@@ -215,17 +225,21 @@ export function createBrowserKmlAccountDraftStore (options = {}) {
       if (!isRecord(record)) throw new TypeError('恢复草稿记录无效')
       const normalized = structuredClone(record)
       let metadataStored = false
+      let fullRecordStored = false
       try {
-        writeLocalNewest(localStorageLike, localMetadata(normalized))
+        const localRecord = localRecordForStorage(normalized, localFullRecordMaxChars)
+        writeLocalNewest(localStorageLike, localRecord)
         metadataStored = true
+        fullRecordStored = !isMetadataOnly(localRecord)
       } catch {
         // IndexedDB may still have enough space when localStorage is full.
       }
       try {
         const database = await getDatabase()
         await indexedPutNewest(database, normalized)
-        return { persistent: metadataStored ? 'indexeddb+metadata' : 'indexeddb' }
+        return { persistent: metadataStored ? (fullRecordStored ? 'indexeddb+local' : 'indexeddb+metadata') : 'indexeddb' }
       } catch (error) {
+        if (fullRecordStored) return { persistent: 'localstorage' }
         throw new Error('IndexedDB 不可用，完整 KML 恢复草稿未持久化', { cause: error })
       }
     },
