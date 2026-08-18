@@ -4060,6 +4060,9 @@ body.media-preview-open {
   background: #172324;
   color: #b3d9d2;
   cursor: pointer;
+  contain: layout paint style;
+  content-visibility: auto;
+  contain-intrinsic-size: 54px 50px;
 }
 
 .media-preview-track-item.has-feature-name {

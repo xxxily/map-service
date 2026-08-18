@@ -25,10 +25,13 @@ test('media preview wraps gallery navigation and clamps image scale', () => {
   assert.equal(getDefaultMediaPreviewTrackExpanded(1, false), false)
 })
 
-test('media preview track keeps a bounded window for large collections', () => {
+test('media preview track exposes every gallery item for scrolling and direct selection', () => {
   assert.deepEqual(getMediaPreviewTrackWindow(4, 2), [0, 1, 2, 3])
-  assert.deepEqual(getMediaPreviewTrackWindow(300, 150), [0, 148, 149, 150, 151, 152, 299])
-  assert.ok(getMediaPreviewTrackWindow(300, 150).length <= 7)
+  const indexes = getMediaPreviewTrackWindow(300, 150)
+  assert.equal(indexes.length, 300)
+  assert.deepEqual(indexes.slice(0, 3), [0, 1, 2])
+  assert.deepEqual(indexes.slice(-3), [297, 298, 299])
+  assert.equal(indexes[150], 150)
 })
 
 test('media preview prefers point names and falls back to stable track numbers', () => {
@@ -70,6 +73,9 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.match(previewSource, /getMediaPreviewTrackLabel/)
   assert.match(stylesSource, /\.media-preview-track-item\.has-feature-name/)
   assert.match(previewSource, /data-media-preview-action="toggle-track"/)
+  assert.match(previewSource, /document\.createDocumentFragment\(\)/)
+  assert.match(previewSource, /image\.dataset\.src = imageUrl/)
+  assert.match(stylesSource, /\.media-preview-track-item\s*\{[^}]*content-visibility:\s*auto;/s)
   assert.match(previewSource, /createMediaPreviewHistoryGuard/)
   assert.match(previewSource, /data-media-preview-action="minimize"/)
   assert.match(previewSource, /data-media-preview-action="restore"/)
@@ -121,5 +127,7 @@ test('media preview cleanup releases media sources and observers between items a
   assert.match(cleanupSource, /frame\.removeAttribute\('src'\)/)
   assert.match(cleanupSource, /content\?\.replaceChildren\(\)/)
   assert.match(closeSource, /cleanupTrackObserver\(\)/)
+  assert.match(closeSource, /track\?\.replaceChildren\(\)/)
+  assert.match(closeSource, /delete track\.dataset\.signature/)
   assert.match(closeSource, /document\.removeEventListener\('keydown', onDocumentKeydown\)/)
 })

@@ -48,13 +48,7 @@ export function getDefaultMediaPreviewTrackExpanded (total, touchFirst = false) 
 export function getMediaPreviewTrackWindow (total, activeIndex, radius = 2) {
   const count = Math.max(0, Number.parseInt(total, 10) || 0)
   if (!count) return []
-  const active = getWrappedMediaIndex(activeIndex, count)
-  const windowRadius = Math.max(1, Number.parseInt(radius, 10) || 2)
-  const indexes = new Set([0, count - 1])
-  for (let index = active - windowRadius; index <= active + windowRadius; index += 1) {
-    if (index >= 0 && index < count) indexes.add(index)
-  }
-  return [...indexes].sort((left, right) => left - right)
+  return Array.from({ length: count }, (_, index) => index)
 }
 
 export function normalizeMediaPreviewItems (items, fallbackType = '') {

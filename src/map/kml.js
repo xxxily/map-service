@@ -92,7 +92,7 @@ const KML_LAST_TARGET_KEY = 'map_kml_last_target_id'
 const KML_COORD_CORRECTION = 'wgs84-to-gcj02'
 const KML_POINT_LABEL_MAX_LENGTH = 18
 const KML_POINT_LABEL_MIN_ZOOM = 14
-const KML_POINT_LABEL_LIMIT = 120
+const KML_POINT_LABEL_BATCH_SIZE = 40
 const KML_POINT_LABEL_DELAY_MS = 240
 const DEFAULT_KML_ID = 'default-kml'
 const DEFAULT_KML_NAME = '默认标注'
@@ -107,6 +107,8 @@ let kmlViewportRerenderBinding = null
 let kmlMapInteractionBinding = null
 let kmlPointLabelSyncTimer = null
 let kmlPointLabelIdleTask = null
+let kmlPointLabelIdleTaskKind = ''
+let kmlPointLabelSyncRevision = 0
 const kmlViewportCache = new WeakMap()
 const leafletMediaIconCache = new Map()
 const leafletSimpleIconCache = new Map()
@@ -672,34 +674,64 @@ function bindKmlPointLabel (layer) {
   })
 }
 
+function scheduleKmlPointLabelIdleTask (callback) {
+  if (typeof window.requestIdleCallback === 'function') {
+    kmlPointLabelIdleTaskKind = 'idle'
+    kmlPointLabelIdleTask = window.requestIdleCallback(deadline => {
+      kmlPointLabelIdleTask = null
+      kmlPointLabelIdleTaskKind = ''
+      callback(deadline)
+    }, { timeout: 700 })
+    return
+  }
+  kmlPointLabelIdleTaskKind = 'timeout'
+  kmlPointLabelIdleTask = window.setTimeout(() => {
+    kmlPointLabelIdleTask = null
+    kmlPointLabelIdleTaskKind = ''
+    callback(null)
+  }, 0)
+}
+
 function syncKmlPointLabels (map) {
+  const revision = ++kmlPointLabelSyncRevision
   const zoom = Number(map?.getZoom?.())
   const bounds = zoom >= KML_POINT_LABEL_MIN_ZOOM ? map.getBounds?.() : null
   const paddedBounds = bounds?.isValid?.() ? bounds.pad(0.18) : null
+  const layers = Array.from(featureLayers.values())
   const visibleLabelKeys = new Set()
-  let visibleLabelCount = 0
-  featureLayers.forEach(layer => {
-    if (!layer?._mapServiceKmlLabel) return
-    const point = layer.getLatLng?.()
-    const labelKey = point
-      ? `${Number(point.lat).toFixed(6)}:${Number(point.lng).toFixed(6)}:${layer._mapServiceKmlLabel}`
-      : ''
-    const shouldDisplay = Boolean(
-      paddedBounds &&
-      point &&
-      paddedBounds.contains(point) &&
-      labelKey &&
-      !visibleLabelKeys.has(labelKey) &&
-      visibleLabelCount < KML_POINT_LABEL_LIMIT
-    )
-    if (shouldDisplay) {
-      visibleLabelKeys.add(labelKey)
-      visibleLabelCount += 1
-      bindKmlPointLabel(layer)
-    } else if (layer.getTooltip?.()) {
-      layer.unbindTooltip()
+  let nextIndex = 0
+
+  const processBatch = deadline => {
+    if (revision !== kmlPointLabelSyncRevision) return
+    let processed = 0
+    while (nextIndex < layers.length && processed < KML_POINT_LABEL_BATCH_SIZE) {
+      if (processed > 0 && deadline && !deadline.didTimeout && deadline.timeRemaining() <= 1) break
+      const layer = layers[nextIndex]
+      nextIndex += 1
+      processed += 1
+      if (!layer?._mapServiceKmlLabel) continue
+      const point = layer.getLatLng?.()
+      const labelKey = point
+        ? `${Number(point.lat).toFixed(6)}:${Number(point.lng).toFixed(6)}:${layer._mapServiceKmlLabel}`
+        : ''
+      const shouldDisplay = Boolean(
+        paddedBounds &&
+        point &&
+        paddedBounds.contains(point) &&
+        labelKey &&
+        !visibleLabelKeys.has(labelKey)
+      )
+      if (shouldDisplay) {
+        visibleLabelKeys.add(labelKey)
+        bindKmlPointLabel(layer)
+      } else if (layer.getTooltip?.()) {
+        layer.unbindTooltip()
+      }
     }
-  })
+    if (nextIndex < layers.length) scheduleKmlPointLabelIdleTask(processBatch)
+  }
+
+  scheduleKmlPointLabelIdleTask(processBatch)
 }
 
 function clearKmlPointLabels () {
@@ -709,12 +741,18 @@ function clearKmlPointLabels () {
 }
 
 function cancelKmlPointLabelSync () {
-  if (kmlPointLabelSyncTimer) window.clearTimeout(kmlPointLabelSyncTimer)
+  kmlPointLabelSyncRevision += 1
+  if (kmlPointLabelSyncTimer !== null) window.clearTimeout(kmlPointLabelSyncTimer)
   kmlPointLabelSyncTimer = null
-  if (kmlPointLabelIdleTask !== null && typeof window.cancelIdleCallback === 'function') {
-    window.cancelIdleCallback(kmlPointLabelIdleTask)
+  if (kmlPointLabelIdleTask !== null) {
+    if (kmlPointLabelIdleTaskKind === 'idle' && typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(kmlPointLabelIdleTask)
+    } else {
+      window.clearTimeout(kmlPointLabelIdleTask)
+    }
   }
   kmlPointLabelIdleTask = null
+  kmlPointLabelIdleTaskKind = ''
 }
 
 function cancelKmlScheduledTasks () {
@@ -1914,13 +1952,6 @@ function scheduleKmlPointLabelSync (map) {
   cancelKmlPointLabelSync()
   kmlPointLabelSyncTimer = window.setTimeout(() => {
     kmlPointLabelSyncTimer = null
-    if (typeof window.requestIdleCallback === 'function') {
-      kmlPointLabelIdleTask = window.requestIdleCallback(() => {
-        kmlPointLabelIdleTask = null
-        syncKmlPointLabels(map)
-      }, { timeout: 700 })
-      return
-    }
     syncKmlPointLabels(map)
   }, KML_POINT_LABEL_DELAY_MS)
 }

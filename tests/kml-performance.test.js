@@ -31,11 +31,12 @@ test('KML feature focus opens visible points immediately and never queues a long
   assert.equal(getKmlFeatureFocusPlan({ type: 'LineString', targetInView: false }).method, 'fit-bounds')
 })
 
-test('2D KML map options prioritize continuous wheel input over marker zoom animation', () => {
+test('2D map performance options preserve continuous Leaflet zoom transitions', () => {
   const options = getKmlLeafletPerformanceOptions()
   assert.equal(options.preferCanvas, true)
-  assert.equal(options.zoomAnimation, false)
-  assert.equal(options.markerZoomAnimation, false)
+  assert.equal(options.zoomAnimation, true)
+  assert.equal(options.fadeAnimation, true)
+  assert.equal(options.markerZoomAnimation, true)
   assert.equal(options.wheelDebounceTime, 8)
   assert.ok(options.zoomSnap <= 0.5)
 })
@@ -92,14 +93,18 @@ test('KML feature rows skip offscreen layout and paint work', () => {
   assert.match(featureRule, /contain-intrinsic-size:\s*36px/)
 })
 
-test('KML point labels are deduplicated, bounded and mounted only when the browser is idle', () => {
+test('KML point labels are deduplicated and every visible label is mounted in idle batches', () => {
   const source = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
   assert.match(source, /const KML_POINT_LABEL_MIN_ZOOM = 14/)
-  assert.match(source, /const KML_POINT_LABEL_LIMIT = 120/)
+  assert.match(source, /const KML_POINT_LABEL_BATCH_SIZE = 40/)
   assert.match(source, /visibleLabelKeys = new Set\(\)/)
-  assert.match(source, /visibleLabelCount < KML_POINT_LABEL_LIMIT/)
+  assert.match(source, /const layers = Array\.from\(featureLayers\.values\(\)\)/)
+  assert.match(source, /nextIndex < layers\.length/)
+  assert.match(source, /processed < KML_POINT_LABEL_BATCH_SIZE/)
+  assert.match(source, /scheduleKmlPointLabelIdleTask/)
   assert.match(source, /window\.requestIdleCallback/)
   assert.match(source, /cancelKmlPointLabelSync\(\)/)
+  assert.doesNotMatch(source, /KML_POINT_LABEL_LIMIT|visibleLabelCount\s*</)
 })
 
 test('2D KML viewport work is lifecycle-bound and cancelled when the map unloads', () => {

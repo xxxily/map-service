@@ -56,9 +56,11 @@ export function getKmlFeatureFocusPlan (options = {}) {
 export function getKmlLeafletPerformanceOptions () {
   return {
     preferCanvas: true,
-    zoomAnimation: false,
-    fadeAnimation: false,
-    markerZoomAnimation: false,
+    // These transitions keep the previous rendered frame visible while the
+    // next tile level is prepared. Disabling them exposes the map background.
+    zoomAnimation: true,
+    fadeAnimation: true,
+    markerZoomAnimation: true,
     wheelDebounceTime: 8,
     wheelPxPerZoomLevel: 45,
     zoomSnap: 0.5,

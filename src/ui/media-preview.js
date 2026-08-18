@@ -22,6 +22,7 @@ const TYPE_LABELS = {
 }
 
 let activeItems = []
+let activeItemsRevision = 0
 let activeIndex = 0
 let previousFocus = null
 let panzoom = null
@@ -353,92 +354,89 @@ function renderIframe (item) {
 function renderMediaTrack () {
   const track = getPreviewElement('[data-media-preview-track]')
   if (!track) return
-  cleanupTrackObserver()
+  if (activeItems.length < 2) {
+    cleanupTrackObserver()
+    track.replaceChildren()
+    delete track.dataset.signature
+    return
+  }
+  if (!isTrackExpanded && !track.children.length) return
   const visibleIndexes = getMediaPreviewTrackWindow(activeItems.length, activeIndex)
-  const signature = visibleIndexes.map(index => {
-    const item = activeItems[index]
-    return [
-      index,
-    item.galleryId || `${item.type}:${item.url}`,
-    getMediaPreviewFeatureName(item),
-    String(item.title || '').trim(),
-    ].join(':')
-  }).join('|')
+  const signature = `${activeItemsRevision}:${activeItems.length}`
   const needsBuild = track.children.length !== visibleIndexes.length || track.dataset.signature !== signature
   if (needsBuild) {
+    cleanupTrackObserver()
     track.replaceChildren()
     track.dataset.signature = signature
-  }
-  visibleIndexes.forEach((index, windowIndex) => {
-    const item = activeItems[index]
-    if (!needsBuild) {
-      const existing = track.children[windowIndex]
-      if (existing) {
-        existing.classList.toggle('is-active', index === activeIndex)
-        existing.tabIndex = index === activeIndex ? 0 : -1
-        existing.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')
-        return
-      }
-    }
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'media-preview-track-item'
-    button.dataset.mediaPreviewAction = 'select'
-    button.dataset.mediaPreviewIndex = String(index)
-    button.tabIndex = index === activeIndex ? 0 : -1
-    button.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')
-    const featureName = getMediaPreviewFeatureName(item)
-    const trackLabel = getMediaPreviewTrackLabel(item, index)
-    button.classList.toggle('has-feature-name', Boolean(featureName))
-    button.setAttribute('aria-label', featureName
-      ? `查看${featureName}的第 ${index + 1} 项${TYPE_LABELS[item.type] || '媒体'}`
-      : `查看第 ${index + 1} 项，${TYPE_LABELS[item.type] || '媒体'}：${getItemTitle(item)}`)
-    button.title = featureName || getItemTitle(item)
-    if (item.type === 'image') {
-      const image = document.createElement('img')
-      const imageUrl = String(item.thumbnailUrl || item.renderUrl || item.url || '')
-      image.alt = ''
-      image.loading = 'lazy'
-      image.referrerPolicy = 'no-referrer'
-      image.addEventListener('error', () => button.classList.add('is-load-error'), { once: true })
-      if ('IntersectionObserver' in window) {
-        image.dataset.src = imageUrl
+    const fragment = document.createDocumentFragment()
+    visibleIndexes.forEach(index => {
+      const item = activeItems[index]
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'media-preview-track-item'
+      button.dataset.mediaPreviewAction = 'select'
+      button.dataset.mediaPreviewIndex = String(index)
+      button.tabIndex = index === activeIndex ? 0 : -1
+      button.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')
+      const featureName = getMediaPreviewFeatureName(item)
+      const trackLabel = getMediaPreviewTrackLabel(item, index)
+      button.classList.toggle('has-feature-name', Boolean(featureName))
+      button.setAttribute('aria-label', featureName
+        ? `查看${featureName}的第 ${index + 1} 项${TYPE_LABELS[item.type] || '媒体'}`
+        : `查看第 ${index + 1} 项，${TYPE_LABELS[item.type] || '媒体'}：${getItemTitle(item)}`)
+      button.title = featureName || getItemTitle(item)
+      if (item.type === 'image') {
+        const image = document.createElement('img')
+        const imageUrl = String(item.thumbnailUrl || item.renderUrl || item.url || '')
+        image.alt = ''
+        image.loading = 'lazy'
+        image.referrerPolicy = 'no-referrer'
+        image.addEventListener('error', () => button.classList.add('is-load-error'), { once: true })
+        if ('IntersectionObserver' in window) {
+          image.dataset.src = imageUrl
+        } else {
+          image.src = imageUrl
+        }
+        button.appendChild(image)
       } else {
-        image.src = imageUrl
+        const icon = document.createElement('span')
+        icon.className = `media-preview-track-icon media-preview-track-icon-${item.type}`
+        icon.setAttribute('aria-hidden', 'true')
+        icon.textContent = getItemTypeIcon(item.type)
+        button.appendChild(icon)
       }
-      button.appendChild(image)
-    } else {
-      const icon = document.createElement('span')
-      icon.className = `media-preview-track-icon media-preview-track-icon-${item.type}`
-      icon.setAttribute('aria-hidden', 'true')
-      icon.textContent = getItemTypeIcon(item.type)
-      button.appendChild(icon)
+      const marker = document.createElement('span')
+      marker.className = 'media-preview-track-marker'
+      marker.textContent = trackLabel
+      button.appendChild(marker)
+      fragment.appendChild(button)
+    })
+    track.appendChild(fragment)
+    if ('IntersectionObserver' in window) {
+      trackObserver = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return
+          const image = entry.target
+          image.src = image.dataset.src || ''
+          image.removeAttribute('data-src')
+          trackObserver?.unobserve(image)
+        })
+      }, { root: track, rootMargin: '0px 160px' })
+      track.querySelectorAll('img[data-src]').forEach(image => trackObserver.observe(image))
     }
-    const marker = document.createElement('span')
-    marker.className = 'media-preview-track-marker'
-    marker.textContent = trackLabel
-    button.appendChild(marker)
-    track.appendChild(button)
-  })
-  if ('IntersectionObserver' in window) {
-    trackObserver = new IntersectionObserver(entries => {
-      entries.forEach(entry => {
-        if (!entry.isIntersecting) return
-        const image = entry.target
-        image.src = image.dataset.src || ''
-        image.removeAttribute('data-src')
-        trackObserver?.unobserve(image)
-      })
-    }, { root: track, rootMargin: '0px 160px' })
-    track.querySelectorAll('img[data-src]').forEach(image => trackObserver.observe(image))
   }
-  track.querySelectorAll('.media-preview-track-item').forEach(button => {
-    const index = Number(button.dataset.mediaPreviewIndex)
-    button.classList.toggle('is-active', index === activeIndex)
-    button.tabIndex = index === activeIndex ? 0 : -1
-    button.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')
-  })
-  const activeButton = track.querySelector('.media-preview-track-item.is-active')
+  const previousActive = track.querySelector('.media-preview-track-item.is-active')
+  if (previousActive && Number(previousActive.dataset.mediaPreviewIndex) !== activeIndex) {
+    previousActive.classList.remove('is-active')
+    previousActive.tabIndex = -1
+    previousActive.setAttribute('aria-current', 'false')
+  }
+  const activeButton = track.querySelector(`[data-media-preview-index="${activeIndex}"]`)
+  activeButton?.classList.add('is-active')
+  if (activeButton) {
+    activeButton.tabIndex = 0
+    activeButton.setAttribute('aria-current', 'true')
+  }
   activeButton?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
 }
 
@@ -532,6 +530,7 @@ function onRootClick (event) {
     isTrackExpanded = !isTrackExpanded
     syncMediaTrackVisibility()
     if (isTrackExpanded) {
+      renderMediaTrack()
       requestAnimationFrame(() => getPreviewElement('.media-preview-track-item.is-active')?.scrollIntoView?.({ block: 'nearest', inline: 'center' }))
     }
   }
@@ -645,6 +644,13 @@ function hideMediaPreview () {
   renderGeneration += 1
   cleanupCurrentMedia()
   cleanupTrackObserver()
+  const track = getPreviewElement('[data-media-preview-track]')
+  track?.querySelectorAll('img').forEach(image => {
+    image.removeAttribute('src')
+    image.removeAttribute('data-src')
+  })
+  track?.replaceChildren()
+  if (track) delete track.dataset.signature
   root.hidden = true
   root.setAttribute('aria-hidden', 'true')
   root.removeAttribute('data-media-type')
@@ -677,6 +683,7 @@ export function openMediaPreview ({ items, index = 0, type = '', trigger = null,
   const wasHidden = root.hidden
   if (wasHidden || isMinimized) previousFocus = trigger || document.activeElement
   activeItems = normalizedItems
+  activeItemsRevision += 1
   activeIndex = getWrappedMediaIndex(index, activeItems.length)
   activeCollectionTitle = String(collectionTitle || normalizedItems[activeIndex]?.kmlName || '').trim()
   activeItemChangeHandler = typeof onActiveItemChange === 'function' ? onActiveItemChange : null
