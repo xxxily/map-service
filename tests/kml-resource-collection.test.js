@@ -10,7 +10,58 @@ import {
   serializeKmlResourceCollection,
   tryNormalizeKmlResourceCollection,
 } from '../shared/kml-resource-collection.js'
-import { createKmlResourceCollectionDisplayResolver } from '../src/map/kml-resource-collection.js'
+import {
+  createKmlResourceCollectionDisplayResolver,
+  extractKmlResourceCollectionHttpsUrls,
+  planKmlResourceCollectionBatchAdd,
+  prepareKmlResourceCollectionEditorSave,
+} from '../src/map/kml-resource-collection.js'
+
+test('resource collection editor keeps full HTTPS URLs and skips duplicate batch entries', () => {
+  assert.deepEqual(extractKmlResourceCollectionHttpsUrls([
+    'https://www.720yun.com/t/demo?scene_id=4279442&view=night',
+    'https://www.720yun.com/t/demo?scene_id=4279442&view=night',
+    'https://example.com/a.jpg。',
+  ].join('\n')), [
+    'https://www.720yun.com/t/demo?scene_id=4279442&view=night',
+    'https://example.com/a.jpg',
+  ])
+
+  const plan = planKmlResourceCollectionBatchAdd([
+    { url: 'https://example.com/existing.jpg' },
+  ], [
+    'https://example.com/existing.jpg',
+    'https://example.com/new.jpg',
+    'https://example.com/new.jpg',
+    'https://example.com/last.jpg',
+  ].join('\n'), 3)
+  assert.deepEqual(plan.additions, ['https://example.com/new.jpg', 'https://example.com/last.jpg'])
+  assert.equal(plan.duplicateCount, 1)
+  assert.equal(plan.omittedCount, 0)
+})
+
+test('resource collection editor save removes untouched placeholders and maps validation to original item', () => {
+  const emptyResult = prepareKmlResourceCollectionEditorSave({
+    version: 1,
+    viewMode: 'grid',
+    items: [{ id: 'empty', title: '', url: '', type: 'auto' }],
+  })
+  assert.deepEqual(emptyResult.value.items, [])
+  assert.equal(emptyResult.removedCount, 1)
+
+  const invalidResult = prepareKmlResourceCollectionEditorSave({
+    version: 1,
+    viewMode: 'list',
+    items: [
+      { id: 'empty', title: '', url: '', type: 'auto' },
+      { id: 'broken', title: '需要地址', url: '', type: 'iframe' },
+    ],
+  })
+  assert.equal(invalidResult.value, null)
+  assert.equal(invalidResult.itemIndex, 1)
+  assert.equal(invalidResult.field, 'url')
+  assert.equal(invalidResult.error.code, 'RESOURCE_COLLECTION_URL_REQUIRED')
+})
 
 test('resource collection normalizes stable items and preserves URL query parameters', () => {
   const normalized = normalizeKmlResourceCollection({
@@ -179,4 +230,13 @@ test('resource collection Escape handling keeps the collection open while media 
   assert.ok(
     keydownSource.indexOf('media-preview-root:not([hidden])') < keydownSource.indexOf('close()'),
   )
+})
+
+test('resource collection editor renders a mode-aware field layout and preserves batch input on rerender', () => {
+  const source = readFileSync(new URL('../src/map/kml-resource-collection.js', import.meta.url), 'utf8')
+  assert.match(source, /class="kml-resource-editor-list is-\$\{escapeHtml\(draft\.viewMode\)\}"/)
+  assert.match(source, /class="kml-resource-editor-fields"/)
+  assert.match(source, /data-resource-batch[^>]*>\$\{escapeHtml\(batchInput\)\}<\/textarea>/)
+  assert.match(source, /aria-pressed="\$\{draft\.viewMode === 'grid'\}"/)
+  assert.match(source, /prepareKmlResourceCollectionEditorSave\(draft\)/)
 })

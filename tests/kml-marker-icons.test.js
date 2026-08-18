@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
   KML_MARKER_ICON_KEYS,
@@ -91,4 +92,13 @@ test('marker picker recent storage records only successfully supplied explicit s
   const brokenStorage = createMemoryStorage({ [KML_MARKER_RECENT_STORAGE_KEY]: '{broken' })
   assert.deepEqual(readKmlMarkerRecentIcons(brokenStorage), [])
   assert.deepEqual(recordKmlMarkerRecentIcon('summit', brokenStorage), ['summit'])
+})
+
+test('Leaflet media point icon hover feedback does not change the marker positioning transform', () => {
+  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+  const iconRule = css.match(/\.kml-media-point-icon\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  const hoverRule = css.match(/\.leaflet-marker-icon\.kml-media-point-icon:hover\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  assert.doesNotMatch(iconRule, /transform-origin|\bscale\s*:/)
+  assert.doesNotMatch(hoverRule, /\bscale\s*:|\btransform\s*:/)
+  assert.match(hoverRule, /filter\s*:/)
 })
