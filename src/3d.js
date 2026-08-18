@@ -58,6 +58,7 @@ import {
 import { installMap3dCameraInteraction } from './map3d/camera-interaction.js'
 import {
   applySceneQuality,
+  formatCompactTerrainStatus,
   formatTerrainStatus,
   getHeightAdjustedExaggeration,
   getTerrainProviderPlan,
@@ -65,10 +66,6 @@ import {
   normalizeQualityPreset,
 } from './map3d/scene-quality.js'
 import { getMotionSafeDuration } from './map3d/motion.js'
-import {
-  ensureTerrainQualityControls as ensureTerrainQualityControlPanel,
-  updateTerrainQualityControls as updateTerrainQualityControlPanel,
-} from './map3d/quality-controls.js'
 import {
   createTerrainRuntimeState,
   createTerrainAutoRetryState,
@@ -205,7 +202,6 @@ let cameraInteraction = null
 let terrainRuntime = createTerrainRuntimeState()
 let terrainAutoRetry = createTerrainAutoRetryState()
 let lastTerrainExaggeration = null
-let manuallySelectedTerrainQuality = null
 const spinRate = 0.035 // 自转速度（弧度/秒）
 const MIN_CAMERA_HEIGHT = 150.0
 const MAX_CAMERA_DISTANCE = 18000000.0
@@ -313,12 +309,14 @@ function updateTerrainStatus (message, state = '') {
   }
 
   const retryButton = document.getElementById('terrain-retry-btn')
+  const statusPanel = document.getElementById('terrain-status-panel')
   if (!retryButton) return
   const control = getTerrainRetryControlState(terrainRuntime.state)
   retryButton.hidden = control.hidden
   retryButton.disabled = control.disabled
   retryButton.setAttribute('aria-busy', String(control.busy))
   retryButton.setAttribute('aria-disabled', String(control.disabled))
+  if (statusPanel) statusPanel.hidden = control.hidden
 }
 
 function getEffectiveTerrainConfig () {
@@ -327,8 +325,8 @@ function getEffectiveTerrainConfig () {
   )
   const provider = String(override.provider ?? terrainConfig.provider ?? 'arcgis-terrain3d')
   const qualitySelection = normalizeQualitySelection(
-    manuallySelectedTerrainQuality ?? override.quality ?? terrainConfig.quality ?? 'auto',
-    'balanced',
+    override.quality ?? terrainConfig.quality ?? 'auto',
+    'auto',
   )
   return {
     ...terrainConfig,
@@ -358,27 +356,6 @@ function applyCurrentSceneQuality () {
   })
 }
 
-function ensureTerrainQualityControls () {
-  return ensureTerrainQualityControlPanel(document, setTerrainQualitySelection)
-}
-
-function updateTerrainQualityControls () {
-  const panel = document.getElementById('terrain-quality-panel')
-  if (!panel) return
-  const { qualitySelection } = getEffectiveTerrainConfig()
-  updateTerrainQualityControlPanel(panel, qualitySelection, terrainRuntime.state)
-}
-
-function setTerrainQualitySelection (selection) {
-  manuallySelectedTerrainQuality = normalizeQualitySelection(selection, 'balanced')
-  if (terrainRuntime.terrain) {
-    applyCurrentSceneQuality()
-    updateTerrainExaggeration({ force: true })
-  }
-  updateTerrainQualityControls()
-  renderTerrainStatus()
-}
-
 function configureMapCanvasAccessibility () {
   const canvas = viewer?.canvas
   if (!canvas) return
@@ -406,7 +383,7 @@ function renderTerrainStatus (detail = terrainRuntime.statusDetail || '') {
     formatTerrainStatus(terrainRuntime.state, safeDetail),
     getTerrainStatusStyle(),
   )
-  updateTerrainQualityControls()
+  updateCameraStatus()
 }
 
 function updateTerrainExaggeration (options = {}) {
@@ -1264,7 +1241,9 @@ function updateCameraStatus () {
 
   const statusEl = document.getElementById('camera-status')
   if (statusEl) {
-    statusEl.textContent = `经度: ${lon}° | 纬度: ${lat}° | 海拔: ${alt} km`
+    const terrainLabel = formatCompactTerrainStatus(terrainRuntime.state, terrainRuntime.statusDetail)
+    statusEl.textContent = `经度 ${lon}° · 纬度 ${lat}° · 海拔 ${alt} km · ${terrainLabel}`
+    statusEl.setAttribute('aria-label', `${statusEl.textContent}。${formatTerrainStatus(terrainRuntime.state, terrainRuntime.statusDetail)}`)
   }
 }
 
@@ -1280,9 +1259,7 @@ function bindUiEvents () {
     adminItem: menu.querySelector('[data-admin-identity-item]'),
   })
 
-  ensureTerrainQualityControls()
   configureMapCanvasAccessibility()
-  updateTerrainQualityControls()
 
   const modeToggleBtn = document.getElementById('map3d-mode-toggle')
   if (modeToggleBtn) {

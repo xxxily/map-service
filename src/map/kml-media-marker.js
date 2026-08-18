@@ -190,12 +190,19 @@ export function getKmlMediaListIcon (feature) {
   const model = getMarkerModel(feature)
   const glyph = model?.iconPaths || ''
   if (!glyph) return ''
-  if (model?.iconKey) {
-    const value = `<svg class="svg-icon kml-media-list-icon kml-media-list-icon-${descriptor.type}" style="color:${model.color}" viewBox="0 0 24 24" role="img" aria-label="${descriptor.label}" xmlns="http://www.w3.org/2000/svg"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${glyph}</g></svg>`
-    if (feature && typeof feature === 'object') MARKER_LIST_ICON_CACHE.set(feature, { signature, value })
-    return value
-  }
-  const value = `<svg class="svg-icon kml-media-list-icon kml-media-list-icon-${descriptor.type}" style="color:${model.color}" viewBox="0 0 32 30" role="img" aria-label="${descriptor.label}" xmlns="http://www.w3.org/2000/svg"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${glyph}</g></svg>`
+  const value = renderMarkerListIcon(model, descriptor)
   if (feature && typeof feature === 'object') MARKER_LIST_ICON_CACHE.set(feature, { signature, value })
   return value
+}
+
+function renderMarkerListIcon (model, descriptor = model) {
+  if (!model?.iconPaths || !descriptor?.type) return ''
+  const viewBox = model.iconKey ? '0 0 24 24' : '0 0 32 30'
+  return `<svg class="svg-icon kml-media-list-icon kml-media-list-icon-${descriptor.type}" style="color:${model.color}" viewBox="${viewBox}" role="img" aria-label="${descriptor.label}" xmlns="http://www.w3.org/2000/svg"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${model.iconPaths}</g></svg>`
+}
+
+export function getKmlMediaProviderListIcon (provider) {
+  const model = PROVIDER_MARKERS[String(provider || '').trim()]
+  if (!model) return ''
+  return renderMarkerListIcon(model, model)
 }

@@ -4,6 +4,7 @@ import {
   getKmlMediaBillboard,
   getKmlMediaListIcon,
   getKmlMediaMarkerDescriptor,
+  getKmlMediaProviderListIcon,
 } from '../src/map/kml-media-marker.js'
 
 test('KML image feature receives an identifiable 2D marker icon', () => {
@@ -67,6 +68,9 @@ test('Douyin and 720yun features receive distinct provider-specific marker icons
   }).image)
   assert.match(douyinListIcon, /kml-provider-logo-douyin/)
   assert.match(panoramaBillboard, /kml-provider-logo-720yun/)
+  assert.match(getKmlMediaProviderListIcon('douyin'), /kml-provider-logo-douyin/)
+  assert.match(getKmlMediaProviderListIcon('720yun'), /kml-provider-logo-720yun/)
+  assert.equal(getKmlMediaProviderListIcon('unknown'), '')
 })
 
 test('an explicit user marker icon overrides provider and generic media icons', () => {

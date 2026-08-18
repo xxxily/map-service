@@ -33,7 +33,7 @@ body.admin-view #app-version {
   display: none !important;
 }
 
-/* 保留并弱化 Cesium 与当前数据服务商要求展示的署名。 */
+/* 保留数据服务商署名，但去掉干扰视线的 Cesium 品牌图标。 */
 .cesium-viewer-bottom {
   display: block !important;
   position: absolute !important;
@@ -50,6 +50,12 @@ body.admin-view #app-version {
   line-height: 1.35;
   pointer-events: auto;
   user-select: text;
+}
+
+.cesium-viewer .cesium-widget-credits img[title="Cesium"],
+.cesium-viewer .cesium-widget-credits img[title="Cesium ion"],
+.cesium-viewer .cesium-widget-credits a[href="https://cesium.com/"] {
+  display: none !important;
 }
 
 .cesium-viewer .cesium-widget-credits {
@@ -84,6 +90,18 @@ body.admin-view #app-version {
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
+}
+
+.map3d-visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 #app-version {
@@ -157,6 +175,11 @@ body.admin-view #app-version {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.terrain-status-panel[hidden],
+.terrain-quality-panel {
+  display: none !important;
 }
 
 .terrain-status {

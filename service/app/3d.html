@@ -9,10 +9,10 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/pwa-icon.svg">
     <title>三维地球 - 混合地图</title>
-    <script type="module" crossorigin src="/assets/map3d-BDWMRRRH.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/access-control-DRce6ixW.js">
-    <link rel="stylesheet" crossorigin href="/assets/access-control-Di6Yd5GS.css">
-    <link rel="stylesheet" crossorigin href="/assets/map3d-NqJt-09Q.css">
+    <script type="module" crossorigin src="/assets/map3d-CM1TpBcX.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/access-control-DusbCveJ.js">
+    <link rel="stylesheet" crossorigin href="/assets/access-control-BJbJosfi.css">
+    <link rel="stylesheet" crossorigin href="/assets/map3d-C4bt7yes.css">
   </head>
   <body>
     <div id="map-search-mod">
@@ -56,8 +56,8 @@
       <span>2D</span>
     </button>
 
-    <div id="terrain-status-panel" class="terrain-status-panel">
-      <div id="terrain-status" class="terrain-status" role="status" aria-live="polite" aria-atomic="true">地形：等待进入 3D 模式</div>
+    <div id="terrain-status-panel" class="terrain-status-panel" hidden>
+      <div id="terrain-status" class="map3d-visually-hidden" role="status" aria-live="polite" aria-atomic="true">地形：等待进入 3D 模式</div>
       <button type="button" id="terrain-retry-btn" class="terrain-retry-btn" aria-describedby="terrain-status" aria-label="重新加载地形" hidden>重试</button>
     </div>
 

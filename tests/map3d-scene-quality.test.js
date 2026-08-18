@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   applySceneQuality,
+  formatCompactTerrainStatus,
   formatTerrainStatus,
   getHeightAdjustedExaggeration,
   getRecommendedPixelRatio,
@@ -63,4 +64,10 @@ test('terrain status never includes hidden provider details by itself', () => {
   assert.equal(formatTerrainStatus('standby'), '地形：等待进入 3D 模式')
   assert.equal(formatTerrainStatus('active', '1.35x'), '地形：真实地形已验证 · 1.35x')
   assert.equal(formatTerrainStatus('fallback'), '地形：已回退平面模式')
+})
+
+test('compact terrain status fits beside camera coordinates', () => {
+  assert.equal(formatCompactTerrainStatus('active', '1.18x'), '真实地形 1.18×')
+  assert.equal(formatCompactTerrainStatus('loading'), '地形加载中')
+  assert.equal(formatCompactTerrainStatus('fallback', '上游服务不可用'), '平面模式')
 })

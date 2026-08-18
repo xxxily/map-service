@@ -13,6 +13,7 @@ import {
 } from './media-preview-state.js'
 import { createMediaPreviewHistoryGuard } from './media-preview-history.js'
 import { isTouchFirstEnvironment } from './touch-environment.js'
+import { getKmlMediaProviderListIcon } from '../map/kml-media-marker.js'
 
 const TYPE_LABELS = {
   image: '图片',
@@ -96,8 +97,8 @@ function createPreviewRoot () {
           <button type="button" class="media-preview-icon-button media-preview-restore" data-media-preview-action="restore" aria-label="展开媒体预览" title="展开媒体预览">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
           </button>
-          <a class="media-preview-source" data-media-preview-source target="_blank" rel="noopener noreferrer" title="打开原始文件">
-            <span class="media-preview-source-label">原始文件</span><span aria-hidden="true">↗</span>
+          <a class="media-preview-source" data-media-preview-source target="_blank" rel="noopener noreferrer" aria-label="打开原始文件" title="打开原始文件">
+            <svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5"/><path d="m10 14 9-9"/><path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>
           </a>
           <button type="button" class="media-preview-icon-button media-preview-close" data-media-preview-action="close" aria-label="关闭预览" title="关闭预览">×</button>
         </div>
@@ -402,7 +403,13 @@ function renderMediaTrack () {
         const icon = document.createElement('span')
         icon.className = `media-preview-track-icon media-preview-track-icon-${item.type}`
         icon.setAttribute('aria-hidden', 'true')
-        icon.textContent = getItemTypeIcon(item.type)
+        const providerIcon = item.type === 'iframe' ? getKmlMediaProviderListIcon(item.provider) : ''
+        if (providerIcon) {
+          icon.classList.add('media-preview-track-provider-icon')
+          icon.innerHTML = providerIcon
+        } else {
+          icon.textContent = getItemTypeIcon(item.type)
+        }
         button.appendChild(icon)
       }
       const marker = document.createElement('span')
@@ -481,9 +488,10 @@ function renderActiveItem () {
   setText('[data-media-preview-url]', getDisplayUrl(item))
   if (source) {
     source.href = getOriginalContentUrl(item)
-    source.title = item.type === 'iframe' ? '打开原始页面' : '打开原始文件'
+    const sourceLabel = item.type === 'iframe' ? '打开原始页面' : '打开原始文件'
+    source.title = sourceLabel
+    source.setAttribute('aria-label', sourceLabel)
   }
-  setText('.media-preview-source-label', item.type === 'iframe' ? '原始页面' : '原始文件')
   const hasMultipleItems = activeItems.length > 1
   if (previousButton) previousButton.hidden = !hasMultipleItems
   if (nextButton) nextButton.hidden = !hasMultipleItems

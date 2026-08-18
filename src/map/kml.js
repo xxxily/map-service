@@ -61,7 +61,6 @@ import {
   enrichKmlDescriptionWithShareLinks,
   getEditableKmlDescription,
 } from '../integrations/kml-share-links.js'
-import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
 import { transferKmlFeature } from './kml-feature-operations.js'
 import {
   expandKmlViewportBounds,
@@ -765,7 +764,7 @@ function cancelKmlScheduledTasks () {
   cancelKmlPointLabelSync()
 }
 
-function bindMobileMediaPointInteraction (layer, kmlFile, feature) {
+function bindMediaPointInteraction (layer, kmlFile, feature) {
   if (!hasKmlFeaturePreviewMedia(feature)) return
 
   const defaultPopupHandler = layer._openPopup
@@ -780,9 +779,8 @@ function bindMobileMediaPointInteraction (layer, kmlFile, feature) {
     pressState = null
   }
 
-  const isTouchPointer = event => isTouchFirstEnvironment() &&
+  const isPrimaryPointer = event =>
     event?.isPrimary !== false &&
-    event?.pointerType !== 'mouse' &&
     (event?.button === undefined || event.button === 0)
 
   const bindMarkerElement = () => {
@@ -791,7 +789,7 @@ function bindMobileMediaPointInteraction (layer, kmlFile, feature) {
     element.dataset.kmlMobileMediaBound = 'true'
 
     const onPointerDown = event => {
-      if (!isTouchPointer(event)) return
+      if (!isPrimaryPointer(event)) return
       clearPress()
       const startX = Number(event.clientX)
       const startY = Number(event.clientY)
@@ -839,10 +837,6 @@ function bindMobileMediaPointInteraction (layer, kmlFile, feature) {
   layer.on('remove', clearPress)
   layer.on('dragstart', clearPress)
   layer.on('click', event => {
-    if (!isTouchFirstEnvironment()) {
-      defaultPopupHandler?.call(layer, event)
-      return
-    }
     if (Date.now() < suppressClickUntil) {
       suppressClickUntil = 0
       return
@@ -935,7 +929,7 @@ function renderFeature (map, kmlFile, feature) {
       minWidth: 270,
     })
     if (feature.type === 'Point' && mediaMarker) {
-      bindMobileMediaPointInteraction(layer, kmlFile, feature)
+      bindMediaPointInteraction(layer, kmlFile, feature)
     }
     featureLayers.set(getFeatureLayerKey(kmlId, feature.id), layer)
   }

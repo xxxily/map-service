@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
   ensureTerrainQualityControls,
@@ -111,4 +112,19 @@ test('quality controls keep selection and actual flat-mode preset explicit', () 
   const fallback = updateTerrainQualityControls(panel, 'quality', 'fallback')
   assert.equal(fallback.label, '渲染质量：高质量（平面模式按节能执行）')
   assert.equal(panel.querySelector('#terrain-quality-quality').classList.contains('is-selected'), true)
+})
+
+test('3D map keeps automatic quality without rendering the quality panel', () => {
+  const source = readFileSync(new URL('../src/3d.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../3d.html', import.meta.url), 'utf8')
+  const styles = readFileSync(new URL('../src/map3d-styles.css', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(source, /ensureTerrainQualityControls\(\)/)
+  assert.doesNotMatch(source, /setTerrainQualitySelection/)
+  assert.match(source, /formatCompactTerrainStatus\(terrainRuntime\.state, terrainRuntime\.statusDetail\)/)
+  assert.match(html, /id="terrain-status-panel" class="terrain-status-panel" hidden/)
+  assert.match(html, /id="camera-status" class="camera-status"/)
+  assert.match(styles, /\.terrain-quality-panel\s*\{\s*display:\s*none !important;/s)
+  assert.match(styles, /img\[title="Cesium"\]/)
+  assert.match(styles, /img\[title="Cesium ion"\]/)
 })

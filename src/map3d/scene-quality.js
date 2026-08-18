@@ -141,3 +141,19 @@ export function formatTerrainStatus (state, detail = '') {
   }
   return `${labels[state] || labels.fallback}${suffix}`
 }
+
+export function formatCompactTerrainStatus (state, detail = '') {
+  const labels = {
+    standby: '地形待命',
+    disabled: '平面模式',
+    loading: '地形加载中',
+    verifying: '地形校验中',
+    active: '真实地形',
+    degraded: '地形异常',
+    fallback: '平面模式',
+  }
+  const label = labels[state] || labels.fallback
+  if (state !== 'active') return label
+  const normalizedDetail = String(detail || '').trim().replace(/x$/i, '×')
+  return normalizedDetail ? `${label} ${normalizedDetail}` : label
+}

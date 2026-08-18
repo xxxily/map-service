@@ -753,7 +753,7 @@ function getPickedKmlMeta (windowPosition) {
   return viewerRef?.scene?.pick?.(windowPosition)?.id?._map3dKmlFeature || null
 }
 
-function getMobileMediaPointTarget (meta) {
+function getMediaPointTarget (meta) {
   if (!meta) return null
   const { kmlFile, feature } = getFeatureById(meta.kmlId, meta.featureId)
   if (!kmlFile || feature?.type !== 'Point' || !hasKmlFeaturePreviewMedia(feature)) return null
@@ -1247,8 +1247,8 @@ function initLongPressPointCreation (options = {}) {
 
     const windowPosition = getCanvasPointerPosition(canvas, event)
     const pickedMeta = getPickedKmlMeta(windowPosition)
-    if (event.pointerType !== 'mouse' && isTouchFirstEnvironment() && pickedMeta) {
-      const mediaTarget = getMobileMediaPointTarget(pickedMeta)
+    if (event.isPrimary !== false && (event.button === undefined || event.button === 0) && pickedMeta) {
+      const mediaTarget = getMediaPointTarget(pickedMeta)
       if (mediaTarget) {
         pressState = {
           kind: 'media',
@@ -1279,14 +1279,16 @@ function initLongPressPointCreation (options = {}) {
         return
       }
 
-      // A long press on an existing KML feature must never create a new point.
-      pressState = {
-        kind: 'feature',
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
+      if (event.pointerType !== 'mouse' && isTouchFirstEnvironment()) {
+        // A long press on an existing KML feature must never create a new point.
+        pressState = {
+          kind: 'feature',
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+        }
+        return
       }
-      return
     }
 
     if (!allowPointCreation) return
@@ -2249,7 +2251,7 @@ function bindCanvasPickEvents () {
       mobileMediaClickSuppression = null
 
       closeFeaturePopup()
-      const mediaTarget = isTouchFirstEnvironment() ? getMobileMediaPointTarget(meta) : null
+      const mediaTarget = getMediaPointTarget(meta)
       if (mediaTarget) {
         openKmlFeatureMediaPreview(mediaTarget.kmlFile, mediaTarget.feature, {
           trigger: viewerRef.canvas,
