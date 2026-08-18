@@ -86,6 +86,19 @@ test('new files and imports keep only the active KML expanded', () => {
   assert.match(source, /expandKmlFileExclusively\(newKml\.id\)/)
 })
 
+test('2D point creation preserves the current map center and zoom after saving', () => {
+  const source = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
+  const createFlow = source.slice(
+    source.indexOf('async function createPointAtLatLng'),
+    source.indexOf('function togglePickupMode'),
+  )
+
+  assert.match(createFlow, /renderFeature\(map, kmlFile, newFeat\)/)
+  assert.match(createFlow, /updateKmlPanelUI\(map\)/)
+  assert.doesNotMatch(createFlow, /focusFeature\(/)
+  assert.doesNotMatch(createFlow, /fitBounds|setView|panInside|panTo|flyTo/)
+})
+
 test('KML feature rows skip offscreen layout and paint work', () => {
   const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
   const featureRule = styles.match(/\.kml-feature-item\s*\{[\s\S]*?\n}/)?.[0] || ''

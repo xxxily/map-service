@@ -1749,7 +1749,6 @@ async function createPointAtLatLng (map, latlng, options = {}) {
   }
 
   updateKmlPanelUI(map)
-  focusFeature(map, kmlFile.id, newFeat.id)
   if (enriched.warnings.length) {
     await showAlert(enriched.warnings.join('；'), { title: '点位已保存' })
   }

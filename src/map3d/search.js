@@ -1,12 +1,51 @@
-import { Cartesian3, Color, HeightReference, LabelStyle, VerticalOrigin, Cartesian2 } from 'cesium'
+import {
+  Cartesian2,
+  Cartesian3,
+  Cartographic,
+  Color,
+  HeightReference,
+  LabelStyle,
+  Math as CesiumMath,
+  VerticalOrigin,
+} from 'cesium'
 import { flyToLngLat } from './location.js'
 import {
   normalizeSearchHistoryItem,
   renderSearchHistoryDropdown,
   saveSearchHistory,
 } from '../map/search-history.js'
+import { createAmapSearchBias } from '../map/search-bias.js'
 
 let currentSearchEntity = null
+
+function getViewerSearchCenter (viewer) {
+  const camera = viewer?.camera
+  const scene = viewer?.scene
+  const canvas = scene?.canvas
+  const ellipsoid = scene?.globe?.ellipsoid
+  if (camera?.pickEllipsoid && canvas && ellipsoid) {
+    const target = camera.pickEllipsoid(
+      new Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2),
+      ellipsoid,
+    )
+    if (target) {
+      const cartographic = Cartographic.fromCartesian(target, ellipsoid)
+      if (cartographic) {
+        return {
+          lng: CesiumMath.toDegrees(cartographic.longitude),
+          lat: CesiumMath.toDegrees(cartographic.latitude),
+        }
+      }
+    }
+  }
+
+  const fallback = camera?.positionCartographic
+  if (!fallback) return null
+  return {
+    lng: CesiumMath.toDegrees(fallback.longitude),
+    lat: CesiumMath.toDegrees(fallback.latitude),
+  }
+}
 
 function showSearchResult3d (viewer, item) {
   const normalized = normalizeSearchHistoryItem(item)
@@ -55,6 +94,8 @@ export function initAmapSearch3d (viewer, AMap) {
 
   const autoComplete = new AMap.AutoComplete({
     input: 'tipinput',
+    city: '全国',
+    citylimit: false,
   })
 
   autoComplete.on('select', (event) => {
@@ -67,6 +108,14 @@ export function initAmapSearch3d (viewer, AMap) {
 
   const searchContainer = document.getElementById('map-search-mod')
   const searchInput = document.getElementById('tipinput')
+  const searchBias = createAmapSearchBias({
+    AMap,
+    getCenter: () => getViewerSearchCenter(viewer),
+    targets: [autoComplete],
+  })
+  searchBias.bindInput(searchInput)
+  searchBias.refresh()
+  viewer?.camera?.moveEnd?.addEventListener(searchBias.schedule)
   if (searchContainer && searchInput) {
     renderSearchHistoryDropdown(searchContainer, searchInput, 'map_search_history', item => {
       showSearchResult3d(viewer, item)

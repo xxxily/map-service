@@ -5,6 +5,7 @@ import {
   renderSearchHistoryDropdown,
   saveSearchHistory,
 } from './search-history.js'
+import { createAmapSearchBias } from './search-bias.js'
 
 let currentSearchMarker = null
 
@@ -277,6 +278,8 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   // 1. 初始化普通搜索联想
   const autoComplete = new AMap.AutoComplete({
     input: 'tipinput',
+    city: '全国',
+    citylimit: false,
   })
 
   autoComplete.on('select', (event) => {
@@ -323,9 +326,13 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   // 2. 初始化路线规划面板中的起终点联想
   const startAutoComplete = new AMap.AutoComplete({
     input: 'route-start-input',
+    city: '全国',
+    citylimit: false,
   })
   const endAutoComplete = new AMap.AutoComplete({
     input: 'route-end-input',
+    city: '全国',
+    citylimit: false,
   })
 
   // 绑定联想选中事件
@@ -366,6 +373,18 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   // 监听输入框变化，清空已失效的 POI 对象缓存并擦除路线及地图 Marker
   const startInput = document.getElementById('route-start-input')
   const endInput = document.getElementById('route-end-input')
+  const searchBias = createAmapSearchBias({
+    AMap,
+    getCenter: () => map.getCenter?.(),
+    targets: [autoComplete, startAutoComplete, endAutoComplete],
+  })
+  ;[searchInput, startInput, endInput].forEach(input => searchBias.bindInput(input))
+  searchBias.refresh()
+  map.on('moveend', searchBias.schedule)
+  map.on('unload', () => {
+    map.off('moveend', searchBias.schedule)
+    searchBias.destroy()
+  })
 
   if (startInput) {
     startInput.addEventListener('input', () => {
