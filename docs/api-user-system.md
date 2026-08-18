@@ -44,6 +44,8 @@
 
 当 map-service 被 SidePanel 类扩展页面嵌入时，登录请求携带 `X-Map-Embed-Context: iframe`，服务端额外写入 `map_user_session_embed` 和 `map_csrf_token_embed`。两者使用 `SameSite=None; Secure; Partitioned; Priority=High`，其中会话 Cookie 仍为 `HttpOnly`。嵌入请求优先使用分区 Cookie，普通标签页继续优先使用原 Cookie；API 响应不返回任何 Token 明文。
 
+如果嵌入分区会话已经撤销或过期、但浏览器仍发送旧的分区 Cookie，服务端会在响应中仅清理该分区的会话和 CSRF Cookie，不会清理普通标签页会话。前端收到 `403 CSRF_INVALID` 后会刷新认证上下文，并对可重放的 JSON 写请求最多重试一次；重试会重新读取当前 CSRF Cookie，仍失败则保留原错误。该兼容流程不接受任意来源或任意 Token，也不关闭 CSRF 校验。
+
 所有非 `GET`、`HEAD`、`OPTIONS` 的登录态写请求必须同时满足：
 
 1. 携带当前上下文对应的会话 Cookie。

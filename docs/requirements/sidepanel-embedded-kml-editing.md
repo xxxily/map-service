@@ -65,6 +65,8 @@ SidePanel 等浏览器侧栏工具会以 `chrome-extension://<扩展 ID>` 页面
   - `map_csrf_token_embed`：前端可读，属性同上
 - 嵌入请求优先读取分区会话和分区 CSRF Cookie；普通页面优先读取原 Cookie。
 - 退出登录必须尝试清理两组 Cookie；浏览器按当前顶层站点分区执行实际清理。
+- 如果分区会话已撤销或过期但 Cookie 尚未同步清除，服务端只清理失效的嵌入 Cookie，不影响普通标签页会话；客户端对可重放的 JSON 写请求刷新会话上下文后最多自动重试一次。
+- 重试必须重新读取当前上下文的 CSRF Cookie；仍失败时保留原错误，不降低 CSRF、来源或权限校验要求。
 - 不在 URL、localStorage、postMessage 或 API 响应中返回会话 Token。
 
 ### 5.3 登录来源校验
@@ -96,6 +98,7 @@ SidePanel 等浏览器侧栏工具会以 `chrome-extension://<扩展 ID>` 页面
 
 - 嵌入登录响应成功但后续会话检查仍未认证时，返回前端错误码 `EMBEDDED_SESSION_UNAVAILABLE`，提示浏览器未能建立侧栏会话。
 - 草稿存储失败继续显示 `KML_RECOVERY_UNAVAILABLE`，不得在恢复保护失败时静默发送新同步批次。
+- 嵌入写请求因旧分区 Cookie 返回一次 `403 CSRF_INVALID` 时，自动清理失效分区状态并重试一次；重试仍失败时显示原始错误并保留恢复草稿。
 - 登录失败、权限不足、版本冲突和网络错误继续使用现有统一 Dialog 与同步状态，不使用浏览器原生弹窗。
 
 ## 6. API 契约
@@ -128,6 +131,7 @@ X-CSRF-Token: <map_csrf_token_embed 的值>
 - 小型未同步草稿在 IndexedDB 不可用、iframe 快速关闭并重新打开后仍可恢复。
 - 大型草稿超过同步副本阈值时不写完整 localStorage，IndexedDB 正常时仍可恢复。
 - 会话失效后先保留草稿，再进入嵌入登录门禁，不泄露已加载的私有 KML。
+- 模拟旧分区会话与普通会话并存时，第一次写请求返回 `CSRF_INVALID` 会清理分区 Cookie，随后使用普通会话 CSRF 完成一次重试；业务操作只执行一次。
 - `npm run check`、`npm test`、`npm run build` 和 `git diff --check` 通过。
 
 ## 9. 实际环境验收记录

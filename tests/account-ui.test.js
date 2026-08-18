@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   buildApiUrl,
+  apiRequest,
   getCsrfToken,
   parseCookieString,
   shouldAttachCsrf,
@@ -68,6 +69,97 @@ test('嵌入页面请求携带受控上下文标记且普通标签页不携带',
   assert.equal(embeddedHeaders.get(EMBED_CONTEXT_HEADER), EMBED_CONTEXT_VALUE)
   const topHeaders = applyEmbeddedRequestContext(new Headers(), topWindow)
   assert.equal(topHeaders.has(EMBED_CONTEXT_HEADER), false)
+})
+
+test('嵌入写请求遇到过期分区 CSRF 后刷新上下文并只重试一次', async () => {
+  const previousWindow = globalThis.window
+  const previousDocument = globalThis.document
+  const previousFetch = globalThis.fetch
+  let cookieValue = 'map_csrf_token=ordinary-csrf; map_csrf_token_embed=stale-csrf'
+  const calls = []
+  globalThis.window = { self: {}, top: {} }
+  globalThis.document = {
+    get cookie () {
+      return cookieValue
+    },
+    set cookie (value) {
+      if (value.startsWith('map_csrf_token_embed=')) cookieValue = 'map_csrf_token=ordinary-csrf'
+    },
+  }
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options, csrf: options.headers?.get?.('X-CSRF-Token') || '' })
+    if (url === '/api/v1/auth/session') {
+      return new Response(JSON.stringify({ code: 0, result: { authenticated: true }, error: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({
+        code: -1,
+        result: null,
+        error: { code: 'CSRF_INVALID', message: '请求安全校验失败' },
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ code: 0, result: { synced: true }, error: null }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  try {
+    const result = await apiRequest('/kml/sync', {
+      method: 'POST',
+      body: { operations: [{ action: 'update' }] },
+    })
+    assert.deepEqual(result, { synced: true })
+    assert.equal(calls.length, 3)
+    assert.equal(calls[0].csrf, 'stale-csrf')
+    assert.equal(calls[1].url, '/api/v1/auth/session')
+    assert.equal(calls[2].csrf, 'ordinary-csrf')
+  } finally {
+    globalThis.window = previousWindow
+    globalThis.document = previousDocument
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('普通页面 CSRF 错误不会触发嵌入上下文重试', async () => {
+  const previousWindow = globalThis.window
+  const previousDocument = globalThis.document
+  const previousFetch = globalThis.fetch
+  let calls = 0
+  const topWindow = {}
+  topWindow.self = topWindow
+  topWindow.top = topWindow
+  globalThis.window = topWindow
+  globalThis.document = { cookie: 'map_csrf_token=csrf-token' }
+  globalThis.fetch = async () => {
+    calls += 1
+    return new Response(JSON.stringify({
+      code: -1,
+      result: null,
+      error: { code: 'CSRF_INVALID', message: '请求安全校验失败' },
+    }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  try {
+    await assert.rejects(
+      apiRequest('/kml/sync', { method: 'POST', body: { operations: [{ action: 'update' }] } }),
+      error => error.code === 'CSRF_INVALID',
+    )
+    assert.equal(calls, 1)
+  } finally {
+    globalThis.window = previousWindow
+    globalThis.document = previousDocument
+    globalThis.fetch = previousFetch
+  }
 })
 
 test('API URL 只生成 /api/v1 同源路径并忽略空查询值', () => {

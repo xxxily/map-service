@@ -220,6 +220,69 @@ test('SidePanel iframe login issues partitioned cookies and supports authenticat
   }
 })
 
+test('SidePanel stale partitioned session cookies are cleared without affecting the ordinary session', async () => {
+  const session = testSession()
+  let syncCalls = 0
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'ordinary-session' ? session : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'ordinary-csrf') {
+        const err = new Error('请求安全校验失败')
+        err.statusCode = 403
+        err.code = 'CSRF_INVALID'
+        throw err
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'kml.own.write')
+    },
+    syncUserKmlFiles: () => {
+      syncCalls += 1
+      return { results: [], syncedAt: '2030-01-01T00:00:00.000Z' }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+  const cookie = [
+    'map_user_session_embed=revoked-session',
+    'map_csrf_token_embed=revoked-csrf',
+    'map_user_session=ordinary-session',
+    'map_csrf_token=ordinary-csrf',
+  ].join('; ')
+
+  try {
+    const stale = await requestJson(baseUrl, '/api/v1/kml/sync', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'X-CSRF-Token': 'revoked-csrf',
+        'X-Map-Embed-Context': 'iframe',
+      },
+      body: JSON.stringify({ operations: [{ action: 'update', kmlId: 'kml_test', data: {} }] }),
+    })
+    assert.equal(stale.response.status, 403)
+    assert.equal(stale.payload.error.code, 'CSRF_INVALID')
+    assert.ok(cookieHeaders(stale.response).some(value => /map_user_session_embed=;/i.test(value)))
+    assert.ok(cookieHeaders(stale.response).some(value => /map_csrf_token_embed=;/i.test(value)))
+    assert.equal(syncCalls, 0)
+
+    const recovered = await requestJson(baseUrl, '/api/v1/kml/sync', {
+      method: 'POST',
+      headers: {
+        Cookie: 'map_user_session=ordinary-session; map_csrf_token=ordinary-csrf',
+        'X-CSRF-Token': 'ordinary-csrf',
+        'X-Map-Embed-Context': 'iframe',
+      },
+      body: JSON.stringify({ operations: [{ action: 'update', kmlId: 'kml_test', data: {} }] }),
+    })
+    assert.equal(recovered.response.status, 200)
+    assert.equal(syncCalls, 1)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('browser login and registration reject cross-site credential requests', async () => {
   let loginCalls = 0
   let registerCalls = 0

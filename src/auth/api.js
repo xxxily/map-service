@@ -89,6 +89,40 @@ function apiErrorFromResponse (response, payload) {
   })
 }
 
+function isReplayableBody (body) {
+  return body === undefined || body === null || typeof body === 'string'
+}
+
+function clearEmbeddedCsrfCookie () {
+  if (typeof document === 'undefined') return
+  // Match the partitioned cookie attributes used by the server. Chromium
+  // treats the local loopback origin as secure for this deletion as well.
+  document.cookie = `${EMBEDDED_CSRF_COOKIE_NAME}=; Max-Age=0; Path=/; Secure; SameSite=None; Partitioned`
+}
+
+async function refreshEmbeddedAuthContext () {
+  clearEmbeddedCsrfCookie()
+  const headers = new Headers({ Accept: 'application/json' })
+  applyEmbeddedRequestContext(headers)
+  try {
+    await fetch(buildApiUrl('/auth/session'), {
+      method: 'GET',
+      headers,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'error',
+    })
+  } catch {
+    // The original write error remains the actionable result.
+  }
+}
+
+async function requestApiResponse (url, options) {
+  const response = await fetch(url, options)
+  const payload = await readResponsePayload(response)
+  return { response, payload }
+}
+
 export async function apiRequest (path, options = {}) {
   const method = String(options.method || 'GET').toUpperCase()
   const headers = new Headers(options.headers || {})
@@ -110,7 +144,7 @@ export async function apiRequest (path, options = {}) {
     if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
   }
 
-  const response = await fetch(buildApiUrl(path, options.query), {
+  const requestOptions = {
     method,
     headers,
     body,
@@ -118,10 +152,26 @@ export async function apiRequest (path, options = {}) {
     cache: 'no-store',
     redirect: 'error',
     signal: options.signal,
-  })
-  const payload = await readResponsePayload(response)
+  }
+  let { response, payload } = await requestApiResponse(buildApiUrl(path, options.query), requestOptions)
   if (!response.ok || (payload && Object.hasOwn(payload, 'code') && payload.code !== 0)) {
-    const error = apiErrorFromResponse(response, payload)
+    let error = apiErrorFromResponse(response, payload)
+    const canRecoverCsrf = error.status === 403 && error.code === 'CSRF_INVALID' &&
+      isEmbeddedDocument() && options.csrf !== false && isReplayableBody(body) &&
+      options.retryOnCsrf !== false
+    if (canRecoverCsrf) {
+      await refreshEmbeddedAuthContext()
+      const refreshedCsrfToken = getCsrfToken()
+      if (refreshedCsrfToken) requestOptions.headers.set('X-CSRF-Token', refreshedCsrfToken)
+      else requestOptions.headers.delete('X-CSRF-Token')
+      const retried = await requestApiResponse(buildApiUrl(path, options.query), requestOptions)
+      response = retried.response
+      payload = retried.payload
+      if (response.ok && !(payload && Object.hasOwn(payload, 'code') && payload.code !== 0)) {
+        return payload && Object.hasOwn(payload, 'result') ? payload.result : payload
+      }
+      error = apiErrorFromResponse(response, payload)
+    }
     notifySessionExpired(error)
     throw error
   }

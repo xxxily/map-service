@@ -160,6 +160,28 @@ function embeddedCookieOptions (options = {}) {
   }
 }
 
+function clearStaleEmbeddedSessionCookies (req, res) {
+  if (!isEmbeddedRequest(req)) return
+  const embeddedSessionToken = getCookie(req, USER_EMBED_SESSION_COOKIE_NAME)
+  const embeddedCsrfToken = getCookie(req, USER_EMBED_CSRF_COOKIE_NAME)
+  if (!embeddedSessionToken) {
+    if (embeddedCsrfToken) {
+      res.clearCookie(USER_EMBED_CSRF_COOKIE_NAME, embeddedCookieOptions({ httpOnly: false }))
+    }
+    return
+  }
+
+  // A revoked/expired partitioned session can outlive its readable CSRF cookie.
+  // Clear only the embedded pair so a valid ordinary tab session is preserved.
+  try {
+    if (service.verifyUserSession(embeddedSessionToken)) return
+  } catch {
+    return
+  }
+  res.clearCookie(USER_EMBED_SESSION_COOKIE_NAME, embeddedCookieOptions())
+  res.clearCookie(USER_EMBED_CSRF_COOKIE_NAME, embeddedCookieOptions({ httpOnly: false }))
+}
+
 function setUserSessionCookies (req, res, login) {
   res.cookie(USER_SESSION_COOKIE_NAME, login.sessionToken, secureCookieOptions(req, { maxAge: login.maxAge }))
   res.cookie(USER_CSRF_COOKIE_NAME, login.csrfToken, secureCookieOptions(req, {
@@ -3007,6 +3029,7 @@ const simpleApi = {
 
           /* 注册路由控制函数 */
           app[method](urlPath, (req, res, next) => {
+            clearStaleEmbeddedSessionCookies(req, res)
             Promise.resolve(conf.handler(req, res, next, conf)).catch((err) => {
               serviceConfig.debug && console.error(`[${method.toUpperCase()} ${urlPath}]`, err)
               if (res.headersSent) {
