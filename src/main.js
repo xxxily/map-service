@@ -41,6 +41,7 @@ import {
   parseBoundedInteger,
 } from './map/location-track.js'
 import { initDesktopShiftDragRotate } from './map/desktop-rotation.js'
+import { getKmlLeafletPerformanceOptions } from './map/kml-performance.js'
 
 // 优化移动端手势缩放时容易误触旋转的问题：加入旋转阈值与无缝软启动交互
 if (L.Map.TouchGestures) {
@@ -181,6 +182,7 @@ async function initLeafletMap () {
     : null
 
   const map = L.map('map', {
+    ...getKmlLeafletPerformanceOptions(),
     center: restrictedCenter || shareCenter || defaultView.center,
     zoom: Number.isFinite(shareZoom) ? shareZoom : defaultView.zoom,
     minZoom: restrictedShare ? shareSpatial.minZoom : undefined,

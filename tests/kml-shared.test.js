@@ -243,3 +243,42 @@ test('SharedKmlManager validates marker icons on managed feature writes', async 
     error => error.statusCode === 400 && error.code === 'VALIDATION_FAILED'
   )
 })
+
+test('SharedKmlManager validates resource collections and reports ignored import extensions', async () => {
+  const store = new MockStore()
+  const manager = new SharedKmlManager({ store })
+  const created = await manager.create({
+    name: '资源集合',
+    features: [{
+      id: 'feat-collection',
+      type: 'Point',
+      name: '集合点',
+      coordinates: [113.26, 23.12],
+      resourceCollection: {
+        version: 1,
+        viewMode: 'grid',
+        items: [{ id: 'scene', title: '视角', url: 'https://www.720yun.com/t/demo?scene_id=1', type: 'iframe' }],
+      },
+    }],
+  })
+  assert.equal(created.features[0].resourceCollection.items[0].url, 'https://www.720yun.com/t/demo?scene_id=1')
+
+  await assert.rejects(
+    () => manager.update(created.id, {
+      features: [{
+        id: 'feat-collection',
+        type: 'Point',
+        coordinates: [113.26, 23.12],
+        resourceCollection: { version: 1, items: [{ url: 'https://cdn.example.com/a.jpg?token=secret', type: 'image' }] },
+      }],
+    }),
+    error => error.statusCode === 400 && error.code === 'VALIDATION_FAILED'
+  )
+
+  const imported = await manager.import(Buffer.from(`<?xml version="1.0"?><kml><Document><Placemark>
+    <ExtendedData><Data name="map-service:resource-collection"><value>{&quot;version&quot;:99,&quot;items&quot;:[]}</value></Data></ExtendedData>
+    <Point><coordinates>113.2,23.1,0</coordinates></Point>
+  </Placemark></Document></kml>`), '未知集合.kml')
+  assert.equal(Object.hasOwn(imported.features[0], 'resourceCollection'), false)
+  assert.equal(imported.warnings.length, 1)
+})

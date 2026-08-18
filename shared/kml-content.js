@@ -1,4 +1,5 @@
 import { getTrustedKmlShareEmbed, resolveKnownKmlShareLink } from './kml-share-links.js'
+import { tryNormalizeKmlResourceCollection } from './kml-resource-collection.js'
 
 const URL_LIMIT = 50
 const KML_MEDIA_RELAY_ENDPOINT = '/api/v1/kml/media'
@@ -7,6 +8,10 @@ const KML_MEDIA_COMPATIBILITY_RULES = new Map([
 ])
 const TWO_BULU_MEDIA_HOST = 'down-files.2bulu.com'
 const TWO_BULU_MEDIA_PATHS = new Set(['/f/d1', '/f/dn1'])
+// Media detection is used by markers, list rows, popups and the detail panel.
+// Keep the parsed view on the feature object and invalidate it when the small
+// content signature changes instead of running the HTML scanner for every use.
+const FEATURE_CONTENT_VIEW_CACHE = new WeakMap()
 
 export const CONTENT_GROUP_ORDER = ['image', 'video', 'audio', 'iframe', 'link']
 export const CONTENT_GROUP_TITLES = {
@@ -480,6 +485,61 @@ export function classifyContentUrl (value, options = {}) {
   }
 }
 
+export function buildResourceCollectionContentView (resourceCollection, options = {}) {
+  const normalized = options.normalizedResourceCollection === true
+    ? resourceCollection
+    : tryNormalizeKmlResourceCollection(resourceCollection).value
+  const groups = CONTENT_GROUP_ORDER.map(type => ({
+    type,
+    title: CONTENT_GROUP_TITLES[type],
+    items: [],
+  }))
+  const groupMap = new Map(groups.map(group => [group.type, group]))
+  const rejected = []
+  const items = normalized?.items || []
+  items.forEach((resource, index) => {
+    const classified = classifyContentUrl(resource.url, {
+      ...options,
+      index,
+      typeHint: resource.type === 'auto' ? '' : resource.type,
+      title: resource.title,
+    })
+    if (!classified.accepted) {
+      rejected.push({ url: resource.url, reason: classified.reason, collectionItemId: resource.id })
+      return
+    }
+    const item = {
+      ...classified.item,
+      id: `resource-collection-${resource.id}`,
+      collectionItemId: resource.id,
+      sourceType: 'resource-collection',
+    }
+    groupMap.get(item.type)?.items.push(item)
+  })
+  const contentSummary = {
+    imageCount: groupMap.get('image').items.length,
+    videoCount: groupMap.get('video').items.length,
+    audioCount: groupMap.get('audio').items.length,
+    iframeCount: groupMap.get('iframe').items.length,
+    linkCount: groupMap.get('link').items.length,
+  }
+  contentSummary.hasRichContent = CONTENT_GROUP_ORDER.some(type => groupMap.get(type).items.length > 0)
+  return {
+    featureId: '',
+    groups,
+    contentSummary,
+    sourceSummary: {
+      bindings: 0,
+      libraries: 0,
+      descriptionLinks: 0,
+      collectionItems: items.length,
+      rejected: rejected.length,
+      truncated: false,
+    },
+    rejected,
+  }
+}
+
 function getEmbeddedShareSourceUrls (references) {
   return new Set(references.flatMap(reference => {
     const trusted = getTrustedKmlShareEmbed(reference.url)
@@ -493,7 +553,31 @@ function isEmbeddedShareSourceReference (reference, sourceUrls) {
   return !reference.typeHint && sourceLink.recognized && sourceUrls.has(sourceLink.sourceUrl)
 }
 
-export function buildFeatureContentView (feature, options = {}) {
+function getFeatureContentViewCacheKey (feature, options = {}) {
+  const allowlist = Array.isArray(options.iframeAllowlist)
+    ? options.iframeAllowlist.map(value => String(value || '').trim()).join(',')
+    : String(options.iframeAllowlist || '')
+  return {
+    description: String(feature?.description || ''),
+    styleUrl: String(feature?.styleUrl || ''),
+    resourceCollection: feature?.resourceCollection || null,
+    includeResourceCollections: options.includeResourceCollections !== false,
+    allowlist,
+    limit: Number.isInteger(options.limit) ? options.limit : URL_LIMIT,
+  }
+}
+
+function isFeatureContentViewCacheKeyEqual (left, right) {
+  return Boolean(left && right) &&
+    left.description === right.description &&
+    left.styleUrl === right.styleUrl &&
+    left.resourceCollection === right.resourceCollection &&
+    left.includeResourceCollections === right.includeResourceCollections &&
+    left.allowlist === right.allowlist &&
+    left.limit === right.limit
+}
+
+function buildFeatureContentViewUncached (feature, options = {}) {
   const { references, truncated } = extractContentReferences(feature?.description || '', options)
   const embeddedShareSourceUrls = getEmbeddedShareSourceUrls(references)
   const styleType = inferKmlStyleContentType(feature?.styleUrl)
@@ -531,6 +615,35 @@ export function buildFeatureContentView (feature, options = {}) {
     groupMap.get(classified.item.type)?.items.push(classified.item)
   })
 
+  const collectionItems = options.includeResourceCollections === false
+    ? []
+    : Array.isArray(feature?.resourceCollection?.items)
+    ? feature.resourceCollection.items
+    : []
+  collectionItems.forEach((resource, index) => {
+    const classified = classifyContentUrl(resource?.url, {
+      ...options,
+      index: references.length + index,
+      typeHint: resource?.type === 'auto' ? '' : resource?.type,
+      title: resource?.title,
+    })
+    if (!classified.accepted) {
+      rejected.push({
+        url: String(resource?.url || ''),
+        reason: classified.reason,
+        collectionItemId: String(resource?.id || ''),
+      })
+      return
+    }
+    const item = {
+      ...classified.item,
+      id: `resource-collection-${String(resource?.id || index + 1)}`,
+      collectionItemId: String(resource?.id || ''),
+      sourceType: 'resource-collection',
+    }
+    groupMap.get(item.type)?.items.push(item)
+  })
+
   const contentSummary = {
     imageCount: groupMap.get('image').items.length,
     videoCount: groupMap.get('video').items.length,
@@ -548,11 +661,22 @@ export function buildFeatureContentView (feature, options = {}) {
       bindings: 0,
       libraries: 0,
       descriptionLinks: references.length,
+      collectionItems: collectionItems.length,
       rejected: rejected.length,
       truncated,
     },
     rejected,
   }
+}
+
+export function buildFeatureContentView (feature, options = {}) {
+  if (!feature || typeof feature !== 'object') return buildFeatureContentViewUncached(feature, options)
+  const key = getFeatureContentViewCacheKey(feature, options)
+  const cached = FEATURE_CONTENT_VIEW_CACHE.get(feature)
+  if (isFeatureContentViewCacheKeyEqual(cached?.key, key)) return cached.value
+  const value = buildFeatureContentViewUncached(feature, options)
+  FEATURE_CONTENT_VIEW_CACHE.set(feature, { key, value })
+  return value
 }
 
 export function formatContentSummary (summary = {}) {
@@ -593,28 +717,19 @@ export function inferKmlStyleContentType (styleUrl) {
 }
 
 export function getFeatureContentTypes (feature, options = {}) {
-  const { references } = extractContentReferences(feature?.description || '', options)
-  const embeddedShareSourceUrls = getEmbeddedShareSourceUrls(references)
-  const detected = references.flatMap((reference, index) => {
-    if (isEmbeddedShareSourceReference(reference, embeddedShareSourceUrls)) return []
-    const classified = classifyContentUrl(reference.url.toString(), {
-      ...options,
-      index,
-      typeHint: reference.typeHint,
-    })
-    if (!classified.accepted) return []
-    return reference.typeHint || classified.item.type
-  })
+  const view = buildFeatureContentView(feature, options)
+  const detected = view.groups
+    .filter(group => group.items.length > 0)
+    .map(group => group.type)
   const styleType = inferKmlStyleContentType(feature?.styleUrl)
   return [...new Set([styleType, ...detected].filter(Boolean))]
 }
 
 export function getFeatureContentProviders (feature, options = {}) {
-  const { references } = extractContentReferences(feature?.description || '', options)
-  return [...new Set(references.flatMap(reference => {
-    const trusted = getTrustedKmlShareEmbed(reference.url)
-    return trusted?.provider ? [trusted.provider] : []
-  }))]
+  const view = buildFeatureContentView(feature, options)
+  return [...new Set(view.groups.flatMap(group => group.items
+    .map(item => String(item?.provider || '').trim())
+    .filter(Boolean)))]
 }
 
 export function getPrimaryFeatureContentProvider (feature, options = {}) {

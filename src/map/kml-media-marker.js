@@ -63,7 +63,29 @@ const PROVIDER_MARKERS = {
   },
 }
 
-function getMarkerModel (feature) {
+const MARKER_MODEL_CACHE = new WeakMap()
+const MARKER_DESCRIPTOR_CACHE = new WeakMap()
+const MARKER_BILLBOARD_CACHE = new WeakMap()
+const MARKER_LIST_ICON_CACHE = new WeakMap()
+
+function getMarkerSignature (feature) {
+  return {
+    markerIcon: String(feature?.markerIcon || ''),
+    styleUrl: String(feature?.styleUrl || ''),
+    description: String(feature?.description || ''),
+    resourceCollection: feature?.resourceCollection || null,
+  }
+}
+
+function markerSignaturesEqual (left, right) {
+  return Boolean(left && right) &&
+    left.markerIcon === right.markerIcon &&
+    left.styleUrl === right.styleUrl &&
+    left.description === right.description &&
+    left.resourceCollection === right.resourceCollection
+}
+
+function buildMarkerModel (feature) {
   const explicitIcon = normalizeKmlMarkerIcon(feature?.markerIcon)
   if (explicitIcon) {
     const definition = getKmlMarkerIconDefinition(explicitIcon)
@@ -76,6 +98,17 @@ function getMarkerModel (feature) {
           iconPaths: definition.glyph,
         }
       : null
+  }
+
+  if (Array.isArray(feature?.resourceCollection?.items)) {
+    const definition = getKmlMarkerIconDefinition('collection')
+    return {
+      type: 'collection',
+      iconKey: 'collection',
+      label: definition.label,
+      color: definition.color,
+      iconPaths: definition.glyph,
+    }
   }
 
   const provider = getPrimaryFeatureContentProvider(feature)
@@ -91,6 +124,16 @@ function getMarkerModel (feature) {
   }
 }
 
+function getMarkerModel (feature) {
+  if (!feature || typeof feature !== 'object') return buildMarkerModel(feature)
+  const signature = getMarkerSignature(feature)
+  const cached = MARKER_MODEL_CACHE.get(feature)
+  if (markerSignaturesEqual(cached?.signature, signature)) return cached.model
+  const model = buildMarkerModel(feature)
+  MARKER_MODEL_CACHE.set(feature, { signature, model })
+  return model
+}
+
 function renderMarkerSvg (model) {
   if (!model?.color || !model?.iconPaths) return ''
   const transform = model.iconKey ? ' transform="translate(4 4)"' : ''
@@ -100,40 +143,59 @@ function renderMarkerSvg (model) {
 }
 
 export function getKmlMediaMarkerDescriptor (feature) {
+  const signature = feature && typeof feature === 'object' ? getMarkerSignature(feature) : ''
+  const cached = feature && typeof feature === 'object' ? MARKER_DESCRIPTOR_CACHE.get(feature) : null
+  if (markerSignaturesEqual(cached?.signature, signature)) return cached.value
   const model = getMarkerModel(feature)
-  if (!model) return null
-  return {
+  const svg = model ? renderMarkerSvg(model) : ''
+  const value = model ? {
     type: model.type,
     iconKey: model.iconKey || '',
     label: model.label,
-    html: `<span class="kml-media-marker kml-media-marker-${model.type}" role="img" aria-label="${model.label}">${renderMarkerSvg(model)}</span>`,
+    // Leaflet's image icon keeps one DOM node per marker. The previous nested
+    // span/SVG tree multiplied layout and paint work when several KML files
+    // were zoomed at once.
+    image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+    html: `<span class="kml-media-marker kml-media-marker-${model.type}" role="img" aria-label="${model.label}">${svg}</span>`,
     iconSize: [32, 40],
     iconAnchor: [16, 39],
     popupAnchor: [0, -36],
     // 与 KML 点位通用偏移 [-16, -18] 叠加后为 [0, -44]，留在图标正上方。
     tooltipAnchor: [16, -26],
-  }
+  } : null
+  if (feature && typeof feature === 'object') MARKER_DESCRIPTOR_CACHE.set(feature, { signature, value })
+  return value
 }
 
 export function getKmlMediaBillboard (feature) {
+  const signature = feature && typeof feature === 'object' ? getMarkerSignature(feature) : ''
+  const cached = feature && typeof feature === 'object' ? MARKER_BILLBOARD_CACHE.get(feature) : null
+  if (markerSignaturesEqual(cached?.signature, signature)) return cached.value
   const descriptor = getKmlMediaMarkerDescriptor(feature)
   if (!descriptor) return null
-  const model = getMarkerModel(feature)
-  const svg = renderMarkerSvg(model)
-  return {
+  const value = {
     ...descriptor,
-    image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+    image: descriptor.image,
   }
+  if (feature && typeof feature === 'object') MARKER_BILLBOARD_CACHE.set(feature, { signature, value })
+  return value
 }
 
 export function getKmlMediaListIcon (feature) {
+  const signature = feature && typeof feature === 'object' ? getMarkerSignature(feature) : ''
+  const cached = feature && typeof feature === 'object' ? MARKER_LIST_ICON_CACHE.get(feature) : null
+  if (markerSignaturesEqual(cached?.signature, signature)) return cached.value
   const descriptor = getKmlMediaMarkerDescriptor(feature)
   if (!descriptor) return ''
   const model = getMarkerModel(feature)
   const glyph = model?.iconPaths || ''
   if (!glyph) return ''
   if (model?.iconKey) {
-    return `<svg class="svg-icon kml-media-list-icon kml-media-list-icon-${descriptor.type}" style="color:${model.color}" viewBox="0 0 24 24" role="img" aria-label="${descriptor.label}" xmlns="http://www.w3.org/2000/svg"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${glyph}</g></svg>`
+    const value = `<svg class="svg-icon kml-media-list-icon kml-media-list-icon-${descriptor.type}" style="color:${model.color}" viewBox="0 0 24 24" role="img" aria-label="${descriptor.label}" xmlns="http://www.w3.org/2000/svg"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${glyph}</g></svg>`
+    if (feature && typeof feature === 'object') MARKER_LIST_ICON_CACHE.set(feature, { signature, value })
+    return value
   }
-  return `<svg class="svg-icon kml-media-list-icon kml-media-list-icon-${descriptor.type}" style="color:${model.color}" viewBox="0 0 32 30" role="img" aria-label="${descriptor.label}" xmlns="http://www.w3.org/2000/svg"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${glyph}</g></svg>`
+  const value = `<svg class="svg-icon kml-media-list-icon kml-media-list-icon-${descriptor.type}" style="color:${model.color}" viewBox="0 0 32 30" role="img" aria-label="${descriptor.label}" xmlns="http://www.w3.org/2000/svg"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${glyph}</g></svg>`
+  if (feature && typeof feature === 'object') MARKER_LIST_ICON_CACHE.set(feature, { signature, value })
+  return value
 }

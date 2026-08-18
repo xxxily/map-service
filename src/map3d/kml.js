@@ -23,7 +23,13 @@ import {
 import { renderKmlFileOverview } from '../map/kml-file-overview.js'
 import { transferKmlFeature } from '../map/kml-feature-operations.js'
 import { getKmlFeatureDisplayName, getKmlFeatureNamePresentation } from '../map/kml-feature-name.js'
+import { invalidateKmlMediaGallery } from '../map/kml-media-gallery.js'
 import { getKmlMediaBillboard, getKmlMediaListIcon } from '../map/kml-media-marker.js'
+import {
+  appendKmlResourceCollectionLinks,
+  isKmlResourceCollectionFeature,
+  showKmlResourceCollectionEditor,
+} from '../map/kml-resource-collection.js'
 import {
   applyKmlMarkerIconSelection,
   buildKmlMarkerIconField,
@@ -177,6 +183,7 @@ function isKmlEditable (kmlFile) {
 }
 
 function saveKmlChanges (kmlFile) {
+  invalidateKmlMediaGallery(kmlFile)
   if (kmlFile?.isPublic) {
     isPublicKmlDirty = true
   } else if (canWritePersonalKml()) {
@@ -404,6 +411,7 @@ function createPointFeature (kmlFile, latlng, result) {
     description: result.description.trim(),
     coordinates: mapLatLngToStoredCoordinate(kmlFile, latlng),
   }
+  if (result.resourceCollection) feature.resourceCollection = result.resourceCollection
   return applyKmlMarkerIconSelection(feature, result.markerIcon)
 }
 
@@ -873,7 +881,18 @@ async function handleEditFeature (kmlId, featureId) {
       type: 'text',
       required: false,
     },
-    ...(feature.type === 'Point' ? [buildKmlMarkerIconField(getEditableKmlMarkerIcon(feature))] : []),
+    ...(feature.type === 'Point' ? [
+      {
+        name: 'pointKind',
+        label: '点位类型',
+        type: 'select',
+        options: [
+          { value: 'point', label: '普通点位' },
+          { value: 'collection', label: '资源集合' },
+        ],
+      },
+      buildKmlMarkerIconField(getEditableKmlMarkerIcon(feature)),
+    ] : []),
     {
       name: 'description',
       label: '描述',
@@ -897,6 +916,7 @@ async function handleEditFeature (kmlId, featureId) {
     fields,
     values: {
       name: feature.name,
+      pointKind: isKmlResourceCollectionFeature(feature) ? 'collection' : 'point',
       markerIcon: getEditableKmlMarkerIcon(feature),
       description: getEditableKmlDescription(feature.description),
       targetKmlId: kmlFile.id,
@@ -904,7 +924,27 @@ async function handleEditFeature (kmlId, featureId) {
   })
 
   if (!result) return
-  const enriched = await enrichKmlDescriptionWithShareLinks(result.description, {
+  let resourceCollection = feature.resourceCollection || null
+  let descriptionInput = result.description
+  if (feature.type === 'Point' && result.pointKind === 'collection') {
+    resourceCollection = await showKmlResourceCollectionEditor(resourceCollection || { version: 1, viewMode: 'grid', items: [] }, {
+      title: result.name?.trim() || '编辑资源集合',
+    })
+    if (!resourceCollection) return
+  } else if (feature.type === 'Point' && resourceCollection) {
+    const conversion = await showChoiceDialog({
+      title: '转换为普通点位',
+      message: '该点位已有资源集合，请选择如何处理集合中的地址。',
+      choices: [
+        { text: '保留为描述链接', value: 'keep', class: 'app-dialog-primary' },
+        { text: '移除集合', value: 'remove' },
+      ],
+    })
+    if (!['keep', 'remove'].includes(conversion)) return
+    if (conversion === 'keep') descriptionInput = appendKmlResourceCollectionLinks(descriptionInput, resourceCollection)
+    resourceCollection = null
+  }
+  const enriched = await enrichKmlDescriptionWithShareLinks(descriptionInput, {
     previousDescription: feature.description,
   })
   const editedFeature = {
@@ -912,6 +952,8 @@ async function handleEditFeature (kmlId, featureId) {
     name: result.name.trim(),
     description: enriched.description.trim(),
   }
+  if (resourceCollection) editedFeature.resourceCollection = resourceCollection
+  else if (feature.type === 'Point') editedFeature.resourceCollection = null
   if (feature.type === 'Point') applyKmlMarkerIconSelection(editedFeature, result.markerIcon)
   else delete editedFeature.markerIcon
   const targetKmlId = String(result.targetKmlId || kmlId)
@@ -935,7 +977,10 @@ async function handleEditFeature (kmlId, featureId) {
       name: editedFeature.name,
       description: editedFeature.description,
     }
-    if (feature.type === 'Point') featurePatch.markerIcon = editedFeature.markerIcon
+    if (feature.type === 'Point') {
+      featurePatch.markerIcon = editedFeature.markerIcon
+      featurePatch.resourceCollection = editedFeature.resourceCollection
+    }
     try {
       applyFeatureOperation({
         sourceKmlId: kmlId,
@@ -955,6 +1000,10 @@ async function handleEditFeature (kmlId, featureId) {
     feature.description = editedFeature.description
     if (feature.type === 'Point') applyKmlMarkerIconSelection(feature, result.markerIcon)
     else delete feature.markerIcon
+    if (feature.type === 'Point') {
+      if (editedFeature.resourceCollection) feature.resourceCollection = editedFeature.resourceCollection
+      else delete feature.resourceCollection
+    }
     saveKmlChanges(kmlFile)
     renderKmlLayers(kmlFile)
     updateKmlPanelUI()
@@ -1055,6 +1104,15 @@ async function createPointAtLatLng (latlng, options = {}) {
       type: 'text',
       required: false,
     },
+    {
+      name: 'pointKind',
+      label: '点位类型',
+      type: 'select',
+      options: [
+        { value: 'point', label: '普通点位' },
+        { value: 'collection', label: '资源集合' },
+      ],
+    },
     buildKmlMarkerIconField('auto'),
     {
       name: 'description',
@@ -1091,6 +1149,7 @@ async function createPointAtLatLng (latlng, options = {}) {
     values: {
       kmlId: targetKmlId,
       name: '',
+      pointKind: 'point',
       markerIcon: 'auto',
       description: '',
     },
@@ -1110,11 +1169,19 @@ async function createPointAtLatLng (latlng, options = {}) {
     return
   }
 
+  let resourceCollection = null
+  if (result.pointKind === 'collection') {
+    resourceCollection = await showKmlResourceCollectionEditor({ version: 1, viewMode: 'grid', items: [] }, {
+      title: result.name?.trim() || '新建资源集合',
+    })
+    if (!resourceCollection) return
+  }
   const enriched = await enrichKmlDescriptionWithShareLinks(result.description)
   pushKmlHistory()
   const newFeature = createPointFeature(kmlFile, latlng, {
     ...result,
     description: enriched.description,
+    resourceCollection,
   })
   kmlFile.features.push(newFeature)
   expandedKmlIds.add(kmlFile.id)
@@ -1479,12 +1546,14 @@ function renderKmlCard (kmlFile) {
   const safeKmlId = escapeHtml(kmlFile.id)
   const enabled = isKmlEnabled(kmlFile)
   const expanded = expandedKmlIds.has(kmlFile.id)
-  const displayFeatures = kmlFile.isShare
-    ? (kmlFile.features || [])
-    : getTrackDisplayFeatures(kmlFile, getViewportOptions3d())
+  const displayFeatures = !expanded
+    ? []
+    : kmlFile.isShare
+      ? (kmlFile.features || [])
+      : getTrackDisplayFeatures(kmlFile, getViewportOptions3d())
   const editable = isKmlEditable(kmlFile)
   const transferable = isWritablePersonalKml(kmlFile)
-  const featureOrderingAvailable = transferable && displayFeatures.length === (kmlFile.features || []).length
+  const featureOrderingAvailable = expanded && transferable && displayFeatures.length === (kmlFile.features || []).length
   featureOrderingAvailability.set(kmlFile.id, featureOrderingAvailable)
   const personalReadOnly = !kmlFile.isPublic && !editable
   const styleEditable = (kmlFile.isPublic && !kmlFile.isShare) || editable
@@ -1531,6 +1600,7 @@ function renderKmlCard (kmlFile) {
       </div>
       ${kmlFile.loadError ? `<p class="kml-share-item-error">${escapeHtml(kmlFile.loadError)}</p>` : ''}
       <div class="kml-file-detail" id="features-${safeKmlId}" style="display: ${expanded ? 'flex' : 'none'};">
+        ${expanded ? `
         ${renderKmlFileOverview(kmlFile)}
         <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
           <div style="display: flex; flex-direction: column; gap: 4px;">
@@ -1571,6 +1641,7 @@ function renderKmlCard (kmlFile) {
           ${displayFeatures.length < (kmlFile.features || []).length ? `<div class="kml-feature-limit-note">已按当前视口和缩放级别过滤显示，共 ${(kmlFile.features || []).length} 个记录点中展示 ${displayFeatures.length} 个；导出仍包含全部记录。</div>` : ''}
           ${displayFeatures.map(feature => renderFeatureItem(kmlFile, feature, editable)).join('')}
         </div>
+        ` : ''}
       </div>
     </div>
   `
@@ -1618,7 +1689,7 @@ function updateKmlPanelUI () {
       <span>${personalExpanded ? '▲' : '▼'}</span>
     </div>
     <div id="kml-personal-list" class="kml-section-list" style="display: ${personalExpanded ? 'flex' : 'none'};">
-      ${kmlList.map(renderKmlCard).join('') || '<div class="kml-empty">无个人图层</div>'}
+      ${personalExpanded ? (kmlList.map(renderKmlCard).join('') || '<div class="kml-empty">无个人图层</div>') : ''}
     </div>
     <div class="kml-section-header" data-kml-action="toggle-section" data-section-id="public-section">
       <span>公共图层 (${publicKmlList.length})</span>
@@ -1630,7 +1701,7 @@ function updateKmlPanelUI () {
       </div>
     </div>
     <div id="kml-public-list" class="kml-section-list" style="display: ${publicExpanded ? 'flex' : 'none'};">
-      ${publicKmlList.map(renderKmlCard).join('') || '<div class="kml-empty">无已发布公共图层</div>'}
+      ${publicExpanded ? (publicKmlList.map(renderKmlCard).join('') || '<div class="kml-empty">无已发布公共图层</div>') : ''}
     </div>
   `
 }
@@ -1907,10 +1978,7 @@ function bindPanelEvents () {
     }
 
     if (action === 'toggle-collapse') {
-      const listDiv = document.getElementById(`features-${kmlId}`)
-      if (!listDiv) return
-      const willExpand = listDiv.style.display === 'none'
-      listDiv.style.display = willExpand ? 'flex' : 'none'
+      const willExpand = !expandedKmlIds.has(kmlId)
       if (willExpand) {
         expandedKmlIds.add(kmlId)
         const kmlFile = publicKmlList.find(k => k.id === kmlId)
@@ -1919,14 +1987,15 @@ function bindPanelEvents () {
             const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
             kmlFile.features = detail.features || []
             renderKmlLayers(kmlFile)
-            updateKmlPanelUI()
           } catch (err) {
+            expandedKmlIds.delete(kmlId)
             showAlert('加载公共图层详情失败')
           }
         }
       } else {
         expandedKmlIds.delete(kmlId)
       }
+      updateKmlPanelUI()
       return
     }
 

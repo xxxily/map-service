@@ -4,6 +4,34 @@ import { getKmlFeatureDisplayName } from './kml-feature-name.js'
 export const KML_PREVIEWABLE_MEDIA_TYPES = ['image', 'video', 'audio', 'iframe']
 
 const PREVIEWABLE_MEDIA_TYPE_SET = new Set(KML_PREVIEWABLE_MEDIA_TYPES)
+const KML_MEDIA_GALLERY_CACHE = new WeakMap()
+
+function getKmlMediaGalleryCacheSignature (kmlFile, options = {}) {
+  if (!kmlFile || typeof kmlFile !== 'object' || options.featureViews) return null
+  const allowlist = Array.isArray(options.contentOptions?.iframeAllowlist)
+    ? options.contentOptions.iframeAllowlist.join(',')
+    : String(options.contentOptions?.iframeAllowlist || '')
+  return {
+    id: String(kmlFile.id || ''),
+    name: String(kmlFile.name || ''),
+    allowlist,
+    includeResourceCollections: options.includeResourceCollections === true,
+    features: kmlFile.features,
+  }
+}
+
+function mediaGallerySignaturesEqual (left, right) {
+  return Boolean(left && right) &&
+    left.id === right.id &&
+    left.name === right.name &&
+    left.allowlist === right.allowlist &&
+    left.includeResourceCollections === right.includeResourceCollections &&
+    left.features === right.features
+}
+
+export function invalidateKmlMediaGallery (kmlFile) {
+  if (kmlFile && typeof kmlFile === 'object') KML_MEDIA_GALLERY_CACHE.delete(kmlFile)
+}
 
 function getSourceOrder (item, groupIndex, itemIndex) {
   const idMatch = /description-link-(\d+)$/i.exec(String(item?.id || ''))
@@ -60,20 +88,33 @@ export function flattenKmlFeatureMediaItems (feature, view, options = {}) {
 }
 
 export function buildKmlMediaGallery (kmlFile, options = {}) {
+  const signature = getKmlMediaGalleryCacheSignature(kmlFile, options)
+  const cached = signature ? KML_MEDIA_GALLERY_CACHE.get(kmlFile) : null
+  if (mediaGallerySignaturesEqual(cached?.signature, signature)) return cached.value
   const features = Array.isArray(kmlFile?.features) ? kmlFile.features : []
   const kmlId = String(kmlFile?.id || '')
   const kmlName = String(kmlFile?.name || '').trim() || '未命名 KML'
+  const includeResourceCollections = options.includeResourceCollections === true
+  const contentOptions = {
+    ...(options.contentOptions || {}),
+    includeResourceCollections,
+  }
 
-  return features.flatMap((feature, featureIndex) => {
+  const value = features.flatMap((feature, featureIndex) => {
     const featureId = String(feature?.id || '')
     const view = getFeatureViewOverride(options.featureViews, featureId)
-    return flattenKmlFeatureMediaItems(feature, view, options).map(item => ({
+    return flattenKmlFeatureMediaItems(feature, view, {
+      ...options,
+      contentOptions,
+    }).map(item => ({
       ...item,
       kmlId,
       kmlName,
       featureIndex,
     }))
   }).map((item, galleryIndex) => ({ ...item, galleryIndex }))
+  if (signature) KML_MEDIA_GALLERY_CACHE.set(kmlFile, { signature, value })
+  return value
 }
 
 export function findKmlMediaGalleryIndex (items, selection = {}) {

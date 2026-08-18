@@ -4,6 +4,7 @@ import {
   normalizeKmlMarkerIcon,
   renderKmlMarkerIconGlyph,
 } from '../../shared/kml-marker-icons.js'
+import { tryNormalizeKmlResourceCollection } from '../../shared/kml-resource-collection.js'
 
 export const KML_MARKER_RECENT_STORAGE_KEY = 'map_kml_marker_recent_icons_v1'
 export const KML_MARKER_RECENT_LIMIT = 5
@@ -122,7 +123,16 @@ export function applyKmlMarkerIconSelection (feature, value) {
 
 export function normalizeKmlFeatureMarkerIcon (feature) {
   const normalized = { ...feature }
-  if (normalized.type === 'Point') return applyKmlMarkerIconSelection(normalized, normalized.markerIcon)
+  if (normalized.type === 'Point') {
+    applyKmlMarkerIconSelection(normalized, normalized.markerIcon)
+    if (normalized.resourceCollection !== undefined) {
+      const result = tryNormalizeKmlResourceCollection(normalized.resourceCollection)
+      if (result.value) normalized.resourceCollection = result.value
+      else delete normalized.resourceCollection
+    }
+    return normalized
+  }
   delete normalized.markerIcon
+  delete normalized.resourceCollection
   return normalized
 }

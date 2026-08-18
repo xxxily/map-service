@@ -8,7 +8,10 @@ import {
   flattenKmlFeatureMediaItems,
   getKmlFeaturePopupMedia,
 } from '../src/map/kml-media-gallery.js'
-import { renderKmlFeaturePopupContent } from '../src/map/kml-content-panel.js'
+import {
+  hasKmlFeaturePreviewMedia,
+  renderKmlFeaturePopupContent,
+} from '../src/map/kml-content-panel.js'
 
 class MockStore {
   constructor () {
@@ -47,6 +50,31 @@ test('KML gallery flattens media across points and keeps the selected point inde
   assert.equal(findKmlMediaGalleryIndex(gallery, { featureId: 'feature-b', id: gallery[2].id }), 2)
   assert.equal(findKmlMediaGalleryIndex(gallery, { featureId: 'feature-b', type: 'video' }), 1)
   assert.equal(findKmlMediaGalleryIndex(gallery, { featureId: 'missing' }), 0)
+})
+
+test('file-wide media gallery leaves resource collections on their paged lazy path', () => {
+  const collection = {
+    ...createFeature('collection', '热门点位', '<img src="https://cdn.example.com/cover.jpg">'),
+    resourceCollection: {
+      version: 1,
+      viewMode: 'grid',
+      items: Array.from({ length: 300 }, (_, index) => ({
+        id: `resource-${index}`,
+        title: `资源 ${index}`,
+        url: `https://cdn.example.com/resource-${index}.jpg`,
+        type: 'image',
+      })),
+    },
+  }
+  const kml = { id: 'kml-collection', name: '集合图层', features: [collection] }
+
+  const defaultGallery = buildKmlMediaGallery(kml)
+  assert.equal(defaultGallery.length, 1)
+  assert.equal(defaultGallery[0].url, 'https://cdn.example.com/cover.jpg')
+  assert.equal(hasKmlFeaturePreviewMedia(collection), true)
+
+  const expandedGallery = buildKmlMediaGallery(kml, { includeResourceCollections: true })
+  assert.equal(expandedGallery.length, 301)
 })
 
 test('unnamed point media keeps titles empty instead of inventing a placeholder', () => {

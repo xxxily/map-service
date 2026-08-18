@@ -1,12 +1,14 @@
 import { AdminStore } from './store.js'
 import { buildFeatureContentView } from './kmlContent.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
+import { tryNormalizeKmlResourceCollection } from '../../../shared/kml-resource-collection.js'
 
 function normalizeFeatureMarkerIcons (features) {
   return (Array.isArray(features) ? features : []).map(feature => {
     const normalized = { ...feature }
     if (normalized.type !== 'Point') {
       delete normalized.markerIcon
+      delete normalized.resourceCollection
       return normalized
     }
     const markerIcon = normalizeKmlMarkerIcon(normalized.markerIcon)
@@ -18,6 +20,18 @@ function normalizeFeatureMarkerIcons (features) {
     }
     if (markerIcon) normalized.markerIcon = markerIcon
     else delete normalized.markerIcon
+    if (normalized.resourceCollection !== undefined && normalized.resourceCollection !== null) {
+      const result = tryNormalizeKmlResourceCollection(normalized.resourceCollection)
+      if (result.error) {
+        const error = new Error(result.error.message)
+        error.statusCode = 400
+        error.code = 'VALIDATION_FAILED'
+        throw error
+      }
+      normalized.resourceCollection = result.value
+    } else {
+      delete normalized.resourceCollection
+    }
     return normalized
   })
 }
@@ -26,6 +40,7 @@ function parseKml (kmlText) {
   // Regex parsing of KML features (Placemark)
   const placemarkRegex = /<Placemark[^>]*>([\s\S]*?)<\/Placemark>/gi
   const features = []
+  const warnings = []
   let match
   let i = 0
 
@@ -71,6 +86,12 @@ function parseKml (kmlText) {
     const rawStyleUrl = extractTagContent(placemarkContent, 'styleUrl')
     const markerIconMatch = /<Data\b[^>]*\bname\s*=\s*["']map-service:marker-icon["'][^>]*>([\s\S]*?)<\/Data\s*>/i.exec(placemarkContent)
     const markerIcon = normalizeKmlMarkerIcon(markerIconMatch ? extractTagContent(markerIconMatch[1], 'value') : '')
+    const collectionMatch = /<Data\b[^>]*\bname\s*=\s*["']map-service:resource-collection["'][^>]*>([\s\S]*?)<\/Data\s*>/i.exec(placemarkContent)
+    const collectionValue = collectionMatch ? extractTagContent(collectionMatch[1], 'value') : ''
+    const collectionResult = collectionValue ? tryNormalizeKmlResourceCollection(decodeXmlEntities(collectionValue)) : { value: null, error: null }
+    if (collectionResult.error) {
+      warnings.push(`第 ${i} 个标注的资源集合已忽略：${collectionResult.error.message}`)
+    }
 
     const name = rawName ? decodeXmlEntities(rawName) : `未命名要素 ${i}`
     const description = rawDesc ? decodeXmlEntities(rawDesc) : ''
@@ -115,12 +136,13 @@ function parseKml (kmlText) {
         description,
         ...(styleUrl ? { styleUrl } : {}),
         ...(markerIcon ? { markerIcon } : {}),
+        ...(collectionResult.value ? { resourceCollection: collectionResult.value } : {}),
         coordinates,
       })
     }
   }
 
-  return features
+  return { features, warnings }
 }
 
 export class SharedKmlManager {
@@ -231,17 +253,21 @@ export class SharedKmlManager {
 
   async import (fileBuffer, originalName, options = {}) {
     const kmlText = fileBuffer.toString('utf8')
-    const features = parseKml(kmlText)
+    const parsed = parseKml(kmlText)
+    const features = parsed.features
     if (features.length === 0) {
       throw new Error('KML 文件中未找到有效的点、线、面要素')
     }
     const name = (options.name || originalName || '未命名导入').trim().replace(/\.kml$/i, '')
-    return this.create({
+    const created = await this.create({
       name,
       status: options.status || 'draft',
       coordCorrection: options.coordCorrection || 'wgs84-to-gcj02',
       features,
     })
+    return parsed.warnings?.length
+      ? { ...created, warnings: parsed.warnings.slice(0, 10) }
+      : created
   }
 }
 

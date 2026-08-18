@@ -411,6 +411,44 @@ test('personal KML validates markerIcon as a Point-only built-in enum', () => {
   }
 })
 
+test('personal KML resource collections preserve safe query parameters and reject credentials', () => {
+  const harness = createHarness()
+  try {
+    const created = harness.service.createKml(harness.one, {
+      name: '资源包',
+      features: [{
+        ...point('collection-point'),
+        resourceCollection: {
+          version: 1,
+          viewMode: 'grid',
+          items: [{
+            id: 'scene',
+            title: '720 云视角',
+            url: 'https://www.720yun.com/t/demo?scene_id=4279442',
+            type: 'iframe',
+          }],
+        },
+      }],
+    })
+    assert.equal(created.features[0].resourceCollection.items[0].url, 'https://www.720yun.com/t/demo?scene_id=4279442')
+    assert.throws(
+      () => harness.service.updateKml(harness.one, created.id, {
+        revision: created.revision,
+        features: [{
+          ...point('collection-point'),
+          resourceCollection: {
+            version: 1,
+            items: [{ url: 'https://cdn.example.com/a.jpg?token=secret', type: 'image' }],
+          },
+        }],
+      }),
+      error => error.code === 'VALIDATION_FAILED' && /敏感查询参数/.test(error.message)
+    )
+  } finally {
+    harness.close()
+  }
+})
+
 test('KML import supports stable sync client id for response-loss recovery', () => {
   const harness = createHarness()
   try {
@@ -434,6 +472,22 @@ test('KML import supports stable sync client id for response-loss recovery', () 
     assert.equal(repeated.id, first.id)
     assert.equal(repeated.name, '两步路导入')
     assert.equal(harness.service.getKmlBySyncClientId(harness.two, '2bulu:request-one:source-hash'), null)
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML import ignores an invalid resource collection and returns a warning', () => {
+  const harness = createHarness()
+  try {
+    const source = `<?xml version="1.0"?><kml><Document><Placemark>
+      <ExtendedData><Data name="map-service:resource-collection"><value>{&quot;version&quot;:99,&quot;items&quot;:[]}</value></Data></ExtendedData>
+      <Point><coordinates>113.2,23.1,0</coordinates></Point>
+    </Placemark></Document></kml>`
+    const imported = harness.service.importKml(harness.one, { kmlText: source })
+    assert.equal(Object.hasOwn(imported.features[0], 'resourceCollection'), false)
+    assert.equal(imported.warnings.length, 1)
+    assert.match(imported.warnings[0], /资源集合已忽略/)
   } finally {
     harness.close()
   }
@@ -959,6 +1013,36 @@ test('independent spatial shares are readable without a password and never expos
     assert.equal(harness.service.getShareRuntimeMetrics(harness.admin).items.some(item => (
       item.shareId === share.id && item.event === 'spatial_scope_cache' && item.decision === 'hit'
     )), true)
+  } finally {
+    harness.close()
+  }
+})
+
+test('public share files strip legacy resource collection credentials from snapshots', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '历史资源包',
+      features: [point('legacy-collection')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '历史资源包',
+      items: [{ kmlId: document.id }],
+    })
+    const manifest = harness.service.getPublicShareManifest(share.publicId)
+    const itemId = manifest.items[0].shareItemId
+    const row = harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id = ?').get(itemId)
+    const snapshot = JSON.parse(row.published_snapshot_json)
+    snapshot.features[0].resourceCollection = {
+      version: 1,
+      items: [{ id: 'legacy', url: 'https://cdn.example.com/a.jpg?token=secret', type: 'image' }],
+    }
+    harness.database.prepare('UPDATE kml_share_items SET published_snapshot_json = ? WHERE id = ?')
+      .run(JSON.stringify(snapshot), itemId)
+
+    const publicFile = harness.service.getPublicShareFile(share.publicId, itemId)
+    assert.equal(Object.hasOwn(publicFile.features[0], 'resourceCollection'), false)
+    assert.doesNotMatch(JSON.stringify(publicFile), /secret|token=/i)
   } finally {
     harness.close()
   }

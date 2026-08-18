@@ -2,7 +2,7 @@
 
 > 状态：已实现，验收中  
 > 基础路径：`/api/v1`  
-> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./requirements/kml-share-spatial-access-and-semi-public-map.md)、[KML 分享发布控制与地图交互性能需求](./requirements/kml-share-publishing-and-map-interaction.md)、[SidePanel 嵌入式 KML 双屏编辑需求](./requirements/sidepanel-embedded-kml-editing.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[KML 要素组织与受控 URL 参数保留](./requirements/kml-feature-organization-and-url-preservation.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [SidePanel 双屏 KML 编辑使用说明](./user-guides/sidepanel-kml-editing.md)、[KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md)、[KML 要素整理使用说明](./user-guides/kml-feature-organization.md)、[两步路导入助手用户操作手册](./user-guides/two-bulu-import.md) 和 [KML 空间受限分享使用说明](./user-guides/kml-spatial-sharing.md)
+> 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./requirements/kml-share-spatial-access-and-semi-public-map.md)、[KML 分享发布控制与地图交互性能需求](./requirements/kml-share-publishing-and-map-interaction.md)、[KML 性能优化与资源集合点位](./requirements/kml-performance-and-resource-collections.md)、[SidePanel 嵌入式 KML 双屏编辑需求](./requirements/sidepanel-embedded-kml-editing.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[KML 要素组织与受控 URL 参数保留](./requirements/kml-feature-organization-and-url-preservation.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [SidePanel 双屏 KML 编辑使用说明](./user-guides/sidepanel-kml-editing.md)、[KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md)、[KML 要素整理使用说明](./user-guides/kml-feature-organization.md)、[资源集合使用说明](./user-guides/kml-resource-collections.md)、[两步路导入助手用户操作手册](./user-guides/two-bulu-import.md) 和 [KML 空间受限分享使用说明](./user-guides/kml-spatial-sharing.md)
 
 本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。
 
@@ -253,6 +253,26 @@ KML 写入模型：
       "description": "现场入口",
       "markerIcon": "viewpoint",
       "coordinates": [116.3974, 39.9093]
+    },
+    {
+      "id": "feat_scene",
+      "type": "Point",
+      "name": "观景台",
+      "description": "",
+      "markerIcon": "collection",
+      "coordinates": [116.3980, 39.9098],
+      "resourceCollection": {
+        "version": 1,
+        "viewMode": "grid",
+        "items": [
+          {
+            "id": "res_1",
+            "title": "夜景视角",
+            "url": "https://www.720yun.com/t/demo?scene_id=4279442",
+            "type": "iframe"
+          }
+        ]
+      }
     }
   ]
 }
@@ -269,6 +289,10 @@ KML 写入模型：
 - `description` 保存 KML 文档级信息介绍；两步路助手会将分享页可确认的总里程、运动耗时和原作者写入其中，服务端解析后再追加规范化来源链接并执行富文本清洗。
 - Point 可选 `markerIcon`，只接受 `pin`、`star`、`flag`、`viewpoint`、`camera`、`campsite`、`food`、`lodging`、`parking`、`warning`、`heart`、`home`、`water`、`restroom`、`hospital`、`shop`、`charging`、`bus`、`train`、`bicycle`、`hiking`、`summit`、`waterfall`；缺省表示自动识别内容。`auto` 仅为前端选择器选项，不写入 JSON/KML；LineString、Polygon 的该字段会被忽略或拒绝。
 - 标准 KML 通过 Placemark 下的 `ExtendedData/Data name="map-service:marker-icon"` 往返保存 `markerIcon`。未知枚举不导入，服务端 JSON 写入收到未知值返回 `400 VALIDATION_FAILED`；不会读取远程图标 URL。
+- Point 可选 `resourceCollection`，字段为 `version`、`viewMode` 和最多 300 个资源项；资源项 `id`、`title`、`url`、`type` 的长度、类型和总序列化大小由服务端统一校验。标准 KML 使用 `ExtendedData/Data name="map-service:resource-collection"` 保存。
+- 集合 URL 仅接受 HTTPS；禁止 URL 用户名/密码以及 `token`、`access_token`、`password`、`signature`、`api_key`、`authorization` 等敏感查询参数，普通视图参数（如 `scene_id`、`view`）完整保留。接口统一返回 `400 VALIDATION_FAILED` 和对应中文字段消息；共享模型内部使用 `RESOURCE_COLLECTION_URL_CREDENTIALS`、`RESOURCE_COLLECTION_URL_SENSITIVE_QUERY` 区分校验分支。
+- 未知集合版本或导入时非法集合不会阻断整份 KML：Point 几何保留、集合扩展忽略，并在导入响应的 `warnings` 数组返回中文提示；服务端写入接口不会保存未知结构。公开分享读取还会再次过滤历史脏数据中的非法集合。
+- 集合浏览由独立的分页面板承载，默认每页 40 项；地图点位和文件级媒体画廊不会预先展开集合资源，点击资源后才进入统一媒体预览器。
 - 更新可携带当前 `revision`；版本不一致返回 `409 KML_REVISION_CONFLICT`，不会静默覆盖。
 - 每个用户始终有一个受保护的默认 KML；默认文件不能直接移入回收站或永久删除。
 

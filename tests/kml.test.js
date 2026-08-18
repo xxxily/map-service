@@ -10,11 +10,16 @@ class MockElement {
     this.localName = node.tag
     this.nodeType = node.tag === '#text' ? 3 : 1
     this.nodeValue = node.tag === '#text' ? node.text : null
+    this.attributes = node.attributes || {}
     this.children = node.children.map(child => new MockElement(child))
     this.childNodes = this.children
     this.textContent = node.tag === '#text'
       ? node.text
       : this.children.map(child => child.textContent).join('')
+  }
+
+  getAttribute (name) {
+    return this.attributes[name] ?? null
   }
 
   getElementsByTagName (tag) {
@@ -43,19 +48,36 @@ function parseSimpleXml (xml) {
   let lastIndex = 0
   let match
 
+  const decodeXml = value => String(value || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+
+  const parseAttributes = source => {
+    const attributes = {}
+    const pattern = /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g
+    let attributeMatch
+    while ((attributeMatch = pattern.exec(source || '')) !== null) {
+      attributes[attributeMatch[1]] = attributeMatch[2] ?? attributeMatch[3] ?? ''
+    }
+    return attributes
+  }
+
   while ((match = tagRe.exec(cleaned)) !== null) {
     const text = cleaned.slice(lastIndex, match.index)
     if (text.trim()) {
-      stack[stack.length - 1].children.push({ tag: '#text', text, children: [], })
+      stack[stack.length - 1].children.push({ tag: '#text', text: decodeXml(text), children: [], })
     }
     lastIndex = tagRe.lastIndex
-    const [, closing, tag, , selfClosing] = match
+    const [, closing, tag, attributeSource, selfClosing] = match
     if (selfClosing) {
-      stack[stack.length - 1].children.push({ tag, children: [], text: '' })
+      stack[stack.length - 1].children.push({ tag, children: [], text: '', attributes: parseAttributes(attributeSource) })
     } else if (closing) {
       if (stack.length > 1) stack.pop()
     } else {
-      const el = { tag, children: [], text: '' }
+      const el = { tag, children: [], text: '', attributes: parseAttributes(attributeSource) }
       stack[stack.length - 1].children.push(el)
       stack.push(el)
     }
@@ -195,4 +217,42 @@ test('KML export keeps empty name for unnamed features', () => {
 
   assert.match(kml, /<name><\/name>/)
   assert.match(kml, /<coordinates>113\.264385,23\.129112,0<\/coordinates>/)
+})
+
+test('KML resource collections round-trip through standard ExtendedData', () => {
+  const source = {
+    type: 'Point',
+    name: '全景集合',
+    description: '',
+    markerIcon: 'collection',
+    coordinates: [113.264385, 23.129112],
+    resourceCollection: {
+      version: 1,
+      viewMode: 'list',
+      items: [{
+        id: 'res-scene',
+        title: '夜景视角',
+        url: 'https://www.720yun.com/t/demo?scene_id=4279442',
+        type: 'iframe',
+      }],
+    },
+  }
+  const kml = generateKmlText('资源集合', [source])
+  assert.match(kml, /name="map-service:resource-collection"/)
+  const parsed = parseKmlDocument(kml)
+  assert.equal(parsed.warnings.length, 0)
+  assert.deepEqual(parsed.features[0].resourceCollection, source.resourceCollection)
+  assert.equal(parsed.features[0].markerIcon, 'collection')
+})
+
+test('invalid resource collection data is ignored without blocking other KML features', () => {
+  const kml = `<?xml version="1.0"?><kml><Document>
+    <Placemark><ExtendedData><Data name="map-service:resource-collection"><value>{&quot;version&quot;:99,&quot;items&quot;:[]}</value></Data></ExtendedData><Point><coordinates>113.2,23.1,0</coordinates></Point></Placemark>
+    <Placemark><Point><coordinates>113.3,23.2,0</coordinates></Point></Placemark>
+  </Document></kml>`
+  const parsed = parseKmlDocument(kml)
+  assert.equal(parsed.features.length, 2)
+  assert.equal(Object.hasOwn(parsed.features[0], 'resourceCollection'), false)
+  assert.equal(parsed.warnings.length, 1)
+  assert.match(parsed.warnings[0], /资源集合已忽略/)
 })

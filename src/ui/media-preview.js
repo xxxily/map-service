@@ -5,6 +5,7 @@ import {
   getMediaPreviewFeatureName,
   getMediaPreviewHeadingTitle,
   getMediaPreviewTrackLabel,
+  getMediaPreviewTrackWindow,
   getWrappedMediaIndex,
   MEDIA_PREVIEW_MAX_SCALE,
   MEDIA_PREVIEW_MIN_SCALE,
@@ -353,19 +354,25 @@ function renderMediaTrack () {
   const track = getPreviewElement('[data-media-preview-track]')
   if (!track) return
   cleanupTrackObserver()
-  const signature = activeItems.map(item => [
+  const visibleIndexes = getMediaPreviewTrackWindow(activeItems.length, activeIndex)
+  const signature = visibleIndexes.map(index => {
+    const item = activeItems[index]
+    return [
+      index,
     item.galleryId || `${item.type}:${item.url}`,
     getMediaPreviewFeatureName(item),
     String(item.title || '').trim(),
-  ].join(':')).join('|')
-  const needsBuild = track.children.length !== activeItems.length || track.dataset.signature !== signature
+    ].join(':')
+  }).join('|')
+  const needsBuild = track.children.length !== visibleIndexes.length || track.dataset.signature !== signature
   if (needsBuild) {
     track.replaceChildren()
     track.dataset.signature = signature
   }
-  activeItems.forEach((item, index) => {
+  visibleIndexes.forEach((index, windowIndex) => {
+    const item = activeItems[index]
     if (!needsBuild) {
-      const existing = track.children[index]
+      const existing = track.children[windowIndex]
       if (existing) {
         existing.classList.toggle('is-active', index === activeIndex)
         existing.tabIndex = index === activeIndex ? 0 : -1
@@ -425,7 +432,8 @@ function renderMediaTrack () {
     }, { root: track, rootMargin: '0px 160px' })
     track.querySelectorAll('img[data-src]').forEach(image => trackObserver.observe(image))
   }
-  track.querySelectorAll('.media-preview-track-item').forEach((button, index) => {
+  track.querySelectorAll('.media-preview-track-item').forEach(button => {
+    const index = Number(button.dataset.mediaPreviewIndex)
     button.classList.toggle('is-active', index === activeIndex)
     button.tabIndex = index === activeIndex ? 0 : -1
     button.setAttribute('aria-current', index === activeIndex ? 'true' : 'false')

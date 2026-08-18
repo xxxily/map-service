@@ -3,9 +3,17 @@ function cloneCoordinateArray (value) {
 }
 
 function cloneFeature (feature) {
-  return feature && typeof feature === 'object'
-    ? { ...feature, coordinates: cloneCoordinateArray(feature.coordinates) }
-    : feature
+  if (!feature || typeof feature !== 'object') return feature
+  const cloned = { ...feature, coordinates: cloneCoordinateArray(feature.coordinates) }
+  if (feature.resourceCollection && typeof feature.resourceCollection === 'object') {
+    cloned.resourceCollection = {
+      ...feature.resourceCollection,
+      items: Array.isArray(feature.resourceCollection.items)
+        ? feature.resourceCollection.items.map(item => ({ ...item }))
+        : [],
+    }
+  }
+  return cloned
 }
 
 function cloneFile (file) {
@@ -78,6 +86,9 @@ export function transferKmlFeature (files, options = {}) {
 
   const originalFeature = nextSource.features[sourceFeatureIndex]
   const editedFeature = patch ? { ...originalFeature, ...patch } : originalFeature
+  if (patch && Object.hasOwn(patch, 'resourceCollection') && patch.resourceCollection == null) {
+    delete editedFeature.resourceCollection
+  }
 
   if (!isSameFile && mode === 'move' && findFeatureIndex(nextTarget, featureId) >= 0) {
     throw new Error('目标 KML 已存在相同 ID 的要素，不能直接移动')

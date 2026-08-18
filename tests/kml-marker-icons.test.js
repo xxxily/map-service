@@ -31,7 +31,8 @@ test('marker icon catalog is a bounded safe enum with an automatic UI-only optio
   assert.equal(KML_MARKER_ICON_OPTIONS[0].key, 'auto')
   assert.equal(KML_MARKER_ICON_KEYS.includes('auto'), false)
   assert.deepEqual(KML_MARKER_ICON_KEYS, [
-    'pin', 'star', 'flag', 'viewpoint', 'camera', 'campsite',
+    'pin', 'star', 'flag', 'viewpoint', 'camera', 'collection',
+    'campsite',
     'food', 'lodging', 'parking', 'warning', 'heart',
     'home', 'water', 'restroom', 'hospital', 'shop', 'charging',
     'bus', 'train', 'bicycle', 'hiking', 'summit', 'waterfall',

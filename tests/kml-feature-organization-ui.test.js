@@ -19,8 +19,8 @@ test('2D and 3D KML editors expose shared move, copy and drag organization flows
     assert.match(source, /beforeFeatureId/)
   }
 
-  assert.match(map2d, /featureOrderingAvailable = writable && displayFeatures\.length === kmlFile\.features\.length/)
-  assert.match(map3d, /const featureOrderingAvailable = transferable && displayFeatures\.length === \(kmlFile\.features \|\| \[\]\)\.length/)
+  assert.match(map2d, /const featureOrderingAvailable = writable && \([\s\S]*!kmlFile\.isLiveTrack/)
+  assert.match(map3d, /const featureOrderingAvailable = expanded && transferable && displayFeatures\.length === \(kmlFile\.features \|\| \[\]\)\.length/)
   assert.match(styles, /\.kml-feature-drag-handle/)
   assert.match(styles, /\.kml-feature-item\.is-kml-dragging/)
   assert.match(styles, /\.kml-file-card\.is-kml-drop-target/)

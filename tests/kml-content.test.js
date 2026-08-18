@@ -11,6 +11,7 @@ import {
   getPrimaryFeatureContentType,
   normalizeKmlMediaRelayTarget,
 } from '../service/bin/admin/kmlContent.js'
+import { buildResourceCollectionContentView } from '../shared/kml-content.js'
 
 test('extractContentUrls extracts https links, deduplicates and tracks truncation', () => {
   const text = [
@@ -123,6 +124,24 @@ test('buildFeatureContentView masks sensitive query params in public output', ()
   assert.match(serialized, /api_key=\*\*\*\*/)
   assert.equal(view.contentSummary.imageCount, 1)
   assert.equal(view.contentSummary.videoCount, 1)
+})
+
+test('feature content can skip collection classification for map hot paths', () => {
+  const feature = {
+    description: 'https://cdn.example.com/cover.jpg',
+    resourceCollection: {
+      version: 1,
+      viewMode: 'grid',
+      items: [{ id: 'r1', title: '集合资源', url: 'https://cdn.example.com/collection.jpg', type: 'image' }],
+    },
+  }
+  const view = buildFeatureContentView(feature, { includeResourceCollections: false })
+  assert.equal(view.contentSummary.imageCount, 1)
+  assert.equal(view.sourceSummary.collectionItems, 0)
+
+  const collectionView = buildResourceCollectionContentView(feature.resourceCollection)
+  assert.equal(collectionView.sourceSummary.collectionItems, 1)
+  assert.equal(collectionView.contentSummary.imageCount, 1)
 })
 
 test('buildFeatureContentView returns grouped content summary', () => {

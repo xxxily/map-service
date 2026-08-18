@@ -10,6 +10,7 @@ import {
   openKmlFeatureMediaPreview,
   renderKmlFeaturePopupContent,
 } from './kml-content-panel.js'
+import { invalidateKmlMediaGallery } from './kml-media-gallery.js'
 import { renderKmlFileOverview } from './kml-file-overview.js'
 import { getKmlFeatureDisplayName, getKmlFeatureNamePresentation } from './kml-feature-name.js'
 import { getKmlMediaListIcon, getKmlMediaMarkerDescriptor } from './kml-media-marker.js'
@@ -25,7 +26,6 @@ import {
   getTrackDisplayFeatures,
   LIVE_TRACK_RENDER_LINE_POINT_LIMIT,
   LIVE_TRACK_RENDER_POINT_LIMIT,
-  VIEWPORT_BUFFER_RATIO,
 } from './location-track.js'
 import { apiRequest } from '../auth/api.js'
 import { getAuthSnapshot, hasPermission } from '../auth/session.js'
@@ -63,6 +63,18 @@ import {
 } from '../integrations/kml-share-links.js'
 import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
 import { transferKmlFeature } from './kml-feature-operations.js'
+import {
+  expandKmlViewportBounds,
+  KML_VIEWPORT_BUFFER_RATIO,
+  getKmlFeatureFocusPlan,
+  isKmlPointInsideBounds,
+  shouldVirtualizeKmlPoints,
+} from './kml-performance.js'
+import {
+  appendKmlResourceCollectionLinks,
+  isKmlResourceCollectionFeature,
+  showKmlResourceCollectionEditor,
+} from './kml-resource-collection.js'
 
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
@@ -79,6 +91,9 @@ const KML_STORAGE_KEY = 'map_kml_list'
 const KML_LAST_TARGET_KEY = 'map_kml_last_target_id'
 const KML_COORD_CORRECTION = 'wgs84-to-gcj02'
 const KML_POINT_LABEL_MAX_LENGTH = 18
+const KML_POINT_LABEL_MIN_ZOOM = 14
+const KML_POINT_LABEL_LIMIT = 120
+const KML_POINT_LABEL_DELAY_MS = 240
 const DEFAULT_KML_ID = 'default-kml'
 const DEFAULT_KML_NAME = '默认标注'
 const LONG_PRESS_DELAY_MS = 650
@@ -86,26 +101,75 @@ const LONG_PRESS_MOVE_TOLERANCE = 10
 let kmlList = []
 let accountSessionExpiryBound = false
 let kmlViewportRerenderTimer = null // KML 图层视口变化重渲染的 debounce timer
+let kmlViewportRenderTask = null
 let mediaFeatureActivationTimer = null
-let lastRenderedViewportBounds = null // 上次渲染时使用的视口边界（用于缓存跳过）
-let lastRenderedZoom = null // 上次渲染时的缩放级别
+let kmlViewportRerenderBinding = null
+let kmlMapInteractionBinding = null
+let kmlPointLabelSyncTimer = null
+let kmlPointLabelIdleTask = null
+const kmlViewportCache = new WeakMap()
+const leafletMediaIconCache = new Map()
+const leafletSimpleIconCache = new Map()
+const mapCoordinateCache = new WeakMap()
+
+function getLeafletMediaIcon (descriptor) {
+  const key = `${descriptor.type}:${descriptor.iconKey || ''}`
+  let icon = leafletMediaIconCache.get(key)
+  if (!icon) {
+    icon = L.icon({
+      className: 'kml-media-point-icon',
+      iconUrl: descriptor.image,
+      iconRetinaUrl: descriptor.image,
+      iconSize: descriptor.iconSize,
+      iconAnchor: descriptor.iconAnchor,
+      popupAnchor: descriptor.popupAnchor,
+      tooltipAnchor: descriptor.tooltipAnchor,
+      alt: descriptor.label,
+    })
+    leafletMediaIconCache.set(key, icon)
+  }
+  return icon
+}
+
+function getLeafletSimpleIcon (color) {
+  let icon = leafletSimpleIconCache.get(color)
+  if (!icon) {
+    icon = L.divIcon({
+      className: 'kml-simple-point-icon',
+      html: `<div class="kml-simple-dot" style="background-color: ${color}"></div>`,
+      iconSize: [12, 12],
+      iconAnchor: [6, 6],
+    })
+    leafletSimpleIconCache.set(color, icon)
+  }
+  return icon
+}
 
 /**
  * 检查当前视口是否仍在上次渲染的缓冲范围内，如果是则跳过重渲染。
- * 缓冲范围 = 上次视口 × VIEWPORT_BUFFER_RATIO。
+ * 缓冲范围 = 上次视口 × KML_VIEWPORT_BUFFER_RATIO。
  */
-function isViewportWithinCache2d (bounds, zoom) {
-  if (!lastRenderedViewportBounds || lastRenderedZoom === null) return false
+function isViewportWithinCache2d (kmlFile, bounds, zoom) {
+  const cached = kmlViewportCache.get(kmlFile)
+  if (!cached?.bounds || cached.zoom === null) return false
   // 缩放级别变化超过 1 级需要重新渲染（LOD 分级不同）
-  if (Math.abs(zoom - lastRenderedZoom) >= 1) return false
-  const latRange = lastRenderedViewportBounds.north - lastRenderedViewportBounds.south
-  const lngRange = lastRenderedViewportBounds.east - lastRenderedViewportBounds.west
-  const latPad = latRange * (VIEWPORT_BUFFER_RATIO - 1) / 2
-  const lngPad = lngRange * (VIEWPORT_BUFFER_RATIO - 1) / 2
-  return bounds.south >= lastRenderedViewportBounds.south - latPad &&
-         bounds.north <= lastRenderedViewportBounds.north + latPad &&
-         bounds.west >= lastRenderedViewportBounds.west - lngPad &&
-         bounds.east <= lastRenderedViewportBounds.east + lngPad
+  if (Math.abs(zoom - cached.zoom) >= 1) return false
+  const latRange = cached.bounds.north - cached.bounds.south
+  const lngRange = cached.bounds.east - cached.bounds.west
+  const latPad = latRange * (KML_VIEWPORT_BUFFER_RATIO - 1) / 2
+  const lngPad = lngRange * (KML_VIEWPORT_BUFFER_RATIO - 1) / 2
+  return bounds.south >= cached.bounds.south - latPad &&
+         bounds.north <= cached.bounds.north + latPad &&
+         bounds.west >= cached.bounds.west - lngPad &&
+         bounds.east <= cached.bounds.east + lngPad
+}
+
+function rememberKmlViewport (kmlFile, viewportOptions) {
+  if (!kmlFile || !viewportOptions?.viewportBounds) return
+  kmlViewportCache.set(kmlFile, {
+    bounds: viewportOptions.viewportBounds,
+    zoom: viewportOptions.zoom,
+  })
 }
 
 let publicKmlList = []
@@ -174,6 +238,7 @@ function isKmlEditable (kmlFile) {
 }
 
 function saveKmlChanges (kmlFile) {
+  invalidateKmlMediaGallery(kmlFile)
   if (kmlFile.isPublic) {
     isPublicKmlDirty = true
   } else if (canWritePersonalKml()) {
@@ -325,6 +390,13 @@ const kmlLayerGroups = new Map()
 const featureLayers = new Map()
 const expandedKmlIds = new Set()
 
+function expandKmlFileExclusively (kmlId) {
+  for (const kmlFile of [...kmlList, ...publicKmlList]) {
+    expandedKmlIds.delete(kmlFile.id)
+  }
+  if (kmlId) expandedKmlIds.add(kmlId)
+}
+
 let isAddingPoint = false
 let activeKmlIdForAdd = null
 let clickListener = null
@@ -474,10 +546,13 @@ function isKmlEnabled (kmlFile) {
 }
 
 function getMapCoordinates (kmlFile, feature) {
-  if (!shouldCorrectCoords(kmlFile)) {
-    return feature.coordinates
-  }
-  return wgs84ToGcj02Deep(feature.coordinates)
+  const coordinates = feature?.coordinates
+  if (!shouldCorrectCoords(kmlFile) || !feature || typeof feature !== 'object') return coordinates
+  const cached = mapCoordinateCache.get(feature)
+  if (cached?.source === coordinates) return cached.value
+  const value = wgs84ToGcj02Deep(coordinates)
+  mapCoordinateCache.set(feature, { source: coordinates, value })
+  return value
 }
 
 function getMapPoint (kmlFile, feature) {
@@ -574,6 +649,7 @@ function createPointFeature (kmlFile, latlng, result) {
     description: result.description.trim(),
     coordinates: mapLatLngToStoredCoordinate(kmlFile, latlng),
   }
+  if (result.resourceCollection) feature.resourceCollection = result.resourceCollection
   return applyKmlMarkerIconSelection(feature, result.markerIcon)
 }
 
@@ -582,6 +658,73 @@ function getFeatureLabel (feature) {
   if (!name) return ''
   if (name.length <= KML_POINT_LABEL_MAX_LENGTH) return name
   return `${name.slice(0, KML_POINT_LABEL_MAX_LENGTH)}...`
+}
+
+function bindKmlPointLabel (layer) {
+  const label = String(layer?._mapServiceKmlLabel || '')
+  if (!label || layer.getTooltip?.()) return
+  layer.bindTooltip(escapeHtml(label), {
+    permanent: true,
+    direction: 'top',
+    offset: [-16, -18],
+    opacity: 1,
+    className: 'kml-point-label',
+  })
+}
+
+function syncKmlPointLabels (map) {
+  const zoom = Number(map?.getZoom?.())
+  const bounds = zoom >= KML_POINT_LABEL_MIN_ZOOM ? map.getBounds?.() : null
+  const paddedBounds = bounds?.isValid?.() ? bounds.pad(0.18) : null
+  const visibleLabelKeys = new Set()
+  let visibleLabelCount = 0
+  featureLayers.forEach(layer => {
+    if (!layer?._mapServiceKmlLabel) return
+    const point = layer.getLatLng?.()
+    const labelKey = point
+      ? `${Number(point.lat).toFixed(6)}:${Number(point.lng).toFixed(6)}:${layer._mapServiceKmlLabel}`
+      : ''
+    const shouldDisplay = Boolean(
+      paddedBounds &&
+      point &&
+      paddedBounds.contains(point) &&
+      labelKey &&
+      !visibleLabelKeys.has(labelKey) &&
+      visibleLabelCount < KML_POINT_LABEL_LIMIT
+    )
+    if (shouldDisplay) {
+      visibleLabelKeys.add(labelKey)
+      visibleLabelCount += 1
+      bindKmlPointLabel(layer)
+    } else if (layer.getTooltip?.()) {
+      layer.unbindTooltip()
+    }
+  })
+}
+
+function clearKmlPointLabels () {
+  featureLayers.forEach(layer => {
+    if (layer?.getTooltip?.()) layer.unbindTooltip()
+  })
+}
+
+function cancelKmlPointLabelSync () {
+  if (kmlPointLabelSyncTimer) window.clearTimeout(kmlPointLabelSyncTimer)
+  kmlPointLabelSyncTimer = null
+  if (kmlPointLabelIdleTask !== null && typeof window.cancelIdleCallback === 'function') {
+    window.cancelIdleCallback(kmlPointLabelIdleTask)
+  }
+  kmlPointLabelIdleTask = null
+}
+
+function cancelKmlScheduledTasks () {
+  if (kmlViewportRerenderTimer) window.clearTimeout(kmlViewportRerenderTimer)
+  if (kmlViewportRenderTask) window.clearTimeout(kmlViewportRenderTask)
+  if (mediaFeatureActivationTimer) window.clearTimeout(mediaFeatureActivationTimer)
+  kmlViewportRerenderTimer = null
+  kmlViewportRenderTask = null
+  mediaFeatureActivationTimer = null
+  cancelKmlPointLabelSync()
 }
 
 function bindMobileMediaPointInteraction (layer, kmlFile, feature) {
@@ -689,30 +832,16 @@ function renderFeature (map, kmlFile, feature) {
     mediaMarker = getKmlMediaMarkerDescriptor(feature)
     
     if (mediaMarker) {
-      const mediaIcon = L.divIcon({
-        className: 'kml-media-point-icon',
-        html: mediaMarker.html,
-        iconSize: mediaMarker.iconSize,
-        iconAnchor: mediaMarker.iconAnchor,
-        popupAnchor: mediaMarker.popupAnchor,
-        tooltipAnchor: mediaMarker.tooltipAnchor,
-      })
       layer = L.marker(latlng, {
         draggable: dragAllowed,
-        icon: mediaIcon,
+        icon: getLeafletMediaIcon(mediaMarker),
         title: mediaMarker.label,
       })
     } else if (theme === 'simple') {
       const colorVal = getKmlColor(kmlFile)
-      const simpleIcon = L.divIcon({
-        className: 'kml-simple-point-icon',
-        html: `<div class="kml-simple-dot" style="background-color: ${colorVal}"></div>`,
-        iconSize: [12, 12],
-        iconAnchor: [6, 6]
-      })
       layer = L.marker(latlng, {
         draggable: dragAllowed,
-        icon: simpleIcon
+        icon: getLeafletSimpleIcon(colorVal)
       })
     } else {
       layer = L.marker(latlng, {
@@ -738,13 +867,9 @@ function renderFeature (map, kmlFile, feature) {
     if (theme !== 'simple') {
       const label = getFeatureLabel(feature)
       if (label) {
-        layer.bindTooltip(escapeHtml(label), {
-          permanent: true,
-          direction: 'top',
-          offset: [-16, -18],
-          opacity: 1,
-          className: 'kml-point-label',
-        })
+        layer._mapServiceKmlLabel = label
+        // Labels are attached after the map settles; creating them during a
+        // bulk marker render makes zoom and pan compete with layout work.
       }
     }
   } else if (feature.type === 'LineString') {
@@ -764,7 +889,8 @@ function renderFeature (map, kmlFile, feature) {
   }
   
   if (layer) {
-    layer.bindPopup(renderKmlFeaturePopupContent(kmlFile, feature, editable), {
+    layer._mapServiceKmlFeatureId = String(feature.id || '')
+    layer.bindPopup(() => renderKmlFeaturePopupContent(kmlFile, feature, editable), {
       closeButton: false,
       className: 'kml-rich-popup',
       maxWidth: 360,
@@ -783,19 +909,14 @@ function removeKmlLayers (map, kmlFile) {
   const kmlId = typeof kmlFile === 'string' ? kmlFile : kmlFile.id
   const group = kmlLayerGroups.get(kmlId)
   if (group) {
+    group.eachLayer(layer => {
+      const featureId = String(layer?._mapServiceKmlFeatureId || '')
+      if (featureId) featureLayers.delete(getFeatureLayerKey(kmlId, featureId))
+    })
     map.removeLayer(group)
     kmlLayerGroups.delete(kmlId)
   }
-
-  const targetKml = typeof kmlFile === 'string'
-    ? (kmlList.find(k => k.id === kmlFile) || publicKmlList.find(k => k.id === kmlFile))
-    : kmlFile
-  const renderedFeatures = targetKml?.isShare
-    ? (targetKml.features || [])
-    : getTrackDisplayFeatures(targetKml)
-  renderedFeatures.forEach(feature => {
-    featureLayers.delete(getFeatureLayerKey(kmlId, feature.id))
-  })
+  if (kmlFile && typeof kmlFile === 'object') kmlViewportCache.delete(kmlFile)
 }
 
 function escapeHtml (str) {
@@ -807,16 +928,62 @@ function escapeHtml (str) {
     .replace(/'/g, '&#39;')
 }
 
-function renderKmlLayers (map, kmlFile) {
+function getRenderableKmlFeatures (map, kmlFile, options = {}) {
+  const viewportOptions = getViewportOptions2d(map)
+  const features = getTrackDisplayFeatures(kmlFile, viewportOptions)
+  if (kmlFile.isLiveTrack || !shouldVirtualizeKmlPoints(features.length) || !viewportOptions.viewportBounds) {
+    return { features, viewportOptions }
+  }
+
+  const includedIds = options.includeFeatureIds instanceof Set
+    ? options.includeFeatureIds
+    : new Set(options.includeFeatureIds || [])
+  const bufferedBounds = expandKmlViewportBounds(viewportOptions.viewportBounds)
+  const visible = features.filter(feature => {
+    if (feature?.type !== 'Point' || includedIds.has(String(feature.id || ''))) return true
+    return isKmlPointInsideBounds(getMapCoordinates(kmlFile, feature), bufferedBounds)
+  })
+  return { features: visible, viewportOptions }
+}
+
+function syncKmlLayers (map, kmlFile, displayFeatures) {
+  let group = kmlLayerGroups.get(kmlFile.id)
+  if (!group) {
+    group = L.featureGroup().addTo(map)
+    kmlLayerGroups.set(kmlFile.id, group)
+  }
+
+  const desiredIds = new Set(displayFeatures.map(feature => String(feature.id || '')))
+  group.eachLayer(layer => {
+    const featureId = String(layer._mapServiceKmlFeatureId || '')
+    if (!featureId || desiredIds.has(featureId)) return
+    group.removeLayer(layer)
+    featureLayers.delete(getFeatureLayerKey(kmlFile.id, featureId))
+  })
+
+  displayFeatures.forEach(feature => {
+    const key = getFeatureLayerKey(kmlFile.id, feature.id)
+    if (featureLayers.has(key)) return
+    const layer = renderFeature(map, kmlFile, feature)
+    if (layer) group.addLayer(layer)
+  })
+}
+
+function renderKmlLayers (map, kmlFile, options = {}) {
+  if (options.incremental && isKmlEnabled(kmlFile)) {
+    const { features, viewportOptions } = getRenderableKmlFeatures(map, kmlFile, options)
+    syncKmlLayers(map, kmlFile, features)
+    rememberKmlViewport(kmlFile, viewportOptions)
+    scheduleKmlPointLabelSync(map)
+    return
+  }
+
   removeKmlLayers(map, kmlFile)
 
   if (!isKmlEnabled(kmlFile)) return
   
   const group = L.featureGroup()
-  const viewportOptions = getViewportOptions2d(map)
-  const displayFeatures = kmlFile.isShare
-    ? (kmlFile.features || [])
-    : getTrackDisplayFeatures(kmlFile, viewportOptions)
+  const { features: displayFeatures, viewportOptions } = getRenderableKmlFeatures(map, kmlFile, options)
 
   displayFeatures.forEach(feat => {
     const layer = renderFeature(map, kmlFile, feat)
@@ -828,11 +995,8 @@ function renderKmlLayers (map, kmlFile) {
   group.addTo(map)
   kmlLayerGroups.set(kmlFile.id, group)
 
-  // 更新视口缓存：live track 渲染后记录当前视口，用于后续跳过判断
-  if (kmlFile.isLiveTrack && viewportOptions.viewportBounds) {
-    lastRenderedViewportBounds = viewportOptions.viewportBounds
-    lastRenderedZoom = viewportOptions.zoom
-  }
+  rememberKmlViewport(kmlFile, viewportOptions)
+  scheduleKmlPointLabelSync(map)
 }
 
 function renderAllKmls (map) {
@@ -894,13 +1058,21 @@ function updateKmlPanelUI (map) {
       <span style="font-size: 11px; color: #6b7280;">${personalExpanded ? '▲' : '▼'}</span>
     </div>
     <div id="kml-personal-list" style="display: ${personalExpanded ? 'flex' : 'none'}; flex-direction: column; gap: 8px; margin-bottom: 16px;">
-      ${kmlList.map(kmlFile => {
+      ${personalExpanded
+        ? (kmlList.map(kmlFile => {
         const safeKmlId = escapeHtml(kmlFile.id)
         const enabled = isKmlEnabled(kmlFile)
         const expanded = expandedKmlIds.has(kmlFile.id)
-        const displayFeatures = getTrackDisplayFeatures(kmlFile, getViewportOptions2d(map))
+        // Collapsed cards intentionally do not build feature rows or media
+        // icons. This keeps the hidden management panel cheap with several
+        // large KML files; expanding a card rebuilds only that card.
+        const displayFeatures = expanded
+          ? getTrackDisplayFeatures(kmlFile, getViewportOptions2d(map))
+          : []
         const writable = canWritePersonalKml()
-        const featureOrderingAvailable = writable && displayFeatures.length === kmlFile.features.length
+        const featureOrderingAvailable = writable && (
+          !kmlFile.isLiveTrack || (expanded && displayFeatures.length === kmlFile.features.length)
+        )
         const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
         const visibilityButton = !writable || kmlFile.isDefault
           ? ''
@@ -938,7 +1110,7 @@ function updateKmlPanelUI (map) {
               </div>
             </div>
             <div class="kml-file-detail" id="features-${safeKmlId}" style="display: ${expanded ? 'flex' : 'none'};">
-              ${renderKmlFileOverview(kmlFile)}
+              ${expanded ? renderKmlFileOverview(kmlFile) : ''}
               <div class="kml-file-toolbox" aria-label="${escapeHtml(kmlFile.name)} 相关操作">
                 <div style="display: flex; flex-direction: column; gap: 4px;">
                   <label class="kml-correction-switch" title="开启后按高德底图纠偏显示；导出仍保留 KML 标准经纬度">
@@ -1002,7 +1174,8 @@ function updateKmlPanelUI (map) {
             </div>
           </div>
         `
-      }).join('') || '<div style="font-size: 12px; color: #9ca3af; text-align: center; padding: 8px 0;">无个人图层</div>'}
+        }).join('') || '<div style="font-size: 12px; color: #9ca3af; text-align: center; padding: 8px 0;">无个人图层</div>')
+        : ''}
     </div>
   `
 
@@ -1020,7 +1193,8 @@ function updateKmlPanelUI (map) {
       </div>
     </div>
     <div id="kml-public-list" style="display: ${publicExpanded ? 'flex' : 'none'}; flex-direction: column; gap: 8px; margin-bottom: 16px;">
-      ${publicKmlList.map(kmlFile => {
+      ${publicExpanded
+        ? (publicKmlList.map(kmlFile => {
         const safeKmlId = escapeHtml(kmlFile.id)
         const enabled = isKmlEnabled(kmlFile)
         const expanded = expandedKmlIds.has(kmlFile.id)
@@ -1043,7 +1217,7 @@ function updateKmlPanelUI (map) {
               </div>
             </div>
             <div class="kml-file-detail" id="features-${safeKmlId}" style="display: ${expanded ? 'flex' : 'none'};">
-              ${renderKmlFileOverview(kmlFile)}
+              ${expanded ? renderKmlFileOverview(kmlFile) : ''}
               <div class="kml-file-toolbox">
                 <div style="display: flex; flex-direction: column; gap: 4px;">
                   <label class="kml-correction-switch" title="公共图层不可在此修改纠偏配置">
@@ -1079,7 +1253,7 @@ function updateKmlPanelUI (map) {
                 </div>
               </div>
               <div class="kml-features-list">
-                ${(kmlFile.features || []).map(feat => {
+                ${expanded ? (kmlFile.features || []).map(feat => {
                   const safeFeatureId = escapeHtml(feat.id)
                   let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
                   if (feat.type === 'LineString') {
@@ -1101,12 +1275,13 @@ function updateKmlPanelUI (map) {
                       ` : ''}
                     </div>
                   `
-                }).join('')}
+                }).join('') : ''}
               </div>
             </div>
           </div>
         `
-      }).join('') || '<div style="font-size: 12px; color: #9ca3af; text-align: center; padding: 8px 0;">无已发布公共图层</div>'}
+        }).join('') || '<div style="font-size: 12px; color: #9ca3af; text-align: center; padding: 8px 0;">无已发布公共图层</div>')
+        : ''}
     </div>
   `
   container.innerHTML = html
@@ -1122,20 +1297,44 @@ function focusFeature (map, kmlId, featureId) {
 
   const feature = kmlFile.features.find(f => f.id === featureId)
   if (!feature) return
-  
-  const layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
-  if (!layer) return
-  
+  let layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
+  map.stop?.()
+
   if (feature.type === 'Point') {
-    map.flyTo(getMapPoint(kmlFile, feature), 15, { duration: 0.8 })
+    const point = getMapPoint(kmlFile, feature)
+    const targetInView = Boolean(map.getBounds?.().contains?.(point))
+    const plan = getKmlFeatureFocusPlan({
+      type: feature.type,
+      currentZoom: map.getZoom?.(),
+      targetInView,
+    })
+    if (plan.method === 'set-view') map.setView(point, plan.zoom, { animate: false })
+    else map.panInside?.(point, { padding: [40, 40], animate: false })
   } else {
+    if (!layer) {
+      renderKmlLayers(map, kmlFile, {
+        incremental: true,
+        includeFeatureIds: [String(featureId)],
+      })
+      layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
+    }
+    if (!layer) return
     const bounds = layer.getBounds()
-    map.flyToBounds(bounds, { maxZoom: 15, duration: 0.8 })
+    const targetInView = Boolean(map.getBounds?.().contains?.(bounds))
+    const plan = getKmlFeatureFocusPlan({ type: feature.type, targetInView })
+    if (plan.method === 'fit-bounds') {
+      map.fitBounds(bounds, { maxZoom: plan.maxZoom, animate: false, padding: [36, 36] })
+    }
   }
-  
-  setTimeout(() => {
-    layer.openPopup()
-  }, 850)
+  if (!layer) {
+    renderKmlLayers(map, kmlFile, {
+      incremental: true,
+      includeFeatureIds: [String(featureId)],
+    })
+    layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
+  }
+  if (!layer) return
+  layer.openPopup()
 }
 
 function activateFeatureForMedia (map, item, options = {}) {
@@ -1143,17 +1342,25 @@ function activateFeatureForMedia (map, item, options = {}) {
   const featureId = String(item?.featureId || '')
   if (!kmlId || !featureId) return
   const { kmlFile, feature } = getFeatureById(kmlId, featureId)
-  const layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
-  if (!kmlFile || !feature || !layer || !isKmlEnabled(kmlFile)) return
+  let layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
+  if (!kmlFile || !feature || !isKmlEnabled(kmlFile)) return
   window.clearTimeout(mediaFeatureActivationTimer)
   map.stop?.()
   if (feature.type === 'Point') {
     const point = getMapPoint(kmlFile, feature)
     if (options.closePreview) map.setView(point, map.getZoom(), { animate: false })
     else map.panTo(point, { animate: true, duration: 0.28 })
-  } else if (typeof layer.getBounds === 'function') {
+  } else if (typeof layer?.getBounds === 'function') {
     map.fitBounds(layer.getBounds(), { maxZoom: 15, animate: !options.closePreview, duration: 0.28 })
   }
+  if (!layer) {
+    renderKmlLayers(map, kmlFile, {
+      incremental: true,
+      includeFeatureIds: [featureId],
+    })
+    layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
+  }
+  if (!layer) return
   const delay = options.closePreview ? 0 : 300
   mediaFeatureActivationTimer = window.setTimeout(() => layer.openPopup(), delay)
 }
@@ -1175,7 +1382,18 @@ async function handleEditFeature (map, kmlId, featureId) {
       type: 'text',
       required: false,
     },
-    ...(feature.type === 'Point' ? [buildKmlMarkerIconField(getEditableKmlMarkerIcon(feature))] : []),
+    ...(feature.type === 'Point' ? [
+      {
+        name: 'pointKind',
+        label: '点位类型',
+        type: 'select',
+        options: [
+          { value: 'point', label: '普通点位' },
+          { value: 'collection', label: '资源集合' },
+        ],
+      },
+      buildKmlMarkerIconField(getEditableKmlMarkerIcon(feature)),
+    ] : []),
     {
       name: 'description',
       label: '描述',
@@ -1198,13 +1416,34 @@ async function handleEditFeature (map, kmlId, featureId) {
     values: {
       kmlId,
       name: feature.name,
+      pointKind: isKmlResourceCollectionFeature(feature) ? 'collection' : 'point',
       markerIcon: getEditableKmlMarkerIcon(feature),
       description: getEditableKmlDescription(feature.description),
     }
   })
   
   if (!result) return
-  const enriched = await enrichKmlDescriptionWithShareLinks(result.description, {
+  let resourceCollection = feature.resourceCollection || null
+  let descriptionInput = result.description
+  if (feature.type === 'Point' && result.pointKind === 'collection') {
+    resourceCollection = await showKmlResourceCollectionEditor(resourceCollection || { version: 1, viewMode: 'grid', items: [] }, {
+      title: result.name?.trim() || '编辑资源集合',
+    })
+    if (!resourceCollection) return
+  } else if (feature.type === 'Point' && resourceCollection) {
+    const conversion = await showChoiceDialog({
+      title: '转换为普通点位',
+      message: '该点位已有资源集合，请选择如何处理集合中的地址。',
+      choices: [
+        { text: '保留为描述链接', value: 'keep', class: 'app-dialog-primary' },
+        { text: '移除集合', value: 'remove' },
+      ],
+    })
+    if (!['keep', 'remove'].includes(conversion)) return
+    if (conversion === 'keep') descriptionInput = appendKmlResourceCollectionLinks(descriptionInput, resourceCollection)
+    resourceCollection = null
+  }
+  const enriched = await enrichKmlDescriptionWithShareLinks(descriptionInput, {
     previousDescription: feature.description,
   })
   const editedFeature = {
@@ -1212,6 +1451,8 @@ async function handleEditFeature (map, kmlId, featureId) {
     name: result.name.trim(),
     description: enriched.description.trim(),
   }
+  if (resourceCollection) editedFeature.resourceCollection = resourceCollection
+  else if (feature.type === 'Point') editedFeature.resourceCollection = null
   if (feature.type === 'Point') applyKmlMarkerIconSelection(editedFeature, result.markerIcon)
   else delete editedFeature.markerIcon
 
@@ -1236,7 +1477,10 @@ async function handleEditFeature (map, kmlId, featureId) {
       name: editedFeature.name,
       description: editedFeature.description,
     }
-    if (feature.type === 'Point') featurePatch.markerIcon = editedFeature.markerIcon
+    if (feature.type === 'Point') {
+      featurePatch.markerIcon = editedFeature.markerIcon
+      featurePatch.resourceCollection = editedFeature.resourceCollection
+    }
 
     try {
       const transferred = transferKmlFeature(kmlList, {
@@ -1273,6 +1517,10 @@ async function handleEditFeature (map, kmlId, featureId) {
   feature.description = editedFeature.description
   if (feature.type === 'Point') applyKmlMarkerIconSelection(feature, result.markerIcon)
   else delete feature.markerIcon
+  if (feature.type === 'Point') {
+    if (editedFeature.resourceCollection) feature.resourceCollection = editedFeature.resourceCollection
+    else delete feature.resourceCollection
+  }
   saveKmlChanges(kmlFile)
   if (feature.type === 'Point') recordKmlMarkerRecentIcon(result.markerIcon)
 
@@ -1334,7 +1582,7 @@ async function handleCreateKmlFile (map) {
 
   const kmlFile = createKmlFile({ name })
   kmlList.splice(1, 0, kmlFile)
-  expandedKmlIds.add(kmlFile.id)
+  expandKmlFileExclusively(kmlFile.id)
   rememberTargetKmlId(kmlFile.id)
   saveToStorage()
   renderKmlLayers(map, kmlFile)
@@ -1383,6 +1631,15 @@ async function createPointAtLatLng (map, latlng, options = {}) {
       type: 'text',
       required: false,
     },
+    {
+      name: 'pointKind',
+      label: '点位类型',
+      type: 'select',
+      options: [
+        { value: 'point', label: '普通点位' },
+        { value: 'collection', label: '资源集合' },
+      ],
+    },
     buildKmlMarkerIconField('auto'),
     {
       name: 'description',
@@ -1410,6 +1667,7 @@ async function createPointAtLatLng (map, latlng, options = {}) {
     values: {
       kmlId: targetKmlId,
       name: '',
+      pointKind: 'point',
       markerIcon: 'auto',
       description: '',
     },
@@ -1431,10 +1689,18 @@ async function createPointAtLatLng (map, latlng, options = {}) {
     return
   }
 
+  let resourceCollection = null
+  if (result.pointKind === 'collection') {
+    resourceCollection = await showKmlResourceCollectionEditor({ version: 1, viewMode: 'grid', items: [] }, {
+      title: result.name?.trim() || '新建资源集合',
+    })
+    if (!resourceCollection) return
+  }
   const enriched = await enrichKmlDescriptionWithShareLinks(result.description)
   const newFeat = createPointFeature(kmlFile, latlng, {
     ...result,
     description: enriched.description,
+    resourceCollection,
   })
   kmlFile.features.push(newFeat)
   expandedKmlIds.add(kmlFile.id)
@@ -1597,39 +1863,92 @@ function initLongPressPointCreation (map) {
 /**
  * 视口变化时按需重渲染 KML 图层（debounce 150ms + setTimeout）。
  * 独立于定位生命周期，确保查看已保存轨迹时也能动态渲染。
- * 仅重渲染 isLiveTrack 的 KML 文件，普通 KML 无视口过滤不需要重渲染。
+ * 普通大型 KML 也使用缓冲视口增量挂载点位；小文件仍保持静态图层。
  * 优化：若当前视口仍在上次渲染的缓冲范围内则跳过，避免不必要的重渲染。
  * 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先完成绘制再执行渲染。
  */
 function scheduleKmlViewportRerender (map) {
   if (kmlViewportRerenderTimer) clearTimeout(kmlViewportRerenderTimer)
+  if (kmlViewportRenderTask) clearTimeout(kmlViewportRenderTask)
   kmlViewportRerenderTimer = setTimeout(() => {
     kmlViewportRerenderTimer = null
-    const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
-                         publicKmlList.some(k => k.isLiveTrack && !k.isShare && k.enabled)
-    if (!hasLiveTrack) return
+    const managedKmlFiles = [...kmlList, ...publicKmlList].filter(kmlFile =>
+      kmlFile.enabled && (kmlFile.isLiveTrack || shouldVirtualizeKmlPoints(kmlFile.features?.length)))
+    if (!managedKmlFiles.length) return
 
-    // 缓存跳过：当前视口在上次渲染的缓冲范围内则不重渲染
     const viewportOptions = getViewportOptions2d(map)
-    if (viewportOptions.viewportBounds && isViewportWithinCache2d(viewportOptions.viewportBounds, viewportOptions.zoom)) {
+    scheduleKmlPointLabelSync(map)
+    if (viewportOptions.viewportBounds && managedKmlFiles.every(kmlFile => (
+      isViewportWithinCache2d(kmlFile, viewportOptions.viewportBounds, viewportOptions.zoom)
+    ))) {
       return
     }
 
-    // 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先绘制再渲染
-    setTimeout(() => {
-      kmlList.forEach(kmlFile => {
-        if (kmlFile.isLiveTrack && !kmlFile.isShare && kmlFile.enabled) {
-          renderKmlLayers(map, kmlFile)
+    kmlViewportRenderTask = setTimeout(() => {
+      kmlViewportRenderTask = null
+      managedKmlFiles.forEach(kmlFile => {
+        if (!viewportOptions.viewportBounds || !isViewportWithinCache2d(kmlFile, viewportOptions.viewportBounds, viewportOptions.zoom)) {
+          renderKmlLayers(map, kmlFile, { incremental: true })
         }
       })
-      publicKmlList.forEach(kmlFile => {
-        if (kmlFile.isLiveTrack && !kmlFile.isShare && kmlFile.enabled) {
-          renderKmlLayers(map, kmlFile)
-        }
-      })
-      // 视口重渲染时不更新面板 UI，避免不必要的 DOM 操作导致卡顿
     }, 0)
   }, 150)
+}
+
+function bindKmlViewportRerender (map) {
+  if (kmlViewportRerenderBinding?.map === map) return
+  kmlViewportRerenderBinding?.unbind?.()
+  const rerender = () => scheduleKmlViewportRerender(map)
+  const unbind = () => {
+    map.off('moveend zoomend', rerender)
+    map.off('unload', unbind)
+    cancelKmlScheduledTasks()
+    if (kmlViewportRerenderBinding?.map === map) kmlViewportRerenderBinding = null
+  }
+  map.on('moveend zoomend', rerender)
+  map.on('unload', unbind)
+  kmlViewportRerenderBinding = { map, unbind }
+}
+
+function scheduleKmlPointLabelSync (map) {
+  cancelKmlPointLabelSync()
+  kmlPointLabelSyncTimer = window.setTimeout(() => {
+    kmlPointLabelSyncTimer = null
+    if (typeof window.requestIdleCallback === 'function') {
+      kmlPointLabelIdleTask = window.requestIdleCallback(() => {
+        kmlPointLabelIdleTask = null
+        syncKmlPointLabels(map)
+      }, { timeout: 700 })
+      return
+    }
+    syncKmlPointLabels(map)
+  }, KML_POINT_LABEL_DELAY_MS)
+}
+
+function bindKmlMapInteractionState (map) {
+  if (kmlMapInteractionBinding?.map === map) return
+  kmlMapInteractionBinding?.unbind?.()
+  const container = map.getContainer?.()
+  const begin = () => {
+    container?.classList.add('kml-map-interacting')
+    cancelKmlPointLabelSync()
+    clearKmlPointLabels()
+  }
+  const end = () => {
+    container?.classList.remove('kml-map-interacting')
+    scheduleKmlPointLabelSync(map)
+  }
+  const unbind = () => {
+    map.off('movestart zoomstart', begin)
+    map.off('moveend zoomend', end)
+    map.off('unload', unbind)
+    container?.classList.remove('kml-map-interacting')
+    if (kmlMapInteractionBinding?.map === map) kmlMapInteractionBinding = null
+  }
+  map.on('movestart zoomstart', begin)
+  map.on('moveend zoomend', end)
+  map.on('unload', unbind)
+  kmlMapInteractionBinding = { map, unbind }
 }
 
 function getKmlFeatureListIcon (feature) {
@@ -1734,7 +2053,7 @@ async function handleTwoBuluImport (map, button, correctionInput) {
     const existingIndex = kmlList.findIndex(item => item.id === importedKml.id)
     if (existingIndex >= 0) kmlList.splice(existingIndex, 1, importedKml)
     else kmlList.splice(1, 0, importedKml)
-    expandedKmlIds.add(importedKml.id)
+    expandKmlFileExclusively(importedKml.id)
     rememberTargetKmlId(importedKml.id)
     saveToStorage()
 
@@ -1852,10 +2171,10 @@ function renderShareKmlPanel (map) {
           </div>
         </div>
         <div class="kml-file-detail" id="features-${safeKmlId}" style="display: ${expanded ? 'flex' : 'none'};">
-          ${renderKmlFileOverview(kmlFile)}
+          ${expanded ? renderKmlFileOverview(kmlFile) : ''}
           ${kmlFile.loadError ? `<p class="kml-share-item-error">${escapeHtml(kmlFile.loadError)}</p>` : ''}
           <div class="kml-features-list">
-            ${features.map(feature => {
+            ${expanded ? features.map(feature => {
               const safeFeatureId = escapeHtml(feature.id)
               const { displayName, accessibleName } = getKmlFeatureNamePresentation(feature)
               return `
@@ -1866,7 +2185,7 @@ function renderShareKmlPanel (map) {
                   </div>
                 </div>
               `
-            }).join('') || (kmlFile.loadError ? '' : '<div class="kml-empty">此 KML 没有可显示的点、线或面</div>')}
+            }).join('') || (kmlFile.loadError ? '' : '<div class="kml-empty">此 KML 没有可显示的点、线或面</div>') : ''}
           </div>
         </div>
       </article>
@@ -1883,16 +2202,13 @@ async function initShareKmlSupport (map) {
   expandedKmlIds.clear()
   const firstExpandable = publicKmlList.find(kmlFile => !kmlFile.loadError && (kmlFile.features || []).length)
   if (firstExpandable) expandedKmlIds.add(firstExpandable.id)
-  renderAllKmls(map)
-  const fitted = fitKmlFilesBounds(
+  fitKmlFilesBounds(
     map,
     publicKmlList.filter(kmlFile => isKmlEnabled(kmlFile) && !kmlFile.loadError),
     { animate: false }
   )
-  if (fitted) renderAllKmls(map)
+  renderAllKmls(map)
   renderShareKmlPanel(map)
-  map.on('moveend zoomend', () => scheduleKmlViewportRerender(map))
-
   const panel = document.getElementById('kml-panel')
   const dropzone = document.getElementById('kml-import-dropzone')
   const createButton = panel?.querySelector('[data-kml-action="create-file"]')
@@ -2065,6 +2381,8 @@ function bindKmlFeatureOrganizationEvents (panel, map) {
 
 export async function initKmlSupport (map) {
   bindKmlPopupActions(map)
+  bindKmlMapInteractionState(map)
+  bindKmlViewportRerender(map)
   if (getActiveShare()) {
     await initShareKmlSupport(map)
     return
@@ -2081,9 +2399,6 @@ export async function initKmlSupport (map) {
   bindAccountSessionExpiry(map)
   await loadInitialKmlFiles()
   initCustomControlsListeners()
-
-  // 注册视口变化监听，按需重渲染轨迹 KML 图层
-  map.on('moveend zoomend', () => scheduleKmlViewportRerender(map))
 
   loadPublicKmls(map).then(() => {
     renderAllKmls(map)
@@ -2174,7 +2489,7 @@ export async function initKmlSupport (map) {
         })
         
         kmlList.splice(1, 0, newKml)
-        expandedKmlIds.add(newKml.id)
+        expandKmlFileExclusively(newKml.id)
         rememberTargetKmlId(newKml.id)
         saveToStorage()
         
@@ -2285,28 +2600,22 @@ export async function initKmlSupport (map) {
     }
 
     if (action === 'toggle-collapse') {
-      const listDiv = document.getElementById(`features-${kmlId}`)
-      if (listDiv) {
-        const willExpand = listDiv.style.display === 'none'
-        listDiv.style.display = willExpand ? 'flex' : 'none'
-        if (willExpand) {
-          expandedKmlIds.add(kmlId)
-          
-          const kmlFile = publicKmlList.find(k => k.id === kmlId)
-          if (kmlFile && kmlFile.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
-            try {
-              const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
-              kmlFile.features = detail.features || []
-              renderKmlLayers(map, kmlFile)
-              updateKmlPanelUI(map)
-            } catch (err) {
-              showAlert('加载公共图层详情失败')
-            }
-          }
-        } else {
+      const willExpand = !expandedKmlIds.has(kmlId)
+      if (willExpand) expandedKmlIds.add(kmlId)
+      else expandedKmlIds.delete(kmlId)
+
+      const kmlFile = publicKmlList.find(k => k.id === kmlId)
+      if (willExpand && kmlFile?.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
+        try {
+          const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
+          kmlFile.features = detail.features || []
+          renderKmlLayers(map, kmlFile)
+        } catch (err) {
           expandedKmlIds.delete(kmlId)
+          showAlert('加载公共图层详情失败')
         }
       }
+      updateKmlPanelUI(map)
       return
     }
 

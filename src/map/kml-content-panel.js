@@ -13,6 +13,11 @@ import { getKmlFeatureDisplayName } from './kml-feature-name.js'
 import { openMediaPreview } from '../ui/media-preview.js'
 import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
 import {
+  getKmlResourceCollectionItemCount,
+  isKmlResourceCollectionFeature,
+  openKmlResourceCollectionPanel,
+} from './kml-resource-collection.js'
+import {
   bindFavoriteActionButtons,
   renderFavoriteActionButton,
 } from './favorite-actions.js'
@@ -104,8 +109,13 @@ function renderPopupMediaItem (item) {
 }
 
 export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
-  const preview = getKmlFeaturePopupMedia(feature, { contentOptions: getKmlContentOptions() })
-  const contentSummary = formatContentSummary(preview.contentSummary)
+  const isCollection = isKmlResourceCollectionFeature(feature)
+  const preview = isCollection
+    ? { items: [], total: 0, remaining: 0, overflowItem: null, contentSummary: {} }
+    : getKmlFeaturePopupMedia(feature, { contentOptions: getKmlContentOptions() })
+  const contentSummary = isCollection
+    ? `资源集合 · ${getKmlResourceCollectionItemCount(feature)} 项`
+    : formatContentSummary(preview.contentSummary)
   const description = getFeatureDescriptionText(feature)
   const favoriteAction = renderFavoriteActionButton(kmlFile, feature)
   const actionsHtml = isEditable
@@ -123,7 +133,14 @@ export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
         <button type="button" class="kml-popup-btn primary kml-detail-btn" data-kml-id="${escapeHtml(kmlFile?.id)}" data-feature-id="${escapeHtml(feature?.id)}">查看详情</button>
       </div>
     `
-  const previewHtml = preview.items.length
+  const previewHtml = isCollection
+    ? `
+      <section class="kml-popup-media kml-popup-resource-collection" aria-label="资源集合">
+        <div class="kml-popup-media-heading"><span>资源集合</span><small>${getKmlResourceCollectionItemCount(feature)} 项</small></div>
+        <button type="button" class="kml-popup-collection-launch" data-kml-resource-collection aria-label="浏览资源集合">浏览资源</button>
+      </section>
+    `
+    : preview.items.length
     ? `
       <section class="kml-popup-media" aria-label="点位媒体预览">
         <div class="kml-popup-media-heading"><span>媒体速览</span><small>${escapeHtml(preview.total)} 项</small></div>
@@ -169,6 +186,11 @@ function buildPreviewItems (kmlFile, feature, view = null) {
 }
 
 export function hasKmlFeaturePreviewMedia (feature) {
+  // A collection is a separate, paged surface. Do not classify up to 300
+  // collection URLs just to decide whether its marker needs an interaction.
+  if (isKmlResourceCollectionFeature(feature)) {
+    return getKmlResourceCollectionItemCount(feature) > 0
+  }
   return getKmlFeaturePopupMedia(feature, {
     contentOptions: getKmlContentOptions(),
   }).total > 0
@@ -187,6 +209,12 @@ export function openKmlFeatureMediaPreview (kmlFile, feature, options = {}) {
     view = null,
     linkMapFeatures = !isTouchFirstEnvironment(),
   } = options
+  if (isKmlResourceCollectionFeature(feature)) {
+    return openKmlResourceCollectionPanel(kmlFile, feature, {
+      trigger,
+      contentOptions: getKmlContentOptions(),
+    })
+  }
   const items = buildPreviewItems(kmlFile, feature, view)
   if (!items.length) return false
   let activeFeatureKey = getKmlMediaFeatureKey({
@@ -233,6 +261,17 @@ export function bindKmlFeaturePopupMediaActions (container, kmlFile, feature) {
   const binding = { kmlFile, feature }
   popupMediaBindings.set(eventRoot, binding)
   eventRoot.addEventListener('click', event => {
+    const collectionTrigger = event.target.closest?.('[data-kml-resource-collection]')
+    if (collectionTrigger && eventRoot.contains(collectionTrigger)) {
+      event.stopPropagation()
+      event.preventDefault()
+      const currentBinding = popupMediaBindings.get(eventRoot)
+      if (currentBinding) openKmlResourceCollectionPanel(currentBinding.kmlFile, currentBinding.feature, {
+        trigger: collectionTrigger,
+        contentOptions: getKmlContentOptions(),
+      })
+      return
+    }
     const trigger = event.target.closest?.('[data-kml-popup-media]')
     if (!trigger || !eventRoot.contains(trigger)) return
     event.stopPropagation()
@@ -441,6 +480,10 @@ function renderPanelContent (panel, kmlFile, feature, view, errorMessage = '') {
 }
 
 export async function openKmlFeatureContentPanel (kmlFile, feature) {
+  if (isKmlResourceCollectionFeature(feature)) {
+    openKmlResourceCollectionPanel(kmlFile, feature, { contentOptions: getKmlContentOptions() })
+    return
+  }
   const panel = ensurePanel()
   const featureName = getKmlFeatureDisplayName(feature)
   panel.hidden = false

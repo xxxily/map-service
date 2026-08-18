@@ -32,6 +32,12 @@ const ICON_DEFINITIONS = Object.freeze([
     glyph: '<path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13.5" r="3.2"/>',
   }),
   Object.freeze({
+    key: 'collection',
+    label: '资源集合',
+    color: '#0e7490',
+    glyph: '<rect x="4" y="5" width="13" height="11" rx="2"/><path d="m6 14 3-3 2.5 2 2-2 2.5 3"/><path d="M8 19h10a2 2 0 0 0 2-2V9"/><circle cx="8.5" cy="8.5" r="1"/>',
+  }),
+  Object.freeze({
     key: 'campsite',
     label: '营地',
     color: '#15803d',

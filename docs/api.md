@@ -1324,6 +1324,8 @@ GET /api/v1/kml/media?url=https%3A%2F%2Fdown-files.2bulu.com%2Ff%2Fdn1%3FdownPar
 
 KML Point 的 `name` 可为空；空名称不会在地图、详情或媒体预览中生成占位标题。可选 `markerIcon` 只接受项目内置枚举，导出时写入 `ExtendedData/Data name="map-service:marker-icon"`；未填写时按 provider、媒体类型和主题默认样式自动识别。具体枚举、空名称展示和导入导出规则见 [KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md) 与 [KML 导入导出](./requirements/kml-import-export.md)。
 
+Point 还可以携带 `resourceCollection` 资源集合扩展，用于在一个地理点管理最多 300 个图片、视频、音频、页面或自动识别资源。标准 KML 使用 `ExtendedData/Data name="map-service:resource-collection"` 往返保存；集合浏览采用每页 40 项的列表/卡片面板，未打开集合时不会把资源 URL 展开到文件级媒体画廊或地图 DOM。集合 URL 必须为 HTTPS，禁止 URL 凭据及 `token`、`access_token`、`password`、`signature`、`api_key`、`authorization` 等敏感查询参数；普通视图参数（如 720 云 `scene_id`）保留。创建或更新收到非法集合返回 `400 VALIDATION_FAILED`，KML 导入遇到非法或未知版本集合则保留 Point 并在响应 `warnings` 中报告，公开分享读取会再次剔除历史脏数据。
+
 ### `GET /api/v1/admin/kml`
 
 管理员获取所有公共 KML 列表。

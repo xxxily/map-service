@@ -8,6 +8,11 @@ import {
 } from './security.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
 import {
+  normalizeKmlResourceCollection,
+  serializeKmlResourceCollection,
+  tryNormalizeKmlResourceCollection,
+} from '../../../shared/kml-resource-collection.js'
+import {
   computeSpatialScope,
   publicSpatialScope,
   spatialPolicyEligibility,
@@ -250,8 +255,33 @@ export function normalizeKmlFeatures (value) {
         throw createHttpError('点位图标不受支持', 400, 'VALIDATION_FAILED')
       }
       if (markerIcon) normalized.markerIcon = markerIcon
+      if (feature.resourceCollection !== undefined && feature.resourceCollection !== null) {
+        try {
+          normalized.resourceCollection = normalizeKmlResourceCollection(feature.resourceCollection, {
+            createId: () => randomId('res'),
+          })
+        } catch (error) {
+          throw createHttpError(error.message || '资源集合格式不正确', 400, 'VALIDATION_FAILED')
+        }
+      }
     }
     return normalized
+  })
+}
+
+function sanitizePublishedKmlFeatures (value) {
+  return (Array.isArray(value) ? value : []).map(rawFeature => {
+    if (!rawFeature || typeof rawFeature !== 'object' || Array.isArray(rawFeature)) return rawFeature
+    const feature = { ...rawFeature }
+    if (feature.type !== 'Point') {
+      delete feature.resourceCollection
+      return feature
+    }
+    if (feature.resourceCollection === undefined || feature.resourceCollection === null) return feature
+    const result = tryNormalizeKmlResourceCollection(feature.resourceCollection)
+    if (result.value) feature.resourceCollection = result.value
+    else delete feature.resourceCollection
+    return feature
   })
 }
 
@@ -283,12 +313,17 @@ function readXmlElement (source, tagName) {
   return match ? decodeXml(match[1]).trim() : ''
 }
 
-function readMarkerIconFromXml (source) {
-  const data = /<(?:[\w.-]+:)?Data\b[^>]*\bname\s*=\s*["']map-service:marker-icon["'][^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?Data\s*>/i
+function readExtendedDataValueFromXml (source, name) {
+  const escapedName = String(name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const data = new RegExp(`<(?:[\\w.-]+:)?Data\\b[^>]*\\bname\\s*=\\s*["']${escapedName}["'][^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?Data\\s*>`, 'i')
     .exec(String(source || ''))?.[1] || ''
   const value = /<(?:[\w.-]+:)?value\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?value\s*>/i
     .exec(data)?.[1] || ''
-  return normalizeKmlMarkerIcon(decodeXml(value))
+  return decodeXml(value)
+}
+
+function readMarkerIconFromXml (source) {
+  return normalizeKmlMarkerIcon(readExtendedDataValueFromXml(source, 'map-service:marker-icon'))
 }
 
 function parseCoordinateText (value) {
@@ -318,6 +353,7 @@ export function parseKmlText (value) {
   const documentName = readXmlElement(documentHeader, 'name')
   const documentDescription = sanitizeRichText(readXmlElement(documentHeader, 'description'), 10000)
   const features = []
+  const warnings = []
   const placemarkPattern = /<(?:[\w.-]+:)?Placemark\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?Placemark\s*>/gi
   let match
   while ((match = placemarkPattern.exec(documentSource)) !== null) {
@@ -341,6 +377,15 @@ export function parseKmlText (value) {
       continue
     }
     const markerIcon = type === 'Point' ? readMarkerIconFromXml(source) : ''
+    const rawResourceCollection = type === 'Point'
+      ? readExtendedDataValueFromXml(source, 'map-service:resource-collection')
+      : ''
+    const parsedResourceCollection = rawResourceCollection
+      ? tryNormalizeKmlResourceCollection(rawResourceCollection, { createId: () => randomId('res') })
+      : { value: null, error: null }
+    if (parsedResourceCollection.error) {
+      warnings.push(`第 ${features.length + 1} 个标注的资源集合已忽略：${parsedResourceCollection.error.message}`)
+    }
     features.push({
       id: randomId('feat'),
       type,
@@ -349,12 +394,14 @@ export function parseKmlText (value) {
       coordinates,
       ...(readXmlElement(source, 'styleUrl') ? { styleUrl: readXmlElement(source, 'styleUrl') } : {}),
       ...(markerIcon ? { markerIcon } : {}),
+      ...(parsedResourceCollection.value ? { resourceCollection: parsedResourceCollection.value } : {}),
     })
   }
   return {
     name: normalizeText(documentName || '导入的 KML', { minLength: 1, maxLength: 200 }),
     description: documentDescription,
     features: normalizeKmlFeatures(features),
+    warnings,
   }
 }
 
@@ -373,11 +420,21 @@ export function generateKmlText (name, features, description = '') {
     parts.push(`      <description>${escapeXml(feature.description)}</description>`)
     if (feature.styleUrl) parts.push(`      <styleUrl>${escapeXml(feature.styleUrl)}</styleUrl>`)
     const markerIcon = feature.type === 'Point' ? normalizeKmlMarkerIcon(feature.markerIcon) : ''
-    if (markerIcon) {
+    const resourceCollection = feature.type === 'Point' && feature.resourceCollection
+      ? normalizeKmlResourceCollection(feature.resourceCollection, { createId: () => randomId('res') })
+      : null
+    if (markerIcon || resourceCollection) {
       parts.push('      <ExtendedData>')
-      parts.push('        <Data name="map-service:marker-icon">')
-      parts.push(`          <value>${escapeXml(markerIcon)}</value>`)
-      parts.push('        </Data>')
+      if (markerIcon) {
+        parts.push('        <Data name="map-service:marker-icon">')
+        parts.push(`          <value>${escapeXml(markerIcon)}</value>`)
+        parts.push('        </Data>')
+      }
+      if (resourceCollection) {
+        parts.push('        <Data name="map-service:resource-collection">')
+        parts.push(`          <value>${escapeXml(serializeKmlResourceCollection(resourceCollection))}</value>`)
+        parts.push('        </Data>')
+      }
       parts.push('      </ExtendedData>')
     }
     if (feature.type === 'Point') {
@@ -1739,7 +1796,7 @@ export class UserContentService {
       throw createHttpError('KML 文件超过单文件大小限制', 413, 'FILE_TOO_LARGE')
     }
     const parsed = parseKmlText(text)
-    return this.createKml(actor, {
+    const created = this.createKml(actor, {
       name: input.name || parsed.name || String(input.fileName || '').replace(/\.kml$/i, ''),
       description: input.description !== undefined ? input.description : parsed.description,
       features: parsed.features,
@@ -1752,6 +1809,9 @@ export class UserContentService {
       sourceByteSize,
       ...(options.syncClientId ? { syncClientId: options.syncClientId } : {}),
     })
+    return parsed.warnings?.length
+      ? { ...created, warnings: parsed.warnings.slice(0, 10) }
+      : created
   }
 
   exportKml (actor, kmlId) {
@@ -2200,7 +2260,7 @@ export class UserContentService {
       lockDrag: Boolean(row.lock_drag),
       enabled: Boolean(row.enabled),
       isLiveTrack: Boolean(row.is_live_track),
-      features: parseJson(row.features_json, []),
+      features: sanitizePublishedKmlFeatures(parseJson(row.features_json, [])),
       featureCount: Number(row.feature_count || 0),
       byteSize: Number(row.byte_size || 0),
       revision: Number(row.revision || 0),
@@ -3019,7 +3079,7 @@ export class UserContentService {
     if (!item) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
     return {
       ...this.publicItemSummary(item),
-      features: Array.isArray(item.snapshot?.features) ? item.snapshot.features : [],
+      features: sanitizePublishedKmlFeatures(item.snapshot?.features),
     }
   }
 

@@ -128,6 +128,34 @@ test('copy only rejects an id collision in the target file', () => {
   assert.equal(result.files[1].features.at(-1).id, 'shared-id')
 })
 
+test('copying a resource collection deep-clones items and null patches remove the optional field', () => {
+  const source = files()
+  source[0].features[0].resourceCollection = {
+    version: 1,
+    viewMode: 'grid',
+    items: [{ id: 'res-1', title: '原始', url: 'https://example.com/a.jpg', type: 'image' }],
+  }
+  const copied = transferKmlFeature(source, {
+    sourceKmlId: 'a',
+    targetKmlId: 'b',
+    featureId: 'one',
+    mode: 'copy',
+    idFactory: () => 'copy-collection',
+  })
+  copied.files[1].features.at(-1).resourceCollection.items[0].title = '副本'
+  assert.equal(source[0].features[0].resourceCollection.items[0].title, '原始')
+
+  const removed = transferKmlFeature(source, {
+    sourceKmlId: 'a',
+    targetKmlId: 'b',
+    featureId: 'one',
+    mode: 'copy',
+    featurePatch: { resourceCollection: null },
+    idFactory: () => 'copy-without-collection',
+  })
+  assert.equal(Object.hasOwn(removed.files[1].features.at(-1), 'resourceCollection'), false)
+})
+
 test('dropping a feature on its file appends it to the end', () => {
   const result = reorderKmlFeature(files(), { kmlId: 'a', featureId: 'one' })
 

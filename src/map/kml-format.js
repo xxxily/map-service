@@ -1,4 +1,8 @@
 import { normalizeKmlMarkerIcon } from '../../shared/kml-marker-icons.js'
+import {
+  serializeKmlResourceCollection,
+  tryNormalizeKmlResourceCollection,
+} from '../../shared/kml-resource-collection.js'
 
 function findDirectChild (element, tagName) {
   const normalizedTagName = String(tagName || '').toLowerCase()
@@ -8,16 +12,20 @@ function findDirectChild (element, tagName) {
   }) || null
 }
 
-function readMarkerIcon (placemark) {
+function readExtendedDataValue (placemark, name) {
   const dataNodes = placemark?.getElementsByTagName?.('Data') || []
   for (const dataNode of dataNodes) {
-    if (dataNode.getAttribute('name') !== 'map-service:marker-icon') continue
+    if (dataNode.getAttribute('name') !== name) continue
     const valueNode = [...(dataNode.children || [])].find(node => {
       return String(node.localName || node.tagName || '').split(':').pop().toLowerCase() === 'value'
     })
-    return normalizeKmlMarkerIcon(valueNode?.textContent || '')
+    return valueNode?.textContent || ''
   }
   return ''
+}
+
+function readMarkerIcon (placemark) {
+  return normalizeKmlMarkerIcon(readExtendedDataValue(placemark, 'map-service:marker-icon'))
 }
 
 export function parseKmlDocument (kmlText) {
@@ -34,6 +42,7 @@ export function parseKmlDocument (kmlText) {
   const documentNode = xmlDoc.getElementsByTagName('Document')[0]
   const documentNameNode = findDirectChild(documentNode, 'name')
   const documentDescriptionNode = findDirectChild(documentNode, 'description')
+  const warnings = []
 
   for (let i = 0; i < placemarks.length; i++) {
     const placemark = placemarks[i]
@@ -45,6 +54,13 @@ export function parseKmlDocument (kmlText) {
     const description = descNode ? getDescriptionContent(descNode) : ''
     const styleUrl = styleNode?.textContent.trim() || ''
     const markerIcon = readMarkerIcon(placemark)
+    const rawResourceCollection = readExtendedDataValue(placemark, 'map-service:resource-collection')
+    const parsedResourceCollection = rawResourceCollection
+      ? tryNormalizeKmlResourceCollection(rawResourceCollection)
+      : { value: null, error: null }
+    if (rawResourceCollection && parsedResourceCollection.error) {
+      warnings.push(`第 ${i + 1} 个标注的资源集合已忽略：${parsedResourceCollection.error.message}`)
+    }
 
     let type = null
     let coordinates = null
@@ -76,6 +92,9 @@ export function parseKmlDocument (kmlText) {
         description,
         ...(styleUrl ? { styleUrl } : {}),
         ...(markerIcon ? { markerIcon } : {}),
+        ...(type === 'Point' && parsedResourceCollection.value
+          ? { resourceCollection: parsedResourceCollection.value }
+          : {}),
         coordinates,
       })
     }
@@ -85,6 +104,7 @@ export function parseKmlDocument (kmlText) {
     name: documentNameNode?.textContent.trim() || '',
     description: documentDescriptionNode ? getDescriptionContent(documentDescriptionNode) : '',
     features,
+    warnings,
   }
 }
 
@@ -139,11 +159,21 @@ export function generateKmlText (kmlName, features, description = '') {
     xmlParts.push(`      <description>${escapeXml(feat.description)}</description>`)
     if (feat.styleUrl) xmlParts.push(`      <styleUrl>${escapeXml(feat.styleUrl)}</styleUrl>`)
     const markerIcon = normalizeKmlMarkerIcon(feat.markerIcon)
-    if (feat.type === 'Point' && markerIcon) {
+    const resourceCollection = feat.type === 'Point'
+      ? tryNormalizeKmlResourceCollection(feat.resourceCollection).value
+      : null
+    if (feat.type === 'Point' && (markerIcon || resourceCollection)) {
       xmlParts.push('      <ExtendedData>')
-      xmlParts.push('        <Data name="map-service:marker-icon">')
-      xmlParts.push(`          <value>${escapeXml(markerIcon)}</value>`)
-      xmlParts.push('        </Data>')
+      if (markerIcon) {
+        xmlParts.push('        <Data name="map-service:marker-icon">')
+        xmlParts.push(`          <value>${escapeXml(markerIcon)}</value>`)
+        xmlParts.push('        </Data>')
+      }
+      if (resourceCollection) {
+        xmlParts.push('        <Data name="map-service:resource-collection">')
+        xmlParts.push(`          <value>${escapeXml(serializeKmlResourceCollection(resourceCollection))}</value>`)
+        xmlParts.push('        </Data>')
+      }
       xmlParts.push('      </ExtendedData>')
     }
 

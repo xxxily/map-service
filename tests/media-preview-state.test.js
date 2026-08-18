@@ -7,6 +7,7 @@ import {
   getMediaPreviewFeatureName,
   getMediaPreviewHeadingTitle,
   getMediaPreviewTrackLabel,
+  getMediaPreviewTrackWindow,
   getWrappedMediaIndex,
   normalizeMediaPreviewItems,
 } from '../src/ui/media-preview-state.js'
@@ -22,6 +23,12 @@ test('media preview wraps gallery navigation and clamps image scale', () => {
   assert.equal(getDefaultMediaPreviewTrackExpanded(3, false), true)
   assert.equal(getDefaultMediaPreviewTrackExpanded(3, true), false)
   assert.equal(getDefaultMediaPreviewTrackExpanded(1, false), false)
+})
+
+test('media preview track keeps a bounded window for large collections', () => {
+  assert.deepEqual(getMediaPreviewTrackWindow(4, 2), [0, 1, 2, 3])
+  assert.deepEqual(getMediaPreviewTrackWindow(300, 150), [0, 148, 149, 150, 151, 152, 299])
+  assert.ok(getMediaPreviewTrackWindow(300, 150).length <= 7)
 })
 
 test('media preview prefers point names and falls back to stable track numbers', () => {
@@ -99,4 +106,20 @@ test('media preview small-window mode keeps one title bar and centers navigation
   assert.match(minimizedNavRule, /place-items:\s*center;/)
   assert.match(minimizedNavRule, /top:\s*50%;/)
   assert.match(minimizedNavRule, /transform:\s*translateY\(-50%\);/)
+})
+
+test('media preview cleanup releases media sources and observers between items and on close', () => {
+  const source = readFileSync(new URL('../src/ui/media-preview.js', import.meta.url), 'utf8')
+  const cleanupSource = source.match(/function cleanupCurrentMedia \(\)[\s\S]*?\n}\n\nfunction cleanupTrackObserver/)?.[0] || ''
+  const closeSource = source.match(/function hideMediaPreview \(\)[\s\S]*?\n}\n\nexport function closeMediaPreview/)?.[0] || ''
+
+  assert.match(cleanupSource, /cleanupPanzoom\(\)/)
+  assert.match(cleanupSource, /hlsInstance\?\.destroy\(\)/)
+  assert.match(cleanupSource, /media\.pause\(\)/)
+  assert.match(cleanupSource, /media\.removeAttribute\('src'\)/)
+  assert.match(cleanupSource, /media\.load\(\)/)
+  assert.match(cleanupSource, /frame\.removeAttribute\('src'\)/)
+  assert.match(cleanupSource, /content\?\.replaceChildren\(\)/)
+  assert.match(closeSource, /cleanupTrackObserver\(\)/)
+  assert.match(closeSource, /document\.removeEventListener\('keydown', onDocumentKeydown\)/)
 })
