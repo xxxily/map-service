@@ -32,6 +32,7 @@
 - [两步路授权浏览器助手与浏览器内导入](./2bulu-authorized-browser-helper.md)（第四版已实现，待手工验收）
 - [两步路公开分享轨迹导入](./2bulu-public-track-import.md)（服务端直连兼容方案，网站入口由浏览器助手替代）
 - [KML 点位富媒体内容展示](./kml-feature-rich-content.md)
+- [KML 媒体预览与 3D 地图界面精简](./kml-media-preview-and-3d-ui-polish.md)（v1.5.19 已发布）
 - [KML 点位第三方分享链接识别与嵌入预览](./kml-point-share-link-embed.md)（首期抖音 provider 已实现，待手工验收）
 - [KML 点位 720 云内容与可配置图标](./kml-720yun-and-marker-icons.md)（第二版已实现，待用户验收）
 - [KML 要素组织与受控 URL 参数保留](./kml-feature-organization-and-url-preservation.md)（第一版已实现）
