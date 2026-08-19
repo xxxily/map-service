@@ -38,7 +38,8 @@ test('2D map performance options preserve continuous Leaflet zoom transitions', 
   assert.equal(options.fadeAnimation, true)
   assert.equal(options.markerZoomAnimation, true)
   assert.equal(options.wheelDebounceTime, 8)
-  assert.ok(options.zoomSnap <= 0.5)
+  assert.equal(options.zoomSnap, 0)
+  assert.equal(options.zoomDelta, 0.5)
 })
 
 test('ordinary KML point virtualization uses a bounded two-view buffer', () => {

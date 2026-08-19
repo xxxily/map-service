@@ -63,7 +63,7 @@ export function getKmlLeafletPerformanceOptions () {
     markerZoomAnimation: true,
     wheelDebounceTime: 8,
     wheelPxPerZoomLevel: 45,
-    zoomSnap: 0.5,
+    zoomSnap: 0,
     zoomDelta: 0.5,
   }
 }
