@@ -167,6 +167,85 @@ test('personal KML CRUD enforces revisions, ownership and default protection', (
   }
 })
 
+test('KML sync switches the default file when the new default update runs first', () => {
+  const harness = createHarness()
+  try {
+    const previousDefault = harness.service.ensureDefaultKml(harness.one)
+    const nextDefault = harness.service.createKml(harness.one, {
+      name: '新的默认文件',
+      features: [],
+    })
+
+    const result = harness.service.syncKmlFiles(harness.one, {
+      operations: [
+        {
+          action: 'update',
+          kmlId: nextDefault.id,
+          data: { revision: nextDefault.revision, isDefault: true },
+        },
+        {
+          action: 'update',
+          kmlId: previousDefault.id,
+          data: { revision: previousDefault.revision, isDefault: false },
+        },
+      ],
+    })
+
+    assert.equal(result.results[0].document.isDefault, true)
+    assert.equal(result.results[1].document.isDefault, false)
+    assert.deepEqual(
+      harness.service.listKmlFiles(harness.one).items
+        .filter(item => item.isDefault)
+        .map(item => item.id),
+      [nextDefault.id],
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML sync restores a future default before promoting it in the next batch', () => {
+  const harness = createHarness()
+  try {
+    const previousDefault = harness.service.ensureDefaultKml(harness.one)
+    const futureDefault = harness.service.createKml(harness.one, {
+      name: '回收站中的新默认',
+      features: [],
+    })
+    harness.service.trashKml(harness.one, futureDefault.id)
+
+    const restored = harness.service.syncKmlFiles(harness.one, {
+      operations: [{ action: 'restore', kmlId: futureDefault.id }],
+    }).results[0].document
+    assert.equal(restored.status, 'active')
+    assert.equal(restored.isDefault, false)
+
+    harness.service.syncKmlFiles(harness.one, {
+      operations: [
+        {
+          action: 'update',
+          kmlId: futureDefault.id,
+          data: { revision: restored.revision, isDefault: true },
+        },
+        {
+          action: 'update',
+          kmlId: previousDefault.id,
+          data: { revision: previousDefault.revision, isDefault: false },
+        },
+      ],
+    })
+
+    assert.deepEqual(
+      harness.service.listKmlFiles(harness.one).items
+        .filter(item => item.isDefault)
+        .map(item => item.id),
+      [futureDefault.id],
+    )
+  } finally {
+    harness.close()
+  }
+})
+
 test('KML quotas reject oversized writes and sync batches roll back atomically', () => {
   const harness = createHarness({
     quota: {

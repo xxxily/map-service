@@ -1,6 +1,10 @@
 import { apiRequest } from '../auth/api.js'
 import { isEmbeddedDocument } from '../auth/embed-context.js'
 import { hasPermission, refreshAuthSession } from '../auth/session.js'
+import {
+  applyKmlMergeChoices,
+  mergeKmlFileSets,
+} from './kml-conflict-merge.js'
 import { getKmlAccountDraftStore } from './kml-account-draft-store.js'
 
 let accountMode = false
@@ -24,6 +28,7 @@ let lifecycleBound = false
 let latestSyncState = { state: 'guest', detail: {} }
 let embeddedAuthRequired = false
 let latestDraftWrite = Promise.resolve(true)
+let workingFilesReplacementHandler = null
 const KML_RECOVERY_STRATEGIES = new Set([
   'discard',
   'restore',
@@ -35,6 +40,24 @@ const KML_RECOVERY_STRATEGIES = new Set([
 function cloneValue (value) {
   if (typeof structuredClone === 'function') return structuredClone(value)
   return JSON.parse(JSON.stringify(value))
+}
+
+function conflictSessionFingerprint (merge) {
+  return JSON.stringify((merge?.conflicts || []).map(item => ({
+    path: item.path,
+    kind: item.kind,
+    base: item.base,
+    local: item.local,
+    server: item.server,
+  })))
+}
+
+function normalizeConflictSession (value) {
+  if (!value || typeof value !== 'object') return null
+  return {
+    version: 1,
+    retryExhausted: Boolean(value.retryExhausted),
+  }
 }
 
 export function getKmlSyncStatusView (state, detail = {}) {
@@ -129,6 +152,21 @@ function dispatchSyncState (state, detail = {}) {
   }))
 }
 
+export function bindKmlAccountWorkingFilesReplacement (handler) {
+  if (!(handler instanceof Function)) return () => {}
+  workingFilesReplacementHandler = handler
+  return () => {
+    if (workingFilesReplacementHandler === handler) workingFilesReplacementHandler = null
+  }
+}
+
+function replaceKmlAccountWorkingFiles (files, detail = {}) {
+  const source = cloneValue(Array.isArray(files) ? files : [])
+  if (!(workingFilesReplacementHandler instanceof Function)) return source
+  const replaced = workingFilesReplacementHandler(source, detail)
+  return Array.isArray(replaced) ? replaced : source
+}
+
 export function resolveKmlAccountMode (auth, options = {}) {
   if (auth?.authenticated) return 'account'
   return options.embedded ? 'embedded-auth-required' : 'guest'
@@ -161,7 +199,9 @@ function serializableKml (file) {
     lockDrag: Boolean(file.lockDrag),
     enabled: file.enabled !== false,
     isLiveTrack: Boolean(file.isLiveTrack),
-    features: Array.isArray(file.features) ? file.features : [],
+    // A snapshot is a historical value. Clone the feature graph so map edits
+    // cannot mutate the base through a shared reference.
+    features: cloneValue(Array.isArray(file.features) ? file.features : []),
   }
 }
 
@@ -170,11 +210,13 @@ export function kmlFingerprint (file) {
 }
 
 function snapshotForDocument (document, localId = document.id) {
+  const base = cloneValue(serializableKml(document))
   return {
     localId: String(localId || document.id || ''),
     serverId: String(document.id || document.serverId || ''),
     revision: Number(document.revision || 1),
-    hash: kmlFingerprint(document),
+    hash: JSON.stringify(base),
+    base,
     status: document.status === 'trashed' ? 'trashed' : 'active',
   }
 }
@@ -183,7 +225,7 @@ function snapshotMap (values = []) {
   if (values instanceof Map) return new Map(values)
   return new Map((values || []).flatMap(value => {
     const localId = String(value?.localId || '')
-    return localId ? [[localId, { ...value, localId }]] : []
+    return localId ? [[localId, { ...cloneValue(value), localId }]] : []
   }))
 }
 
@@ -237,6 +279,7 @@ function snapshotsWithCommittedCreates (serverFiles, draft) {
 
 export function buildKmlSyncOperations (files, currentSnapshots = snapshots, deletedClientIds = []) {
   const operations = []
+  const defaultRestores = []
   const activeIds = new Set()
   files.forEach(file => {
     const localId = String(file.id || '')
@@ -248,9 +291,11 @@ export function buildKmlSyncOperations (files, currentSnapshots = snapshots, del
     if (!snapshot) {
       operations.push({ action: 'create', clientId: localId, data })
     } else if (snapshot.status === 'trashed') {
-      operations.push(snapshot.serverId
+      const restore = snapshot.serverId
         ? { action: 'restore', kmlId: snapshot.serverId }
-        : { action: 'restore', clientId: localId })
+        : { action: 'restore', clientId: localId }
+      operations.push(restore)
+      if (data.isDefault === true) defaultRestores.push(restore)
     } else if (snapshot.hash !== hash) {
       operations.push({
         action: 'update',
@@ -269,7 +314,19 @@ export function buildKmlSyncOperations (files, currentSnapshots = snapshots, del
     if (!normalizedId || activeIds.has(normalizedId) || currentSnapshots.has(normalizedId)) continue
     operations.push({ action: 'trash', clientId: normalizedId })
   }
-  return operations
+  // Restoring a file always returns it as non-default. When that local file is
+  // intended to become the new default, restore it in an isolated first phase;
+  // the next sync pass can then promote it before demoting the previous default.
+  if (defaultRestores.length) return defaultRestores
+  const defaultPromotions = []
+  const remainingOperations = []
+  operations.forEach(operation => {
+    const promotesDefault = ['create', 'update'].includes(operation.action) &&
+      operation.data?.isDefault === true
+    if (promotesDefault) defaultPromotions.push(operation)
+    else remainingOperations.push(operation)
+  })
+  return [...defaultPromotions, ...remainingOperations]
 }
 
 export function reduceKmlSyncResult (currentSnapshots, result) {
@@ -336,21 +393,24 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
 }
 
 export function buildKmlRecoveryDraft (userId, files, currentSnapshots, options = {}) {
-  return {
-    version: 1,
+  const draft = {
+    version: 2,
     userId: String(userId || ''),
     generation: Math.max(1, Number(options.generation || 1)),
     reason: String(options.reason || 'dirty'),
     updatedAt: options.updatedAt || new Date().toISOString(),
     files: cloneValue(Array.isArray(files) ? files : []),
-    snapshots: Array.from(snapshotMap(currentSnapshots).values(), value => ({ ...value })),
+    snapshots: Array.from(snapshotMap(currentSnapshots).values(), value => cloneValue(value)),
     deletedClientIds: [...new Set(Array.from(options.deletedClientIds || [], id => String(id || '')).filter(Boolean))],
     pendingOperations: normalizePendingSyncOperations(options.pendingOperations),
   }
+  const conflictSession = normalizeConflictSession(options.conflictSession)
+  if (conflictSession) draft.conflictSession = conflictSession
+  return draft
 }
 
 function normalizeRecoveryDraft (value, userId) {
-  if (!value || value.version !== 1 || String(value.userId || '') !== String(userId || '')) return null
+  if (!value || ![1, 2].includes(Number(value.version)) || String(value.userId || '') !== String(userId || '')) return null
   if (!Array.isArray(value.files) || !Array.isArray(value.snapshots)) return null
   const normalized = buildKmlRecoveryDraft(userId, value.files, value.snapshots, {
     generation: value.generation,
@@ -358,6 +418,7 @@ function normalizeRecoveryDraft (value, userId) {
     updatedAt: value.updatedAt,
     deletedClientIds: value.deletedClientIds,
     pendingOperations: value.pendingOperations,
+    conflictSession: value.conflictSession,
   })
   if (value.incompleteWrite) {
     normalized.incompleteWrite = true
@@ -366,6 +427,7 @@ function normalizeRecoveryDraft (value, userId) {
       Number(value.generation || 0)
     )
   }
+  if (Number(value.version) === 1) normalized.legacyVersion = 1
   return normalized
 }
 
@@ -614,13 +676,16 @@ async function loadDocuments (items, concurrency = 4) {
   return results.filter(Boolean)
 }
 
-async function loadAllAccountDocuments () {
+async function loadAllAccountDocuments (options = {}) {
+  const status = ['active', 'trashed', 'all'].includes(String(options.status || 'active'))
+    ? String(options.status || 'active')
+    : 'active'
   const items = []
   let page = 1
   let usage = null
   while (page <= 100) {
     const list = await apiRequest('/kml/files', {
-      query: { page, limit: 100, status: 'active' },
+      query: { page, limit: 100, status },
     })
     const pageItems = Array.isArray(list?.items) ? list.items : []
     items.push(...pageItems)
@@ -632,12 +697,71 @@ async function loadAllAccountDocuments () {
   return { files: await loadDocuments(items), usage }
 }
 
+function rebaseSnapshotsToServer (serverFiles, currentSnapshots = snapshots) {
+  const rebased = snapshotsForServerFiles(serverFiles, currentSnapshots)
+  snapshotMap(currentSnapshots).forEach(item => {
+    if (!item.serverId) rebased.set(item.localId, cloneValue(item))
+  })
+  return rebased
+}
+
+export function mergeKmlRecoveryDraft (draft, serverFiles, options = {}) {
+  const legacy = Number(draft?.legacyVersion || draft?.version || 0) < 2 ||
+    (draft?.snapshots || []).some(snapshot => snapshot?.serverId && snapshot?.base == null)
+  if (legacy) {
+    return {
+      files: cloneValue(draft?.files || []),
+      conflicts: [],
+      autoMergedCount: 0,
+      conflictSummary: { total: 0, files: 0, fields: 0, features: 0, resources: 0, orders: 0 },
+      serverFiles: cloneValue(serverFiles || []),
+      usage: options.usage || null,
+      draft: cloneValue(draft),
+      legacy: true,
+      supported: false,
+    }
+  }
+  const merge = mergeKmlFileSets(draft?.files || [], serverFiles, draft?.snapshots || [])
+  return {
+    ...merge,
+    ...(draft?.conflictSession?.retryExhausted ? { retryExhausted: true } : {}),
+    serverFiles: cloneValue(serverFiles || []),
+    usage: options.usage || null,
+    draft: cloneValue(draft),
+  }
+}
+
+async function prepareKmlConflictMerge (draft, options = {}) {
+  const loaded = options.loaded || await loadAllAccountDocuments({ status: 'all' })
+  return mergeKmlRecoveryDraft(draft, loaded.files, { usage: loaded.usage })
+}
+
+async function attemptAutomaticConflictMerge (draft) {
+  const prepared = await prepareKmlConflictMerge(draft)
+  if (prepared.legacy || prepared.conflicts.length) return { merged: false, prepared }
+  snapshots = rebaseSnapshotsToServer(prepared.serverFiles, draft?.snapshots || [])
+  latestFiles = replaceKmlAccountWorkingFiles(prepared.files, {
+    reason: 'auto-merge',
+    autoMergedCount: Number(prepared.autoMergedCount || 0),
+  })
+  pendingCreateDeletes = new Set((draft?.deletedClientIds || []).filter(id => (
+    !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+  )))
+  pendingSyncOperations = []
+  unconfirmedCreateIds = new Set()
+  trackUnconfirmedCreates(latestFiles)
+  syncBlockedByConflict = false
+  pendingConflict = null
+  activeDraft = persistCurrentDraft('auto-merged') || draft
+  return { merged: true, prepared }
+}
+
 function snapshotsForServerFiles (serverFiles, draftSnapshots = []) {
   const next = new Map()
   const previousByServerId = new Map(Array.from(snapshotMap(draftSnapshots).values(), item => [item.serverId, item]))
   serverFiles.forEach(document => {
     const previous = previousByServerId.get(String(document.id || ''))
-    const localId = previous?.localId || document.id
+    const localId = previous?.localId || document.syncClientId || document.id
     next.set(localId, snapshotForDocument(document, localId))
   })
   return next
@@ -665,6 +789,7 @@ function persistCurrentDraft (reason = 'dirty') {
     reason,
     deletedClientIds: pendingCreateDeletes,
     pendingOperations: pendingSyncOperations,
+    conflictSession: pendingConflict?.merge,
   })
   activeDraft = draft
   if (syncBlockedByConflict) pendingConflict = { ...(pendingConflict || {}), draft: cloneValue(draft) }
@@ -765,6 +890,13 @@ export async function initializeKmlAccountMode () {
           activeDraft = stored
           draftGeneration = Math.max(draftGeneration, storedRecoveryGeneration(stored))
           recovery = { draft: stored, analysis }
+          if ((analysis?.conflictedLocalIds?.length || stored.conflictSession?.retryExhausted) && !stored.legacyVersion) {
+            const mergeLoaded = await loadAllAccountDocuments({ status: 'all' })
+            const merge = await prepareKmlConflictMerge(stored, { loaded: mergeLoaded })
+            recovery.merge = merge
+            pendingConflict = { draft: cloneValue(stored), merge: cloneValue(merge) }
+            syncBlockedByConflict = true
+          }
         } else if (stored) {
           clearRecoveryDraft()
         }
@@ -779,10 +911,24 @@ export async function initializeKmlAccountMode () {
         message: `无法读取本机恢复草稿：${recoveryError.message}`,
       })
     } else {
-      if (accountCanWrite) dispatchSettledSyncState('loaded', {
-        count: loaded.files.length,
-      })
-      else dispatchSyncState('readonly', { count: loaded.files.length, readOnly: true })
+      if (syncBlockedByConflict) {
+        const merge = recovery?.merge
+        dispatchSyncState('conflict', {
+          code: 'KML_REVISION_CONFLICT',
+          message: merge?.legacy
+            ? '恢复草稿基于旧版本，请选择加载服务器版本或另存为新 KML'
+            : (merge?.retryExhausted && !merge?.conflicts?.length
+                ? '自动合并后的保存仍遇到服务器更新，请确认处理'
+                : `已自动合并可兼容修改，仍有 ${Number(merge?.conflicts?.length || 0)} 项需要确认`),
+          recoveryAvailable: true,
+          conflictCount: Number(merge?.conflicts?.length || 0),
+          autoMergedCount: Number(merge?.autoMergedCount || 0),
+        })
+      } else if (accountCanWrite) {
+        dispatchSettledSyncState('loaded', { count: loaded.files.length })
+      } else {
+        dispatchSyncState('readonly', { count: loaded.files.length, readOnly: true })
+      }
     }
     return {
       mode: 'account',
@@ -877,7 +1023,7 @@ function applySyncResult (result, files) {
   })
 }
 
-async function flushSync () {
+async function flushSync (options = {}) {
   if (!accountMode || !accountCanWrite || syncBlockedByConflict) return
   if (syncInFlight) {
     syncPending = true
@@ -894,6 +1040,7 @@ async function flushSync () {
   }
 
   const epoch = syncEpoch
+  let retryAfterAutoMerge = false
   syncInFlight = true
   dispatchSyncState('saving', { operationCount: operations.length })
   try {
@@ -929,13 +1076,56 @@ async function flushSync () {
     if (!accountMode || epoch !== syncEpoch) return
     if (Number(error?.status || 0) > 0) pendingSyncOperations = []
     if (error.code === 'KML_REVISION_CONFLICT') {
-      syncBlockedByConflict = true
       const draft = persistCurrentDraft('conflict') || activeDraft
-      pendingConflict = draft ? { draft: cloneValue(draft) } : null
+      if (!options.autoMergeAttempted && draft) {
+        try {
+          const automatic = await attemptAutomaticConflictMerge(draft)
+          if (!accountMode || epoch !== syncEpoch) return
+          if (automatic.merged) {
+            retryAfterAutoMerge = true
+            syncPending = true
+            dispatchSyncState('dirty', {
+              message: '已合并其他设备的修改，正在重新保存',
+              autoMergedCount: automatic.prepared.autoMergedCount,
+            })
+            return
+          }
+          pendingConflict = {
+            draft: cloneValue(draft),
+            merge: cloneValue(automatic.prepared),
+          }
+        } catch (mergeError) {
+          pendingConflict = {
+            draft: cloneValue(draft),
+            mergeError: mergeError.message,
+          }
+        }
+      } else if (draft) {
+        try {
+          const prepared = await prepareKmlConflictMerge(draft)
+          pendingConflict = {
+            draft: cloneValue(draft),
+            merge: cloneValue({ ...prepared, retryExhausted: true }),
+          }
+        } catch (mergeError) {
+          pendingConflict = {
+            draft: cloneValue(draft),
+            mergeError: mergeError.message,
+          }
+        }
+      } else {
+        pendingConflict = null
+      }
+      syncBlockedByConflict = true
+      persistCurrentDraft('conflict')
       dispatchSyncState('conflict', {
         code: error.code,
-        message: error.message,
+        message: pendingConflict?.merge?.conflicts?.length
+          ? `已自动合并可兼容修改，仍有 ${pendingConflict.merge.conflicts.length} 项需要确认`
+          : error.message,
         recoveryAvailable: Boolean(draft),
+        conflictCount: Number(pendingConflict?.merge?.conflicts?.length || 0),
+        autoMergedCount: Number(pendingConflict?.merge?.autoMergedCount || 0),
       })
       dispatchResolutionRequest('automatic')
     } else {
@@ -952,7 +1142,7 @@ async function flushSync () {
       syncPending = false
       if (syncTimer) clearTimeout(syncTimer)
       syncTimer = null
-      await flushSync()
+      await flushSync(retryAfterAutoMerge ? { autoMergeAttempted: true } : {})
     }
   }
 }
@@ -1031,6 +1221,61 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
       (newestCurrentDraft && compareRecoveryRecords(newestCurrentDraft, stored) > 0)) {
     throw new Error('KML 草稿在处理期间又有更新，请重新选择处理方式')
   }
+  if (normalizedStrategy === 'restore' && !stored.legacyVersion && recovery?.merge && !recovery.merge.legacy) {
+    const merge = await prepareKmlConflictMerge(stored, { loaded: await loadAllAccountDocuments({ status: 'all' }) })
+    if (merge.conflicts.length) {
+      snapshots = snapshotMap(stored.snapshots)
+      latestFiles = cloneValue(stored.files || [])
+      pendingCreateDeletes = new Set(stored.deletedClientIds || [])
+      pendingSyncOperations = normalizePendingSyncOperations(stored.pendingOperations)
+      unconfirmedCreateIds = new Set()
+      trackUnconfirmedCreates(latestFiles)
+      syncBlockedByConflict = true
+      pendingConflict = { draft: cloneValue(stored), merge: cloneValue(merge) }
+      persistCurrentDraft('conflict')
+      dispatchSyncState('conflict', {
+        code: 'KML_REVISION_CONFLICT',
+        message: `已自动合并可兼容修改，仍有 ${merge.conflicts.length} 项需要确认`,
+        recoveryAvailable: true,
+        conflictCount: merge.conflicts.length,
+        autoMergedCount: Number(merge.autoMergedCount || 0),
+      })
+      return {
+        files: latestFiles,
+        snapshots: Array.from(snapshots.values(), value => cloneValue(value)),
+        analysis: recovery.analysis || analyzeKmlRecoveryDraft(loaded.files, stored),
+        merge,
+        copiedCount: 0,
+        shouldSync: false,
+        blockedByConflict: true,
+        deletedClientIds: [...pendingCreateDeletes],
+        pendingOperations: cloneValue(pendingSyncOperations),
+      }
+    }
+    snapshots = rebaseSnapshotsToServer(merge.serverFiles, stored.snapshots || [])
+    latestFiles = merge.files
+    pendingCreateDeletes = new Set((stored.deletedClientIds || []).filter(id => (
+      !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+    )))
+    pendingSyncOperations = []
+    unconfirmedCreateIds = new Set()
+    trackUnconfirmedCreates(latestFiles)
+    syncBlockedByConflict = false
+    pendingConflict = null
+    persistCurrentDraft('auto-merged')
+    dispatchSyncState('dirty', { autoMergedCount: Number(merge.autoMergedCount || 0) })
+    return {
+      files: latestFiles,
+      snapshots: Array.from(snapshots.values(), value => cloneValue(value)),
+      analysis: recovery.analysis || analyzeKmlRecoveryDraft(loaded.files, stored),
+      merge,
+      copiedCount: 0,
+      shouldSync: true,
+      blockedByConflict: false,
+      deletedClientIds: [...pendingCreateDeletes],
+      pendingOperations: [],
+    }
+  }
   const result = buildKmlRecoveryResolution(loaded.files, stored, normalizedStrategy)
 
   snapshots = snapshotMap(result.snapshots)
@@ -1070,6 +1315,65 @@ export async function resolveKmlAccountConflict (strategy) {
   }
   const mapped = strategy === 'reload' ? 'reload-conflicts' : 'save-as-conflicts'
   return resolveKmlAccountRecovery(mapped)
+}
+
+export function getKmlAccountConflictSession () {
+  if (!pendingConflict) return null
+  return cloneValue(pendingConflict)
+}
+
+export async function resolveKmlAccountConflictChoices (choices = {}) {
+  if (!accountMode || !accountCanWrite || !accountUserId) {
+    throw new Error('当前账号不能处理 KML 冲突')
+  }
+  const stored = pendingConflict?.draft || activeDraft
+  if (!stored) throw new Error('没有可处理的 KML 冲突草稿')
+  const latest = await prepareKmlConflictMerge(stored)
+  if (latest.legacy) throw new Error('旧版草稿缺少合并基线，请加载服务器版本或将本地版本另存为新 KML')
+  const displayedMerge = pendingConflict?.merge
+  if (displayedMerge && conflictSessionFingerprint(displayedMerge) !== conflictSessionFingerprint(latest)) {
+    pendingConflict = { draft: cloneValue(stored), merge: cloneValue(latest) }
+    syncBlockedByConflict = true
+    persistCurrentDraft('conflict-rebased')
+    dispatchSyncState('conflict', {
+      code: 'KML_REVISION_CONFLICT',
+      message: '服务器内容在处理期间发生变化，已重新计算冲突，请重新选择',
+      recoveryAvailable: true,
+      conflictCount: latest.conflicts.length,
+      autoMergedCount: Number(latest.autoMergedCount || 0),
+    })
+    throw new Error('服务器内容在处理期间发生变化，已重新计算冲突，请重新选择')
+  }
+  if (!latest.conflicts.length) {
+    const automatic = await attemptAutomaticConflictMerge(stored)
+    if (!automatic.merged) throw new Error('服务器内容刚刚发生变化，请重新打开冲突处理')
+    syncBlockedByConflict = false
+    pendingConflict = null
+    persistCurrentDraft('auto-merged')
+    dispatchSyncState('dirty', { autoMergedCount: automatic.prepared.autoMergedCount })
+    await flushSync({ autoMergeAttempted: true })
+    return { ...automatic.prepared, resolved: true, conflicts: [] }
+  }
+  const missingChoice = latest.conflicts.find(item => !['local', 'server'].includes(String(choices[item.path] || '')))
+  if (missingChoice) throw new Error(`请先处理冲突：${missingChoice.path}`)
+  const resolvedFiles = applyKmlMergeChoices(latest, choices)
+  snapshots = rebaseSnapshotsToServer(latest.serverFiles, stored.snapshots || [])
+  latestFiles = resolvedFiles
+  pendingCreateDeletes = new Set((stored.deletedClientIds || []).filter(id => (
+    !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+  )))
+  pendingSyncOperations = []
+  unconfirmedCreateIds = new Set()
+  trackUnconfirmedCreates(latestFiles)
+  syncBlockedByConflict = false
+  pendingConflict = null
+  persistCurrentDraft('manual-merge')
+  dispatchSyncState('dirty', {
+    conflictCount: latest.conflicts.length,
+    resolvedConflictCount: latest.conflicts.length,
+  })
+  await flushSync({ autoMergeAttempted: true })
+  return { ...latest, files: latestFiles, resolved: true }
 }
 
 export function suspendKmlAccountSync (options = {}) {

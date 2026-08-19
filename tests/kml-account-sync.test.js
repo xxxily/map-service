@@ -8,10 +8,12 @@ import {
   getKmlSyncStatusView,
   getPendingShareReferenceCount,
   kmlFingerprint,
+  mergeKmlRecoveryDraft,
   registerKmlAccountDocumentSnapshot,
   reduceKmlSyncResult,
   resolveKmlAccountMode,
 } from '../src/map/kml-account-sync.js'
+import { applyKmlMergeChoices } from '../src/map/kml-conflict-merge.js'
 import {
   createBrowserKmlAccountDraftStore,
   createMemoryKmlAccountDraftStore,
@@ -73,6 +75,113 @@ test('KML account sync builds create, update and trash operations from snapshots
   assert.equal(operations.find(item => item.action === 'update').data.revision, 3)
   assert.equal(operations.find(item => item.action === 'create').clientId, 'local-new')
   assert.equal(operations.find(item => item.action === 'trash').kmlId, 'server-2')
+})
+
+test('KML account sync promotes an existing new default before clearing the old default', () => {
+  const snapshots = new Map([
+    ['local-a', {
+      localId: 'local-a',
+      serverId: 'server-a',
+      revision: 4,
+      hash: kmlFingerprint({ name: 'A', isDefault: true, features: [] }),
+    }],
+    ['local-b', {
+      localId: 'local-b',
+      serverId: 'server-b',
+      revision: 2,
+      hash: kmlFingerprint({ name: 'B', isDefault: false, features: [] }),
+    }],
+  ])
+
+  const operations = buildKmlSyncOperations([
+    { id: 'local-a', name: 'A', isDefault: false, features: [] },
+    { id: 'local-b', name: 'B', isDefault: true, features: [] },
+  ], snapshots)
+
+  assert.deepEqual(operations.map(operation => ({
+    action: operation.action,
+    target: operation.kmlId || operation.clientId,
+    isDefault: operation.data?.isDefault,
+  })), [
+    { action: 'update', target: 'server-b', isDefault: true },
+    { action: 'update', target: 'server-a', isDefault: false },
+  ])
+})
+
+test('KML account sync creates a new default before clearing the previous default', () => {
+  const snapshots = new Map([
+    ['local-a', {
+      localId: 'local-a',
+      serverId: 'server-a',
+      revision: 4,
+      hash: kmlFingerprint({ name: 'A', isDefault: true, features: [] }),
+    }],
+  ])
+
+  const operations = buildKmlSyncOperations([
+    { id: 'local-a', name: 'A', isDefault: false, features: [] },
+    { id: 'local-b', name: 'B', isDefault: true, features: [] },
+  ], snapshots)
+
+  assert.deepEqual(operations.map(operation => ({
+    action: operation.action,
+    target: operation.kmlId || operation.clientId,
+    isDefault: operation.data?.isDefault,
+  })), [
+    { action: 'create', target: 'local-b', isDefault: true },
+    { action: 'update', target: 'server-a', isDefault: false },
+  ])
+})
+
+test('KML account sync restores a trashed future default before switching the account default', () => {
+  let snapshots = new Map([
+    ['local-a', {
+      localId: 'local-a',
+      serverId: 'server-a',
+      revision: 4,
+      hash: kmlFingerprint({ name: 'A', isDefault: true, features: [] }),
+      status: 'active',
+    }],
+    ['local-b', {
+      localId: 'local-b',
+      serverId: 'server-b',
+      revision: 2,
+      hash: kmlFingerprint({ name: 'B', isDefault: false, features: [] }),
+      status: 'trashed',
+    }],
+  ])
+  const files = [
+    { id: 'local-a', name: 'A', isDefault: false, features: [] },
+    { id: 'local-b', name: 'B', isDefault: true, features: [] },
+  ]
+
+  assert.deepEqual(buildKmlSyncOperations(files, snapshots), [
+    { action: 'restore', kmlId: 'server-b' },
+  ])
+
+  snapshots = reduceKmlSyncResult(snapshots, {
+    results: [{
+      action: 'restore',
+      document: {
+        id: 'server-b',
+        syncClientId: 'local-b',
+        revision: 3,
+        status: 'active',
+        name: 'B',
+        isDefault: false,
+        features: [],
+      },
+    }],
+  }).snapshots
+
+  assert.deepEqual(buildKmlSyncOperations(files, snapshots).map(operation => ({
+    action: operation.action,
+    target: operation.kmlId || operation.clientId,
+    isDefault: operation.data?.isDefault,
+  })), [
+    { action: 'update', target: 'server-b', isDefault: true },
+    { action: 'update', target: 'server-a', isDefault: false },
+  ])
 })
 
 test('服务端直接创建的 KML 可登记同步快照且不会再次生成 create', () => {
@@ -314,6 +423,211 @@ test('KML recovery draft keeps create, update and delete intent with user isolat
   ], draft)
   assert.deepEqual(analysis.operations.map(item => item.action).sort(), ['create', 'trash', 'update'])
   assert.deepEqual(analysis.conflictedLocalIds, [])
+})
+
+test('KML v2 recovery draft keeps an immutable full base for three-way merge', () => {
+  const document = {
+    id: 'server-a',
+    revision: 3,
+    name: '基线文件',
+    features: [{
+      id: 'point-a',
+      type: 'Point',
+      name: '原点位',
+      description: '',
+      coordinates: [113, 23],
+    }],
+  }
+  const snapshots = registerKmlAccountDocumentSnapshot(new Map(), document, 'local-a')
+  const draft = buildKmlRecoveryDraft('user-a', [{ ...document, id: 'local-a' }], snapshots)
+
+  document.features[0].name = '后续修改'
+  document.features[0].coordinates[0] = 120
+  assert.equal(draft.version, 2)
+  assert.equal(draft.snapshots[0].base.features[0].name, '原点位')
+  assert.deepEqual(draft.snapshots[0].base.features[0].coordinates, [113, 23])
+})
+
+test('KML v2 recovery performs three-way merge while legacy v1 draft safely declines it', () => {
+  const base = {
+    name: '路线',
+    description: '',
+    isDefault: true,
+    coordCorrection: 'wgs84-to-gcj02',
+    theme: 'default',
+    color: '#0f766e',
+    lockDrag: false,
+    enabled: true,
+    isLiveTrack: false,
+    features: [{
+      id: 'p1',
+      type: 'Point',
+      name: '起点',
+      description: '',
+      coordinates: [113, 23],
+    }],
+  }
+  const draft = buildKmlRecoveryDraft('user-a', [{
+    id: 'local-a',
+    ...structuredClone(base),
+    name: '本地名称',
+  }], new Map([['local-a', {
+    localId: 'local-a',
+    serverId: 'server-a',
+    revision: 1,
+    hash: JSON.stringify(base),
+    base: structuredClone(base),
+    status: 'active',
+  }]]))
+  const serverFiles = [{
+    id: 'server-a',
+    revision: 2,
+    ...structuredClone(base),
+    description: '服务器介绍',
+  }]
+  const merged = mergeKmlRecoveryDraft(draft, serverFiles)
+
+  assert.equal(merged.legacy, undefined)
+  assert.equal(merged.conflicts.length, 0)
+  assert.equal(merged.files[0].name, '本地名称')
+  assert.equal(merged.files[0].description, '服务器介绍')
+  assert.equal(merged.files[0].revision, 2)
+
+  const legacy = structuredClone(draft)
+  legacy.version = 1
+  delete legacy.snapshots[0].base
+  const legacyMerge = mergeKmlRecoveryDraft(legacy, serverFiles)
+  assert.equal(legacyMerge.legacy, true)
+  assert.equal(legacyMerge.supported, false)
+  assert.equal(legacyMerge.files[0].name, '本地名称')
+})
+
+test('KML v2 无服务端 ID 的删除墓碑不会被误判为旧版草稿', () => {
+  const draft = buildKmlRecoveryDraft('user-a', [], new Map([['local-deleted', {
+    localId: 'local-deleted',
+    serverId: '',
+    revision: 0,
+    hash: '',
+    status: 'trashed',
+  }]]), {
+    deletedClientIds: ['local-deleted'],
+  })
+  const merged = mergeKmlRecoveryDraft(draft, [])
+
+  assert.equal(merged.legacy, undefined)
+  assert.equal(merged.supported, undefined)
+})
+
+test('自动重试耗尽状态随 v2 草稿持久化并在重新计算时保留', async () => {
+  const base = {
+    name: '路线',
+    description: '',
+    isDefault: true,
+    coordCorrection: 'wgs84-to-gcj02',
+    theme: 'default',
+    color: '#0f766e',
+    lockDrag: false,
+    enabled: true,
+    isLiveTrack: false,
+    features: [],
+  }
+  const draft = buildKmlRecoveryDraft('user-a', [{ id: 'local-a', ...base, name: '本地名称' }], new Map([['local-a', {
+    localId: 'local-a',
+    serverId: 'server-a',
+    revision: 1,
+    hash: JSON.stringify(base),
+    base,
+    status: 'active',
+  }]]), {
+    conflictSession: { version: 1, retryExhausted: true },
+  })
+  const store = createMemoryKmlAccountDraftStore()
+  await store.put(draft)
+  const restored = await store.get('user-a')
+  const merge = mergeKmlRecoveryDraft(restored, [{ id: 'server-a', revision: 2, ...base }])
+
+  assert.equal(restored.conflictSession.retryExhausted, true)
+  assert.deepEqual(Object.keys(restored.conflictSession).sort(), ['retryExhausted', 'version'])
+  assert.equal(merge.retryExhausted, true)
+  assert.equal(merge.conflicts.length, 0)
+})
+
+test('服务器回收站文件选择保留本地时先恢复再提交本地修改', () => {
+  const base = {
+    id: 'local-a',
+    name: '原文件',
+    description: '',
+    isDefault: false,
+    coordCorrection: 'wgs84-to-gcj02',
+    theme: 'default',
+    color: '#0f766e',
+    lockDrag: false,
+    enabled: true,
+    isLiveTrack: false,
+    features: [],
+  }
+  const draft = buildKmlRecoveryDraft('user-a', [{ ...base, name: '本地继续编辑' }], new Map([['local-a', {
+    localId: 'local-a',
+    serverId: 'server-a',
+    revision: 1,
+    hash: kmlFingerprint(base),
+    base: structuredClone(base),
+    status: 'active',
+  }]]))
+  const trashedServer = {
+    ...base,
+    id: 'server-a',
+    syncClientId: 'local-a',
+    revision: 2,
+    status: 'trashed',
+  }
+  const merge = mergeKmlRecoveryDraft(draft, [trashedServer])
+  const resolved = applyKmlMergeChoices(merge, {})
+  const trashedSnapshots = registerKmlAccountDocumentSnapshot(new Map(), trashedServer, 'local-a')
+
+  assert.deepEqual(buildKmlSyncOperations(resolved, trashedSnapshots), [
+    { action: 'restore', kmlId: 'server-a' },
+  ])
+  const restoredSnapshots = reduceKmlSyncResult(trashedSnapshots, {
+    results: [{
+      action: 'restore',
+      document: { ...trashedServer, status: 'active', revision: 3 },
+    }],
+  }).snapshots
+  const update = buildKmlSyncOperations(resolved, restoredSnapshots)
+  assert.equal(update[0].action, 'update')
+  assert.equal(update[0].kmlId, 'server-a')
+  assert.equal(update[0].data.name, '本地继续编辑')
+})
+
+test('服务器永久删除文件选择保留本地时使用新 clientId 创建副本', () => {
+  const base = {
+    name: '原文件',
+    description: '',
+    isDefault: false,
+    coordCorrection: 'wgs84-to-gcj02',
+    theme: 'default',
+    color: '#0f766e',
+    lockDrag: false,
+    enabled: true,
+    isLiveTrack: false,
+    features: [],
+  }
+  const draft = buildKmlRecoveryDraft('user-a', [{ id: 'local-a', ...base, name: '本地继续编辑' }], new Map([['local-a', {
+    localId: 'local-a',
+    serverId: 'server-a',
+    revision: 1,
+    hash: JSON.stringify(base),
+    base,
+    status: 'active',
+  }]]))
+  const merge = mergeKmlRecoveryDraft(draft, [])
+  const resolved = applyKmlMergeChoices(merge, {}, { createId: () => 'local-recovered' })
+  const operations = buildKmlSyncOperations(resolved, new Map())
+
+  assert.equal(operations.length, 1)
+  assert.equal(operations[0].action, 'create')
+  assert.equal(operations[0].clientId, 'local-recovered')
 })
 
 test('KML recovery tombstones prevent stale drafts from resurfacing', async () => {
@@ -673,6 +987,8 @@ test('账号同步源码使用代次隔离会话失效后的在途响应', async
   assert.match(source, /export function suspendKmlAccountSync \(options = \{\}\) \{[\s\S]*syncEpoch \+= 1/)
   assert.match(source, /window\.addEventListener\('pagehide'/)
   assert.match(source, /syncBlockedByConflict = true/)
+  assert.match(source, /if \(syncBlockedByConflict\) \{[\s\S]*dispatchSyncState\('conflict'/)
+  assert.match(source, /latestFiles = replaceKmlAccountWorkingFiles\(prepared\.files/)
   assert.match(source, /pendingSyncOperations = normalizePendingSyncOperations\(operations\)/)
   assert.match(source, /persistCurrentDraft\('in-flight'\)/)
   assert.match(source, /const draftWrite = latestDraftWrite\s+const draftPersisted = await draftWrite/)
@@ -723,6 +1039,7 @@ test('2D and 3D KML panels bind session expiry before account recovery and expos
   assert.ok(mapInit.indexOf('bindAccountSessionExpiry(map)') < mapInit.indexOf('await loadInitialKmlFiles()'))
   assert.ok(map3dInit.indexOf('bindAccountSessionExpiry3d()') < map3dInit.indexOf('await loadInitialKmlFiles()'))
   assert.match(recoverySource, /catch \(error\) \{\s+if \(!isAccountKmlMode\(\)\) return null/)
+  assert.match(recoverySource, /bindKmlAccountWorkingFilesReplacement\(replaceFiles\)/)
   assert.match(styles, /\.kml-sync-status\[data-state="conflict"\]/)
   assert.match(styles, /\.kml-sync-status\[data-state="share-pending"\]/)
   assert.match(styles, /\.kml-sync-status\[data-state="auth-required"\]/)

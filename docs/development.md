@@ -67,12 +67,15 @@ npm run build
 - 用户、角色、会话、个人 KML、收藏和分享的业务规则放在 `service/bin/user/` 服务层；`simpleApi.js` 只负责鉴权、参数读取、服务调用和统一响应。
 - 权限判断以服务端返回的权限码为准。`account.self.update` 蕴含资料读取，`kml.own.write` 蕴含个人 KML 读取，`kml.any.manage` 蕴含任意 KML 读取。
 - 账号 KML 的读取权限和写入权限必须分开处理。只读账号仍可加载、查看、聚焦和导出授权数据，但不得通过隐藏控件、事件伪造、轨迹记录或撤销重做修改内存数据和服务端数据。
-- 2D 与 3D 共用 `src/map/kml-account-sync.js`、`kml-account-draft-store.js` 和 `kml-account-recovery-ui.js`。任何新写入口都必须先更新工作文件并立即保存用户隔离草稿，再进入防抖同步。
+- 2D 与 3D 共用 `src/map/kml-account-sync.js`、`kml-account-draft-store.js`、`kml-conflict-merge.js` 和 `kml-account-recovery-ui.js`。任何新写入口都必须先更新工作文件并立即保存用户隔离草稿，再进入防抖同步。
 - `/kml/sync` 的 `create.clientId` 是用户范围内的幂等键；同一创建意图在重试和恢复时必须复用。服务端同时保留 `(owner_id, sync_client_id)` 唯一约束和 `kml_sync_create_keys` 持久账本；永久删除内容行不得释放旧键。
-- 同步成功只能在确认没有后续修改时清理草稿。`409 KML_REVISION_CONFLICT` 后必须暂停自动同步，通过统一 Dialog 选择加载服务器版本、另存冲突副本或稍后处理。
-- 完整草稿只写 IndexedDB；`localStorage` 仅允许保存轻量代次元数据和删除墓碑，禁止在高频编辑路径同步序列化完整 KML。新元数据而完整写入未完成时必须回退到最近完整草稿，并以元数据的更高代次继续写入；初始化时即使记录已删除，也要读取墓碑代次，避免页面重载后的低代次写入复活旧草稿。
+- 同步成功只能在确认没有后续修改时清理草稿。`409 KML_REVISION_CONFLICT` 后使用 `snapshot.base / local / server` 三方合并：互不相交的修改自动合并并最多自动重试一次，真实冲突通过统一 Dialog 逐项选择本地或服务器版本；不得整文件静默覆盖、裁剪或无限重试。
+- 草稿 v2 的快照必须保留完整深拷贝 `base`；Feature、坐标和资源项不得与工作文件共享引用。完整草稿以 IndexedDB 为主，750000 字符以内允许同步保存完整 localStorage 副本，大草稿 localStorage 只保存代次元数据。新元数据而完整写入未完成时必须回退到最近完整草稿，并以元数据的更高代次继续写入；不得为控制大小裁剪 KML 内容。
+- `retryExhausted` 必须以精简状态随草稿持久化，不保存可过期的服务器副本或冲突结果。页面刷新后重新读取服务器并重新计算冲突，只继承已自动重试状态；人工选择提交前也必须再次读取服务器，冲突集合变化时拒绝旧选择。
+- 自动合并改变工作文件后，必须通过统一替换回调同步更新 2D/3D 的 `kmlList`、图层和管理面板，再以同一对象继续提交；不得只更新同步模块的内部副本，否则后续编辑会把服务器合并结果覆盖回去。
+- 默认 KML 作为账号级唯一状态处理；文件字段合并不得造成多个默认文件。回收站文件保留本地先 restore 再 update；若恢复文件要成为默认，restore 单独提交后下一批再完成默认切换。永久删除文件保留本地必须使用新 ID create。
 - 会话失效监听必须在初始账号加载和恢复之前绑定；事件处理先调用 `suspendKmlAccountSync({ preserveDraft: true })`，随后才允许清理账号 KML 并加载访客本地数据。
-- 修改这些模块至少运行 `tests/kml-account-sync.test.js`、`tests/account-ui.test.js`、`tests/user-system.test.js`，并继续执行全量门禁。
+- 修改这些模块至少运行 `tests/kml-conflict-merge.test.js`、`tests/kml-account-sync.test.js`、`tests/account-ui.test.js`、`tests/user-system.test.js`，并继续执行全量门禁。
 
 后台前端模块约定：
 
