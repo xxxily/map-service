@@ -14,6 +14,16 @@ import {
 import { createMediaPreviewHistoryGuard } from './media-preview-history.js'
 import { isTouchFirstEnvironment } from './touch-environment.js'
 import { getKmlMediaProviderListIcon } from '../map/kml-media-marker.js'
+import {
+  MEDIA_PREVIEW_LAYOUT_MODES,
+  clampMediaPreviewWindow,
+  isMediaPreviewWideAvailable,
+  readMediaPreviewLayout,
+  readMediaPreviewWindow,
+  resizeMediaPreviewWindow,
+  writeMediaPreviewLayout,
+  writeMediaPreviewWindow,
+} from './media-preview-layout.js'
 
 const TYPE_LABELS = {
   image: '图片',
@@ -38,6 +48,10 @@ let trackObserver = null
 let activeItemChangeHandler = null
 let isTrackExpanded = true
 let previewHistoryGuard = null
+let isWide = false
+let smallWindowGeometry = null
+let activeWindowInteraction = null
+let windowInteractionFrame = null
 
 function prefersReducedMotion () {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
@@ -62,6 +76,25 @@ function getMediaSourceUrl (item) {
 
 function getOriginalContentUrl (item) {
   return String(item?.canonicalUrl || item?.sourceUrl || item?.url || '')
+}
+
+function isTouchPreviewEnvironment () {
+  return isTouchFirstEnvironment()
+}
+
+function getPreviewViewport () {
+  return {
+    width: Math.max(0, Number(window.innerWidth || document.documentElement?.clientWidth || 0)),
+    height: Math.max(0, Number(window.innerHeight || document.documentElement?.clientHeight || 0)),
+  }
+}
+
+function isWideModeAvailable () {
+  return !isTouchPreviewEnvironment() && isMediaPreviewWideAvailable(getPreviewViewport().width)
+}
+
+function getEffectiveWideMode () {
+  return isWide && isWideModeAvailable() && !isMinimized
 }
 
 function getItemTypeIcon (type) {
@@ -93,6 +126,9 @@ function createPreviewRoot () {
         </div>
         <div class="media-preview-header-actions">
           <button type="button" class="media-preview-icon-button media-preview-track-toggle" data-media-preview-action="toggle-track" aria-expanded="true" aria-label="收起缩略图" title="收起缩略图">▦</button>
+          <button type="button" class="media-preview-icon-button media-preview-wide-toggle" data-media-preview-action="toggle-wide" aria-pressed="false" aria-label="切换宽屏模式" title="切换宽屏模式">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6M4 4v6M20 4h-6M20 4v6M4 20h6M4 20v-6M20 20h-6M20 20v-6"/></svg>
+          </button>
           <button type="button" class="media-preview-icon-button media-preview-minimize" data-media-preview-action="minimize" aria-label="收缩为小窗" title="收缩为小窗">⌟</button>
           <button type="button" class="media-preview-icon-button media-preview-restore" data-media-preview-action="restore" aria-label="展开媒体预览" title="展开媒体预览">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
@@ -122,10 +158,13 @@ function createPreviewRoot () {
           <span data-media-preview-url></span>
         </div>
       </footer>
+      <div class="media-preview-window-resize-handle media-preview-window-resize-handle-nw" data-media-preview-window-resize="nw" tabindex="0" role="separator" aria-label="从左上角调整预览窗口大小" title="从左上角调整预览窗口大小"></div>
+      <div class="media-preview-window-resize-handle media-preview-window-resize-handle-se" data-media-preview-window-resize="se" tabindex="0" role="separator" aria-label="从右下角调整预览窗口大小" title="从右下角调整预览窗口大小"></div>
     </section>
   `
   root.addEventListener('click', onRootClick)
   root.addEventListener('input', onRootInput)
+  root.addEventListener('pointerdown', onPreviewPointerDown)
   document.body.appendChild(root)
   return root
 }
@@ -463,6 +502,101 @@ function syncMediaTrackVisibility () {
   }
 }
 
+function applySmallWindowGeometry (geometry, { persist = false } = {}) {
+  const root = ensurePreviewRoot()
+  smallWindowGeometry = clampMediaPreviewWindow(geometry, getPreviewViewport())
+  if (root.classList.contains('is-minimized')) {
+    root.style.setProperty('--media-preview-window-left', `${smallWindowGeometry.left}px`)
+    root.style.setProperty('--media-preview-window-top', `${smallWindowGeometry.top}px`)
+    root.style.setProperty('--media-preview-window-width', `${smallWindowGeometry.width}px`)
+    root.style.setProperty('--media-preview-window-height', `${smallWindowGeometry.height}px`)
+  }
+  if (persist) writeMediaPreviewWindow(smallWindowGeometry, undefined, getPreviewViewport())
+}
+
+function syncWideMode () {
+  const root = ensurePreviewRoot()
+  const toggle = getPreviewElement('[data-media-preview-action="toggle-wide"]')
+  const available = isWideModeAvailable()
+  root.classList.toggle('is-wide', getEffectiveWideMode())
+  if (toggle) {
+    toggle.hidden = !available || isMinimized
+    toggle.setAttribute('aria-pressed', String(getEffectiveWideMode()))
+    const label = getEffectiveWideMode() ? '切换居中模式' : '切换宽屏模式'
+    toggle.setAttribute('aria-label', label)
+    toggle.title = label
+  }
+}
+
+function setPreviewWide (wide) {
+  if (!isWideModeAvailable() && wide) return
+  isWide = Boolean(wide)
+  writeMediaPreviewLayout(isWide ? MEDIA_PREVIEW_LAYOUT_MODES.WIDE : MEDIA_PREVIEW_LAYOUT_MODES.CENTERED)
+  syncWideMode()
+}
+
+function scheduleSmallWindowGeometry (geometry) {
+  smallWindowGeometry = clampMediaPreviewWindow(geometry, getPreviewViewport())
+  if (windowInteractionFrame) return
+  windowInteractionFrame = requestAnimationFrame(() => {
+    windowInteractionFrame = null
+    applySmallWindowGeometry(smallWindowGeometry)
+  })
+}
+
+function finishPreviewPointerInteraction () {
+  if (!activeWindowInteraction) return
+  activeWindowInteraction = null
+  if (windowInteractionFrame) {
+    cancelAnimationFrame(windowInteractionFrame)
+    windowInteractionFrame = null
+    applySmallWindowGeometry(smallWindowGeometry)
+  }
+  document.body.classList.remove('media-preview-window-interacting')
+  document.body.classList.remove('media-preview-window-resizing')
+  writeMediaPreviewWindow(smallWindowGeometry, undefined, getPreviewViewport())
+  window.removeEventListener('pointermove', onPreviewPointerMove)
+  window.removeEventListener('pointerup', finishPreviewPointerInteraction)
+  window.removeEventListener('pointercancel', finishPreviewPointerInteraction)
+}
+
+function onPreviewPointerMove (event) {
+  if (!activeWindowInteraction || event.pointerId !== activeWindowInteraction.pointerId) return
+  event.preventDefault()
+  const deltaX = event.clientX - activeWindowInteraction.startX
+  const deltaY = event.clientY - activeWindowInteraction.startY
+  const start = activeWindowInteraction.geometry
+  const next = activeWindowInteraction.type === 'resize'
+    ? resizeMediaPreviewWindow(start, activeWindowInteraction.direction, { x: deltaX, y: deltaY }, getPreviewViewport())
+    : { ...start, left: start.left + deltaX, top: start.top + deltaY }
+  scheduleSmallWindowGeometry(next)
+}
+
+function onPreviewPointerDown (event) {
+  if (!isMinimized || isTouchPreviewEnvironment() || activeWindowInteraction) return
+  const resizeHandle = event.target.closest('[data-media-preview-window-resize]')
+  const header = event.target.closest('.media-preview-header')
+  const interactive = event.target.closest('button, a, input, select, textarea')
+  const type = resizeHandle ? 'resize' : header && !interactive ? 'drag' : ''
+  if (!type) return
+  event.preventDefault()
+  event.stopPropagation()
+  smallWindowGeometry ||= readMediaPreviewWindow(undefined, getPreviewViewport())
+  activeWindowInteraction = {
+    type,
+    direction: resizeHandle?.dataset.mediaPreviewWindowResize || 'se',
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    geometry: { ...smallWindowGeometry },
+  }
+  document.body.classList.add('media-preview-window-interacting')
+  document.body.classList.toggle('media-preview-window-resizing', type === 'resize')
+  window.addEventListener('pointermove', onPreviewPointerMove, { passive: false })
+  window.addEventListener('pointerup', finishPreviewPointerInteraction)
+  window.addEventListener('pointercancel', finishPreviewPointerInteraction)
+}
+
 function renderActiveItem () {
   const generation = ++renderGeneration
   cleanupCurrentMedia()
@@ -542,6 +676,7 @@ function onRootClick (event) {
       requestAnimationFrame(() => getPreviewElement('.media-preview-track-item.is-active')?.scrollIntoView?.({ block: 'nearest', inline: 'center' }))
     }
   }
+  if (action === 'toggle-wide') setPreviewWide(!getEffectiveWideMode())
   if (action === 'minimize') setPreviewMinimized(true)
   if (action === 'restore') setPreviewMinimized(false)
   if (action === 'zoom-in') setImageScale((panzoom?.getScale() || 1) + 0.5)
@@ -576,6 +711,17 @@ function trapFocus (event) {
 
 function onDocumentKeydown (event) {
   if (ensurePreviewRoot().hidden) return
+  const resizeHandle = event.target.closest?.('[data-media-preview-window-resize]')
+  if (isMinimized && resizeHandle && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+    event.preventDefault()
+    const step = event.shiftKey ? 40 : 12
+    const geometry = smallWindowGeometry || readMediaPreviewWindow(undefined, getPreviewViewport())
+    applySmallWindowGeometry(resizeMediaPreviewWindow(geometry, resizeHandle.dataset.mediaPreviewWindowResize, {
+      x: event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0,
+      y: event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0,
+    }, getPreviewViewport()), { persist: true })
+    return
+  }
   if (event.key === 'Escape') {
     event.preventDefault()
     closeMediaPreview()
@@ -624,7 +770,13 @@ function onDocumentKeydown (event) {
 }
 
 function onWindowResize () {
-  if (!ensurePreviewRoot().hidden && !isMinimized && activeItems[activeIndex]?.type === 'image') resetImage(false)
+  if (ensurePreviewRoot().hidden) return
+  syncWideMode()
+  if (isMinimized) {
+    applySmallWindowGeometry(smallWindowGeometry || readMediaPreviewWindow(undefined, getPreviewViewport()), { persist: true })
+  } else if (activeItems[activeIndex]?.type === 'image') {
+    resetImage(false)
+  }
 }
 
 function setPreviewMinimized (minimized) {
@@ -634,6 +786,11 @@ function setPreviewMinimized (minimized) {
   root.classList.toggle('is-minimized', isMinimized)
   getPreviewElement('.media-preview-dialog')?.setAttribute('aria-modal', isMinimized ? 'false' : 'true')
   document.body.classList.toggle('media-preview-open', !isMinimized)
+  if (isMinimized) {
+    smallWindowGeometry ||= readMediaPreviewWindow(undefined, getPreviewViewport())
+    applySmallWindowGeometry(smallWindowGeometry)
+  }
+  syncWideMode()
   const minimizeButton = getPreviewElement('[data-media-preview-action="minimize"]')
   if (minimizeButton) {
     minimizeButton.hidden = isMinimized
@@ -650,6 +807,7 @@ function hideMediaPreview () {
   const root = previewRoot || document.getElementById('app-media-preview')
   if (!root || root.hidden) return
   renderGeneration += 1
+  finishPreviewPointerInteraction()
   cleanupCurrentMedia()
   cleanupTrackObserver()
   const track = getPreviewElement('[data-media-preview-track]')
@@ -662,7 +820,11 @@ function hideMediaPreview () {
   root.hidden = true
   root.setAttribute('aria-hidden', 'true')
   root.removeAttribute('data-media-type')
-  root.classList.remove('is-minimized', 'is-track-collapsed')
+  root.classList.remove('is-minimized', 'is-track-collapsed', 'is-wide')
+  root.style.removeProperty('--media-preview-window-left')
+  root.style.removeProperty('--media-preview-window-top')
+  root.style.removeProperty('--media-preview-window-width')
+  root.style.removeProperty('--media-preview-window-height')
   document.body.classList.remove('media-preview-open')
   document.removeEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', onWindowResize)
@@ -671,6 +833,8 @@ function hideMediaPreview () {
   activeCollectionTitle = ''
   activeItemChangeHandler = null
   isMinimized = false
+  isWide = false
+  smallWindowGeometry = null
   isTrackExpanded = true
   if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
   previousFocus = null
@@ -696,6 +860,7 @@ export function openMediaPreview ({ items, index = 0, type = '', trigger = null,
   activeCollectionTitle = String(collectionTitle || normalizedItems[activeIndex]?.kmlName || '').trim()
   activeItemChangeHandler = typeof onActiveItemChange === 'function' ? onActiveItemChange : null
   isMinimized = false
+  isWide = readMediaPreviewLayout() === MEDIA_PREVIEW_LAYOUT_MODES.WIDE
   isTrackExpanded = getDefaultMediaPreviewTrackExpanded(activeItems.length, isTouchFirstEnvironment())
   root.classList.remove('is-minimized')
   getPreviewElement('.media-preview-dialog')?.setAttribute('aria-modal', 'true')
@@ -709,6 +874,7 @@ export function openMediaPreview ({ items, index = 0, type = '', trigger = null,
   window.removeEventListener('resize', onWindowResize)
   window.addEventListener('resize', onWindowResize)
   if (wasHidden) ensurePreviewHistoryGuard().activate()
+  syncWideMode()
   renderActiveItem()
   requestAnimationFrame(() => getPreviewElement('.media-preview-stage')?.focus({ preventScroll: true }))
   return true

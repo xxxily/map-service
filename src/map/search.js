@@ -270,6 +270,15 @@ function triggerRoutePlanning (map, AMap) {
 }
 
 export function initAmapSearch (map, AMap, amapGeolocation) {
+  const searchContainer = document.getElementById('map-search-mod')
+  const closeSearchButton = document.getElementById('close-search-panel-btn')
+  if (searchContainer && closeSearchButton && closeSearchButton.dataset.searchCloseBound !== 'true') {
+    closeSearchButton.dataset.searchCloseBound = 'true'
+    closeSearchButton.addEventListener('click', () => {
+      searchContainer.style.display = 'none'
+    })
+  }
+
   if (!AMap?.AutoComplete || !AMap?.PlaceSearch) {
     console.warn('高德搜索插件加载失败，搜索功能不可用')
     return
@@ -304,7 +313,6 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   })
 
   // 绑定普通位置搜索框历史记录下拉
-  const searchContainer = document.getElementById('map-search-mod')
   const searchInput = document.getElementById('tipinput')
   if (searchContainer && searchInput) {
     renderSearchHistoryDropdown(searchContainer, searchInput, 'map_search_history', (item) => {

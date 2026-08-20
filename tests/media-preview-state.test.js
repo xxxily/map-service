@@ -11,6 +11,58 @@ import {
   getWrappedMediaIndex,
   normalizeMediaPreviewItems,
 } from '../src/ui/media-preview-state.js'
+import {
+  MEDIA_PREVIEW_LAYOUT_MODES,
+  clampMediaPreviewWindow,
+  getDefaultMediaPreviewWindow,
+  isMediaPreviewWideAvailable,
+  normalizeMediaPreviewLayout,
+  readMediaPreviewLayout,
+  readMediaPreviewWindow,
+  resizeMediaPreviewWindow,
+  writeMediaPreviewWindow,
+} from '../src/ui/media-preview-layout.js'
+
+test('media preview layout preferences and small-window geometry are normalized and clamped', () => {
+  assert.equal(normalizeMediaPreviewLayout('wide'), MEDIA_PREVIEW_LAYOUT_MODES.WIDE)
+  assert.equal(normalizeMediaPreviewLayout('unknown'), MEDIA_PREVIEW_LAYOUT_MODES.CENTERED)
+  assert.equal(isMediaPreviewWideAvailable(1600), true)
+  assert.equal(isMediaPreviewWideAvailable(1520), false)
+
+  const viewport = { width: 1280, height: 720 }
+  const defaultWindow = getDefaultMediaPreviewWindow(viewport)
+  assert.deepEqual(defaultWindow, { left: 904, top: 464, width: 360, height: 240 })
+  assert.deepEqual(clampMediaPreviewWindow({ left: -100, top: 999, width: 9999, height: 1 }, viewport), {
+    left: 16,
+    top: 524,
+    width: 1248,
+    height: 180,
+  })
+
+  const storage = new Map()
+  const browserStorage = {
+    getItem: key => storage.get(key) || null,
+    setItem: (key, value) => storage.set(key, value),
+  }
+  assert.equal(readMediaPreviewLayout(browserStorage), MEDIA_PREVIEW_LAYOUT_MODES.CENTERED)
+  writeMediaPreviewWindow({ left: 2, top: 3, width: 400, height: 260 }, browserStorage, viewport)
+  assert.deepEqual(readMediaPreviewWindow(browserStorage, viewport), { left: 16, top: 16, width: 400, height: 260 })
+  storage.set('map_media_preview_window_v1', '{invalid')
+  assert.deepEqual(readMediaPreviewWindow(browserStorage, viewport), defaultWindow)
+
+  assert.deepEqual(resizeMediaPreviewWindow({ left: 400, top: 240, width: 360, height: 240 }, 'nw', { x: -80, y: -40 }, viewport), {
+    left: 320,
+    top: 200,
+    width: 440,
+    height: 280,
+  })
+  assert.deepEqual(resizeMediaPreviewWindow({ left: 400, top: 240, width: 360, height: 240 }, 'nw', { x: 999, y: 999 }, viewport), {
+    left: 480,
+    top: 300,
+    width: 280,
+    height: 180,
+  })
+})
 
 test('media preview wraps gallery navigation and clamps image scale', () => {
   assert.equal(getWrappedMediaIndex(-1, 3), 2)
@@ -81,6 +133,11 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.match(previewSource, /createMediaPreviewHistoryGuard/)
   assert.match(previewSource, /data-media-preview-action="minimize"/)
   assert.match(previewSource, /data-media-preview-action="restore"/)
+  assert.match(previewSource, /data-media-preview-action="toggle-wide"/)
+  assert.match(previewSource, /data-media-preview-window-resize="nw"/)
+  assert.match(previewSource, /data-media-preview-window-resize="se"/)
+  assert.match(previewSource, /readMediaPreviewLayout/)
+  assert.match(previewSource, /writeMediaPreviewWindow/)
   assert.match(previewSource, /import\('hls\.js'\)/)
   assert.match(previewSource, /video\.autoplay = true/)
   assert.match(previewSource, /video\.muted = true/)
@@ -93,12 +150,14 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.doesNotMatch(previewSource, /media-preview-feature-jump|data-media-preview-feature|open-feature/)
   assert.match(stylesSource, /\.media-preview-image\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*object-fit:\s*contain;/s)
   assert.match(stylesSource, /\.media-preview-content\s*\{[^}]*background:\s*var\(--media-preview-surface,\s*#050909\);/s)
-  assert.match(stylesSource, /\.media-preview-iframe-shell\s*\{[^}]*align-items:\s*center;[^}]*justify-content:\s*flex-start;[^}]*padding-block:[^;]+;[^}]*padding-inline:\s*0;[^}]*background:\s*var\(--media-preview-surface,\s*#050909\);/s)
-  assert.match(stylesSource, /\.media-preview-iframe\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;[^}]*background:\s*var\(--media-preview-surface,\s*#050909\);[^}]*color-scheme:\s*dark;/s)
+  assert.match(stylesSource, /\.media-preview-iframe-shell\s*\{[^}]*display:\s*grid;[^}]*height:\s*100%;[^}]*align-items:\s*stretch;[^}]*justify-content:\s*stretch;[^}]*padding:\s*0;[^}]*background:\s*var\(--media-preview-surface,\s*#050909\);/s)
+  assert.match(stylesSource, /\.media-preview-iframe\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*max-width:\s*none;[^}]*max-height:\s*none;[^}]*background:\s*var\(--media-preview-surface,\s*#050909\);[^}]*color-scheme:\s*dark;/s)
   assert.doesNotMatch(stylesSource, /\.media-preview-iframe\s*\{[^}]*width:\s*min\(1280px,\s*100%\)/s)
   assert.match(stylesSource, /--media-preview-control-bg:/)
   assert.match(stylesSource, /\.media-preview-source:active,[\s\S]*background:\s*var\(--media-preview-control-bg\);/)
   assert.match(stylesSource, /\.media-preview-track-provider-icon\s*\{[^}]*background:\s*rgba\(255, 255, 255, \.94\);/s)
+  assert.match(stylesSource, /\.media-preview-meta\s*\{[^}]*margin-left:\s*auto;[^}]*justify-self:\s*end;[^}]*text-align:\s*right;/s)
+  assert.match(stylesSource, /\.media-preview-window-resize-handle-nw\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*background:\s*transparent;/s)
 })
 
 test('media preview small-window mode keeps one title bar and centers navigation icons', () => {
@@ -112,7 +171,7 @@ test('media preview small-window mode keeps one title bar and centers navigation
   assert.equal([...previewTemplate.matchAll(/data-media-preview-action="restore"/g)].length, 1)
   assert.match(headerTemplate, /data-media-preview-action="restore"/)
   assert.doesNotMatch(previewSource, /media-preview-restore-copy|data-media-preview-restore-title|data-media-preview-restore-position/)
-  assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-header\s*\{[^}]*background:\s*var\(--media-preview-panel-bg\);/s)
+  assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-header\s*\{[^}]*height:\s*32px;[^}]*background:\s*var\(--media-preview-panel-bg\);/s)
   assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-heading\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;[^}]*align-items:\s*center;/s)
   const minimizedNavRule = stylesSource.match(/\.media-preview-root\.is-minimized \.media-preview-nav:not\(\[hidden\]\)\s*\{([^}]*)\}/s)?.[1] || ''
   assert.match(minimizedNavRule, /display:\s*grid;/)

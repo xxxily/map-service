@@ -1044,9 +1044,9 @@ async function init3dEarth () {
   // 7. 初始化与首页对标的地图工具能力
   const AMap = await loadAmap()
   if (AMap) {
-    initAmapSearch3d(viewer, AMap)
     amapGeolocation = initAmapGeolocation(AMap)
   }
+  initAmapSearch3d(viewer, AMap)
   await initKmlSupport3d(viewer)
   if (!shareMode) {
     initGuidelines3d(viewer)
@@ -1256,7 +1256,6 @@ function bindUiEvents () {
 
   initIdentityEntry({
     button: menu.querySelector('[data-action="openAccount"]'),
-    adminItem: menu.querySelector('[data-admin-identity-item]'),
   })
 
   configureMapCanvasAccessibility()
@@ -1664,13 +1663,6 @@ function bindUiEvents () {
     accountBtn.addEventListener('click', () => {
       const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
       window.location.href = `/account?returnTo=${encodeURIComponent(returnTo)}`
-    })
-  }
-
-  const adminBtn = menu.querySelector('[data-action="openAdmin"]')
-  if (adminBtn) {
-    adminBtn.addEventListener('click', () => {
-      window.location.href = '/admin/overview'
     })
   }
 

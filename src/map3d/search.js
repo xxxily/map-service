@@ -87,6 +87,15 @@ function showSearchResult3d (viewer, item) {
 }
 
 export function initAmapSearch3d (viewer, AMap) {
+  const searchContainer = document.getElementById('map-search-mod')
+  const closeSearchButton = document.getElementById('close-search-panel-btn')
+  if (searchContainer && closeSearchButton && closeSearchButton.dataset.searchCloseBound !== 'true') {
+    closeSearchButton.dataset.searchCloseBound = 'true'
+    closeSearchButton.addEventListener('click', () => {
+      searchContainer.style.display = 'none'
+    })
+  }
+
   if (!AMap?.AutoComplete) {
     console.warn('高德搜索插件加载失败，搜索功能不可用')
     return
@@ -106,7 +115,6 @@ export function initAmapSearch3d (viewer, AMap) {
     showSearchResult3d(viewer, saved || event.poi)
   })
 
-  const searchContainer = document.getElementById('map-search-mod')
   const searchInput = document.getElementById('tipinput')
   const searchBias = createAmapSearchBias({
     AMap,

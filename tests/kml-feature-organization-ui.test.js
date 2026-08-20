@@ -17,13 +17,25 @@ test('2D and 3D KML editors expose shared move, copy and drag organization flows
     assert.match(source, /data-kml-drop-target="feature"/)
     assert.match(source, /data-kml-drop-target="file"/)
     assert.match(source, /beforeFeatureId/)
+    assert.match(source, /applyKmlFeatureBatch/)
+    assert.match(source, /data-kml-action="toggle-batch"/)
+    assert.match(source, /data-kml-action="batch-operate"/)
+    assert.match(source, /data-kml-action="batch-select-all"/)
+    assert.match(source, /data-kml-action="batch-invert"/)
+    assert.match(source, /data-kml-action="toggle-batch-feature"/)
+    assert.match(source, /if \(action === 'toggle-batch'\)/)
+    assert.match(source, /if \(action === 'batch-operate'\)/)
+    assert.match(source, /action === 'batch-select-all' \|\| action === 'batch-invert'/)
   }
 
-  assert.match(map2d, /const featureOrderingAvailable = writable && \([\s\S]*!kmlFile\.isLiveTrack/)
-  assert.match(map3d, /const featureOrderingAvailable = expanded && transferable && displayFeatures\.length === \(kmlFile\.features \|\| \[\]\)\.length/)
+  assert.match(map2d, /const featureOrderingAvailable = writable && !kmlBatchSelection\.isActive\(\) && \([\s\S]*!kmlFile\.isLiveTrack/)
+  assert.match(map3d, /const featureOrderingAvailable = expanded && transferable && !kmlBatchSelection\.isActive\(\) && displayFeatures\.length === \(kmlFile\.features \|\| \[\]\)\.length/)
   assert.match(styles, /\.kml-feature-drag-handle/)
   assert.match(styles, /\.kml-feature-item\.is-kml-dragging/)
   assert.match(styles, /\.kml-file-card\.is-kml-drop-target/)
+  assert.match(styles, /\.kml-batch-toolbar/)
+  assert.match(styles, /\.kml-feature-batch-check/)
+  assert.match(styles, /\.kml-feature-item\.is-batch-selected/)
 })
 
 test('3D editing refreshes or closes the popup without moving the camera', () => {

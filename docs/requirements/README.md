@@ -36,6 +36,7 @@
 - [KML 点位第三方分享链接识别与嵌入预览](./kml-point-share-link-embed.md)（首期抖音 provider 已实现，待手工验收）
 - [KML 点位 720 云内容与可配置图标](./kml-720yun-and-marker-icons.md)（第二版已实现，待用户验收）
 - [KML 要素组织与受控 URL 参数保留](./kml-feature-organization-and-url-preservation.md)（第一版已实现）
+- [KML 批量管理与媒体窗口自由布局](./kml-batch-management-and-media-window-layout.md)（第二版已实现，待手工验收）
 - [KML 性能优化与资源集合点位](./kml-performance-and-resource-collections.md)（已实现）
 - [KML 分享发布控制与地图交互性能](./kml-share-publishing-and-map-interaction.md)（开发中）
 - [2D macOS 触摸板缩放方向稳定性](./2d-trackpad-zoom-direction-stability.md)（v1.5.23 已实现）

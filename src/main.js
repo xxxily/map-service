@@ -213,8 +213,8 @@ async function initLeafletMap () {
   let amapGeolocation = null
   if (AMap && !restrictedShare) {
     amapGeolocation = initAmapGeolocation(AMap)
-    initAmapSearch(map, AMap, amapGeolocation)
   }
+  initAmapSearch(map, AMap, amapGeolocation)
 
   if (!shareMode) addTargetMarker(map, defaultView.center)
 
@@ -324,9 +324,6 @@ async function initLeafletMap () {
         map.setBearing(0)
       }
     },
-    openAdmin: () => {
-      window.location.href = '/admin/overview'
-    },
     openAccount: () => {
       const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
       window.location.href = `/account?returnTo=${encodeURIComponent(returnTo)}`
@@ -342,7 +339,6 @@ async function initLeafletMap () {
 
   initIdentityEntry({
     button: mapMenu.querySelector('[data-action="openAccount"]'),
-    adminItem: mapMenu.querySelector('[data-admin-identity-item]'),
   })
 
   // 绑定定位按钮 3s 长按事件

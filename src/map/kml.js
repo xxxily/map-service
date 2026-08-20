@@ -63,6 +63,11 @@ import {
 } from '../integrations/kml-share-links.js'
 import { transferKmlFeature } from './kml-feature-operations.js'
 import {
+  applyKmlFeatureBatch,
+  createKmlBatchSelectionModel,
+  KML_FEATURE_BATCH_ACTIONS,
+} from './kml-batch-operations.js'
+import {
   expandKmlViewportBounds,
   KML_VIEWPORT_BUFFER_RATIO,
   getKmlFeatureFocusPlan,
@@ -390,12 +395,138 @@ async function exitEditingPublicKml (map) {
 const kmlLayerGroups = new Map()
 const featureLayers = new Map()
 const expandedKmlIds = new Set()
+const kmlBatchSelection = createKmlBatchSelectionModel()
+let kmlBatchActionBusy = false
 
 function expandKmlFileExclusively (kmlId) {
   for (const kmlFile of [...kmlList, ...publicKmlList]) {
     expandedKmlIds.delete(kmlFile.id)
   }
   if (kmlId) expandedKmlIds.add(kmlId)
+}
+
+function isKmlBatchFeatureSelectable (kmlFile, feature) {
+  return Boolean(kmlBatchSelection.isActive() && feature?.id && kmlFile && !kmlFile.isPublic && isKmlEditable(kmlFile))
+}
+
+function pruneKmlBatchSelection () {
+  kmlBatchSelection.prune(({ kmlId, featureId }) => {
+    const file = kmlList.find(item => item.id === kmlId)
+    return Boolean(file && !file.isPublic && isKmlEditable(file) && file.features?.some(feature => feature.id === featureId))
+  })
+}
+
+function exitKmlBatchMode () {
+  kmlBatchSelection.deactivate()
+  kmlBatchActionBusy = false
+}
+
+function getKmlBatchTargets () {
+  return kmlList
+    .filter(file => !file.isPublic && isKmlEditable(file))
+    .map(file => ({
+      value: file.id,
+      label: `${file.name}${file.isDefault ? '（默认）' : ''}`,
+    }))
+}
+
+function renderKmlBatchToolbar () {
+  if (!canWritePersonalKml()) return ''
+  const active = kmlBatchSelection.isActive()
+  const count = kmlBatchSelection.count
+  if (!active) {
+    return '<button type="button" class="kml-batch-toggle kml-file-btn" data-kml-action="toggle-batch" title="批量选择 KML 要素" aria-label="批量选择 KML 要素">☷</button>'
+  }
+  return `
+    <div class="kml-batch-toolbar" role="toolbar" aria-label="批量管理 KML 要素">
+      <button type="button" class="kml-batch-select-all kml-file-btn" data-kml-action="batch-select-all" title="选择当前显示的全部要素" aria-label="全选当前显示的 KML 要素">全选</button>
+      <button type="button" class="kml-batch-invert kml-file-btn" data-kml-action="batch-invert" title="反选当前显示的要素" aria-label="反选当前显示的 KML 要素">反选</button>
+      <button type="button" class="kml-batch-operate kml-file-btn" data-kml-action="batch-operate" ${count ? '' : 'disabled'} title="对已选要素执行操作" aria-label="对已选 ${count} 个要素执行操作">${count ? `操作 ${count}` : '操作'}</button>
+      <button type="button" class="kml-batch-cancel kml-file-btn" data-kml-action="batch-cancel" title="退出批量选择" aria-label="退出批量选择">×</button>
+    </div>
+  `
+}
+
+function getVisibleKmlBatchSelection (panel) {
+  return [...(panel || document).querySelectorAll('[data-kml-action="toggle-batch-feature"]')]
+    .map(button => ({
+      kmlId: button.getAttribute('data-kml-id'),
+      featureId: button.getAttribute('data-feature-id'),
+    }))
+}
+
+async function executeKmlBatchAction (map) {
+  if (kmlBatchActionBusy || !kmlBatchSelection.isActive()) return
+  pruneKmlBatchSelection()
+  const selection = kmlBatchSelection.getSelection()
+  if (!selection.length) {
+    await showAlert('请先选择要操作的 KML 要素。')
+    return
+  }
+
+  const action = await showChoiceDialog({
+    title: '批量操作',
+    message: `已选择 ${selection.length} 个 KML 要素。`,
+    choices: KML_FEATURE_BATCH_ACTIONS,
+  })
+  if (!KML_FEATURE_BATCH_ACTIONS.some(item => item.value === action)) return
+
+  let targetKmlId = ''
+  if (action === 'move' || action === 'copy') {
+    const targetOptions = getKmlBatchTargets()
+    if (!targetOptions.length) {
+      await showAlert('当前没有可写的目标 KML 文件。')
+      return
+    }
+    const result = await showEditDialog({
+      title: action === 'move' ? '选择移动目标' : '选择复制目标',
+      fields: [{ name: 'kmlId', label: '目标 KML 文件', type: 'select', options: targetOptions }],
+      values: { kmlId: targetOptions[0].value },
+      confirmText: action === 'move' ? '移动' : '复制',
+    })
+    targetKmlId = String(result?.kmlId || '')
+    if (!targetKmlId) return
+  } else if (!(await showConfirm(`确认删除已选的 ${selection.length} 个 KML 要素吗？`))) {
+    return
+  }
+
+  kmlBatchActionBusy = true
+  try {
+    const result = applyKmlFeatureBatch(kmlList, {
+      selection,
+      mode: action,
+      targetKmlId,
+    })
+    if (!result.changed) {
+      await showAlert('所选要素已经位于目标文件，无需移动。')
+      return
+    }
+    const previousKmlFiles = kmlList
+    pushKmlHistory()
+    kmlList = result.files
+    if (targetKmlId) {
+      expandedKmlIds.add(targetKmlId)
+      rememberTargetKmlId(targetKmlId)
+    }
+    result.affectedKmlIds.forEach(id => {
+      invalidateKmlMediaGallery(previousKmlFiles.find(file => file.id === id))
+      invalidateKmlMediaGallery(kmlList.find(file => file.id === id))
+    })
+    saveToStorage()
+    exitKmlBatchMode()
+    renderAllKmls(map)
+    updateKmlPanelUI(map)
+    const summary = action === 'delete'
+      ? `已删除 ${result.deletedCount} 个要素。`
+      : action === 'copy'
+        ? `已复制 ${result.copiedCount} 个要素。`
+        : `已移动 ${result.movedCount} 个要素。`
+    await showAlert(summary, { title: '批量操作完成' })
+  } catch (error) {
+    await showAlert(error?.message || '批量操作失败，数据未改变。')
+  } finally {
+    kmlBatchActionBusy = false
+  }
 }
 
 let isAddingPoint = false
@@ -1050,6 +1181,7 @@ function bindAccountSessionExpiry (map) {
   accountSessionExpiryBound = true
   window.addEventListener('map-auth-session-expired', () => {
     if (!isAccountKmlMode()) return
+    exitKmlBatchMode()
     suspendKmlAccountSync({ preserveDraft: true, reason: 'session-expired' })
     if (!isEmbeddedKmlAuthRequired()) loadFromStorage()
     else kmlList = []
@@ -1073,6 +1205,8 @@ function updateKmlPanelUI (map) {
   if (createButton) createButton.hidden = !personalKmlWritable
   if (correctionOption) correctionOption.hidden = !personalKmlWritable
   if (personalKmlWritable) ensureDefaultKmlFile()
+  if (!personalKmlWritable && kmlBatchSelection.isActive()) exitKmlBatchMode()
+  if (kmlBatchSelection.isActive()) pruneKmlBatchSelection()
   const container = document.getElementById('kml-files-list')
   if (!container) return
 
@@ -1085,9 +1219,12 @@ function updateKmlPanelUI (map) {
   // 1. 个人图层分区
   const personalExpanded = !expandedKmlIds.has('personal-section')
   html += `
-    <div class="kml-section-header" style="margin-top: 8px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(22, 61, 61, 0.12); display: flex; justify-content: space-between; align-items: center; cursor: pointer;" data-kml-action="toggle-section" data-section-id="personal-section">
+    <div class="kml-section-header kml-personal-section-header" style="margin-top: 8px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(22, 61, 61, 0.12); display: flex; justify-content: space-between; align-items: center; cursor: pointer;" data-kml-action="toggle-section" data-section-id="personal-section">
       <span style="font-weight: bold; color: #0f766e; font-size: 13px;">个人图层 (${kmlList.length})</span>
-      <span style="font-size: 11px; color: #6b7280;">${personalExpanded ? '▲' : '▼'}</span>
+      <div class="kml-section-actions">
+        ${renderKmlBatchToolbar()}
+        <span style="font-size: 11px; color: #6b7280;">${personalExpanded ? '▲' : '▼'}</span>
+      </div>
     </div>
     <div id="kml-personal-list" style="display: ${personalExpanded ? 'flex' : 'none'}; flex-direction: column; gap: 8px; margin-bottom: 16px;">
       ${personalExpanded
@@ -1102,7 +1239,7 @@ function updateKmlPanelUI (map) {
           ? getTrackDisplayFeatures(kmlFile, getViewportOptions2d(map))
           : []
         const writable = canWritePersonalKml()
-        const featureOrderingAvailable = writable && (
+        const featureOrderingAvailable = writable && !kmlBatchSelection.isActive() && (
           !kmlFile.isLiveTrack || (expanded && displayFeatures.length === kmlFile.features.length)
         )
         const visibilityTitle = enabled ? '隐藏此 KML 文件' : '显示此 KML 文件'
@@ -1191,14 +1328,18 @@ function updateKmlPanelUI (map) {
                   }
                   iconSvg = getKmlMediaListIcon(feat) || iconSvg
                   const { displayName, accessibleName } = getKmlFeatureNamePresentation(feat)
+                  const batchSelectable = isKmlBatchFeatureSelectable(kmlFile, feat)
+                  const selected = batchSelectable && kmlBatchSelection.has(kmlFile.id, feat.id)
                   return `
-                    <div class="kml-feature-item${featureOrderingAvailable ? ' is-draggable' : ''}" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" ${featureOrderingAvailable ? 'draggable="true" data-kml-draggable="true" data-kml-drop-target="feature"' : ''}>
-                      ${featureOrderingAvailable ? '<span class="kml-feature-drag-handle" aria-hidden="true" title="拖动排序或移至其他 KML">⋮⋮</span>' : ''}
+                    <div class="kml-feature-item${featureOrderingAvailable ? ' is-draggable' : ''}${batchSelectable ? ' is-batch-selectable' : ''}${selected ? ' is-batch-selected' : ''}" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" ${featureOrderingAvailable ? 'draggable="true" data-kml-draggable="true" data-kml-drop-target="feature"' : ''}>
+                      ${batchSelectable
+                        ? `<button type="button" class="kml-feature-batch-check" data-kml-action="toggle-batch-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" aria-pressed="${selected}" aria-label="${selected ? '取消选择' : '选择'}${escapeHtml(accessibleName)}"><span aria-hidden="true">${selected ? '✓' : ''}</span></button>`
+                        : (featureOrderingAvailable ? '<span class="kml-feature-drag-handle" aria-hidden="true" title="拖动排序或移至其他 KML">⋮⋮</span>' : '')}
                       <div class="kml-feature-info" data-kml-action="focus-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" aria-label="定位到${escapeHtml(accessibleName)}">
                         <span class="kml-feature-icon">${iconSvg}</span>
                         ${displayName ? `<span class="kml-feature-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>` : ''}
                       </div>
-                      ${writable ? `<button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>` : ''}
+                      ${writable && !batchSelectable ? `<button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>` : ''}
                     </div>
                   `
                 }).join('')}
@@ -2465,10 +2606,13 @@ export async function initKmlSupport (map) {
       panel.hidden = !panel.hidden
       if (!panel.hidden) {
         updateKmlPanelUI(map)
+      } else {
+        exitKmlBatchMode()
       }
     },
     closeKmlPanel: () => {
       panel.hidden = true
+      exitKmlBatchMode()
       if (isAddingPoint) {
         togglePickupMode(map, null)
       }
@@ -2542,6 +2686,48 @@ export async function initKmlSupport (map) {
     const action = actionTarget.getAttribute('data-kml-action')
     const kmlId = actionTarget.getAttribute('data-kml-id')
     const featureId = actionTarget.getAttribute('data-feature-id')
+
+    if (action === 'toggle-batch') {
+      event.stopPropagation()
+      if (!canWritePersonalKml()) return
+      kmlBatchSelection.activate()
+      updateKmlPanelUI(map)
+      return
+    }
+
+    if (action === 'batch-cancel') {
+      event.stopPropagation()
+      exitKmlBatchMode()
+      updateKmlPanelUI(map)
+      return
+    }
+
+    if (action === 'batch-select-all' || action === 'batch-invert') {
+      event.stopPropagation()
+      if (!kmlBatchSelection.isActive()) return
+      const visibleSelection = getVisibleKmlBatchSelection(panel)
+      if (action === 'batch-select-all') {
+        kmlBatchSelection.clear()
+        kmlBatchSelection.select(visibleSelection)
+      }
+      else kmlBatchSelection.invert(visibleSelection)
+      updateKmlPanelUI(map)
+      return
+    }
+
+    if (action === 'batch-operate') {
+      event.stopPropagation()
+      await executeKmlBatchAction(map)
+      return
+    }
+
+    if (action === 'toggle-batch-feature') {
+      event.stopPropagation()
+      if (!kmlBatchSelection.isActive() || !kmlId || !featureId) return
+      kmlBatchSelection.toggle(kmlId, featureId)
+      updateKmlPanelUI(map)
+      return
+    }
 
     if (action === 'import-2bulu') {
       event.stopPropagation()
