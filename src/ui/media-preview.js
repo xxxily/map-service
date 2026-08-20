@@ -119,10 +119,10 @@ function createPreviewRoot () {
     <section class="media-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="media-preview-title">
       <header class="media-preview-header">
         <div class="media-preview-heading">
-          <span class="media-preview-collection" data-media-preview-collection></span>
-          <span class="media-preview-kind" data-media-preview-kind></span>
           <h2 id="media-preview-title" data-media-preview-title></h2>
+          <span class="media-preview-kind" data-media-preview-kind></span>
           <span class="media-preview-position" data-media-preview-position aria-live="polite"></span>
+          <span class="media-preview-collection" data-media-preview-collection></span>
         </div>
         <div class="media-preview-header-actions">
           <button type="button" class="media-preview-icon-button media-preview-track-toggle" data-media-preview-action="toggle-track" aria-expanded="true" aria-label="收起缩略图" title="收起缩略图">▦</button>

@@ -156,8 +156,27 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.match(stylesSource, /--media-preview-control-bg:/)
   assert.match(stylesSource, /\.media-preview-source:active,[\s\S]*background:\s*var\(--media-preview-control-bg\);/)
   assert.match(stylesSource, /\.media-preview-track-provider-icon\s*\{[^}]*background:\s*rgba\(255, 255, 255, \.94\);/s)
-  assert.match(stylesSource, /\.media-preview-meta\s*\{[^}]*margin-left:\s*auto;[^}]*justify-self:\s*end;[^}]*text-align:\s*right;/s)
+  assert.match(stylesSource, /\.media-preview-footer\s*\{[^}]*min-height:\s*34px;[^}]*padding:\s*3px 10px;/s)
+  assert.match(stylesSource, /\.media-preview-root:not\(\[data-media-type="image"\]\) \.media-preview-footer\s*\{[^}]*min-height:\s*30px;/s)
+  assert.match(stylesSource, /\.media-preview-zoom-controls\s*\{[^}]*grid-template-columns:\s*26px minmax\(72px, 180px\) 40px 26px 26px;/s)
+  assert.match(stylesSource, /\.media-preview-zoom-controls \.media-preview-icon-button\s*\{[^}]*width:\s*26px;[^}]*height:\s*26px;[^}]*font-size:\s*16px;/s)
+  assert.match(stylesSource, /\.media-preview-meta\s*\{[^}]*display:\s*flex;[^}]*margin-left:\s*auto;[^}]*justify-self:\s*end;[^}]*overflow:\s*hidden;[^}]*text-align:\s*right;/s)
   assert.match(stylesSource, /\.media-preview-window-resize-handle-nw\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*background:\s*transparent;/s)
+})
+
+test('media preview heading prioritizes the title before status metadata', () => {
+  const previewSource = readFileSync(new URL('../src/ui/media-preview.js', import.meta.url), 'utf8')
+  const previewTemplate = previewSource.match(/root\.innerHTML = `([\s\S]*?)`/)?.[1] || ''
+  const heading = previewTemplate.match(/<div class="media-preview-heading">([\s\S]*?)<\/div>/)?.[1] || ''
+
+  const titleIndex = heading.indexOf('data-media-preview-title')
+  const kindIndex = heading.indexOf('data-media-preview-kind')
+  const positionIndex = heading.indexOf('data-media-preview-position')
+  const collectionIndex = heading.indexOf('data-media-preview-collection')
+  assert.ok(titleIndex >= 0)
+  assert.ok(titleIndex < kindIndex)
+  assert.ok(kindIndex < positionIndex)
+  assert.ok(positionIndex < collectionIndex)
 })
 
 test('media preview small-window mode keeps one title bar and centers navigation icons', () => {
@@ -171,7 +190,8 @@ test('media preview small-window mode keeps one title bar and centers navigation
   assert.equal([...previewTemplate.matchAll(/data-media-preview-action="restore"/g)].length, 1)
   assert.match(headerTemplate, /data-media-preview-action="restore"/)
   assert.doesNotMatch(previewSource, /media-preview-restore-copy|data-media-preview-restore-title|data-media-preview-restore-position/)
-  assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-header\s*\{[^}]*height:\s*32px;[^}]*background:\s*var\(--media-preview-panel-bg\);/s)
+  assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-header\s*\{[^}]*height:\s*30px;[^}]*background:\s*var\(--media-preview-panel-bg\);/s)
+  assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-icon-button svg,[\s\S]*?\.media-preview-root\.is-minimized \.media-preview-restore svg\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/s)
   assert.match(stylesSource, /\.media-preview-root\.is-minimized \.media-preview-heading\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;[^}]*align-items:\s*center;/s)
   const minimizedNavRule = stylesSource.match(/\.media-preview-root\.is-minimized \.media-preview-nav:not\(\[hidden\]\)\s*\{([^}]*)\}/s)?.[1] || ''
   assert.match(minimizedNavRule, /display:\s*grid;/)

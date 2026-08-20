@@ -29,13 +29,13 @@
 ## Design principles
 - Selection is explicit: 批量模式必须可见、可取消，并提供只针对当前可见要素的全选/反选，不会误触原有定位操作
 - Reversible actions: 批量修改一次提交、一次撤销；破坏性删除先确认
-- Content first: 宽屏和小窗优先给媒体内容，标题和工具栏保持紧凑；iframe 不因宿主 padding 产生黑边
+- Content first: 宽屏和小窗优先给媒体内容，标题优先于类型/位置/集合信息；底部工具与状态压为单行，iframe 不因宿主 padding 或高状态栏挤占内容
 - Stable motion: 拖动/缩放只操作合成层和自身布局，不破坏地图/媒体连续过渡
 
 ## Visual language
 - Color: 延续现有墨绿色强调色、浅色透明控件底、深色媒体内容面
 - Typography: 现有系统字体；批量状态和标题使用紧凑层级
-- Spacing/layout rhythm: 8px 基础间距，工具栏允许横向滚动但不引起页面横向滚动
+- Spacing/layout rhythm: 8px 基础间距；媒体状态栏保持约 30-34px 单行高度，小窗图标约 18px；工具栏允许横向滚动但不引起页面横向滚动
 - Shape/radius/elevation: 6-8px 控件圆角，窗口使用轻量阴影，不叠套卡片
 - Motion: 拖动/缩放使用帧合并；模式切换可使用短过渡，尊重 reduced-motion
 - Imagery/iconography: 复用现有 SVG/Lucide 风格图标，新增按钮必须有 tooltip
