@@ -39,6 +39,7 @@
 - [KML 性能优化与资源集合点位](./kml-performance-and-resource-collections.md)（已实现）
 - [KML 分享发布控制与地图交互性能](./kml-share-publishing-and-map-interaction.md)（开发中）
 - [2D macOS 触摸板缩放方向稳定性](./2d-trackpad-zoom-direction-stability.md)（v1.5.23 已实现）
+- [66 服务器资源安全与应用运行防护](./server-resource-safety.md)（v1.5.24 第一阶段已实现）
 - [SidePanel 嵌入式 KML 双屏编辑](./sidepanel-embedded-kml-editing.md)（已实现并通过实际扩展验收）
 - [KML 点位富媒体第二阶段：外部内容库与资产库集成规划](./kml-rich-content-phase2-content-library.md)
 - [动态 Feature Layer 视口加载与服务端聚合](./dynamic-feature-layer-loading.md)

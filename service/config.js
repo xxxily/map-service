@@ -30,6 +30,7 @@ const config = {
       staleTtl: 1000 * 60 * 60 * 24 * 30,
       timeout: 1000 * 10,
       minCacheBytes: 128,
+      statsRefreshMinIntervalMs: 6 * 60 * 60 * 1000,
       browserMaxAge: 1000 * 60 * 60,
       browserStaleWhileRevalidate: 1000 * 60 * 60 * 24,
       allowedContentTypes: [

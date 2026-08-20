@@ -28,6 +28,11 @@ const HEADER_ALLOW_LIST = [
   'last-modified',
 ]
 const SENSITIVE_QUERY_KEYS = ['key', 'token', 'tk', 'appid', 'api_key', 'apikey', 'access_token', 'session']
+export const MAX_FETCH_RELAY_STATS_ENTRIES = 100
+// Cache statistics are an administrative view, not part of the tile hot path.
+// A long refresh interval prevents repeated full-directory walks when the
+// cache is busy while still allowing a cold start to produce a fresh snapshot.
+export const DEFAULT_STATS_REFRESH_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 function now () {
   return Date.now()
@@ -102,6 +107,19 @@ function cacheKeyInput (url, options = {}) {
   return range ? `${url}|range:${range}` : url
 }
 
+// Keep the administrative preview bounded while the complete cache directory
+// is being counted. This avoids retaining hundreds of thousands of metadata
+// records just to show the newest 100 rows.
+export function retainRecentStatsEntry (entries, entry, limit = MAX_FETCH_RELAY_STATS_ENTRIES) {
+  if (!Array.isArray(entries) || !entry) return entries
+  entries.push(entry)
+  if (entries.length >= limit * 2) {
+    entries.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+    entries.splice(limit)
+  }
+  return entries
+}
+
 class FetchRelay {
   constructor (conf) {
     const defConf = {
@@ -110,6 +128,7 @@ class FetchRelay {
       ttl: 1000 * 60 * 60 * 6,
       staleTtl: 1000 * 60 * 60 * 24 * 30,
       minCacheBytes: 128,
+      statsRefreshMinIntervalMs: DEFAULT_STATS_REFRESH_MIN_INTERVAL_MS,
       allowedContentTypes: [
         'image/',
         'application/octet-stream',
@@ -125,9 +144,13 @@ class FetchRelay {
     this.statsStatePath = path.join(this.config.cacheDir, STATS_STATE_FILE)
     this.statsStateLoaded = false
     this.statsStateLoadPromise = null
+    this.statsStateWritePromise = null
     this.statsDirty = false
+    this.statsInvalidationGeneration = 0
     this.statsSnapshot = null
     this.statsRefreshPromise = null
+    this.statsRefreshTimer = null
+    this.lastStatsRefreshAt = 0
   }
 
   resolveTarget (url, options = {}) {
@@ -157,13 +180,10 @@ class FetchRelay {
   }
 
   async readMeta (metaPath) {
-    if (!await fs.pathExists(metaPath)) {
-      return null
-    }
-
     try {
       return await fs.readJson(metaPath)
     } catch (err) {
+      if (err.code === 'ENOENT') return null
       console.warn(`[fetchRelay] invalid meta file removed: ${metaPath}`, err.message)
       await fs.remove(metaPath)
       return null
@@ -442,11 +462,26 @@ class FetchRelay {
         : this.statsRefreshPromise
     }
 
+    const refreshMinIntervalMs = Math.max(0, Number(this.config.statsRefreshMinIntervalMs) || 0)
+    if (this.statsSnapshot && refreshMinIntervalMs > 0 &&
+      now() - this.lastStatsRefreshAt < refreshMinIntervalMs) {
+      this.scheduleStatsRefresh(refreshMinIntervalMs - (now() - this.lastStatsRefreshAt))
+      return { ...this.statsSnapshot, refreshing: true }
+    }
+
+    const scanGeneration = this.statsInvalidationGeneration
     this.statsRefreshPromise = this.collectStats()
       .then((stats) => {
-        this.statsSnapshot = stats
-        this.statsDirty = false
-        return this.writeStatsState().then(() => stats)
+        const isCurrentGeneration = scanGeneration === this.statsInvalidationGeneration
+        if (isCurrentGeneration || !this.statsSnapshot) {
+          this.statsSnapshot = stats
+        }
+        this.lastStatsRefreshAt = now()
+        if (isCurrentGeneration) {
+          this.statsDirty = false
+          this.clearStatsRefreshTimer()
+        }
+        return this.writeStatsState().then(() => this.statsSnapshot)
       })
       .catch((err) => {
         if (this.statsSnapshot) {
@@ -457,6 +492,10 @@ class FetchRelay {
       })
       .finally(() => {
         this.statsRefreshPromise = null
+        if (this.statsDirty) {
+          const refreshMinIntervalMs = Math.max(0, Number(this.config.statsRefreshMinIntervalMs) || 0)
+          this.scheduleStatsRefresh(refreshMinIntervalMs)
+        }
       })
 
     if (this.statsSnapshot) {
@@ -467,6 +506,24 @@ class FetchRelay {
     }
 
     return this.statsRefreshPromise
+  }
+
+  clearStatsRefreshTimer () {
+    if (!this.statsRefreshTimer) return
+    clearTimeout(this.statsRefreshTimer)
+    this.statsRefreshTimer = null
+  }
+
+  scheduleStatsRefresh (delayMs) {
+    if (this.statsRefreshTimer || !this.statsDirty) return
+    const delay = Math.max(0, Number(delayMs) || 0)
+    this.statsRefreshTimer = setTimeout(() => {
+      this.statsRefreshTimer = null
+      this.getStats().catch(err => {
+        console.warn('[fetchRelay] deferred cache stats refresh failed:', err.message)
+      })
+    }, delay)
+    this.statsRefreshTimer.unref?.()
   }
 
   async ensureStatsStateLoaded () {
@@ -480,6 +537,7 @@ class FetchRelay {
         const state = await fs.readJson(this.statsStatePath)
         this.statsDirty = Boolean(state.dirty)
         this.statsSnapshot = state.snapshot || null
+        this.lastStatsRefreshAt = Number(this.statsSnapshot?.generatedAt || 0)
       } catch (err) {
         this.statsDirty = false
         this.statsSnapshot = null
@@ -495,15 +553,23 @@ class FetchRelay {
 
   async writeStatsState () {
     await fs.ensureDir(this.config.cacheDir)
-    await fs.writeJson(this.statsStatePath, {
+    const state = {
       dirty: this.statsDirty,
       snapshot: this.statsSnapshot,
       updatedAt: now(),
-    }, { spaces: 2 })
+    }
+    const previousWrite = this.statsStateWritePromise?.catch(() => {}) || Promise.resolve()
+    this.statsStateWritePromise = previousWrite.then(() => fs.writeJson(this.statsStatePath, state, { spaces: 2 }))
+    return this.statsStateWritePromise
   }
 
-  async invalidateStatsSnapshot () {
+  async invalidateStatsSnapshot ({ force = false } = {}) {
     await this.ensureStatsStateLoaded()
+    this.statsInvalidationGeneration += 1
+    if (force) {
+      this.lastStatsRefreshAt = 0
+      this.clearStatsRefreshTimer()
+    }
     if (this.statsDirty) return
 
     this.statsDirty = true
@@ -559,24 +625,46 @@ class FetchRelay {
     const byPublish = {}
     const byResourceType = {}
     const entries = []
+    let scanned = 0
 
-    const walk = async (dir) => {
-      const items = await fs.readdir(dir, { withFileTypes: true })
-      for (const item of items) {
+    const walk = async (dir, provider = 'unknown') => {
+      let directory
+      try {
+        directory = await fs.opendir(dir)
+      } catch (err) {
+        if (err.code === 'ENOENT') return
+        throw err
+      }
+
+      for await (const item of directory) {
         if (item.name === STATS_STATE_FILE) {
           continue
         }
 
         const itemPath = path.join(dir, item.name)
         if (item.isDirectory()) {
-          await walk(itemPath)
-        } else if (!item.name.endsWith(META_SUFFIX)) {
-          const stat = await fs.stat(itemPath)
+          await walk(itemPath, provider === 'unknown' ? item.name : provider)
+        } else if (!item.name.endsWith(META_SUFFIX) && item.isFile()) {
           const meta = await this.readMeta(`${itemPath}${META_SUFFIX}`)
-          const relPath = path.relative(this.config.cacheDir, itemPath)
-          const provider = relPath.split(path.sep)[0] || 'unknown'
+          const metadataSize = Number(meta?.size)
+          const metadataUpdatedAt = Number(meta?.updatedAt)
+          const hasMetadataSize = Number.isFinite(metadataSize) && metadataSize >= 0
+          const hasMetadataUpdatedAt = Number.isFinite(metadataUpdatedAt) && metadataUpdatedAt >= 0
+          let stat = null
+          // Cache writes persist both values in the sidecar. Reuse them for
+          // the large-directory scan and stat only legacy/incomplete entries.
+          if (!hasMetadataSize || !hasMetadataUpdatedAt) {
+            try {
+              stat = await fs.stat(itemPath)
+            } catch (err) {
+              if (err.code === 'ENOENT') continue
+              throw err
+            }
+          }
+          const size = hasMetadataSize ? metadataSize : stat.size
+          const updatedAt = hasMetadataUpdatedAt ? metadataUpdatedAt : stat.mtimeMs
           files += 1
-          bytes += stat.size
+          bytes += size
           providers[provider] = (providers[provider] || 0) + 1
 
           const state = this.isFresh(meta)
@@ -588,12 +676,12 @@ class FetchRelay {
           if (state === 'fresh') fresh += 1
           if (state === 'stale') stale += 1
           if (state === 'expired') expired += 1
-          this.incrementStatsGroup(bySource, meta?.sourceId, state, stat.size)
-          this.incrementStatsGroup(byLayer, meta?.layerId, state, stat.size)
-          this.incrementStatsGroup(byPublish, meta?.publishId, state, stat.size)
-          this.incrementStatsGroup(byResourceType, meta?.resourceType, state, stat.size)
+          this.incrementStatsGroup(bySource, meta?.sourceId, state, size)
+          this.incrementStatsGroup(byLayer, meta?.layerId, state, size)
+          this.incrementStatsGroup(byPublish, meta?.publishId, state, size)
+          this.incrementStatsGroup(byResourceType, meta?.resourceType, state, size)
 
-          entries.push({
+          retainRecentStatsEntry(entries, {
             key: meta?.key || path.basename(itemPath),
             url: meta?.url || null,
             sourceId: meta?.sourceId || null,
@@ -602,10 +690,14 @@ class FetchRelay {
             resourceType: meta?.resourceType || null,
             range: meta?.range || null,
             state,
-            size: stat.size,
-            updatedAt: meta?.updatedAt || stat.mtimeMs,
+            size,
+            updatedAt,
             expiresAt: meta?.expiresAt || null,
           })
+          scanned += 1
+          if (scanned % 128 === 0) {
+            await new Promise(resolve => setImmediate(resolve))
+          }
         }
       }
     }
@@ -625,8 +717,8 @@ class FetchRelay {
       byPublish,
       byResourceType,
       entries: entries
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 100),
+        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .slice(0, MAX_FETCH_RELAY_STATS_ENTRIES),
       generatedAt: now(),
       refreshing: false,
     }
@@ -636,8 +728,14 @@ class FetchRelay {
     if (sourceId) {
       await fs.ensureDir(this.config.cacheDir)
       const walk = async (dir) => {
-        const items = await fs.readdir(dir, { withFileTypes: true })
-        for (const item of items) {
+        let directory
+        try {
+          directory = await fs.opendir(dir)
+        } catch (err) {
+          if (err.code === 'ENOENT') return
+          throw err
+        }
+        for await (const item of directory) {
           const itemPath = path.join(dir, item.name)
           if (item.isDirectory()) {
             await walk(itemPath)
@@ -652,7 +750,7 @@ class FetchRelay {
         }
       }
       await walk(this.config.cacheDir)
-      await this.invalidateStatsSnapshot()
+      await this.invalidateStatsSnapshot({ force: true })
       return {
         removed: 'source',
         target: sourceId,
@@ -665,7 +763,7 @@ class FetchRelay {
         fs.remove(paths.cachePath),
         fs.remove(paths.metaPath),
       ])
-      await this.invalidateStatsSnapshot()
+      await this.invalidateStatsSnapshot({ force: true })
 
       return {
         removed: 1,
@@ -676,8 +774,11 @@ class FetchRelay {
     await fs.remove(this.config.cacheDir)
     await fs.ensureDir(this.config.cacheDir)
     await this.ensureStatsStateLoaded()
+    this.statsInvalidationGeneration += 1
+    this.clearStatsRefreshTimer()
     this.statsDirty = false
     this.statsSnapshot = this.createEmptyStats()
+    this.lastStatsRefreshAt = now()
     await this.writeStatsState()
 
     return {
@@ -704,7 +805,7 @@ class FetchRelay {
         fs.remove(paths.metaPath),
       ])
     }))
-    await this.invalidateStatsSnapshot()
+    await this.invalidateStatsSnapshot({ force: true })
 
     return {
       removed: urls.length,

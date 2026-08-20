@@ -507,6 +507,110 @@ test('fetch relay persists cache stats and reuses snapshot without cache changes
   }
 })
 
+test('fetch relay streams complete stats while retaining only the newest 100 entries', async () => {
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-stats-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const relay = new FetchRelay({
+    cacheDir,
+    minCacheBytes: 1,
+    statsRefreshMinIntervalMs: 0,
+    targetResolver: resolveTestTarget,
+  })
+
+  try {
+    const providerDir = path.join(cacheDir, 'tiles.example.com')
+    await fs.ensureDir(providerDir)
+    let expectedBytes = 0
+    for (let index = 0; index < 125; index += 1) {
+      const cachePath = path.join(providerDir, `tile-${index}.png`)
+      const size = index + 1
+      const updatedAt = 10_000 + index
+      expectedBytes += size
+      await fs.writeFile(cachePath, Buffer.alloc(size))
+      await fs.writeJson(`${cachePath}.meta.json`, {
+        key: `tile-${index}`,
+        sourceId: 'source-a',
+        size,
+        updatedAt,
+        expiresAt: Date.now() + 60_000,
+        staleExpiresAt: Date.now() + 120_000,
+      })
+    }
+
+    const stats = await relay.getStats()
+    assert.equal(stats.files, 125)
+    assert.equal(stats.bytes, expectedBytes)
+    assert.equal(stats.bySource['source-a'].files, 125)
+    assert.equal(stats.entries.length, 100)
+    assert.equal(stats.entries[0].key, 'tile-124')
+    assert.equal(stats.entries.at(-1).key, 'tile-25')
+  } finally {
+    await removeDir(cacheDir)
+  }
+})
+
+test('fetch relay does not rescan a dirty snapshot inside the refresh cooldown', async () => {
+  const targetUrl = 'https://www.google.com/maps/vt?lyrs=s&x=70&y=71&z=12'
+  const { relay, cleanup } = createRelay([{}])
+
+  try {
+    await readStream((await relay.fetch(targetUrl)).stream)
+    const first = await relay.getStats()
+    let scans = 0
+    relay.collectStats = async () => {
+      scans += 1
+      return first
+    }
+
+    await relay.invalidateStatsSnapshot()
+    const duringCooldown = await relay.getStats()
+    const repeated = await relay.getStats()
+    assert.equal(duringCooldown.refreshing, true)
+    assert.equal(repeated.refreshing, true)
+    assert.equal(scans, 0)
+  } finally {
+    relay.clearStatsRefreshTimer()
+    await cleanup()
+  }
+})
+
+test('fetch relay uses sidecar size and timestamp without stat for complete metadata', async () => {
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-meta-stats-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const relay = new FetchRelay({
+    cacheDir,
+    minCacheBytes: 1,
+    statsRefreshMinIntervalMs: 0,
+    targetResolver: resolveTestTarget,
+  })
+
+  try {
+    const cachePath = path.join(cacheDir, 'tiles.example.com', 'tile.png')
+    await fs.ensureDir(path.dirname(cachePath))
+    await fs.writeFile(cachePath, 'tile')
+    await fs.writeJson(`${cachePath}.meta.json`, {
+      key: 'sidecar-only',
+      size: 321,
+      updatedAt: 654,
+      expiresAt: Date.now() + 60_000,
+      staleExpiresAt: Date.now() + 120_000,
+    })
+
+    const originalStat = fs.stat
+    fs.stat = async () => {
+      throw new Error('complete metadata should avoid stat')
+    }
+    try {
+      const stats = await relay.getStats()
+      assert.equal(stats.files, 1)
+      assert.equal(stats.bytes, 321)
+      assert.equal(stats.entries[0].updatedAt, 654)
+    } finally {
+      fs.stat = originalStat
+    }
+  } finally {
+    await removeDir(cacheDir)
+  }
+})
+
 test('fetch relay clears cache entries by sourceId', async () => {
   const firstUrl = 'https://www.google.com/maps/vt?lyrs=s&x=50&y=51&z=12'
   const secondUrl = 'https://www.google.com/maps/vt?lyrs=s&x=52&y=53&z=12'

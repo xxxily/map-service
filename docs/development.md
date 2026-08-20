@@ -46,7 +46,7 @@ MAP_SERVICE_USER_DATABASE=/absolute/path/map-service.sqlite
 - `npm start`：通过 nodemon 运行服务。
 - `npm run check`：检查后端、Vite 配置和前端模块语法。
 - `npm test`：运行 Node 原生测试。
-- `npm run pm2-start`：通过 `pm2.config.js` 启动。
+- `npm run pm2-start`：通过 `pm2.config.cjs` 启动。生产环境关闭文件监听、取消应用自拉代码和定时重启；代码更新统一使用 `deploy-66.sh`，由脚本保留现有环境变量、应用资源阈值并执行健康检查/回滚。
 
 ## 前端开发
 
