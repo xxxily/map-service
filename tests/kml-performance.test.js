@@ -31,14 +31,14 @@ test('KML feature focus opens visible points immediately and never queues a long
   assert.equal(getKmlFeatureFocusPlan({ type: 'LineString', targetInView: false }).method, 'fit-bounds')
 })
 
-test('2D map performance options preserve continuous Leaflet zoom transitions', () => {
+test('2D map performance options preserve transitions and a usable wheel zoom step', () => {
   const options = getKmlLeafletPerformanceOptions()
   assert.equal(options.preferCanvas, true)
   assert.equal(options.zoomAnimation, true)
   assert.equal(options.fadeAnimation, true)
   assert.equal(options.markerZoomAnimation, true)
   assert.equal(options.wheelDebounceTime, 8)
-  assert.equal(options.zoomSnap, 0)
+  assert.equal(options.zoomSnap, 0.5)
   assert.equal(options.zoomDelta, 0.5)
 })
 

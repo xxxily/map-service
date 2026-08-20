@@ -63,7 +63,10 @@ export function getKmlLeafletPerformanceOptions () {
     markerZoomAnimation: true,
     wheelDebounceTime: 8,
     wheelPxPerZoomLevel: 45,
-    zoomSnap: 0,
+    // Wheel/pinch input can produce very small deltas on macOS trackpads.
+    // Keep a usable half-level floor while the gesture adapter still handles
+    // direction and mode boundaries independently.
+    zoomSnap: 0.5,
     zoomDelta: 0.5,
   }
 }

@@ -29,7 +29,7 @@ test('无缝瓦片立即变为不透明，同时保留缩放期间的旧层级�
   assert.equal(mapOptions.zoomAnimation, true)
   assert.equal(mapOptions.fadeAnimation, true)
   assert.equal(mapOptions.markerZoomAnimation, true)
-  assert.equal(mapOptions.zoomSnap, 0)
+  assert.equal(mapOptions.zoomSnap, 0.5)
   assert.doesNotMatch(mainSource, /fadeAnimation:\s*false/)
   assert.doesNotMatch(mainSource, /zoomAnimation:\s*false/)
   assert.doesNotMatch(`${mainSource}\n${performanceSource}`, /L\.Browser\.any3d\s*=\s*false/)
