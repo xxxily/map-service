@@ -896,6 +896,44 @@ test('share passwords, pause, rotation and revoke invalidate public access immed
   }
 })
 
+test('password share URL validates the current password and records password-link access', async () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '带密码链接', features: [point('password-link')] })
+    const share = harness.service.createShare(harness.one, {
+      title: '带密码链接', items: [{ kmlId: document.id }], password: '1234',
+    })
+    await assert.rejects(
+      harness.service.createPasswordShareUrl(harness.one, share.id, 'wrong'),
+      error => error.code === 'SHARE_PASSWORD_INVALID' && error.statusCode === 401,
+    )
+    const link = await harness.service.createPasswordShareUrl(harness.one, share.id, '1234')
+    assert.equal(link.shareUrl, `/share/${share.publicId}?password=1234`)
+    const authorization = await harness.service.authorizePublicShare(
+      share.publicId,
+      { password: '1234', accessMethod: 'password_link' },
+      { visitorId: 'visitor-link-1234567890' },
+    )
+    harness.service.getPublicShareManifest(share.publicId, {
+      accessToken: authorization.accessToken,
+      visitorId: 'visitor-link-1234567890',
+    })
+    const events = harness.service.listShareAccessEvents(harness.one, share.id)
+    assert.equal(events.total, 1)
+    assert.equal(events.items[0].accessMethod, 'password_link')
+    assert.equal(events.items[0].accessCount, 1)
+
+    const current = harness.service.getShare(harness.one, share.id)
+    harness.service.updateShare(harness.one, share.id, { revision: current.revision, password: '5678' })
+    await assert.rejects(
+      harness.service.authorizePublicShare(share.publicId, { password: '1234' }),
+      error => error.code === 'SHARE_PASSWORD_INVALID' && error.statusCode === 401,
+    )
+  } finally {
+    harness.close()
+  }
+})
+
 test('share expiry, download control, site policy and administrator moderation are enforced', () => {
   const harness = createHarness({
     publicAccessPolicy: 'inherit_site_access',

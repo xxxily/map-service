@@ -209,6 +209,7 @@ function addAuthorizedLoaders (loaders) {
       page: 1,
       limit: adminState.moderatedShares.limit,
     })])
+    loaders.push(['shareRuntimeMetrics', () => adminApi.getShareRuntimeMetrics()])
   }
   if (can('admin.audit.read')) {
     loaders.push(['auditLogs', () => adminApi.listAuditLogs({

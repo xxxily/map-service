@@ -66,6 +66,7 @@ import {
   normalizeQualityPreset,
 } from './map3d/scene-quality.js'
 import { getMotionSafeDuration } from './map3d/motion.js'
+import { loadGlobalAnalytics } from './analytics.js'
 import {
   createTerrainRuntimeState,
   createTerrainAutoRetryState,
@@ -1691,5 +1692,7 @@ if (isShareLocation(window.location)) {
     submitText: '载入三维地球',
   })
 }
+
+if (!isAdminLocation(window.location)) loadGlobalAnalytics()
 
 registerServiceWorker()

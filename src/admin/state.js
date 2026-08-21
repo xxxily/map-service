@@ -40,6 +40,7 @@ export const adminState = {
     search: '',
     status: '',
   },
+  shareRuntimeMetrics: null,
   auditLogs: {
     items: [],
     page: 1,

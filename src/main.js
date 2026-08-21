@@ -43,6 +43,7 @@ import {
 import { initDesktopShiftDragRotate } from './map/desktop-rotation.js'
 import { getKmlLeafletPerformanceOptions } from './map/kml-performance.js'
 import { installStableTrackpadWheelZoom } from './map/trackpad-wheel-zoom.js'
+import { loadGlobalAnalytics } from './analytics.js'
 
 installStableTrackpadWheelZoom(L)
 
@@ -597,5 +598,7 @@ if (isShareLocation(window.location)) {
     submitText: '载入地图',
   })
 }
+
+if (!isAdminLocation(window.location)) loadGlobalAnalytics()
 
 registerServiceWorker()

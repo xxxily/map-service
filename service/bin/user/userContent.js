@@ -17,6 +17,10 @@ import {
   publicSpatialScope,
   spatialPolicyEligibility,
 } from './shareSpatialAccess.js'
+import {
+  normalizeShareAnalyticsConfig,
+  resolveShareAnalyticsDescriptor,
+} from './analytics.js'
 
 const DEFAULT_SETTINGS = Object.freeze({
   quota: {
@@ -69,6 +73,9 @@ const SHARE_MANIFEST_RATE_LIMIT = Object.freeze({
   windowMs: 1000 * 60,
   maxEntries: 10000,
 })
+
+const SHARE_ACCESS_EVENT_DEDUP_MS = 15 * 60 * 1000
+const SHARE_ACCESS_EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
 function parseJson (value, fallback) {
   try {
@@ -720,6 +727,14 @@ class FixedWindowLimiter {
     entry.count += 1
     this.entries.set(normalizedKey, entry)
   }
+
+  configure (options = {}) {
+    this.options = {
+      maxRequests: Math.max(1, Number(options.maxRequests) || this.options.maxRequests),
+      windowMs: Math.max(1000, Number(options.windowMs) || this.options.windowMs),
+      maxEntries: Math.max(100, Number(options.maxEntries) || this.options.maxEntries),
+    }
+  }
 }
 
 export class UserContentService {
@@ -733,8 +748,14 @@ export class UserContentService {
     this.sharePasswordLimiter = new AttemptLimiter(options.sharePasswordLimit || SHARE_PASSWORD_LIMIT, this.clock)
     this.shareTileLimiter = new FixedWindowLimiter(options.shareTileRateLimit || SHARE_TILE_RATE_LIMIT, this.clock)
     this.shareManifestLimiter = new FixedWindowLimiter(options.shareManifestRateLimit || SHARE_MANIFEST_RATE_LIMIT, this.clock)
+    this.useRuntimeTileRateLimit = options.shareTileRateLimit === undefined
+    this.useRuntimeManifestRateLimit = options.shareManifestRateLimit === undefined
+    // IP fallback digests are keyed per process so low-entropy addresses are
+    // not directly reversible from the persisted access-event table.
+    this.sharePrivacySecret = String(options.sharePrivacySecret || randomToken(32))
     this.shareRuntimeMetrics = new Map()
     this.shareRuntimeMetricLimit = Math.max(100, Number(options.shareRuntimeMetricLimit) || 2000)
+    this.lastShareAccessCleanupAt = 0
   }
 
   nowIso () {
@@ -816,7 +837,82 @@ export class UserContentService {
     const settings = this.settingsProvider() || {}
     return {
       quota: { ...DEFAULT_SETTINGS.quota, ...(settings.quota || {}) },
-      share: { ...DEFAULT_SETTINGS.share, ...(settings.share || {}) },
+      share: {
+        ...DEFAULT_SETTINGS.share,
+        ...(settings.share || {}),
+        rateLimit: {
+          enabled: true,
+          windowMs: 60 * 1000,
+          tileMaxRequests: 3000,
+          manifestMaxRequests: 300,
+          maxEntries: 10000,
+          ...(settings.share?.rateLimit || {}),
+        },
+      },
+      analytics: settings.analytics || {},
+    }
+  }
+
+  shareRateLimitSettings () {
+    const rateLimit = this.getSettings().share.rateLimit || {}
+    return {
+      enabled: rateLimit.enabled !== false,
+      windowMs: Math.max(10 * 1000, Number(rateLimit.windowMs) || 60 * 1000),
+      tileMaxRequests: Math.max(100, Number(rateLimit.tileMaxRequests) || 3000),
+      manifestMaxRequests: Math.max(20, Number(rateLimit.manifestMaxRequests) || 300),
+      maxEntries: Math.max(100, Number(rateLimit.maxEntries) || 10000),
+    }
+  }
+
+  shareClientKey (shareId, context = {}) {
+    const visitorId = String(context.visitorId || '').slice(0, 160)
+    const fallback = hashToken([
+      this.sharePrivacySecret,
+      String(context.ip || '').slice(0, 120),
+      String(context.userAgent || '').slice(0, 255),
+    ].join('|')).slice(0, 24)
+    return `${shareId}:${visitorId || fallback}`
+  }
+
+  consumeShareRateLimit (kind, shareId, context = {}) {
+    if (kind === 'tile' && !this.useRuntimeTileRateLimit) {
+      try {
+        this.shareTileLimiter.consume(
+          this.shareClientKey(shareId, context),
+          '分享地图请求过于频繁，请稍后再试',
+          'SHARE_TILE_RATE_LIMITED'
+        )
+      } catch (error) {
+        if (error?.code === 'SHARE_TILE_RATE_LIMITED') this.recordShareRuntimeMetric(shareId, 'tile_rate_limited')
+        throw error
+      }
+      return
+    }
+    if (kind === 'manifest' && !this.useRuntimeManifestRateLimit) {
+      try {
+        this.shareManifestLimiter.consume(
+          this.shareClientKey(shareId, context),
+          '分享数据请求过于频繁，请稍后再试',
+          'SHARE_MANIFEST_RATE_LIMITED'
+        )
+      } catch (error) {
+        if (error?.code === 'SHARE_MANIFEST_RATE_LIMITED') this.recordShareRuntimeMetric(shareId, 'manifest_rate_limited')
+        throw error
+      }
+      return
+    }
+    const settings = this.shareRateLimitSettings()
+    if (!settings.enabled) return
+    const limiter = kind === 'tile' ? this.shareTileLimiter : this.shareManifestLimiter
+    const maxRequests = kind === 'tile' ? settings.tileMaxRequests : settings.manifestMaxRequests
+    limiter.configure({ maxRequests, windowMs: settings.windowMs, maxEntries: settings.maxEntries })
+    const errorCode = kind === 'tile' ? 'SHARE_TILE_RATE_LIMITED' : 'SHARE_MANIFEST_RATE_LIMITED'
+    const message = kind === 'tile' ? '分享地图请求过于频繁，请稍后再试' : '分享数据请求过于频繁，请稍后再试'
+    try {
+      limiter.consume(this.shareClientKey(shareId, context), message, errorCode)
+    } catch (error) {
+      if (error?.code === errorCode) this.recordShareRuntimeMetric(shareId, `${kind}_rate_limited`)
+      throw error
     }
   }
 
@@ -988,6 +1084,23 @@ export class UserContentService {
     return {
       ttlMode,
       effectiveTtlMs: ttlMode === 'finite' ? Number(this.getSettings().share.accessTtlMs) : null,
+    }
+  }
+
+  shareAnalyticsView (row) {
+    const config = parseJson(row.analytics_config_json, {})
+    const descriptor = resolveShareAnalyticsDescriptor(
+      config,
+      this.getSettings().analytics?.share,
+      { disabled: Boolean(row.analytics_disabled) }
+    )
+    return {
+      mode: config.mode || 'none',
+      websiteId: config.mode === 'provider' ? String(config.websiteId || '') : '',
+      script: config.mode === 'custom' ? (config.script || null) : null,
+      effective: Boolean(descriptor),
+      disabledByAdmin: Boolean(row.analytics_disabled),
+      disabledReason: row.analytics_disabled ? String(row.analytics_disabled_reason || '') : '',
     }
   }
 
@@ -2173,6 +2286,7 @@ export class UserContentService {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       lastAccessedAt: row.last_accessed_at || null,
+      analytics: this.shareAnalyticsView(row),
     }
     if (options.includeItems) result.items = this.shareItemsForOwner(row.id)
     result.itemCount = options.includeItems
@@ -2304,6 +2418,7 @@ export class UserContentService {
     const allowDownload = normalizeBoolean(input.allowDownload, true)
     const expiresAt = normalizeExpiresAt(input.expiresAt)
     const viewConfig = normalizeViewConfig(input.viewConfig)
+    const analyticsConfig = normalizeShareAnalyticsConfig(input.analytics, settings.analytics?.share)
     const passwordHash = normalizeSharePassword(input.password, null)
     const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, 'unrestricted')
     const spatialState = this.resolveShareSpatialState(items, spatialAccessMode, settings)
@@ -2329,14 +2444,15 @@ export class UserContentService {
           spatial_access_mode, password_access_ttl_mode, spatial_scope_json,
           spatial_scope_revision, spatial_status, spatial_error_code,
           password_version, access_policy_revision, content_revision, content_published_at,
+          analytics_config_json, analytics_disabled, analytics_disabled_reason,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'public_link', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, 'public_link', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, 0, '', ?, ?)
       `).run(
         id, publicId, ownerId, title, description, status, passwordHash,
         allowDownload ? 1 : 0, expiresAt, JSON.stringify(viewConfig),
         spatialAccessMode, passwordAccessTtlMode, JSON.stringify(spatialState.scope || {}),
         spatialScopeRevision, spatialState.status, spatialState.errorCode || '',
-        accessPolicyRevision, now, now, now
+        accessPolicyRevision, now, JSON.stringify(analyticsConfig), now, now
       )
       this.replaceShareItems(id, items, now)
       this.insertAudit({
@@ -2470,6 +2586,11 @@ export class UserContentService {
     const allowDownload = normalizeBoolean(input.allowDownload, Boolean(row.allow_download))
     const expiresAt = normalizeExpiresAt(input.expiresAt, row.expires_at || null)
     const viewConfig = normalizeViewConfig(input.viewConfig, parseJson(row.view_config_json, {}))
+    const analyticsConfig = normalizeShareAnalyticsConfig(
+      input.analytics,
+      settings.analytics?.share,
+      parseJson(row.analytics_config_json, {})
+    )
     const passwordHash = normalizeSharePassword(input.password, row.password_hash)
     const previousSpatialMode = row.spatial_access_mode || 'unrestricted'
     const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, previousSpatialMode)
@@ -2514,6 +2635,7 @@ export class UserContentService {
           password_access_ttl_mode = ?, spatial_scope_json = ?, spatial_scope_revision = ?,
           spatial_status = ?, spatial_error_code = ?, password_version = ?,
           access_policy_revision = ?, content_revision = ?, content_published_at = ?,
+          analytics_config_json = ?,
           revision = revision + 1, updated_at = ?
         WHERE id = ?
       `).run(
@@ -2521,7 +2643,8 @@ export class UserContentService {
         expiresAt, JSON.stringify(viewConfig), spatialAccessMode,
         passwordAccessTtlMode, JSON.stringify(spatialState.scope || {}), spatialScopeRevision,
         spatialState.status, spatialState.errorCode || '', passwordVersion,
-        accessPolicyRevision, contentRevision, contentPublishedAt, now, row.id
+        accessPolicyRevision, contentRevision, contentPublishedAt,
+        JSON.stringify(analyticsConfig), now, row.id
       )
       if (contentChanged) this.replaceShareItems(row.id, items, now)
       if (passwordChanged) this.revokeShareSessions(row.id, 'share.password.update')
@@ -2893,28 +3016,28 @@ export class UserContentService {
     }
   }
 
-  hasShareAccessSession (shareId, accessToken) {
-    if (!accessToken) return false
+  getShareAccessSession (shareId, accessToken) {
+    if (!accessToken) return null
     const row = typeof shareId === 'object' ? shareId : this.database.prepare(
       'SELECT * FROM kml_shares WHERE id = ?'
     ).get(shareId)
-    if (!row) return false
+    if (!row) return null
     const session = this.database.prepare(`
       SELECT * FROM share_access_sessions
       WHERE share_id = ? AND token_hash = ? AND revoked_at IS NULL
       LIMIT 1
     `).get(row.id, hashToken(accessToken))
-    if (!session) return false
-    if (Number(session.password_version || 1) !== Number(row.password_version || 1)) return false
+    if (!session) return null
+    if (Number(session.password_version || 1) !== Number(row.password_version || 1)) return null
     const ttlMode = session.ttl_mode || 'finite'
     if (ttlMode === 'unlimited') {
-      if ((row.password_access_ttl_mode || 'finite') !== 'unlimited' || session.expires_at !== null) return false
-      if ((row.spatial_access_mode || 'unrestricted') !== 'kml_bounds' || row.spatial_status !== 'ready') return false
-      if (Number(session.policy_revision || 1) !== Number(row.access_policy_revision || 1)) return false
-      if (this.getSettings().share.unlimitedAccessEnabled !== true) return false
+      if ((row.password_access_ttl_mode || 'finite') !== 'unlimited' || session.expires_at !== null) return null
+      if ((row.spatial_access_mode || 'unrestricted') !== 'kml_bounds' || row.spatial_status !== 'ready') return null
+      if (Number(session.policy_revision || 1) !== Number(row.access_policy_revision || 1)) return null
+      if (this.getSettings().share.unlimitedAccessEnabled !== true) return null
     } else {
       const expiresAt = Date.parse(session.expires_at || '')
-      if (!Number.isFinite(expiresAt) || expiresAt <= this.clock()) return false
+      if (!Number.isFinite(expiresAt) || expiresAt <= this.clock()) return null
     }
     const lastAccessedAt = Date.parse(session.last_accessed_at || '')
     if (!Number.isFinite(lastAccessedAt) || this.clock() - lastAccessedAt >= SHARE_SESSION_TOUCH_INTERVAL_MS) {
@@ -2922,15 +3045,26 @@ export class UserContentService {
         UPDATE share_access_sessions SET last_accessed_at = ? WHERE id = ?
       `).run(this.nowIso(), session.id)
     }
-    return true
+    return session
+  }
+
+  hasShareAccessSession (shareId, accessToken) {
+    return Boolean(this.getShareAccessSession(shareId, accessToken))
   }
 
   assertPublicShareAccess (row, context = {}) {
     this.assertPublicShareState(row)
     this.assertSiteAccess(context)
     row = this.assertPublicSpatialState(row)
-    if (row.password_hash && !this.hasShareAccessSession(row, context.accessToken)) {
-      throw createHttpError('分享需要密码验证', 401, 'SHARE_PASSWORD_REQUIRED')
+    if (row.password_hash) {
+      const session = this.getShareAccessSession(row, context.accessToken)
+      if (!session) throw createHttpError('分享需要密码验证', 401, 'SHARE_PASSWORD_REQUIRED')
+      const createdAt = Date.parse(session.created_at || '')
+      row.__shareAccessMethod = Number.isFinite(createdAt) && this.clock() - createdAt < 60 * 1000
+        ? (session.access_method || 'password_form')
+        : 'session'
+    } else {
+      row.__shareAccessMethod = 'open'
     }
     return row
   }
@@ -2949,22 +3083,10 @@ export class UserContentService {
 
   assertPublicShareTileRequest (publicId, sourceId, context = {}) {
     const share = this.assertPublicShareRequest(publicId, context)
-    // Bound the total tile workload for one share and client. Including the
-    // caller-controlled source id here would let a client bypass the limit by
-    // rotating source ids before the catalog validation runs.
-    const limiterKey = `${share.id}:${String(context.ip || '').slice(0, 80)}`
-    try {
-      this.shareTileLimiter.consume(
-        limiterKey,
-        '分享地图请求过于频繁，请稍后再试',
-        'SHARE_TILE_RATE_LIMITED'
-      )
-    } catch (error) {
-      if (error?.code === 'SHARE_TILE_RATE_LIMITED') {
-        this.recordShareRuntimeMetric(share.id, 'tile_rate_limited')
-      }
-      throw error
-    }
+    // Explicit constructor overrides are reserved for deterministic service
+    // tests. Runtime traffic is counted by the map-source service only after
+    // catalog and spatial classification have accepted the tile.
+    if (!this.useRuntimeTileRateLimit) this.consumeShareRateLimit('tile', share.id, context)
     return share
   }
 
@@ -3011,6 +3133,134 @@ export class UserContentService {
     return items
   }
 
+  classifyDeviceType (userAgent) {
+    const value = String(userAgent || '').toLowerCase()
+    if (/mobile|android|iphone|ipad/.test(value)) return 'mobile'
+    if (/tablet/.test(value)) return 'tablet'
+    if (value) return 'desktop'
+    return 'unknown'
+  }
+
+  referrerOrigin (value) {
+    try {
+      const parsed = new URL(String(value || ''))
+      return parsed.origin.slice(0, 255)
+    } catch {
+      return ''
+    }
+  }
+
+  recordShareAccessEvent (row, context = {}, accessMethod = 'open') {
+    if (!row?.id) return
+    const now = this.clock()
+    const nowIso = new Date(now).toISOString()
+    const visitorHash = hashToken(this.shareClientKey(row.id, context)).slice(0, 64)
+    const ipHash = context.ip
+      ? hashToken(`${this.sharePrivacySecret}|${String(context.ip).slice(0, 120)}`).slice(0, 64)
+      : ''
+    const method = ['open', 'password_form', 'password_link', 'session'].includes(accessMethod)
+      ? accessMethod
+      : 'open'
+    const cutoff = new Date(now - SHARE_ACCESS_EVENT_DEDUP_MS).toISOString()
+    const existing = this.database.prepare(`
+      SELECT id FROM share_access_events
+      WHERE share_id = ? AND visitor_hash = ? AND access_method = ? AND last_accessed_at >= ?
+      ORDER BY last_accessed_at DESC LIMIT 1
+    `).get(row.id, visitorHash, method, cutoff)
+    if (existing) {
+      this.database.prepare(`
+        UPDATE share_access_events
+        SET last_accessed_at = ?, access_count = access_count + 1,
+            ip_hash = ?, device_type = ?, referrer_origin = ?
+        WHERE id = ?
+      `).run(
+        nowIso, ipHash, this.classifyDeviceType(context.userAgent),
+        this.referrerOrigin(context.referrer), existing.id
+      )
+    } else {
+      this.database.prepare(`
+        INSERT INTO share_access_events(
+          id, share_id, visitor_hash, ip_hash, first_accessed_at, last_accessed_at,
+          access_count, access_method, device_type, referrer_origin, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+      `).run(
+        randomId('sae'), row.id, visitorHash, ipHash, nowIso, nowIso,
+        method, this.classifyDeviceType(context.userAgent), this.referrerOrigin(context.referrer), nowIso
+      )
+    }
+    if (now - this.lastShareAccessCleanupAt >= 60 * 60 * 1000) {
+      this.lastShareAccessCleanupAt = now
+      const retention = new Date(now - SHARE_ACCESS_EVENT_RETENTION_MS).toISOString()
+      this.database.prepare('DELETE FROM share_access_events WHERE last_accessed_at < ?').run(retention)
+    }
+  }
+
+  listShareAccessEvents (actor, shareId, input = {}) {
+    const row = this.requireOwnedShare(actor, shareId)
+    const pageInfo = normalizePage(input)
+    const total = Number(this.database.prepare(
+      'SELECT COUNT(*) AS count FROM share_access_events WHERE share_id = ?'
+    ).get(row.id)?.count || 0)
+    const items = this.database.prepare(`
+      SELECT first_accessed_at, last_accessed_at, access_count, access_method,
+             device_type, referrer_origin
+      FROM share_access_events
+      WHERE share_id = ?
+      ORDER BY last_accessed_at DESC, id DESC
+      LIMIT ? OFFSET ?
+    `).all(row.id, pageInfo.limit, (pageInfo.page - 1) * pageInfo.limit)
+      .map(item => ({
+        firstAccessedAt: item.first_accessed_at,
+        lastAccessedAt: item.last_accessed_at,
+        accessCount: Number(item.access_count || 0),
+        accessMethod: item.access_method,
+        deviceType: item.device_type,
+        referrerOrigin: item.referrer_origin || '',
+      }))
+    return { items, page: pageInfo.page, limit: pageInfo.limit, total }
+  }
+
+  createPasswordShareUrl (actor, shareId, password) {
+    const row = this.requireOwnedShare(actor, shareId)
+    if (!row.password_hash) {
+      throw createHttpError('该分享未设置密码', 409, 'SHARE_PASSWORD_NOT_SET')
+    }
+    if (!String(password || '')) {
+      throw createHttpError('请输入当前分享密码', 400, 'VALIDATION_FAILED')
+    }
+    return verifyPassword(String(password), row.password_hash).then(valid => {
+      if (!valid) throw createHttpError('分享密码不正确', 401, 'SHARE_PASSWORD_INVALID')
+      return {
+        shareUrl: `/share/${row.public_id}?password=${encodeURIComponent(String(password))}`,
+      }
+    })
+  }
+
+  setShareAnalyticsDisabled (actor, shareId, input = {}) {
+    this.assertPermission(actor, 'admin.share.moderate')
+    const row = this.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(String(shareId || ''))
+    if (!row) throw createHttpError('分享不存在', 404, 'RESOURCE_NOT_FOUND')
+    const disabled = normalizeBoolean(input.disabled, true)
+    const reason = disabled ? normalizeText(input.reason, { maxLength: 500 }) : ''
+    const now = this.nowIso()
+    this.database.prepare(`
+      UPDATE kml_shares
+      SET analytics_disabled = ?, analytics_disabled_reason = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ?
+    `).run(disabled ? 1 : 0, reason, now, row.id)
+    this.insertAudit({
+      actorUserId: this.actorUser(actor).id,
+      action: disabled ? 'share.analytics.disable' : 'share.analytics.enable',
+      targetType: 'kml-share',
+      targetId: row.id,
+      reason,
+    })
+    return this.shareModerationViewFromRow(
+      actor,
+      this.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(row.id)
+    )
+  }
+
   publicItemSummary (row) {
     const snapshot = row.snapshot || {}
     return {
@@ -3034,24 +3284,14 @@ export class UserContentService {
   getPublicShareManifest (publicId, context = {}) {
     const row = this.publicShareRow(publicId)
     const current = this.assertPublicShareAccess(row, context)
-    try {
-      this.shareManifestLimiter.consume(
-        `${current.id}:${String(context.ip || '').slice(0, 80)}`,
-        '分享数据请求过于频繁，请稍后再试',
-        'SHARE_MANIFEST_RATE_LIMITED'
-      )
-    } catch (error) {
-      if (error?.code === 'SHARE_MANIFEST_RATE_LIMITED') {
-        this.recordShareRuntimeMetric(current.id, 'manifest_rate_limited')
-      }
-      throw error
-    }
+    this.consumeShareRateLimit('manifest', current.id, context)
     const items = this.ensurePublicItems(current)
     const now = this.nowIso()
     this.database.prepare(`
       UPDATE kml_shares
       SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?
     `).run(now, current.id)
+    this.recordShareAccessEvent(current, context, current.__shareAccessMethod || context.accessMethod || (context.accessToken ? 'session' : 'open'))
     const viewConfig = parseJson(current.view_config_json, {})
     const result = {
       publicId: current.public_id,
@@ -3067,6 +3307,11 @@ export class UserContentService {
       itemCount: items.length,
       items: items.map(item => this.publicItemSummary(item)),
       updatedAt: current.updated_at,
+      analytics: resolveShareAnalyticsDescriptor(
+        parseJson(current.analytics_config_json, {}),
+        this.getSettings().analytics?.share,
+        { disabled: Boolean(current.analytics_disabled) }
+      ),
     }
     if (viewConfig.showOwnerDisplayName === true) result.ownerDisplayName = current.owner_display_name
     return result
@@ -3099,6 +3344,9 @@ export class UserContentService {
 
   async authorizePublicShare (publicId, input, context = {}) {
     const password = isPlainObject(input) ? input.password : input
+    const accessMethod = isPlainObject(input) && input.accessMethod === 'password_link'
+      ? 'password_link'
+      : 'password_form'
     let row = this.publicShareRow(publicId)
     this.assertPublicShareState(row)
     this.assertSiteAccess(context)
@@ -3135,11 +3383,11 @@ export class UserContentService {
     this.database.prepare(`
       INSERT INTO share_access_sessions(
         id, share_id, token_hash, created_at, ttl_mode, expires_at,
-        password_version, policy_revision, last_accessed_at, revoke_reason
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+        password_version, policy_revision, last_accessed_at, revoke_reason, access_method
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
     `).run(
       randomId('sas'), current.id, hashToken(token), now, ttlMode, expiresAt,
-      Number(current.password_version || 1), Number(current.access_policy_revision || 1), now
+      Number(current.password_version || 1), Number(current.access_policy_revision || 1), now, accessMethod
     )
     return { passwordRequired: true, ttlMode, accessToken: token, expiresAt }
   }

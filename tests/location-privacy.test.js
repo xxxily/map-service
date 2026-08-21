@@ -38,3 +38,19 @@ test('access logs redact KML compatibility media targets', () => {
     '/api/v1/kml/media?url=%5Bredacted%5D',
   )
 })
+
+test('access logs redact password links and common credential query parameters', () => {
+  const sanitized = sanitizeLogUrl('/share/public-id?password=A%26b%3D1234&layer=road&TOKEN=secret-token&api_key=secret-key')
+  assert.equal(sanitized.includes('A%26b%3D1234'), false)
+  assert.equal(sanitized.includes('secret-token'), false)
+  assert.equal(sanitized.includes('secret-key'), false)
+  assert.equal(sanitized, '/share/public-id?password=****&layer=road&TOKEN=****&api_key=****')
+})
+
+test('access log redaction still protects credentials in malformed URLs', () => {
+  const sanitized = sanitizeLogUrl('/share/public-id?password=plain-secret&token=token-secret&bad=%E0%A4%A')
+  assert.equal(sanitized.includes('plain-secret'), false)
+  assert.equal(sanitized.includes('token-secret'), false)
+  assert.match(sanitized, /password=\*\*\*\*/)
+  assert.match(sanitized, /token=\*\*\*\*/)
+})

@@ -623,6 +623,8 @@ Content-Type: application/json
 | `GET` | `/kml/shares` | `share.own.manage` | 分享包列表 |
 | `POST` | `/kml/shares` | `share.own.manage` | 创建分享包 |
 | `GET` | `/kml/shares/:id` | `share.own.manage` | 获取完整配置 |
+| `GET` | `/kml/shares/:id/access-events` | `share.own.manage` | 获取自己的最近聚合访问记录 |
+| `POST` | `/kml/shares/:id/password-url` | `share.own.manage` | 校验当前分享密码并生成带密码参数的链接 |
 | `PUT` | `/kml/shares/:id` | `share.own.manage` | 编辑文件、顺序、显隐和视图 |
 | `POST` | `/kml/shares/:id/sync` | `share.own.manage` | 发布当前 KML 内容快照并重新计算分享范围 |
 | `POST` | `/kml/shares/:id/pause` | `share.own.manage` | 暂停分享 |
@@ -644,6 +646,7 @@ Content-Type: application/json
   "expiresAt": "2026-12-31T16:00:00.000Z",
   "spatialAccess": { "mode": "kml_bounds" },
   "passwordAccess": { "ttlMode": "unlimited" },
+  "analytics": { "mode": "provider", "websiteId": "573277f7-4747-4871-abf4-24406a67707e" },
   "viewConfig": {
     "center": [30.2741, 120.1551],
     "zoom": 11,
@@ -671,6 +674,8 @@ Content-Type: application/json
 - `spatialAccess.mode` 支持 `unrestricted` 和 `kml_bounds`；省略时创建默认为 `unrestricted`，更新时保持现状。`kml_bounds` 的范围、面积和对角线只能由服务端根据分享内 active KML 计算。
 - `passwordAccess.ttlMode` 支持 `finite` 和 `unlimited`；无密码时公开视图为 `not_applicable`。`unlimited` 仅在空间受限、范围合规且后台允许时可用，服务端保存时会重新计算，不信任前端预检。
 - 非空分享密码采用独立访问口令规则，长度为 4～128 位；不沿用账号密码的 12 位和常见密码限制，但仍仅保存安全哈希并受独立尝试限流保护。
+- `analytics.mode` 支持 `none`、`provider` 和经超级管理员授权的 `custom`。默认 provider 模式只提交网站 ID，脚本来源由管理员固定；公开清单只返回服务端校验后的 descriptor。
+- `password-url` 不从数据库读取密码明文。所有者必须重新提交当前密码，服务端校验成功后仅在本次响应的 `shareUrl` 中编码该密码；响应不另设密码字段，服务端也不保存该明文。
 - active 分享删除到没有有效文件时会自动暂停。
 - `revoked` 不可恢复；`blocked` 只能由管理员解封。
 
@@ -698,6 +703,8 @@ Content-Type: application/json
 ```json
 { "password": "optional-share-password" }
 ```
+
+带密码链接访问时可增加 `accessMethod: "password_link"`，仅用于脱敏访问聚合。客户端应在任何地图、媒体或统计脚本初始化前移除 URL 中的 `password` 参数。
 
 成功后写入路径受限的 `map_share_access_<publicId>` HttpOnly Cookie，响应不返回授权 Token。
 
@@ -810,7 +817,26 @@ Content-Type: application/json
     "unlimitedAccessEnabled": false,
     "unlimitedAccessMaxAreaKm2": 2000,
     "unlimitedAccessMaxDiagonalKm": 100,
-    "spatialPolicyRevision": 1
+    "spatialPolicyRevision": 1,
+    "rateLimit": {
+      "enabled": true,
+      "windowMs": 60000,
+      "tileMaxRequests": 3000,
+      "manifestMaxRequests": 300,
+      "maxEntries": 10000
+    }
+  },
+  "analytics": {
+    "global": {
+      "enabled": false,
+      "script": null
+    },
+    "share": {
+      "enabled": false,
+      "providerScriptUrl": "https://msc.anzz.site/script.js",
+      "providerWebsiteIdAttribute": "data-website-id",
+      "customScriptEnabled": false
+    }
   }
 }
 ```
@@ -819,6 +845,10 @@ Content-Type: application/json
 
 - `inherit_site_access`：分享页继承全站访问密码。
 - `independent`：分享授权独立于全站访问密码。
+
+分享限流按“分享 + HttpOnly 匿名访客标识”计数，Cookie 不可用时回退到服务端 IP/UA 摘要。瓦片仅在图源和空间范围校验通过后计数，范围外透明瓦片不消耗正常配额；设置更新后无需重启。
+
+全站统计允许管理员配置受控的 HTTPS 外部脚本；禁止内联脚本、事件属性、非 HTTPS 和带账号密码的 URL。分享统计默认只允许固定 provider + 网站 ID；`customScriptEnabled` 只有超级管理员可以修改。
 
 空间策略影响预览响应包含：
 
@@ -844,6 +874,7 @@ Content-Type: application/json
 | `GET` | `/admin/kml/shares/runtime-metrics` | `admin.share.moderate` | 查看内存有界的分享瓦片判定、范围拒绝和限流聚合指标 |
 | `POST` | `/admin/kml/shares/:id/block` | `admin.share.moderate` | 封禁并记录原因 |
 | `POST` | `/admin/kml/shares/:id/unblock` | `admin.share.moderate` | 解封后进入 paused，由所有者决定恢复 |
+| `PUT` | `/admin/kml/shares/:id/analytics` | `admin.share.moderate` | 逐分享禁用或恢复统计脚本 |
 | `GET` | `/admin/audit-logs` | `admin.audit.read` | 分页查询脱敏审计日志 |
 
 封禁请求：
@@ -853,6 +884,8 @@ Content-Type: application/json
 ```
 
 审计和治理列表不会返回密码、Token、Cookie、CSRF、会话哈希、请求认证头或代理凭据。
+
+所有者访问记录仅保存 15 分钟窗口内的聚合结果，默认保留 30 天。响应包括首次/最近访问时间、聚合次数、`open` / `password_form` / `password_link` / `session` 访问方式、设备大类和来源 Origin；不返回原始 IP、完整 User-Agent、完整 Referer 或查询参数。
 
 运行指标按内部分享 ID、受控图源 ID、事件和空间判定结果聚合，返回计数、首次/最近发生时间，以及空间重算累计/最大耗时。响应同时给出当前空间分享、半公开分享、范围状态和有限/不限授权会话数量快照；不记录来源 IP、`publicId`、Cookie、Token、完整 URL 或瓦片坐标。指标为单进程内存状态，服务重启后清空，多实例部署需接入统一监控系统。
 
@@ -883,8 +916,8 @@ Content-Type: application/json
 | `422` | `SHARE_UNLIMITED_ACCESS_DISABLED` / `SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE` | 不限授权未开放或范围超过更严格阈值 |
 | `413` | `FILE_TOO_LARGE` | KML 文件或请求超过限制 |
 | `429` | `RATE_LIMITED` | 登录、注册或分享密码尝试过多 |
-| `429` | `SHARE_MANIFEST_RATE_LIMITED` | 单个分享和来源 IP 的公开清单请求过于频繁 |
-| `429` | `SHARE_TILE_RATE_LIMITED` | 单个分享和来源 IP 的瓦片请求过于频繁 |
+| `429` | `SHARE_MANIFEST_RATE_LIMITED` | 单个分享和匿名访客的公开清单请求过于频繁 |
+| `429` | `SHARE_TILE_RATE_LIMITED` | 单个分享和匿名访客的瓦片请求过于频繁 |
 | `500` | `INTERNAL_ERROR` | 未预期服务端错误，响应已脱敏 |
 
 ## 8. 当前实施边界

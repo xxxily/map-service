@@ -960,6 +960,40 @@ test('public share password creates a share-scoped HttpOnly cookie and never ret
   }
 })
 
+test('public share routes issue and reuse a stable HttpOnly anonymous visitor cookie', async () => {
+  const contexts = []
+  let generated = 0
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    createAnonymousShareVisitorId: () => `visitor_${String(++generated).padStart(20, '0')}`,
+    getPublicKmlShareManifest: (publicId, context) => {
+      contexts.push(context)
+      return { publicId, title: '访客标识测试', items: [] }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const first = await requestJson(baseUrl, '/api/v1/public/kml-shares/public-visitor')
+    assert.equal(first.response.status, 200)
+    const cookies = cookieHeaders(first.response)
+    const visitorCookie = cookiePair(cookies, 'map_share_visitor')
+    assert.ok(visitorCookie)
+    assert.ok(cookies.some(value => /map_share_visitor=.*HttpOnly/i.test(value)))
+    assert.equal(contexts[0].visitorId, 'visitor_00000000000000000001')
+
+    const second = await requestJson(baseUrl, '/api/v1/public/kml-shares/public-visitor', {
+      headers: { Cookie: visitorCookie },
+    })
+    assert.equal(second.response.status, 200)
+    assert.equal(contexts[1].visitorId, contexts[0].visitorId)
+    assert.equal(generated, 1)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('unlimited public share authorization uses a persistent bounded browser cookie', async () => {
   const restore = withMockedService({
     isAccessEnabled: async () => false,

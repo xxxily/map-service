@@ -38,6 +38,34 @@ function spatialMetric (value, suffix) {
   return Number.isFinite(number) ? `${number.toFixed(1)} ${suffix}` : ''
 }
 
+function analyticsSummary (share) {
+  const analytics = share?.analytics || {}
+  if (analytics.disabledByAdmin) return '已被管理员禁用'
+  if (analytics.mode === 'provider') return analytics.effective ? '托管统计 · 已生效' : '托管统计 · 未生效'
+  if (analytics.mode === 'custom') return analytics.effective ? '自定义统计 · 已生效' : '自定义统计 · 未生效'
+  return '未配置'
+}
+
+function analyticsDetails (share) {
+  const analytics = share?.analytics || {}
+  if (analytics.mode === 'provider') {
+    return analytics.websiteId
+      ? `<small class="admin-cell-secondary">网站 ID：<code>${escapeHtml(analytics.websiteId)}</code></small>`
+      : ''
+  }
+  if (analytics.mode !== 'custom' || !analytics.script?.src) return ''
+  const attributes = Object.entries(analytics.script.attributes || {})
+    .map(([name, value]) => `${name}=${String(value)}`)
+    .join(' · ')
+  return `
+    <details class="admin-inline-details admin-share-analytics-details">
+      <summary>查看统计脚本</summary>
+      <code>${escapeHtml(analytics.script.src)}</code>
+      ${attributes ? `<small>${escapeHtml(attributes)}</small>` : ''}
+    </details>
+  `
+}
+
 function filtersForRequest (state, page) {
   return {
     ...state.shareFilters,
@@ -53,6 +81,7 @@ async function reloadShares (state, api, page = state.moderatedShares?.page || 1
 export function renderShareModerationPage (state) {
   const collection = state.moderatedShares || { items: [] }
   const filters = state.shareFilters || {}
+  const runtime = state.shareRuntimeMetrics || {}
   return `
     <div class="admin-user-system-stack">
       <section class="admin-panel">
@@ -74,6 +103,7 @@ export function renderShareModerationPage (state) {
           </label>
           <button type="submit">筛选</button>
         </form>
+        ${runtime.summary ? `<div class="admin-share-runtime-summary"><span>空间分享 ${Number(runtime.summary.spatialShares || 0)}</span><span>范围正常 ${Number(runtime.summary.spatialReady || 0)}</span><span>限流事件 ${(runtime.items || []).filter(item => /rate_limited$/.test(item.event)).reduce((sum, item) => sum + Number(item.count || 0), 0)}</span></div>` : ''}
         <div class="admin-table-wrap">
           <table class="admin-table admin-share-table">
             <thead><tr><th>分享</th><th>所有者</th><th>状态</th><th>空间与授权</th><th>访问与期限</th><th>操作</th></tr></thead>
@@ -105,6 +135,9 @@ export function renderShareModerationPage (state) {
                     <small class="admin-cell-secondary">访问 ${Number(share.accessCount || 0)} 次</small>
                     <small class="admin-cell-secondary">最近：${escapeHtml(formatTime(share.lastAccessedAt))}</small>
                     <small class="admin-cell-secondary">到期：${escapeHtml(formatTime(share.expiresAt))}</small>
+                    <small class="admin-cell-secondary">统计：${escapeHtml(analyticsSummary(share))}</small>
+                    ${analyticsDetails(share)}
+                    ${share.analytics?.disabledReason ? `<small class="admin-warning-text">统计禁用原因：${escapeHtml(share.analytics.disabledReason)}</small>` : ''}
                   </td>
                   <td>
                     <div class="admin-row-actions">
@@ -113,6 +146,9 @@ export function renderShareModerationPage (state) {
                         : share.status !== 'revoked'
                           ? `<button type="button" class="admin-button-danger" data-admin-action="block-share" data-share-id="${escapeHtml(share.id)}" data-share-title="${escapeHtml(share.title)}">封禁</button>`
                           : '<span>不可操作</span>'}
+                      ${share.analytics?.disabledByAdmin
+                        ? `<button type="button" data-admin-action="enable-share-analytics" data-share-id="${escapeHtml(share.id)}">恢复统计</button>`
+                        : `<button type="button" data-admin-action="disable-share-analytics" data-share-id="${escapeHtml(share.id)}">禁用统计</button>`}
                     </div>
                   </td>
                 </tr>
@@ -196,6 +232,40 @@ export async function handleShareModerationClick ({ api, event, renderDashboard,
       await api.unblockUserShare(target.dataset.shareId)
       await reloadShares(state, api)
       setNotice('已解除封禁，分享当前为暂停状态')
+    } catch (err) {
+      setNotice('', err.message)
+    }
+    renderDashboard()
+    return true
+  }
+
+  if (action === 'disable-share-analytics') {
+    const result = await showEditDialog({
+      title: '禁用分享统计',
+      fields: [{ name: 'reason', label: '禁用原因', type: 'textarea' }],
+      values: { reason: '' },
+      confirmText: '确认禁用',
+    })
+    if (!result) return true
+    try {
+      setNotice('正在禁用分享统计...')
+      await api.setUserShareAnalyticsDisabled(target.dataset.shareId, { disabled: true, reason: String(result.reason || '').trim() })
+      await reloadShares(state, api)
+      setNotice('分享统计已禁用')
+    } catch (err) {
+      setNotice('', err.message)
+    }
+    renderDashboard()
+    return true
+  }
+
+  if (action === 'enable-share-analytics') {
+    if (!await showConfirm('恢复后该分享会按当前管理员策略加载统计脚本。', { title: '恢复分享统计', confirmText: '恢复' })) return true
+    try {
+      setNotice('正在恢复分享统计...')
+      await api.setUserShareAnalyticsDisabled(target.dataset.shareId, { disabled: false })
+      await reloadShares(state, api)
+      setNotice('分享统计已恢复')
     } catch (err) {
       setNotice('', err.message)
     }

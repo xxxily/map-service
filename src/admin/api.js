@@ -125,8 +125,10 @@ export const adminApi = {
   previewUserSystemSettings: (body) => requestAdminApi('/admin/user-system/settings/impact-preview', { method: 'POST', body }),
   updateUserSystemSettings: (body) => requestAdminApi('/admin/user-system/settings', { method: 'PUT', body }),
   listUserShares: (params = {}) => requestAdminApi(`/admin/kml/shares${queryString(params)}`),
+  getShareRuntimeMetrics: () => requestAdminApi('/admin/kml/shares/runtime-metrics'),
   blockUserShare: (id, reason) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/block`, { method: 'POST', body: { reason } }),
   unblockUserShare: (id) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/unblock`, { method: 'POST' }),
+  setUserShareAnalyticsDisabled: (id, body = {}) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/analytics`, { method: 'PUT', body }),
   listAuditLogs: (params = {}) => requestAdminApi(`/admin/audit-logs${queryString(params)}`),
 }
 

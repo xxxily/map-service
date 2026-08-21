@@ -2,8 +2,55 @@ import {
   buildShareUpdateItems,
   buildShareViewConfig,
   escapeHtml,
+  formatDateTime,
   normalizeSpatialAccess,
 } from './model.js'
+
+const SHARE_PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!#$%&*+-=?@_'
+
+function secureRandomInt (maximum) {
+  const limit = Math.floor(0x100000000 / maximum) * maximum
+  const values = new Uint32Array(1)
+  do {
+    globalThis.crypto?.getRandomValues?.(values)
+    if (!globalThis.crypto?.getRandomValues) throw new Error('当前浏览器不支持安全随机数')
+  } while (values[0] >= limit)
+  return values[0] % maximum
+}
+
+function shuffleSecure (values) {
+  for (let index = values.length - 1; index > 0; index -= 1) {
+    const target = secureRandomInt(index + 1)
+    const current = values[index]
+    values[index] = values[target]
+    values[target] = current
+  }
+  return values
+}
+
+export function generateStrongSharePassword (length = 20) {
+  const size = Math.max(4, Math.min(128, Number.parseInt(length, 10) || 20))
+  const groups = [
+    'ABCDEFGHJKLMNPQRSTUVWXYZ',
+    'abcdefghijkmnopqrstuvwxyz',
+    '23456789',
+    '!#$%&*+-=?@_',
+  ]
+  const result = groups.map(group => group[secureRandomInt(group.length)])
+  while (result.length < size) result.push(SHARE_PASSWORD_ALPHABET[secureRandomInt(SHARE_PASSWORD_ALPHABET.length)])
+  return shuffleSecure(result).join('')
+}
+
+function scriptDescriptorToText (script) {
+  if (!script?.src) return ''
+  const attributes = [
+    script.defer !== false ? 'defer' : '',
+    script.async === true ? 'async' : '',
+    `src="${String(script.src)}"`,
+    ...Object.entries(script.attributes || {}).map(([name, value]) => `${name}="${String(value)}"`),
+  ].filter(Boolean)
+  return `<script ${attributes.join(' ')}></script>`
+}
 
 function ensureAccountDialogRoot () {
   let root = document.getElementById('app-dialog-root')
@@ -25,8 +72,9 @@ export function showAccountPasswordDialog (options = {}) {
         <p>${escapeHtml(options.message || '请输入当前密码继续。')}</p>
         <label class="account-dialog-field">
           <span>${escapeHtml(options.label || '密码')}</span>
-          <input name="password" type="password" minlength="${Number(options.minLength || 1)}" maxlength="128" autocomplete="${escapeHtml(options.autocomplete || 'current-password')}" required>
+          <div class="account-password-input-row"><input name="password" type="password" minlength="${Number(options.minLength || 1)}" maxlength="128" autocomplete="${escapeHtml(options.autocomplete || 'current-password')}" required>${options.generate ? '<button type="button" class="app-dialog-secondary account-password-generate" data-account-password-action="generate">生成密码</button><button type="button" class="app-dialog-secondary account-password-copy" data-account-password-action="copy" hidden>复制</button>' : ''}</div>
         </label>
+        ${options.generate ? '<small class="account-password-status" data-account-password-status aria-live="polite"></small>' : ''}
         <div class="app-dialog-actions">
           <button type="button" class="app-dialog-secondary" data-account-password-action="cancel">取消</button>
           <button type="submit" class="app-dialog-primary">${escapeHtml(options.confirmText || '继续')}</button>
@@ -36,6 +84,8 @@ export function showAccountPasswordDialog (options = {}) {
   `
   const form = root.querySelector('[data-account-password-form]')
   const input = form.querySelector('input')
+  const copyButton = form.querySelector('[data-account-password-action="copy"]')
+  const statusNode = form.querySelector('[data-account-password-status]')
   input?.focus()
 
   return new Promise(resolve => {
@@ -54,10 +104,33 @@ export function showAccountPasswordDialog (options = {}) {
       event.preventDefault()
       finish(form.elements.password.value)
     }
-    const onClick = event => {
+    const onClick = async event => {
       const target = event.target.closest('[data-account-password-action]')
       if (!target) return
       if (target.classList.contains('app-dialog-backdrop') && form.contains(event.target)) return
+      if (target.dataset.accountPasswordAction === 'generate') {
+        input.value = generateStrongSharePassword(options.passwordLength || 20)
+        input.type = 'text'
+        if (copyButton) copyButton.hidden = false
+        if (statusNode) statusNode.textContent = '已生成，可直接使用或修改。'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.focus()
+        input.select()
+        return
+      }
+      if (target.dataset.accountPasswordAction === 'copy') {
+        if (!input.value) return
+        try {
+          await navigator.clipboard?.writeText(input.value)
+          if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+          if (statusNode) statusNode.textContent = '密码已复制'
+        } catch {
+          input.focus()
+          input.select()
+          if (statusNode) statusNode.textContent = '已选中密码，请手动复制'
+        }
+        return
+      }
       finish(null)
     }
     const onKeydown = event => {
@@ -69,6 +142,95 @@ export function showAccountPasswordDialog (options = {}) {
     form.addEventListener('submit', onSubmit)
     document.addEventListener('keydown', onKeydown)
   })
+}
+
+function analyticsModeValue (share) {
+  const mode = share?.analytics?.mode
+  return ['provider', 'custom'].includes(mode) ? mode : 'none'
+}
+
+export function showAccountShareAccessEventsDialog (options = {}) {
+  const root = ensureAccountDialogRoot()
+  const share = options.share || {}
+  const load = typeof options.onLoad === 'function' ? options.onLoad : async () => ({ items: [], page: 1, limit: 20, total: 0 })
+  let page = 1
+  let closed = false
+
+  root.hidden = false
+  root.innerHTML = `
+    <div class="app-dialog-backdrop" data-account-access-events-action="cancel">
+      <section class="app-dialog account-access-events-dialog" role="dialog" aria-modal="true" aria-labelledby="account-access-events-title">
+        <div class="account-share-dialog-heading"><div><h2 id="account-access-events-title">访问记录</h2><p>${escapeHtml(share.title || '分享')}</p></div><span data-account-access-events-count>读取中…</span></div>
+        <div class="account-access-events-body" data-account-access-events-body><div class="account-loading"><span></span><p>正在读取访问记录…</p></div></div>
+        <div class="account-access-events-footer"><button type="button" class="account-secondary-button" data-account-access-events-page="prev" disabled>上一页</button><span data-account-access-events-page-label>第 1 页</span><button type="button" class="account-secondary-button" data-account-access-events-page="next" disabled>下一页</button></div>
+        <div class="app-dialog-actions"><button type="button" class="app-dialog-secondary" data-account-access-events-action="cancel">关闭</button></div>
+      </section>
+    </div>
+  `
+  const body = root.querySelector('[data-account-access-events-body]')
+  const count = root.querySelector('[data-account-access-events-count]')
+  const prev = root.querySelector('[data-account-access-events-page="prev"]')
+  const next = root.querySelector('[data-account-access-events-page="next"]')
+  const label = root.querySelector('[data-account-access-events-page-label]')
+  const methodLabels = {
+    open: '直接访问',
+    password_form: '输入密码',
+    password_link: '带密码链接',
+    session: '已授权会话',
+  }
+  const deviceLabels = { mobile: '移动设备', tablet: '平板设备', desktop: '桌面设备', unknown: '未知设备' }
+  const renderRows = result => {
+    const items = Array.isArray(result?.items) ? result.items : []
+    const total = Number(result?.total || 0)
+    const limit = Math.max(1, Number(result?.limit || 20))
+    const currentPage = Math.max(1, Number(result?.page || page))
+    page = currentPage
+    count.textContent = `${total.toLocaleString()} 条聚合记录`
+    label.textContent = `第 ${currentPage} / ${Math.max(1, Math.ceil(total / limit))} 页`
+    prev.disabled = currentPage <= 1
+    next.disabled = currentPage * limit >= total
+    body.innerHTML = items.length ? `<div class="account-access-events-list">${items.map(item => `
+      <article><div><strong>${escapeHtml(methodLabels[item.accessMethod] || item.accessMethod || '访问')}</strong><p>${escapeHtml(deviceLabels[item.deviceType] || item.deviceType || '未知设备')} · ${escapeHtml(item.referrerOrigin || '直接进入')}</p><small>首次 ${escapeHtml(formatDateTime(item.firstAccessedAt))}</small></div><div><strong>${Number(item.accessCount || 0).toLocaleString()} 次</strong><small>最近 ${escapeHtml(formatDateTime(item.lastAccessedAt))}</small></div></article>
+    `).join('')}</div>` : '<div class="account-empty is-compact"><p>最近暂无可展示的访问记录。</p></div>'
+  }
+  const loadPage = async () => {
+    body.innerHTML = '<div class="account-loading"><span></span><p>正在读取访问记录…</p></div>'
+    try {
+      renderRows(await load({ page, limit: 20 }))
+    } catch (error) {
+      body.innerHTML = `<div class="account-empty is-compact"><p>${escapeHtml(error.message || '访问记录读取失败')}</p></div>`
+      count.textContent = '读取失败'
+    }
+  }
+  const cleanup = () => {
+    root.removeEventListener('click', onClick)
+    document.removeEventListener('keydown', onKeydown)
+    root.innerHTML = ''
+    root.hidden = true
+    closed = true
+  }
+  const onClick = event => {
+    const action = event.target.closest('[data-account-access-events-action]')
+    if (action) {
+      if (action.classList.contains('app-dialog-backdrop') && event.target.closest('.app-dialog')) return
+      cleanup()
+      return
+    }
+    const pager = event.target.closest('[data-account-access-events-page]')
+    if (!pager || pager.disabled) return
+    page += pager.dataset.accountAccessEventsPage === 'next' ? 1 : -1
+    loadPage()
+  }
+  const onKeydown = event => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      cleanup()
+    }
+  }
+  root.addEventListener('click', onClick)
+  document.addEventListener('keydown', onKeydown)
+  loadPage()
+  return () => { if (!closed) cleanup() }
 }
 
 export function showAccountShareDialog (options = {}) {
@@ -95,6 +257,14 @@ export function showAccountShareDialog (options = {}) {
     }))
   const viewConfig = share.viewConfig || {}
   const spatialAccess = normalizeSpatialAccess(share)
+  const analyticsPolicy = options.analyticsPolicy || {}
+  const analytics = share.analytics || {}
+  const selectedAnalyticsMode = analyticsModeValue(share)
+  const analyticsModeOptions = analyticsPolicy.enabled === true
+    ? `<option value="none" ${selectedAnalyticsMode === 'none' ? 'selected' : ''}>不启用</option><option value="provider" ${selectedAnalyticsMode === 'provider' ? 'selected' : ''}>托管服务</option>${analyticsPolicy.customScriptEnabled === true ? `<option value="custom" ${selectedAnalyticsMode === 'custom' ? 'selected' : ''}>自定义脚本</option>` : ''}`
+    : selectedAnalyticsMode === 'none'
+      ? '<option value="none" selected>不启用</option>'
+      : '<option value="keep" selected>后台未开放，保持现状</option>'
   const passwordTtlMode = share.passwordAccess?.ttlMode || share.passwordAccessTtlMode || 'finite'
   const mode = options.mode === 'create' ? 'create' : 'edit'
   const center = Array.isArray(viewConfig.center) ? viewConfig.center : []
@@ -121,6 +291,14 @@ export function showAccountShareDialog (options = {}) {
               <label class="account-dialog-field"><span>有效期</span><select name="expiresMode">${mode === 'edit' ? '<option value="keep">保持当前设置</option>' : ''}<option value="none">永不过期</option><option value="7d">从现在起 7 天</option><option value="30d">从现在起 30 天</option><option value="90d">从现在起 90 天</option></select></label>
               <label class="account-dialog-field"><span>分享密码</span><select name="passwordAction">${mode === 'create' ? '<option value="keep">不设置</option>' : '<option value="keep">保持不变</option>'}<option value="change">设置新密码</option>${mode === 'edit' ? '<option value="remove">移除密码</option>' : ''}</select></label>
             </div>
+          </section>
+          <section class="account-share-dialog-section">
+            <h3>访问统计</h3>
+            <div class="account-share-dialog-columns">
+              <label class="account-dialog-field"><span>分享统计</span><select name="analyticsMode">${analyticsModeOptions}</select></label>
+              <label class="account-dialog-field" data-account-analytics-provider-field><span>网站 ID</span><input name="analyticsWebsiteId" maxlength="160" value="${escapeHtml(analytics.websiteId || '')}" placeholder="填写统计服务分配的网站 ID"></label>
+            </div>
+            <label class="account-dialog-field" data-account-analytics-custom-field><span>统计脚本</span><textarea name="analyticsCustomScript" rows="3" maxlength="4096" spellcheck="false" placeholder="<script defer src=&quot;https://example.com/script.js&quot;></script>">${escapeHtml(scriptDescriptorToText(analytics.script))}</textarea></label>
           </section>
           <section class="account-share-dialog-section">
             <div class="account-share-dialog-section-heading"><div><h3>包含的 KML</h3><p>勾选文件，并在右侧调整顺序和默认显隐。</p></div></div>
@@ -175,6 +353,9 @@ export function showAccountShareDialog (options = {}) {
   const spatialSummaryRoot = root.querySelector('[data-account-spatial-summary]')
   const spatialPreviewButton = root.querySelector('[data-account-spatial-preview]')
   const passwordAccessField = root.querySelector('[data-account-password-access-field]')
+  const analyticsModeField = form.elements.analyticsMode
+  const analyticsProviderField = root.querySelector('[data-account-analytics-provider-field]')
+  const analyticsCustomField = root.querySelector('[data-account-analytics-custom-field]')
   let previewKey = spatialAccess.mode === 'kml_bounds' ? selectedItems.map(item => item.kmlId).join(',') : ''
   let latestPreview = spatialAccess.mode === 'kml_bounds' && spatialAccess.status === 'ready' ? spatialAccess : null
   let previewSequence = 0
@@ -195,6 +376,11 @@ export function showAccountShareDialog (options = {}) {
       (mode === 'edit' && share.passwordProtected === true && passwordAction !== 'remove')
     passwordAccessField.hidden = !hasPassword
     if (!hasPassword) form.elements.passwordAccessTtlMode.value = 'finite'
+  }
+  const updateAnalyticsVisibility = () => {
+    const mode = analyticsModeField?.value || 'none'
+    if (analyticsProviderField) analyticsProviderField.hidden = mode !== 'provider'
+    if (analyticsCustomField) analyticsCustomField.hidden = mode !== 'custom'
   }
   const requestSpatialPreview = async () => {
     if (form.elements.spatialAccessMode.value !== 'kml_bounds') {
@@ -237,6 +423,7 @@ export function showAccountShareDialog (options = {}) {
     previewTimer = setTimeout(() => { requestSpatialPreview() }, 120)
   }
   updatePasswordAccessVisibility()
+  updateAnalyticsVisibility()
   spatialPreviewButton.hidden = spatialAccess.mode !== 'kml_bounds'
 
   const showError = message => {
@@ -343,6 +530,7 @@ export function showAccountShareDialog (options = {}) {
       if (event.target.name === 'passwordAction') {
         updatePasswordAccessVisibility()
       }
+      if (event.target.name === 'analyticsMode') updateAnalyticsVisibility()
       if (event.target.name === 'passwordAccessTtlMode' && event.target.value === 'unlimited' && form.elements.spatialAccessMode.value !== 'kml_bounds') {
         form.elements.spatialAccessMode.value = 'kml_bounds'
         form.elements.mapMode.value = '2d'
@@ -383,6 +571,16 @@ export function showAccountShareDialog (options = {}) {
           return
         }
       }
+      if (form.elements.analyticsMode.value === 'provider' && !form.elements.analyticsWebsiteId.value.trim()) {
+        showError('请填写统计网站 ID')
+        form.elements.analyticsWebsiteId.focus()
+        return
+      }
+      if (form.elements.analyticsMode.value === 'custom' && !form.elements.analyticsCustomScript.value.trim()) {
+        showError('请填写统计脚本')
+        form.elements.analyticsCustomScript.focus()
+        return
+      }
       const viewInput = { mapMode: spatialAccessMode === 'kml_bounds' ? '2d' : form.elements.mapMode.value }
       if (latitude && longitude) viewInput.center = [Number(latitude), Number(longitude)]
       const numericFieldNames = ['zoom', 'bearing', 'pitch']
@@ -398,6 +596,13 @@ export function showAccountShareDialog (options = {}) {
           allowDownload: form.elements.allowDownload.value === 'true',
           expiresMode: form.elements.expiresMode.value,
           passwordAction: form.elements.passwordAction.value,
+          analytics: form.elements.analyticsMode.value === 'keep'
+            ? undefined
+            : form.elements.analyticsMode.value === 'provider'
+            ? { mode: 'provider', websiteId: form.elements.analyticsWebsiteId.value.trim() }
+            : form.elements.analyticsMode.value === 'custom'
+              ? { mode: 'custom', script: form.elements.analyticsCustomScript.value.trim() }
+              : { mode: 'none' },
           spatialAccess: { mode: spatialAccessMode },
           passwordAccess: { ttlMode: passwordAccessTtlMode },
           items: buildShareUpdateItems(selectedItems),

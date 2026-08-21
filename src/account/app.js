@@ -1,6 +1,6 @@
 import './account.css'
 import { accountApi, saveDownload } from './api.js'
-import { showAccountPasswordDialog, showAccountShareDialog } from './dialogs.js'
+import { showAccountPasswordDialog, showAccountShareAccessEventsDialog, showAccountShareDialog } from './dialogs.js'
 import {
   buildShareItems,
   getAccountCapabilities,
@@ -25,7 +25,7 @@ import {
   register,
   subscribeAuth,
 } from '../auth/session.js'
-import { showAlert, showConfirm, showEditDialog } from '../ui/dialog.js'
+import { showAlert, showChoiceDialog, showConfirm, showEditDialog } from '../ui/dialog.js'
 import {
   clearTwoBuluImportRequest,
   showTwoBuluImportDialog,
@@ -48,7 +48,7 @@ const KML_WRITE_ACTIONS = new Set([
 ])
 const SHARE_ACTIONS = new Set([
   'create-share', 'go-kml-share', 'copy-share', 'edit-share', 'toggle-share',
-  'sync-share', 'rotate-share', 'revoke-share',
+  'share-access-events', 'sync-share', 'rotate-share', 'revoke-share',
 ])
 const FAVORITE_ACTIONS = new Set(['edit-favorite', 'cancel-favorite-edit', 'delete-favorite'])
 const SESSION_ACTIONS = new Set(['revoke-session', 'logout-other-sessions'])
@@ -105,6 +105,10 @@ function clearPrivateState () {
 
 function capabilities () {
   return getAccountCapabilities(state.auth.user)
+}
+
+function shareAnalyticsPolicy () {
+  return state.auth.config?.analytics?.sharePolicy || {}
 }
 
 function requireCapability (key, message = '当前账号没有执行此操作的权限') {
@@ -613,6 +617,7 @@ async function createShareFromSelection () {
       viewConfig: { mapMode: '2d' },
     },
     documents: state.kml.items,
+    analyticsPolicy: shareAnalyticsPolicy(),
     onSpatialPreview: previewItems => accountApi.spatialPreview({
       items: previewItems,
       spatialAccess: { mode: 'kml_bounds' },
@@ -628,6 +633,7 @@ async function createShareFromSelection () {
       minLength: 4,
       autocomplete: 'new-password',
       confirmText: '创建分享',
+      generate: true,
     })
     if (!password) return
   }
@@ -639,6 +645,7 @@ async function createShareFromSelection () {
     expiresAt: expiresAtFromMode(values.expiresMode),
     spatialAccess: values.spatialAccess,
     passwordAccess: values.passwordAccess,
+    analytics: values.analytics,
     viewConfig: values.viewConfig,
     ...(password ? { password } : {}),
   }), { progress: '正在创建分享链接…' })
@@ -674,6 +681,7 @@ async function editShare (id) {
     // showAccountShareDialog({ share, documents }) keeps the edit dialog contract stable.
     share,
     documents,
+    analyticsPolicy: shareAnalyticsPolicy(),
     onSpatialPreview: previewItems => accountApi.spatialPreview({
       items: previewItems,
       spatialAccess: { mode: 'kml_bounds' },
@@ -690,6 +698,7 @@ async function editShare (id) {
     viewConfig: values.viewConfig,
     spatialAccess: values.spatialAccess,
     passwordAccess: values.passwordAccess,
+    analytics: values.analytics,
   }
   const expiresAt = expiresAtFromMode(values.expiresMode)
   if (expiresAt !== undefined) body.expiresAt = expiresAt
@@ -701,6 +710,7 @@ async function editShare (id) {
       label: '新分享密码',
       minLength: 4,
       autocomplete: 'new-password',
+      generate: true,
     })
     if (!password) return
     body.password = password
@@ -756,6 +766,44 @@ async function copyShareUrl (value) {
   } catch {
     await showAlert(url, { title: '分享链接' })
   }
+}
+
+async function copyShare (share) {
+  if (!share) return
+  let url = share.shareUrl || `/share/${share.publicId}`
+  if (share.passwordProtected) {
+    const choice = await showChoiceDialog({
+      title: '复制分享链接',
+      message: '带密码链接打开后会自动验证；修改分享密码后旧链接失效。',
+      choices: [
+        { text: '复制普通链接', value: 'plain', class: 'app-dialog-secondary' },
+        { text: '复制带密码链接', value: 'password', class: 'app-dialog-primary' },
+      ],
+    })
+    if (choice === 'cancel') return
+    if (choice === 'password') {
+      const password = await showAccountPasswordDialog({
+        title: '确认分享密码',
+        message: '输入当前分享密码后生成带密码链接。',
+        label: '当前分享密码',
+      })
+      if (!password) return
+      const result = await runAction(() => accountApi.createSharePasswordUrl(share.id, password), {
+        progress: '正在生成带密码链接…',
+      })
+      if (!result) return
+      url = result.shareUrl
+    }
+  }
+  await copyShareUrl(url)
+}
+
+function showShareAccessEvents (share) {
+  if (!share) return
+  showAccountShareAccessEventsDialog({
+    share,
+    onLoad: query => accountApi.listShareAccessEvents(share.id, query),
+  })
 }
 
 async function handleClick (event) {
@@ -850,7 +898,9 @@ async function handleClick (event) {
     writeActiveTab('kml')
     await loadActivePanel()
   } else if (action === 'copy-share') {
-    await copyShareUrl(target.dataset.url)
+    await copyShare(state.shares.items.find(item => item.id === id))
+  } else if (action === 'share-access-events') {
+    showShareAccessEvents(state.shares.items.find(item => item.id === id))
   } else if (action === 'edit-share') {
     await editShare(id)
   } else if (action === 'sync-share') {

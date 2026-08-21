@@ -11,6 +11,7 @@ import multer from 'multer'
 import utils from './utils/index.js'
 import baseConfig from '../config.js'
 import service from './service.js'
+import { sanitizeLogUrl } from './logSanitizer.js'
 import { TRANSPARENT_TILE_PNG } from './user/shareSpatialAccess.js'
 import whitelist from './whitelist.js'
 
@@ -26,6 +27,7 @@ const USER_CSRF_COOKIE_NAME = USER_COOKIE_NAMES.csrfCookieName
 const USER_EMBED_SESSION_COOKIE_NAME = `${USER_SESSION_COOKIE_NAME}_embed`
 const USER_EMBED_CSRF_COOKIE_NAME = `${USER_CSRF_COOKIE_NAME}_embed`
 const SHARE_COOKIE_PREFIX = USER_COOKIE_NAMES.shareCookiePrefix
+const SHARE_VISITOR_COOKIE_NAME = 'map_share_visitor'
 const UNLIMITED_SHARE_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000
 const ACCESS_VERIFY_LIMIT = {
   maxAttempts: 5,
@@ -97,6 +99,7 @@ function requestContext (req) {
     ip: req.ip || req.socket?.remoteAddress || '',
     userAgent: req.get('user-agent') || '',
     deviceLabel: req.get('x-device-label') || req.get('user-agent') || '',
+    referrer: req.get('referer') || '',
   }
 }
 
@@ -354,12 +357,29 @@ function shareCookieName (publicId) {
   return `${SHARE_COOKIE_PREFIX}${String(publicId || '').slice(0, 64)}`
 }
 
-async function publicShareContext (req) {
+function shareVisitorCookieOptions (req) {
+  return secureCookieOptions(req, {
+    httpOnly: true,
+    maxAge: 400 * 24 * 60 * 60 * 1000,
+  })
+}
+
+function ensureShareVisitorId (req, res) {
+  const current = getCookie(req, SHARE_VISITOR_COOKIE_NAME)
+  if (/^[A-Za-z0-9_-]{20,160}$/.test(current)) return current
+  const visitorId = service.createAnonymousShareVisitorId()
+  res.cookie(SHARE_VISITOR_COOKIE_NAME, visitorId, shareVisitorCookieOptions(req))
+  return visitorId
+}
+
+async function publicShareContext (req, res) {
   const accessEnabled = await service.isAccessEnabled()
   const siteAccessGranted = !accessEnabled || await service.verifyAccess(accessTokenFromRequest(req))
+  const visitorId = ensureShareVisitorId(req, res)
   return {
     ...requestContext(req),
     siteAccessGranted,
+    visitorId,
     accessToken: getCookie(req, shareCookieName(req.params.publicId)),
   }
 }
@@ -375,23 +395,7 @@ function sendKmlDownload (res, exported) {
 }
 
 function maskSensitiveQueryParams (value) {
-  const raw = String(value || '')
-  if (!raw) return raw
-
-  try {
-    const parsed = new URL(raw, 'http://localhost')
-    let changed = false
-    ;['token', 'access_token'].forEach((key) => {
-      if (parsed.searchParams.has(key)) {
-        parsed.searchParams.set(key, '****')
-        changed = true
-      }
-    })
-    if (!changed) return raw
-    return `${parsed.pathname}${parsed.search}${parsed.hash}`
-  } catch (err) {
-    return raw.replace(/([?&](?:token|access_token)=)[^&]*/gi, '$1****')
-  }
+  return sanitizeLogUrl(value)
 }
 
 function externalPublishLogLimit (publish) {
@@ -1000,6 +1004,34 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/kml/shares/:id/access-events',
+    method: 'get',
+    describe: '获取个人分享最近访问记录',
+    tags: ['shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.listUserKmlShareAccessEvents(
+        requireUser(req, 'share.own.manage'),
+        req.params.id,
+        req.query || {}
+      ))
+    },
+  },
+  {
+    path: '/kml/shares/:id/password-url',
+    method: 'post',
+    describe: '验证当前分享密码并生成带密码链接',
+    tags: ['shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(await service.createUserKmlSharePasswordUrl(
+        requireUser(req, 'share.own.manage'),
+        req.params.id,
+        req.body?.password
+      ))
+    },
+  },
+  {
     path: '/kml/shares/:id',
     method: 'put',
     describe: '更新个人分享包',
@@ -1090,7 +1122,7 @@ const userApiRoutes = [
     tags: ['shares'],
     handler: async (req, res) => {
       noStore(res)
-      res.jsonSuc(service.getPublicKmlShareManifest(req.params.publicId, await publicShareContext(req)))
+      res.jsonSuc(service.getPublicKmlShareManifest(req.params.publicId, await publicShareContext(req, res)))
     },
   },
   {
@@ -1102,7 +1134,7 @@ const userApiRoutes = [
       noStore(res)
       res.jsonSuc(await service.getPublicKmlShareMapCatalog(
         req.params.publicId,
-        await publicShareContext(req)
+        await publicShareContext(req, res)
       ))
     },
   },
@@ -1123,7 +1155,7 @@ const userApiRoutes = [
           x: req.params.x,
           y: req.params.y,
         },
-        await publicShareContext(req)
+        await publicShareContext(req, res)
       )
       if (classification.decision !== 'allow') {
         sendTransparentShareTile(res, classification.decision)
@@ -1144,7 +1176,7 @@ const userApiRoutes = [
       const result = await service.authorizePublicKmlShare(
         req.params.publicId,
         req.body || {},
-        await publicShareContext(req)
+        { ...(await publicShareContext(req, res)), accessMethod: req.body?.accessMethod === 'password_link' ? 'password_link' : 'password_form' }
       )
       if (result.accessToken) {
         const expiresAtMs = result.expiresAt ? Date.parse(result.expiresAt) : Number.NaN
@@ -1172,7 +1204,7 @@ const userApiRoutes = [
       res.jsonSuc(service.getPublicKmlShareFile(
         req.params.publicId,
         req.params.shareItemId,
-        await publicShareContext(req)
+        await publicShareContext(req, res)
       ))
     },
   },
@@ -1185,7 +1217,7 @@ const userApiRoutes = [
       sendKmlDownload(res, service.exportPublicKmlShareFile(
         req.params.publicId,
         req.params.shareItemId,
-        await publicShareContext(req)
+        await publicShareContext(req, res)
       ))
     },
   },
@@ -1423,6 +1455,21 @@ const userApiRoutes = [
       res.jsonSuc(service.unblockUserKmlShare(
         requireAdmin(req, 'admin.share.moderate'),
         req.params.id,
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/admin/kml/shares/:id/analytics',
+    method: 'put',
+    describe: '管理后台禁用或恢复单个分享的统计脚本',
+    tags: ['admin-shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.setUserKmlShareAnalyticsDisabled(
+        requireAdmin(req, 'admin.share.moderate'),
+        req.params.id,
+        req.body || {},
         requestContext(req)
       ))
     },

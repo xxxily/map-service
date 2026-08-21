@@ -305,12 +305,69 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.admin-field-span-two {
+  grid-column: span 2;
+}
+
+.admin-form textarea {
+  width: 100%;
+  min-height: 78px;
+  box-sizing: border-box;
+  border: 1px solid #bfced0;
+  border-radius: 7px;
+  padding: 9px;
+  resize: vertical;
+  background: #fff;
+  color: #102528;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.admin-form textarea:focus-visible {
+  outline: none;
+  border-color: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}
+
+.admin-share-runtime-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 0 0 12px;
+}
+
+.admin-share-runtime-summary span {
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #f0fdfa;
+  color: #35625f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.admin-share-analytics-details code,
+.admin-share-analytics-details small {
+  display: block;
+  max-width: 280px;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  color: #526c70;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .admin-permission-fieldset {
   min-width: 0;
   margin: 6px 0;
   border: 1px solid rgba(22, 61, 61, 0.12);
   border-radius: 8px;
   padding: 12px;
+}
+
+@media (max-width: 760px) {
+  .admin-field-span-two {
+    grid-column: auto;
+  }
 }
 
 .admin-permission-fieldset legend {

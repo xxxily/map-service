@@ -22,7 +22,7 @@ import { UserContentService } from './user/userContent.js'
 import { TwoBuluImportService } from './user/twoBuluImport.js'
 import TwoBuluImportCoordinator from './user/twoBuluImportCoordinator.js'
 import KmlShareLinkResolverService from './user/shareLinkResolver.js'
-import { createHttpError } from './user/security.js'
+import { createHttpError, randomToken } from './user/security.js'
 import { buildShareMapCatalog, isShareMapSourceAllowed } from './user/shareMapCatalog.js'
 import { classifyTileAgainstScope } from './user/shareSpatialAccess.js'
 import {
@@ -438,6 +438,18 @@ const service = {
     return userContent.updateShare(actor, id, input, context)
   },
 
+  listUserKmlShareAccessEvents (actor, id, input) {
+    return userContent.listShareAccessEvents(actor, id, input)
+  },
+
+  createUserKmlSharePasswordUrl (actor, id, password) {
+    return userContent.createPasswordShareUrl(actor, id, password)
+  },
+
+  createAnonymousShareVisitorId () {
+    return randomToken(24)
+  },
+
   syncUserKmlShareContent (actor, id, input, context) {
     return userContent.syncShareContent(actor, id, input, context)
   },
@@ -490,6 +502,7 @@ const service = {
       throw createHttpError('分享底图不存在', 404, 'RESOURCE_NOT_FOUND')
     }
     if (spatialAccess.mode !== 'kml_bounds') {
+      userContent.consumeShareRateLimit('tile', share.id, options)
       userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: 'allow' })
       return { decision: 'allow', tile }
     }
@@ -501,6 +514,9 @@ const service = {
     if (classification.decision === 'invalid' || classification.decision === 'unavailable') {
       userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: classification.decision })
       throw createHttpError('瓦片坐标无效', 400, 'INVALID_TILE_COORDINATES')
+    }
+    if (classification.decision === 'allow') {
+      userContent.consumeShareRateLimit('tile', share.id, options)
     }
     userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: classification.decision })
     return classification
@@ -528,6 +544,10 @@ const service = {
 
   unblockUserKmlShare (actor, id, context) {
     return userContent.unblockShare(actor, id, context)
+  },
+
+  setUserKmlShareAnalyticsDisabled (actor, id, input, context) {
+    return userContent.setShareAnalyticsDisabled(actor, id, input, context)
   },
 
   async fetchRelay (url, options = {}) {

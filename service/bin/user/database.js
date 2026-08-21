@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 6
+export const USER_DATABASE_VERSION = 7
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -486,6 +486,53 @@ export class UserDatabase {
 
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(6, now)
+      })
+    }
+
+    if (current < 7) {
+      this.transaction(() => {
+        const tableExists = (tableName) => Boolean(this.database.prepare(`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+        `).get(tableName))
+        const columnsOf = (tableName) => tableExists(tableName)
+          ? this.database.prepare(`PRAGMA table_info(${tableName})`).all().map(column => column.name)
+          : []
+        const addColumn = (tableName, columnName, definition) => {
+          if (!columnsOf(tableName).includes(columnName)) {
+            this.database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+          }
+        }
+
+        if (tableExists('kml_shares')) {
+          addColumn('kml_shares', 'analytics_config_json', "TEXT NOT NULL DEFAULT '{}'")
+          addColumn('kml_shares', 'analytics_disabled', 'INTEGER NOT NULL DEFAULT 0')
+          addColumn('kml_shares', 'analytics_disabled_reason', "TEXT NOT NULL DEFAULT ''")
+        }
+        if (tableExists('share_access_sessions')) {
+          addColumn('share_access_sessions', 'access_method', "TEXT NOT NULL DEFAULT 'password_form'")
+        }
+        this.database.exec(`
+          CREATE TABLE IF NOT EXISTS share_access_events (
+            id TEXT PRIMARY KEY,
+            share_id TEXT NOT NULL,
+            visitor_hash TEXT NOT NULL,
+            ip_hash TEXT NOT NULL DEFAULT '',
+            first_accessed_at TEXT NOT NULL,
+            last_accessed_at TEXT NOT NULL,
+            access_count INTEGER NOT NULL DEFAULT 1,
+            access_method TEXT NOT NULL,
+            device_type TEXT NOT NULL DEFAULT 'unknown',
+            referrer_origin TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (share_id) REFERENCES kml_shares(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS idx_share_access_events_owner
+            ON share_access_events(share_id, last_accessed_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_share_access_events_aggregate
+            ON share_access_events(share_id, visitor_hash, access_method, last_accessed_at DESC);
+        `)
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(7, new Date().toISOString())
       })
     }
 

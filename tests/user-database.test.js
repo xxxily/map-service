@@ -14,6 +14,7 @@ test('UserDatabase initializes the relational schema once', () => {
       WHERE type = 'table' AND name IN (
         'users', 'sessions', 'kml_documents', 'kml_sync_create_keys',
         'kml_sync_delete_tombstones', 'favorite_places', 'kml_shares'
+        , 'share_access_events'
       )
       ORDER BY name
     `).all().map(row => row.name)
@@ -24,6 +25,7 @@ test('UserDatabase initializes the relational schema once', () => {
       'kml_sync_create_keys',
       'kml_sync_delete_tombstones',
       'sessions',
+      'share_access_events',
       'users',
     ])
   } finally {
@@ -365,6 +367,53 @@ test('UserDatabase v6 backfills published KML snapshots for existing shares', ()
     assert.equal(snapshot.description, '迁移说明')
     assert.equal(snapshot.features[0].id, 'point-one')
     assert.equal(snapshot.revision, 7)
+  } finally {
+    database.close()
+  }
+})
+
+test('UserDatabase v7 adds analytics and access-event fields to a v6 database idempotently', () => {
+  const rawDatabase = new DatabaseSync(':memory:')
+  rawDatabase.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations(version, applied_at) VALUES (6, '2026-08-20T00:00:00.000Z');
+    CREATE TABLE users (id TEXT PRIMARY KEY);
+    INSERT INTO users(id) VALUES ('usr_one');
+    CREATE TABLE kml_shares (
+      id TEXT PRIMARY KEY, public_id TEXT NOT NULL UNIQUE, owner_id TEXT NOT NULL,
+      title TEXT NOT NULL, password_hash TEXT, updated_at TEXT NOT NULL, created_at TEXT NOT NULL,
+      FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    INSERT INTO kml_shares(id, public_id, owner_id, title, updated_at, created_at)
+    VALUES ('shr_one', 'public-one', 'usr_one', '旧分享',
+      '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+    CREATE TABLE share_access_sessions (
+      id TEXT PRIMARY KEY, share_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT,
+      FOREIGN KEY (share_id) REFERENCES kml_shares(id) ON DELETE CASCADE
+    );
+    INSERT INTO share_access_sessions(id, share_id, token_hash, created_at, expires_at)
+    VALUES ('sas_one', 'shr_one', 'hash-one', '2026-08-20T00:00:00.000Z', '2026-08-21T00:00:00.000Z');
+  `)
+
+  const database = new UserDatabase({ filePath: ':memory:', database: rawDatabase })
+  try {
+    const shareColumns = database.prepare('PRAGMA table_info(kml_shares)').all().map(column => column.name)
+    assert.equal(shareColumns.includes('analytics_config_json'), true)
+    assert.equal(shareColumns.includes('analytics_disabled'), true)
+    assert.equal(shareColumns.includes('analytics_disabled_reason'), true)
+    const session = database.prepare('SELECT access_method FROM share_access_sessions WHERE id = ?').get('sas_one')
+    assert.equal(session.access_method, 'password_form')
+    const indexes = database.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'index' AND name LIKE 'idx_share_access_events_%'
+      ORDER BY name
+    `).all().map(row => row.name)
+    assert.deepEqual(indexes, ['idx_share_access_events_aggregate', 'idx_share_access_events_owner'])
+    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 7)
+    assert.doesNotThrow(() => database.migrate())
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'share_access_events'").get().count, 1)
   } finally {
     database.close()
   }

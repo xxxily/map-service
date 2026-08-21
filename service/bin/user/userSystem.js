@@ -19,6 +19,12 @@ import {
   isKnownPermission,
   PERMISSIONS,
 } from './permissions.js'
+import {
+  DEFAULT_ANALYTICS_SETTINGS,
+  mergeAnalyticsSettings,
+  normalizeAnalyticsSettings,
+  publicAnalyticsConfig,
+} from './analytics.js'
 
 const DEFAULT_SETTINGS = Object.freeze({
   registration: {
@@ -49,7 +55,15 @@ const DEFAULT_SETTINGS = Object.freeze({
     unlimitedAccessMaxAreaKm2: 2000,
     unlimitedAccessMaxDiagonalKm: 100,
     spatialPolicyRevision: 1,
+    rateLimit: {
+      enabled: true,
+      windowMs: 60 * 1000,
+      tileMaxRequests: 3000,
+      manifestMaxRequests: 300,
+      maxEntries: 10000,
+    },
   },
+  analytics: DEFAULT_ANALYTICS_SETTINGS,
 })
 
 const SPATIAL_SHARE_SETTING_KEYS = Object.freeze([
@@ -442,7 +456,12 @@ export class UserSystemService {
       share: {
         ...DEFAULT_SETTINGS.share,
         ...(saved.share || {}),
+        rateLimit: {
+          ...DEFAULT_SETTINGS.share.rateLimit,
+          ...(saved.share?.rateLimit || {}),
+        },
       },
+      analytics: mergeAnalyticsSettings(saved.analytics),
     }
   }
 
@@ -454,6 +473,7 @@ export class UserSystemService {
         enabled: settings.registration.mode === 'open',
       },
       passwordPolicy: PASSWORD_POLICY,
+      analytics: publicAnalyticsConfig(settings.analytics),
     }
   }
 
@@ -545,6 +565,20 @@ export class UserSystemService {
       next.share.maxFilesPerShare = clampInteger(input.share.maxFilesPerShare, current.share.maxFilesPerShare, 1, 20)
       next.share.accessTtlMs = clampInteger(input.share.accessTtlMs, current.share.accessTtlMs, 1000 * 60 * 5, 1000 * 60 * 60 * 24 * 7)
 
+      if (input.share.rateLimit !== undefined) {
+        if (!input.share.rateLimit || typeof input.share.rateLimit !== 'object' || Array.isArray(input.share.rateLimit)) {
+          throw createHttpError('分享访问限流设置格式不正确', 400, 'VALIDATION_FAILED')
+        }
+        next.share.rateLimit = {
+          ...current.share.rateLimit,
+          enabled: normalizeBooleanSetting(input.share.rateLimit.enabled, current.share.rateLimit.enabled, '分享访问限流开关'),
+          windowMs: clampInteger(input.share.rateLimit.windowMs, current.share.rateLimit.windowMs, 10 * 1000, 10 * 60 * 1000),
+          tileMaxRequests: clampInteger(input.share.rateLimit.tileMaxRequests, current.share.rateLimit.tileMaxRequests, 100, 60000),
+          manifestMaxRequests: clampInteger(input.share.rateLimit.manifestMaxRequests, current.share.rateLimit.manifestMaxRequests, 20, 10000),
+          maxEntries: clampInteger(input.share.rateLimit.maxEntries, current.share.rateLimit.maxEntries, 100, 100000),
+        }
+      }
+
       const spatialSettingRequested = SPATIAL_SHARE_SETTING_KEYS.some(key => Object.hasOwn(input.share, key))
       if (spatialSettingRequested) this.assertSuperAdmin(actor)
       next.share.spatialAccessEnabled = normalizeBooleanSetting(
@@ -604,7 +638,13 @@ export class UserSystemService {
         : Number(current.share.spatialPolicyRevision || 1)
     }
 
-    if (['registration', 'session', 'quota', 'share'].some(section => Object.hasOwn(input, section))) {
+    if (input.analytics !== undefined) {
+      this.assertPermission(actor, 'admin.security.manage')
+      const allowCustomScriptChange = this.isSuperAdmin(actor)
+      next.analytics = normalizeAnalyticsSettings(input.analytics, current.analytics, { allowCustomScriptChange })
+    }
+
+    if (['registration', 'session', 'quota', 'share', 'analytics'].some(section => Object.hasOwn(input, section))) {
       this.assertRecentReauth(actor)
     }
 

@@ -1,6 +1,17 @@
 import { apiRequest } from '../auth/api.js'
+import { loadAnalyticsScript } from '../analytics.js'
 
 let activeShare = null
+
+function takeSharePasswordFromLocation (publicId) {
+  if (typeof window === 'undefined') return ''
+  const url = new URL(window.location.href)
+  const password = url.searchParams.get('password') || ''
+  if (!password) return ''
+  url.searchParams.delete('password')
+  window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`)
+  return password
+}
 
 function markSharePageNoIndex () {
   let meta = document.querySelector('meta[name="robots"]')
@@ -10,6 +21,13 @@ function markSharePageNoIndex () {
     document.head.appendChild(meta)
   }
   meta.content = 'noindex, nofollow'
+  let referrer = document.querySelector('meta[name="referrer"]')
+  if (!referrer) {
+    referrer = document.createElement('meta')
+    referrer.name = 'referrer'
+    document.head.appendChild(referrer)
+  }
+  referrer.content = 'no-referrer'
 }
 
 function escapeHtml (value) {
@@ -149,6 +167,7 @@ function shareUnavailableMessage (error) {
 export async function prepareShareView (init) {
   const publicId = getSharePublicId()
   if (!publicId) return false
+  const passwordFromLink = takeSharePasswordFromLocation(publicId)
   markSharePageNoIndex()
   document.body.classList.add('share-view')
 
@@ -172,6 +191,7 @@ export async function prepareShareView (init) {
         return
       }
       activeShare = { publicId, manifest }
+      loadAnalyticsScript(manifest.analytics)
       await init()
     } catch (error) {
       if (error.code === 'SITE_ACCESS_REQUIRED') {
@@ -188,6 +208,20 @@ export async function prepareShareView (init) {
         return
       }
       if (error.code === 'SHARE_PASSWORD_REQUIRED') {
+        if (passwordFromLink) {
+          try {
+            await apiRequest(`/public/kml-shares/${encodeURIComponent(publicId)}/access`, {
+              method: 'POST',
+              body: { password: passwordFromLink, accessMethod: 'password_link' },
+              csrf: false,
+            })
+            await load()
+            return
+          } catch {
+            // Fall through to the normal password form without exposing the
+            // failed value in the URL or the UI.
+          }
+        }
         showPasswordScreen({
           title: '分享密码验证',
           message: '该分享设置了独立访问密码。',

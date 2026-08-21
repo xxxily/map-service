@@ -140,6 +140,7 @@ const index = {
       app.get('/share/:publicId', (req, res) => {
         res.set('Cache-Control', 'no-cache')
         res.set('X-Robots-Tag', 'noindex, nofollow')
+        res.set('Referrer-Policy', 'no-referrer')
         res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
       })
     }

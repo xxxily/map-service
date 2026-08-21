@@ -100,7 +100,7 @@ npm run exec
 - 生产数据库位于持久化磁盘，目录权限只允许服务账号和备份账号读取。
 - HTTPS 终止、反向代理和应用的 Secure Cookie 判断配置一致。
 - 反向代理只在受信边界内设置客户端 IP，并按实际拓扑配置 `MAP_SERVICE_TRUST_PROXY`；应用限流和 Secure Cookie 使用 Express 解析后的 `req.ip` / `req.secure`，不直接信任任意客户端转发头。
-- 不在日志、监控标签、错误页或备份文件名中写入密码、Token、Cookie、CSRF 或分享密码。
+- 不在日志、监控标签、错误页或备份文件名中写入密码、Token、Cookie、CSRF 或分享密码。应用访问日志会脱敏 `password`、`token` 等敏感查询参数；Caddy、Nginx、CDN 和上游负载均衡的访问日志也必须关闭完整查询串记录，或对这些参数执行同等脱敏。
 - 注册默认关闭；需要开放时由拥有 `admin.registration.manage` 的账号显式开启。
 - 普通管理员只分配日常运维权限；用户、角色、注册和根安全策略保留给超级管理员。
 - 站点访问密码、用户会话和分享密码分别测试，确认不存在互相绕过。

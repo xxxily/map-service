@@ -10,6 +10,19 @@ function numberValue (value, divisor = 1) {
   return Number.isFinite(result) ? result : 0
 }
 
+function analyticsScriptValue (script) {
+  if (!script?.src) return ''
+  const attributes = [
+    script.defer !== false ? 'defer' : '',
+    script.async === true ? 'async' : '',
+    `src="${String(script.src)}"`,
+    ...Object.entries(script.attributes || {}).map(([name, value]) => (
+      `${name}="${String(value)}"`
+    )),
+  ].filter(Boolean)
+  return `<script ${attributes.join(' ')}></script>`
+}
+
 function registrationRoles (state) {
   return (state.roles || []).filter(role => {
     const permissions = role.permissions || []
@@ -30,6 +43,10 @@ export function renderUserSystemSettingsPage (state) {
   const session = settings.session || {}
   const quota = settings.quota || {}
   const share = settings.share || {}
+  const rateLimit = share.rateLimit || {}
+  const analytics = settings.analytics || {}
+  const globalAnalytics = analytics.global || {}
+  const shareAnalytics = analytics.share || {}
   const canManageRegistration = hasPermission(state, 'admin.registration.manage')
   const canManageSecurity = hasPermission(state, 'admin.security.manage')
   const canManageSpatialPolicy = isSuperAdmin(state)
@@ -119,6 +136,31 @@ export function renderUserSystemSettingsPage (state) {
                 <label><span>单个分享最多 KML 数</span><input name="maxFilesPerShare" type="number" min="1" max="20" value="${Number(share.maxFilesPerShare || 20)}" required></label>
                 <label><span>分享密码授权有效期（小时）</span><input name="shareAccessHours" type="number" min="1" max="168" value="${numberValue(share.accessTtlMs, HOUR_MS)}" required></label>
               </div>
+            </fieldset>
+            <fieldset class="admin-permission-fieldset">
+              <legend>分享访问限流</legend>
+              <div class="admin-field-grid admin-field-grid-three">
+                <label><span>启用限流</span><select name="shareRateLimitEnabled"><option value="true" ${rateLimit.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${rateLimit.enabled === false ? 'selected' : ''}>关闭</option></select></label>
+                <label><span>统计窗口（秒）</span><input name="shareRateLimitWindowSeconds" type="number" min="10" max="600" step="1" value="${Math.round(Number(rateLimit.windowMs || 60000) / 1000)}" required></label>
+                <label><span>每窗口瓦片请求</span><input name="shareTileMaxRequests" type="number" min="100" max="60000" value="${Number(rateLimit.tileMaxRequests || 3000)}" required></label>
+                <label><span>每窗口清单请求</span><input name="shareManifestMaxRequests" type="number" min="20" max="10000" value="${Number(rateLimit.manifestMaxRequests || 300)}" required></label>
+                <label><span>内存访客条目上限</span><input name="shareRateLimitMaxEntries" type="number" min="100" max="100000" value="${Number(rateLimit.maxEntries || 10000)}" required></label>
+              </div>
+              <p class="admin-field-help">仅统计通过图源和空间校验的请求，范围外透明瓦片不消耗配额。</p>
+            </fieldset>
+            <fieldset class="admin-permission-fieldset">
+              <legend>访问统计</legend>
+              <div class="admin-field-grid admin-field-grid-three">
+                <label><span>全站统计</span><select name="globalAnalyticsEnabled"><option value="true" ${globalAnalytics.enabled === true ? 'selected' : ''}>启用</option><option value="false" ${globalAnalytics.enabled === true ? '' : 'selected'}>关闭</option></select></label>
+                <label class="admin-field-span-two"><span>全站统计脚本</span><textarea name="globalAnalyticsScript" rows="3" maxlength="4096" spellcheck="false" placeholder="<script defer src=&quot;https://example.com/script.js&quot;></script>">${escapeHtml(analyticsScriptValue(globalAnalytics.script))}</textarea></label>
+              </div>
+              <div class="admin-field-grid admin-field-grid-three">
+                <label><span>分享统计能力</span><select name="shareAnalyticsEnabled"><option value="true" ${shareAnalytics.enabled === true ? 'selected' : ''}>开放</option><option value="false" ${shareAnalytics.enabled === true ? '' : 'selected'}>关闭</option></select></label>
+                <label><span>托管脚本地址</span><input name="shareAnalyticsProviderScriptUrl" type="url" value="${escapeHtml(shareAnalytics.providerScriptUrl || '')}" required></label>
+                <label><span>网站 ID 属性</span><input name="shareAnalyticsProviderWebsiteIdAttribute" value="${escapeHtml(shareAnalytics.providerWebsiteIdAttribute || 'data-website-id')}" required></label>
+                ${canManageSpatialPolicy ? `<label><span>允许自定义分享脚本</span><select name="shareAnalyticsCustomScriptEnabled"><option value="true" ${shareAnalytics.customScriptEnabled === true ? 'selected' : ''}>允许</option><option value="false" ${shareAnalytics.customScriptEnabled === true ? '' : 'selected'}>禁止</option></select></label>` : ''}
+              </div>
+              <p class="admin-field-help">全站脚本必须是 HTTPS 外部脚本；分享默认只允许托管服务和网站 ID。</p>
             </fieldset>
             ${canManageSpatialPolicy ? `
               <fieldset class="admin-permission-fieldset">
@@ -226,6 +268,25 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
         publicAccessPolicy: String(data.get('publicAccessPolicy') || 'inherit_site_access'),
         maxFilesPerShare: integerField(data, 'maxFilesPerShare'),
         accessTtlMs: integerField(data, 'shareAccessHours') * HOUR_MS,
+        rateLimit: {
+          enabled: data.get('shareRateLimitEnabled') === 'true',
+          windowMs: integerField(data, 'shareRateLimitWindowSeconds') * 1000,
+          tileMaxRequests: integerField(data, 'shareTileMaxRequests'),
+          manifestMaxRequests: integerField(data, 'shareManifestMaxRequests'),
+          maxEntries: integerField(data, 'shareRateLimitMaxEntries'),
+        },
+      },
+      analytics: {
+        global: {
+          enabled: data.get('globalAnalyticsEnabled') === 'true',
+          script: String(data.get('globalAnalyticsScript') || '').trim() || null,
+        },
+        share: {
+          enabled: data.get('shareAnalyticsEnabled') === 'true',
+          providerScriptUrl: String(data.get('shareAnalyticsProviderScriptUrl') || '').trim(),
+          providerWebsiteIdAttribute: String(data.get('shareAnalyticsProviderWebsiteIdAttribute') || '').trim(),
+          ...(isSuperAdmin(state) ? { customScriptEnabled: data.get('shareAnalyticsCustomScriptEnabled') === 'true' } : {}),
+        },
       },
     }
     if (isSuperAdmin(state)) {
