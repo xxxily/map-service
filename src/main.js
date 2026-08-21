@@ -6,7 +6,7 @@ import './styles.css'
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
 import markerIcon from 'leaflet/dist/images/marker-icon.png'
 import markerShadow from 'leaflet/dist/images/marker-shadow.png'
-import { amapConfig } from './config.js'
+import { amapConfig, defaultMapView } from './config.js'
 import { initLayerControl, setLayerControlVisible } from './map/layers.js'
 import { initAmapGeolocation } from './map/geolocation.js'
 import {
@@ -24,7 +24,7 @@ import {
 } from './map/continuous-location.js'
 import { showChoiceDialog, showEditDialog, showAlert } from './ui/dialog.js'
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
-import { parseDefaultView, writeMapViewToUrl } from './map/url-state.js'
+import { isMapViewInsideBounds, parseDefaultView, parseMapUrlState, writeMapViewToUrl } from './map/url-state.js'
 import { initAdminApp } from './admin/dashboard.js'
 import { isAdminLocation } from './admin/routes.js'
 import { initAccountApp, isAccountLocation } from './account/app.js'
@@ -170,7 +170,13 @@ async function initLeafletMap () {
   }
   const restrictedShare = shareMode && shareSpatial.restricted
   const shareViewConfig = activeShare?.manifest?.viewConfig || {}
-  const defaultView = parseDefaultView()
+  const urlState = parseMapUrlState(window.location.search)
+  const defaultView = parseDefaultView({
+    includeUrl: false,
+    useStoredState: !shareMode,
+    defaultCenter: defaultMapView.center,
+    defaultZoom: defaultMapView.zoom,
+  })
   const shareCenter = Array.isArray(shareViewConfig.center) && shareViewConfig.center.length === 2 &&
     shareViewConfig.center.every(value => Number.isFinite(Number(value)))
     ? shareViewConfig.center.map(Number)
@@ -184,16 +190,22 @@ async function initLeafletMap () {
   const restrictedCenter = restrictedBounds
     ? [(restrictedBounds[0][0] + restrictedBounds[1][0]) / 2, (restrictedBounds[0][1] + restrictedBounds[1][1]) / 2]
     : null
+  const useUrlView = urlState.hasUrlCoords && (!restrictedShare || isMapViewInsideBounds(urlState.coords, restrictedBounds, shareSpatial.minZoom))
+  const initialLayerName = urlState.hasUrlLayer
+    ? urlState.layerName
+    : (shareViewConfig.layerId || defaultView.layerName)
 
   const map = L.map('map', {
     ...getKmlLeafletPerformanceOptions(),
-    center: restrictedCenter || shareCenter || defaultView.center,
-    zoom: Number.isFinite(shareZoom) ? shareZoom : defaultView.zoom,
+    center: restrictedShare
+      ? (useUrlView ? urlState.coords.center : restrictedCenter)
+      : (useUrlView ? urlState.coords.center : shareCenter || defaultView.center),
+    zoom: useUrlView ? urlState.coords.zoom : (Number.isFinite(shareZoom) ? shareZoom : defaultView.zoom),
     minZoom: restrictedShare ? shareSpatial.minZoom : undefined,
     maxBounds: restrictedBounds || undefined,
     maxBoundsViscosity: restrictedShare ? 1 : 0,
     worldCopyJump: false,
-    bearing: Number.isFinite(shareBearing) ? shareBearing : (defaultView.bearing || 0),
+    bearing: useUrlView ? urlState.coords.bearing : (Number.isFinite(shareBearing) ? shareBearing : (defaultView.bearing || 0)),
     rotate: true,
     touchRotate: true,
     shiftKeyRotate: true,
@@ -202,7 +214,7 @@ async function initLeafletMap () {
     keyboardPanDelta: 480,
   }).setMaxBounds(restrictedBounds || [[-90, 0], [90, 360]])
 
-  if (restrictedShare) {
+  if (restrictedShare && !useUrlView) {
     map.fitBounds(restrictedBounds, { animate: false, padding: [24, 24] })
   }
 
@@ -221,7 +233,7 @@ async function initLeafletMap () {
 
   const layerControl = await initLayerControl(
     map,
-    shareViewConfig.layerId || defaultView.layerName,
+    initialLayerName,
     {
       persist: !shareMode,
       strictCatalog: shareMode,
@@ -250,7 +262,7 @@ async function initLeafletMap () {
     }
   )
 
-  await initKmlSupport(map)
+  await initKmlSupport(map, { fitShareView: !useUrlView })
   if (!shareMode) {
     initGuidelines(map)
     initLocationHistoryPanel2d()
@@ -334,9 +346,14 @@ async function initLeafletMap () {
     open3d: () => {
       if (restrictedShare) return
       const publicId = getActiveShare()?.publicId
-      window.location.href = shareMode && publicId
-        ? `/3d?share=${encodeURIComponent(publicId)}`
-        : '/3d' + window.location.search
+      if (shareMode && publicId) {
+        const url = new URL(window.location.href)
+        url.pathname = '/3d'
+        url.searchParams.set('share', publicId)
+        window.location.href = `${url.pathname}${url.search}${url.hash}`
+      } else {
+        window.location.href = '/3d' + window.location.search
+      }
     },
   }
 

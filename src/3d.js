@@ -50,6 +50,7 @@ import {
 } from './map/continuous-location.js'
 import { showChoiceDialog, showEditDialog, showAlert } from './ui/dialog.js'
 import { initAmapSearch3d, toggleSearchMode3d } from './map3d/search.js'
+import { parseDefaultView, parseMapUrlState } from './map/url-state.js'
 import {
   MAX_LOCATION_HISTORY_POINTS,
   MAX_LOCATION_INTERVAL_SECONDS,
@@ -818,10 +819,22 @@ async function init3dEarth () {
   const shareSpatial = shareMode ? getShareSpatialConfig(activeShare?.manifest) : { restricted: false, valid: true }
   if (shareMode && shareSpatial.restricted) {
     const publicId = activeShare?.publicId
-    if (publicId) window.location.replace(`/share/${encodeURIComponent(publicId)}`)
+    if (publicId) {
+      const url = new URL(window.location.href)
+      url.pathname = `/share/${encodeURIComponent(publicId)}`
+      url.searchParams.delete('share')
+      window.location.replace(`${url.pathname}${url.search}${url.hash}`)
+    }
     return
   }
   const shareViewConfig = activeShare?.manifest?.viewConfig || {}
+  const urlState = parseMapUrlState(window.location.search)
+  const defaultView = parseDefaultView({
+    includeUrl: false,
+    useStoredState: !shareMode,
+    defaultCenter: [35.8, 104.2],
+    defaultZoom: 3,
+  })
   if (viewer) {
     const previousViewer = viewer
     if (intervalLocationState3d.active) stopIntervalLocation3d(previousViewer)
@@ -948,8 +961,6 @@ async function init3dEarth () {
     defaultLayerId = 'amap-hybrid'
   }
 
-  const urlParams = new URLSearchParams(window.location.search)
-  const queryLayer = urlParams.get('layer') || ''
   let cachedLayerId = ''
   let cachedLayerName = ''
   if (!shareMode) {
@@ -957,7 +968,9 @@ async function init3dEarth () {
     cachedLayerName = localStorage.getItem('last_map_layer') || ''
   }
   
-  const requestedLayer = shareViewConfig.layerId || queryLayer
+  const requestedLayer = urlState.hasUrlLayer
+    ? urlState.layerName
+    : (shareViewConfig.layerId || defaultView.layerName)
   let initialLayer = requestedLayer || cachedLayerId || cachedLayerName || defaultLayerId
   let needFallbackAlert = false
 
@@ -988,7 +1001,7 @@ async function init3dEarth () {
   }
 
   // 3. 从 URL 或者缓存初始化相机视角（对齐 2D）
-  initCameraView(shareViewConfig)
+  initCameraView(shareViewConfig, urlState, defaultView)
   initFavoriteActions({
     readOnly: shareMode,
   })
@@ -1048,7 +1061,7 @@ async function init3dEarth () {
     amapGeolocation = initAmapGeolocation(AMap)
   }
   initAmapSearch3d(viewer, AMap)
-  await initKmlSupport3d(viewer)
+  await initKmlSupport3d(viewer, { fitShareView: !urlState.hasExplicitViewState })
   if (!shareMode) {
     initGuidelines3d(viewer)
     initLocationHistoryPanel3d()
@@ -1103,12 +1116,12 @@ function resetCameraView () {
 }
 
 // 从 URL 或者 localStorage 恢复上一次停留的位置，高度对齐 2D 地图
-function initCameraView (viewConfig = {}) {
+function initCameraView (
+  viewConfig = {},
+  urlState = parseMapUrlState(typeof window === 'undefined' ? '' : window.location.search),
+  defaultView = parseDefaultView({ includeUrl: false, defaultCenter: [35.8, 104.2], defaultZoom: 3 })
+) {
   if (!viewer) return
-
-  const shareMode = isShareLocation(window.location)
-  const urlParams = new URLSearchParams(window.location.search)
-  const coordsParam = urlParams.get('coords')
 
   const configuredCenter = Array.isArray(viewConfig.center) && viewConfig.center.length === 2
     ? viewConfig.center.map(Number)
@@ -1119,30 +1132,18 @@ function initCameraView (viewConfig = {}) {
   let bearing = Number.isFinite(Number(viewConfig.bearing)) ? Number(viewConfig.bearing) : NaN
   const pitch = Number.isFinite(Number(viewConfig.pitch)) ? Number(viewConfig.pitch) : 0
 
-  if (!shareMode && coordsParam) {
-    const rawCoords = coordsParam.split(',')
-    lat = Number(rawCoords[0])
-    lng = Number(rawCoords[1])
-    zoom = Number.parseInt(rawCoords[2] || '', 10)
-    bearing = Number(rawCoords[3] || 0)
+  if (urlState.hasUrlCoords) {
+    lat = urlState.coords.center[0]
+    lng = urlState.coords.center[1]
+    zoom = urlState.coords.zoom
+    bearing = urlState.coords.bearing
   }
 
-  if (!shareMode && (Number.isNaN(lat) || Number.isNaN(lng))) {
-    // 尝试从 localStorage 中恢复
-    try {
-      const rawLocal = localStorage.getItem('last_map_view')
-      if (rawLocal) {
-        const localView = JSON.parse(rawLocal)
-        if (localView && localView.center) {
-          lat = localView.center[0]
-          lng = localView.center[1]
-          zoom = localView.zoom
-          bearing = localView.bearing
-        }
-      }
-    } catch (e) {
-      console.error('Failed to parse last_map_view from localStorage', e)
-    }
+  if (!urlState.hasUrlCoords && (Number.isNaN(lat) || Number.isNaN(lng))) {
+    lat = defaultView.center[0]
+    lng = defaultView.center[1]
+    zoom = defaultView.zoom
+    bearing = defaultView.bearing
   }
 
   // 如果没有缓存，则使用兜底默认值（中国上空）
@@ -1672,9 +1673,14 @@ function bindUiEvents () {
   if (backBtn) {
     backBtn.addEventListener('click', () => {
       const publicId = getActiveShare()?.publicId
-      window.location.href = shareMode && publicId
-        ? `/share/${encodeURIComponent(publicId)}`
-        : '/' + window.location.search
+      if (shareMode && publicId) {
+        const url = new URL(window.location.href)
+        url.pathname = `/share/${encodeURIComponent(publicId)}`
+        url.searchParams.delete('share')
+        window.location.href = `${url.pathname}${url.search}${url.hash}`
+      } else {
+        window.location.href = '/' + window.location.search
+      }
     })
   }
 }

@@ -2359,7 +2359,7 @@ function renderShareKmlPanel (map) {
   `
 }
 
-async function initShareKmlSupport (map) {
+async function initShareKmlSupport (map, options = {}) {
   window.getActiveKmlMarkers = getActiveKmlMarkers
   window.activateKmlFeatureForMedia = (item, options) => activateFeatureForMedia(map, item, options)
   kmlList = []
@@ -2367,11 +2367,13 @@ async function initShareKmlSupport (map) {
   expandedKmlIds.clear()
   const firstExpandable = publicKmlList.find(kmlFile => !kmlFile.loadError && (kmlFile.features || []).length)
   if (firstExpandable) expandedKmlIds.add(firstExpandable.id)
-  fitKmlFilesBounds(
-    map,
-    publicKmlList.filter(kmlFile => isKmlEnabled(kmlFile) && !kmlFile.loadError),
-    { animate: false }
-  )
+  if (options.fitShareView !== false) {
+    fitKmlFilesBounds(
+      map,
+      publicKmlList.filter(kmlFile => isKmlEnabled(kmlFile) && !kmlFile.loadError),
+      { animate: false }
+    )
+  }
   renderAllKmls(map)
   renderShareKmlPanel(map)
   const panel = document.getElementById('kml-panel')
@@ -2544,12 +2546,12 @@ function bindKmlFeatureOrganizationEvents (panel, map) {
   })
 }
 
-export async function initKmlSupport (map) {
+export async function initKmlSupport (map, options = {}) {
   bindKmlPopupActions(map)
   bindKmlMapInteractionState(map)
   bindKmlViewportRerender(map)
   if (getActiveShare()) {
-    await initShareKmlSupport(map)
+    await initShareKmlSupport(map, options)
     return
   }
   window.getActiveKmlMarkers = getActiveKmlMarkers

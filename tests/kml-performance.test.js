@@ -70,9 +70,10 @@ test('2D KML popup content is lazy and feature focus has no fixed 850ms wait', (
 
 test('share mode fits before one layer render and collapsed files do not mount hidden feature rows', () => {
   const source = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
-  const shareInitSource = source.match(/async function initShareKmlSupport \(map\)[\s\S]*?\n}\n\nfunction bindKmlFeatureOrganizationEvents/)?.[0] || ''
+  const shareInitSource = source.match(/async function initShareKmlSupport \(map(?:, options = \{\})?\)[\s\S]*?\n}\n\nfunction bindKmlFeatureOrganizationEvents/)?.[0] || ''
   assert.equal(shareInitSource.match(/renderAllKmls\(map\)/g)?.length, 1)
   assert.ok(shareInitSource.indexOf('fitKmlFilesBounds(') < shareInitSource.indexOf('renderAllKmls(map)'))
+  assert.match(shareInitSource, /if \(options\.fitShareView !== false\)/)
 
   const sharePanelSource = source.match(/function renderShareKmlPanel \(map\)[\s\S]*?\n}\n\nasync function initShareKmlSupport/)?.[0] || ''
   assert.match(sharePanelSource, /\$\{expanded \? features\.map\(feature =>/)

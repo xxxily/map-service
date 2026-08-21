@@ -23,6 +23,13 @@ test('share pages opt out of search engine indexing in HTTP and client fallbacks
   assert.match(serverSource, /res\.set\('X-Robots-Tag', 'noindex, nofollow'\)/)
 })
 
+test('分享页 2D/3D 重定向保留坐标、层级和底图参数', () => {
+  const source = readFileSync(new URL('../src/map/share-view.js', import.meta.url), 'utf8')
+  assert.match(source, /url\.pathname = `\/share\/\$\{encodeURIComponent\(publicId\)\}`[\s\S]*url\.searchParams\.delete\('share'\)/)
+  assert.match(source, /url\.pathname = '\/3d'[\s\S]*url\.searchParams\.set\('share', publicId\)/)
+  assert.match(source, /window\.location\.replace\(`\$\{url\.pathname\}\$\{url\.search\}\$\{url\.hash\}`\)/)
+})
+
 test('空间受限分享必须提供 ready 状态的相机边界和最低缩放级别', () => {
   const valid = getShareSpatialConfig({
     spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113, 23], minZoom: 11 },

@@ -2519,7 +2519,7 @@ async function fitShareKmlView () {
   }
 }
 
-export async function initKmlSupport3d (viewer) {
+export async function initKmlSupport3d (viewer, options = {}) {
   viewerRef = viewer
   window.activateKmlFeatureForMedia = (item, options) => activateFeatureForMedia(item, options)
   window.getIsKmlPickupModeActive = () => isAddingPoint
@@ -2532,7 +2532,7 @@ export async function initKmlSupport3d (viewer) {
     const firstExpandable = publicKmlList.find(kmlFile => !kmlFile.loadError && (kmlFile.features || []).length)
     if (firstExpandable) expandedKmlIds.add(firstExpandable.id)
     renderAllKmls()
-    await fitShareKmlView()
+    if (options.fitShareView !== false) await fitShareKmlView()
     updateKmlPanelUI()
     const panel = document.getElementById('kml-panel')
     panel?.querySelector('#kml-import-dropzone')?.setAttribute('hidden', '')

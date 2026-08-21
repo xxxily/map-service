@@ -19,6 +19,8 @@ test('2D share view keeps the full read-only KML browsing lifecycle', () => {
   assert.ok(initSource.indexOf('bindKmlPopupActions(map)') < initSource.indexOf('if (getActiveShare())'))
   assert.match(contentPanelSource, /kmlFile\?\.isPublic && !kmlFile\?\.isShare/)
   assert.match(mainSource, /if \(!shareMode\) addTargetMarker\(map, defaultView\.center\)/)
+  assert.match(mainSource, /initKmlSupport\(map, \{ fitShareView: !useUrlView \}\)/)
+  assert.match(source, /if \(options\.fitShareView !== false\)/)
   assert.match(source, /getFeatureLayerKey\(kmlId, featureId\)/)
   assert.match(source, /const features = getTrackDisplayFeatures\(kmlFile, viewportOptions\)/)
   assert.match(source, /includeFeatureIds: \[String\(featureId\)\]/)
@@ -28,10 +30,13 @@ test('2D share view keeps the full read-only KML browsing lifecycle', () => {
 
 test('3D share view exposes full features and automatically fits enabled content', () => {
   const source = readSource('../src/map3d/kml.js')
+  const mainSource = readSource('../src/3d.js')
 
   assert.match(source, /const displayFeatures = !expanded[\s\S]*?: kmlFile\.isShare\s*\? \(kmlFile\.features \|\| \[\]\)/)
   assert.match(source, /const styleEditable = \(kmlFile\.isPublic && !kmlFile\.isShare\) \|\| editable/)
   assert.match(source, /async function fitShareKmlView \(\)/)
+  assert.match(mainSource, /initKmlSupport3d\(viewer, \{ fitShareView: !urlState\.hasExplicitViewState \}\)/)
+  assert.match(source, /if \(options\.fitShareView !== false\) await fitShareKmlView\(\)/)
   assert.match(source, /await fitShareKmlView\(\)/)
   assert.match(source, /renderFeatureItem\(kmlFile, feature, editable\)/)
   assert.match(source, /getFeatureEntityKey\(kmlId, featureId\)/)

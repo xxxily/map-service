@@ -728,7 +728,7 @@ Content-Type: application/json
 
 公开清单使用分享项 ID `shareItemId` 引用文件，不返回所有者邮箱、内部用户 ID、内部 KML ID、密码哈希、管理备注或代理凭据。分享 scoped catalog 当前只包含后台已发布、前台可见且受控的栅格图源；任意 URL、未公开图源和矢量图源不会通过分享接口暴露。
 
-公开查看页在取得各分享文件后直接使用响应中的脱敏要素进行只读渲染，不再调用传统公共 KML 的内容接口。2D 和 3D 均展示完整要素列表并复用常规 KML 的定位、信息窗口、详情和媒体预览交互；不提供新增、编辑、拖拽或删除。首屏对 `visibleByDefault=true` 且加载成功的文件计算联合几何范围并自动适配，只有没有有效点、线、面时才使用 `viewConfig.center` / `viewConfig.zoom` 兜底。
+公开查看页在取得各分享文件后直接使用响应中的脱敏要素进行只读渲染，不再调用传统公共 KML 的内容接口。2D 和 3D 均展示完整要素列表并复用常规 KML 的定位、信息窗口、详情和媒体预览交互；不提供新增、编辑、拖拽或删除。视口初始化优先使用合法 URL `coords`（空间受限分享还必须位于允许矩形且不低于 `minZoom`）；没有合法 URL `coords` 时，若存在有效的默认可见 KML，则适配其联合几何范围，否则使用分享 `viewConfig.center` / `viewConfig.zoom` 或系统默认视图兜底。图层初始化独立按 URL `layer` → 分享 `viewConfig.layerId` → 默认图层执行。URL 状态非法或越界时安全回退，刷新、2D/3D 路由切换均保留 `coords` 和 `layer`。
 
 空间受限分享的公开清单和 catalog 返回脱敏 `spatialAccess` 摘要，包括固定的 `version: 2`、`geometryType: "BoundingBox"`，以及外包矩形的 `bbox`、`bboxSegments`、`cameraBounds`、`displayGeometry`、`paddingMeters`、`minZoom`、`maxCameraHeight`、范围版本和状态；不返回内部投影、`localBounds`、源 revision hash 或管理员阈值。分享瓦片请求会规范化世界环绕 `x`：完全位于矩形内且不低于 `minZoom` 的瓦片原样回源，边界瓦片回源后按矩形执行 Alpha 遮罩，范围外和低于最低缩放的瓦片返回透明占位，并带 `X-Kml-Share-Spatial-Decision` 响应头。分享瓦片无论回源成功还是返回透明占位，均使用 `Cache-Control: private, no-store`，避免分享授权内容进入共享缓存或浏览器持久缓存。
 

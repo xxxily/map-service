@@ -187,11 +187,17 @@ export async function prepareShareView (init) {
         throw error
       }
       if (spatial.restricted && (window.location.pathname === '/3d' || window.location.pathname === '/3d.html')) {
-        window.location.replace(`/share/${encodeURIComponent(publicId)}`)
+        const url = new URL(window.location.href)
+        url.pathname = `/share/${encodeURIComponent(publicId)}`
+        url.searchParams.delete('share')
+        window.location.replace(`${url.pathname}${url.search}${url.hash}`)
         return
       }
       if (!spatial.restricted && manifest.viewConfig?.mapMode === '3d' && window.location.pathname.startsWith('/share/')) {
-        window.location.replace(`/3d?share=${encodeURIComponent(publicId)}`)
+        const url = new URL(window.location.href)
+        url.pathname = '/3d'
+        url.searchParams.set('share', publicId)
+        window.location.replace(`${url.pathname}${url.search}${url.hash}`)
         return
       }
       activeShare = { publicId, manifest }
