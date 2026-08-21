@@ -294,6 +294,8 @@ export function normalizeSpatialAccess (share = {}) {
   return {
     mode: mode === 'kml_bounds' ? 'kml_bounds' : 'unrestricted',
     status: spatial.status || share.spatialStatus || (mode === 'kml_bounds' ? 'recalculating' : 'ready'),
+    version: mode === 'kml_bounds' ? optionalFiniteNumber(spatial.version) : null,
+    geometryType: mode === 'kml_bounds' ? (spatial.geometryType || null) : null,
     bbox: Array.isArray(spatial.bbox) ? spatial.bbox : null,
     areaKm2: optionalFiniteNumber(spatial.areaKm2),
     diagonalKm: optionalFiniteNumber(spatial.diagonalKm),

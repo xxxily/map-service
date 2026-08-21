@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import sharp from 'sharp'
+import { isCurrentSpatialScope } from './shareSpatialAccess.js'
 
 const MAX_INPUT_BYTES = 2 * 1024 * 1024
 const MAX_IMAGE_EDGE = 1024
@@ -41,55 +42,10 @@ function projectCoordinate (coordinate, projection) {
   ]
 }
 
-function pointSegmentDistanceSquared (point, start, end) {
-  const dx = end[0] - start[0]
-  const dy = end[1] - start[1]
-  if (Math.abs(dx) < EPSILON && Math.abs(dy) < EPSILON) {
-    return (point[0] - start[0]) ** 2 + (point[1] - start[1]) ** 2
-  }
-  const ratio = clamp(
-    ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (dx * dx + dy * dy),
-    0,
-    1
-  )
-  const projected = [start[0] + ratio * dx, start[1] + ratio * dy]
-  return (point[0] - projected[0]) ** 2 + (point[1] - projected[1]) ** 2
-}
-
-function pointInRing (point, ring) {
-  let inside = false
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
-    const currentPoint = ring[index]
-    const previousPoint = ring[previous]
-    const intersects = ((currentPoint[1] > point[1]) !== (previousPoint[1] > point[1])) &&
-      (point[0] < (previousPoint[0] - currentPoint[0]) * (point[1] - currentPoint[1]) /
-        ((previousPoint[1] - currentPoint[1]) || EPSILON) + currentPoint[0])
-    if (intersects) inside = !inside
-  }
-  return inside
-}
-
-function distanceToRingSquared (point, ring) {
-  let minimum = Number.POSITIVE_INFINITY
-  for (let index = 1; index < ring.length; index += 1) {
-    minimum = Math.min(minimum, pointSegmentDistanceSquared(point, ring[index - 1], ring[index]))
-  }
-  return minimum
-}
-
 function containsPoint (scope, point, insetMeters = 0) {
-  const padding = Math.max(0, Number(scope.paddingMeters || 0) - insetMeters)
-  const radiusSquared = padding * padding
-  for (const center of scope.primitives.points || []) {
-    if ((point[0] - center[0]) ** 2 + (point[1] - center[1]) ** 2 <= radiusSquared + EPSILON) return true
-  }
-  for (const segment of scope.primitives.segments || []) {
-    if (pointSegmentDistanceSquared(point, segment[0], segment[1]) <= radiusSquared + EPSILON) return true
-  }
-  for (const ring of scope.primitives.polygons || []) {
-    if (pointInRing(point, ring) || distanceToRingSquared(point, ring) <= radiusSquared + EPSILON) return true
-  }
-  return false
+  const [minX, minY, maxX, maxY] = scope.localBounds
+  return point[0] >= minX + insetMeters - EPSILON && point[0] <= maxX - insetMeters + EPSILON &&
+    point[1] >= minY + insetMeters - EPSILON && point[1] <= maxY - insetMeters + EPSILON
 }
 
 function tilePointProjector (scope, tile, width, height) {
@@ -106,48 +62,13 @@ function tilePointProjector (scope, tile, width, height) {
   }
 }
 
-function boundsIntersect (left, right) {
-  return left[0] <= right[2] + EPSILON && left[2] >= right[0] - EPSILON &&
-    left[1] <= right[3] + EPSILON && left[3] >= right[1] - EPSILON
-}
-
-function primitiveBounds (points, padding) {
-  return [
-    Math.min(...points.map(point => point[0])) - padding,
-    Math.min(...points.map(point => point[1])) - padding,
-    Math.max(...points.map(point => point[0])) + padding,
-    Math.max(...points.map(point => point[1])) + padding,
-  ]
-}
-
-function scopeForTile (scope, projectPixel, width, height) {
-  const corners = [projectPixel(0, 0), projectPixel(width, 0), projectPixel(width, height), projectPixel(0, height)]
-  const tileBounds = primitiveBounds(corners, 0)
-  const padding = Number(scope.paddingMeters || 0)
-  return {
-    ...scope,
-    primitives: {
-      points: (scope.primitives.points || []).filter(point =>
-        boundsIntersect(tileBounds, primitiveBounds([point], padding))
-      ),
-      segments: (scope.primitives.segments || []).filter(segment =>
-        boundsIntersect(tileBounds, primitiveBounds(segment, padding))
-      ),
-      polygons: (scope.primitives.polygons || []).filter(ring =>
-        boundsIntersect(tileBounds, primitiveBounds(ring, padding))
-      ),
-    },
-  }
-}
-
 export function buildShareTileAlphaMask (scope, tile, width, height) {
-  if (!scope?.projection || !scope?.primitives) throw new Error('分享空间范围不可用')
+  if (!isCurrentSpatialScope(scope)) throw new Error('分享空间范围不可用')
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 ||
       width > MAX_IMAGE_EDGE || height > MAX_IMAGE_EDGE) {
     throw new Error('分享瓦片尺寸不受支持')
   }
   const projectPixel = tilePointProjector(scope, tile, width, height)
-  const tileScope = scopeForTile(scope, projectPixel, width, height)
   const northWest = projectPixel(0, 0)
   const southEast = projectPixel(1, 1)
   const pixelInset = Math.hypot(southEast[0] - northWest[0], southEast[1] - northWest[1]) / 2
@@ -156,7 +77,7 @@ export function buildShareTileAlphaMask (scope, tile, width, height) {
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const point = projectPixel(x + 0.5, y + 0.5)
-      if (!containsPoint(tileScope, point, pixelInset)) continue
+      if (!containsPoint(scope, point, pixelInset)) continue
       mask[y * width + x] = 255
       opaquePixels += 1
     }
@@ -255,7 +176,7 @@ export class ShareSpatialTileMasker {
 
   cacheKey (scope, sourceId, tile, input) {
     const scopeKey = scope.sourceRevisionHash || JSON.stringify([
-      scope.policyRevision, scope.paddingMeters, scope.localBounds, scope.primitives,
+      scope.version, scope.policyRevision, scope.paddingMeters, scope.localBounds,
     ])
     const inputHash = crypto.createHash('sha256').update(input).digest('base64url').slice(0, 22)
     return `${scopeKey}|${sourceId}|${tile.z}/${tile.x}/${tile.y}|${inputHash}`

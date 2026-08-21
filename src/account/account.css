@@ -1203,6 +1203,34 @@ button:disabled {
   padding: 2px 20px 4px;
 }
 
+.account-password-generation-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 10px;
+}
+
+.account-password-generation-options .account-dialog-field {
+  margin: 0;
+}
+
+.account-password-special-option {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  color: #496264;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.account-password-special-option input {
+  width: 16px;
+  height: 16px;
+  accent-color: #0f766e;
+}
+
 .account-password-tools {
   display: flex;
   gap: 8px;
@@ -1539,6 +1567,11 @@ body.account-view .app-dialog:not(.account-share-dialog) {
 }
 
 @media (max-width: 720px) {
+  .account-password-generation-options {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
   .account-password-tools {
     align-items: stretch;
     flex-direction: column;

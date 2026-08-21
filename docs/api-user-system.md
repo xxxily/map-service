@@ -128,7 +128,7 @@ system.super_admin
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/auth/config` | 无 | 获取注册开关和密码规则 |
+| `GET` | `/auth/config` | 无 | 获取注册开关、账号密码规则和公开分享能力开关 |
 | `POST` | `/auth/register` | 无 | 自助注册；注册关闭时拒绝 |
 | `POST` | `/auth/login` | 无 | 用户登录 |
 | `POST` | `/auth/logout` | 会话 + CSRF | 注销当前会话 |
@@ -152,6 +152,18 @@ system.super_admin
   "remember": true
 }
 ```
+
+公开配置响应包含管理员控制的分享能力开关：
+
+```json
+{
+  "registration": { "enabled": false },
+  "passwordPolicy": { "minLength": 12, "maxLength": 128 },
+  "share": { "passwordlessSharingEnabled": false }
+}
+```
+
+`share.passwordlessSharingEnabled=false` 时，前端不提供“不设置密码”或“移除密码”，服务端也会独立拒绝无密码分享请求。
 
 字段通过校验且未触发限流时，注册接口统一返回 `202 Accepted`：
 
@@ -671,11 +683,15 @@ Content-Type: application/json
 - 更新时可携带 `revision`；冲突返回 `SHARE_REVISION_CONFLICT`。
 - 分享公开内容使用已发布快照。个人 KML 修改不会自动改变公开链接；所有者视图返回 `syncStatus`、`pendingSyncItemCount`，分享项返回 `sourceRevision`、`publishedRevision`、`syncStatus` 和 `publishedAt`。
 - `password` 省略表示保持现状，空字符串或 `null` 表示移除密码。
+- 创建后最终没有密码，或更新后最终移除密码时，后台必须开启 `share.passwordlessSharingEnabled`；否则返回 `422 SHARE_PASSWORDLESS_DISABLED`。管理员关闭后，无密码分享不能继续保存、同步内容或轮换为新链接，测试分享应删除或设置密码后重建，不提供旧行为兼容分支。
+- `expiresAt=null` 表示分享链接没有固定到期时间，与是否设置密码独立；管理员允许时，无密码分享同样可使用 `expiresAt=null`。
 - `spatialAccess.mode` 支持 `unrestricted` 和 `kml_bounds`；省略时创建默认为 `unrestricted`，更新时保持现状。`kml_bounds` 的范围、面积和对角线只能由服务端根据分享内 active KML 计算。
+- `kml_bounds` 的权威范围是全部 KML 有效坐标形成的轴对齐外包矩形，并在四边扩展管理员余量；最外层点位或线段之间的矩形内部全部可查看，不再按点位周边或几何缓冲联合区域授权。
 - `passwordAccess.ttlMode` 支持 `finite` 和 `unlimited`；无密码时公开视图为 `not_applicable`。`unlimited` 仅在空间受限、范围合规且后台允许时可用，服务端保存时会重新计算，不信任前端预检。
 - 非空分享密码采用独立访问口令规则，长度为 4～128 位；不沿用账号密码的 12 位和常见密码限制。服务端保存用于访问校验的安全哈希，并另存仅供所有者主动复制的 AES-256-GCM 密文；密文不进入普通接口、日志和审计元数据。
+- 浏览器密码生成器默认生成 12 位，可选 8、12、16、20、24、32 位，并可关闭特殊字符。启用特殊字符时只使用 `!$*+@`，排除 `?`、`&`、`#`、`%`、`=` 等查询分隔符；服务端生成带密码链接时仍必须使用 `encodeURIComponent`。
 - `analytics.mode` 支持 `none`、`provider` 和经超级管理员授权的 `custom`。默认 provider 模式只提交网站 ID，脚本来源由管理员固定；公开清单只返回服务端校验后的 descriptor。
-- `password-url` 不要求所有者再次输入密码。服务端使用稳定密钥加密保存分享密码，普通读取接口不返回该字段；仅所有者主动调用时在 `no-store` 响应中返回 `shareUrl` 和 `password`。历史版本创建、无法完成密文迁移的分享需先重新设置一次密码。
+- `password-url` 不要求所有者再次输入密码。服务端使用稳定密钥加密保存分享密码，普通读取接口不返回该字段；仅所有者主动调用时在 `no-store` 响应中返回 `shareUrl` 和 `password`。当前没有正式用户，不为缺少密码密文的旧测试分享保留兼容流程；直接删除并重新创建分享。
 - active 分享删除到没有有效文件时会自动暂停。
 - `revoked` 不可恢复；`blocked` 只能由管理员解封。
 
@@ -714,7 +730,7 @@ Content-Type: application/json
 
 公开查看页在取得各分享文件后直接使用响应中的脱敏要素进行只读渲染，不再调用传统公共 KML 的内容接口。2D 和 3D 均展示完整要素列表并复用常规 KML 的定位、信息窗口、详情和媒体预览交互；不提供新增、编辑、拖拽或删除。首屏对 `visibleByDefault=true` 且加载成功的文件计算联合几何范围并自动适配，只有没有有效点、线、面时才使用 `viewConfig.center` / `viewConfig.zoom` 兜底。
 
-空间受限分享的公开清单和 catalog 返回脱敏 `spatialAccess` 摘要，包括 `bbox`、`bboxSegments`、`cameraBounds`、`paddingMeters`、`minZoom`、`maxCameraHeight`、范围版本和状态；不返回内部投影、空间索引、源 revision hash 或管理员阈值。分享瓦片请求会规范化世界环绕 `x`，只有完全落在允许范围且不低于 `minZoom` 的瓦片才回源，其他情况返回透明占位并带 `X-Kml-Share-Spatial-Decision` 响应头。分享瓦片无论回源成功还是返回透明占位，均使用 `Cache-Control: private, no-store`，避免分享授权内容进入共享缓存或浏览器持久缓存。
+空间受限分享的公开清单和 catalog 返回脱敏 `spatialAccess` 摘要，包括固定的 `version: 2`、`geometryType: "BoundingBox"`，以及外包矩形的 `bbox`、`bboxSegments`、`cameraBounds`、`displayGeometry`、`paddingMeters`、`minZoom`、`maxCameraHeight`、范围版本和状态；不返回内部投影、`localBounds`、源 revision hash 或管理员阈值。分享瓦片请求会规范化世界环绕 `x`：完全位于矩形内且不低于 `minZoom` 的瓦片原样回源，边界瓦片回源后按矩形执行 Alpha 遮罩，范围外和低于最低缩放的瓦片返回透明占位，并带 `X-Kml-Share-Spatial-Decision` 响应头。分享瓦片无论回源成功还是返回透明占位，均使用 `Cache-Control: private, no-store`，避免分享授权内容进入共享缓存或浏览器持久缓存。
 
 空间受限分享加载时强制使用 2D，避免 3D 全球地形或影像链路形成未校验的资源入口。
 
@@ -810,6 +826,7 @@ Content-Type: application/json
     "publicAccessPolicy": "inherit_site_access",
     "maxFilesPerShare": 20,
     "accessTtlMs": 43200000,
+    "passwordlessSharingEnabled": false,
     "spatialAccessEnabled": true,
     "spatialPaddingMeters": 1000,
     "spatialMaxAreaKm2": 10000,
@@ -845,6 +862,8 @@ Content-Type: application/json
 
 - `inherit_site_access`：分享页继承全站访问密码。
 - `independent`：分享授权独立于全站访问密码。
+
+`passwordlessSharingEnabled` 默认为 `false`。关闭时，创建无密码分享、移除密码、继续保存、同步内容或轮换无密码分享链接均返回 `SHARE_PASSWORDLESS_DISABLED`；开启时，无密码分享可设置固定期限或 `expiresAt=null`，但其 `passwordAccess.ttlMode` 始终为 `not_applicable`。
 
 分享限流按“分享 + HttpOnly 匿名访客标识”计数，Cookie 不可用时回退到服务端 IP/UA 摘要。瓦片仅在图源和空间范围校验通过后计数，范围外透明瓦片不消耗正常配额；设置更新后无需重启。
 
@@ -913,6 +932,7 @@ Content-Type: application/json
 | `400` | `INVALID_TILE_COORDINATES` | 分享瓦片坐标无效 |
 | `422` | `SHARE_SPATIAL_DISABLED` / `SHARE_SPATIAL_BOUNDS_EMPTY` | 空间受限分享未开放或没有有效几何 |
 | `422` | `SHARE_SPATIAL_RANGE_TOO_LARGE` | 超过空间限制总体阈值 |
+| `422` | `SHARE_PASSWORDLESS_DISABLED` | 后台未开放无密码分享，必须设置分享密码 |
 | `422` | `SHARE_UNLIMITED_ACCESS_DISABLED` / `SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE` | 不限授权未开放或范围超过更严格阈值 |
 | `413` | `FILE_TOO_LARGE` | KML 文件或请求超过限制 |
 | `429` | `RATE_LIMITED` | 登录、注册或分享密码尝试过多 |

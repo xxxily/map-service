@@ -109,7 +109,8 @@ npm run exec
 - HTTPS 终止、反向代理和应用的 Secure Cookie 判断配置一致。
 - 反向代理只在受信边界内设置客户端 IP，并按实际拓扑配置 `MAP_SERVICE_TRUST_PROXY`；应用限流和 Secure Cookie 使用 Express 解析后的 `req.ip` / `req.secure`，不直接信任任意客户端转发头。
 - 不在日志、监控标签、错误页或备份文件名中写入密码、Token、Cookie、CSRF 或分享密码。应用访问日志会脱敏 `password`、`token` 等敏感查询参数；Caddy、Nginx、CDN 和上游负载均衡的访问日志也必须关闭完整查询串记录，或对这些参数执行同等脱敏。
-- `MAP_SERVICE_SHARE_SECRET_KEY` 已持久化备份且发布前后保持一致。更换该密钥不会破坏分享密码的哈希访问验证，但会使已有 `password_secret` 无法解密；所有者需重新设置一次分享密码才能恢复复制密码和带密码链接。
+- `MAP_SERVICE_SHARE_SECRET_KEY` 已持久化备份且发布前后保持一致。更换该密钥不会破坏分享密码的哈希访问验证，但会使已有 `password_secret` 无法解密；服务不会尝试从旧哈希恢复明文，所有者需重新设置一次分享密码才能恢复复制密码和带密码链接。当前没有正式用户，缺少或不可解密的测试分享密码副本直接删除分享并按新规则重建。
+- 用户体系设置中的 `share.passwordlessSharingEnabled` 默认关闭；开启后无密码分享可使用固定期限或 `expiresAt=null`，公开 `passwordAccess.ttlMode` 为 `not_applicable`。关闭后新建、移除密码、继续保存、同步内容和轮换无密码分享均被拒绝。空间受限分享重建后统一使用 `version=2`、`geometryType=BoundingBox`；旧测试分享直接删除并按当前规则重建。
 - 注册默认关闭；需要开放时由拥有 `admin.registration.manage` 的账号显式开启。
 - 普通管理员只分配日常运维权限；用户、角色、注册和根安全策略保留给超级管理员。
 - 站点访问密码、用户会话和分享密码分别测试，确认不存在互相绕过。

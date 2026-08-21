@@ -61,6 +61,8 @@ test('公开分享底图目录拒绝非 Web Mercator 图源并携带脱敏空间
   assert.deepEqual(result.spatialAccess, {
     mode: 'kml_bounds',
     status: 'ready',
+    version: 2,
+    geometryType: 'BoundingBox',
     revision: 0,
     areaKm2: 1,
     crossesAntimeridian: false,

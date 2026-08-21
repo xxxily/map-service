@@ -5,6 +5,7 @@ import {
   computeSpatialScope,
   normalizeTileCoordinates,
   publicSpatialScope,
+  isCurrentSpatialScope,
   spatialPolicyEligibility,
 } from '../service/bin/user/shareSpatialAccess.js'
 
@@ -22,7 +23,7 @@ function tileForCoordinate (longitude, latitude, zoom) {
   }
 }
 
-test('空间范围合并点线面并生成公开相机摘要', () => {
+test('空间范围按全部点线面生成外包矩形和公开相机摘要', () => {
   const result = computeSpatialScope({
     documents: [documentWith(
       { type: 'Point', coordinates: [113.2644, 23.1291] },
@@ -38,18 +39,49 @@ test('空间范围合并点线面并生成公开相机摘要', () => {
   assert.equal(result.status, 'ready')
   assert.equal(result.scope.policyRevision, 2)
   assert.equal(result.scope.paddingMeters, 1000)
+  assert.equal(result.scope.version, 2)
+  assert.equal(result.scope.geometryType, 'BoundingBox')
   assert.ok(result.scope.areaKm2 > 0)
   assert.ok(result.scope.diagonalKm > 0)
   assert.equal(Number.isFinite(result.scope.rawAreaKm2), true)
   assert.equal(Number.isFinite(result.scope.rawDiagonalKm), true)
   assert.match(result.scope.sourceRevisionHash, /^sha256:[a-f0-9]{64}$/)
   assert.equal(result.scope.displayGeometry.type, 'MultiPolygon')
+  assert.equal(isCurrentSpatialScope(result.scope), true)
 
   const publicScope = publicSpatialScope(result.scope, 4)
+  assert.equal(publicScope.version, 2)
+  assert.equal(publicScope.geometryType, 'BoundingBox')
   assert.equal(publicScope.mode, 'kml_bounds')
   assert.equal(publicScope.revision, 4)
   assert.equal(Object.hasOwn(publicScope, 'primitives'), false)
   assert.equal(Object.hasOwn(publicScope, 'sourceRevisionHash'), false)
+})
+
+test('旧空间范围模型不会被当前瓦片判定继续使用', () => {
+  const current = computeSpatialScope({
+    documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],
+    paddingMeters: 1000,
+  }).scope
+  const legacy = { ...current, version: 1, geometryType: 'PrimitiveUnion' }
+  const tile = tileForCoordinate(113.2644, 23.1291, Math.max(current.minZoom, 15))
+  assert.equal(isCurrentSpatialScope(legacy), false)
+  assert.equal(publicSpatialScope(legacy, 1), null)
+  assert.equal(classifyTileAgainstScope(legacy, tile).decision, 'unavailable')
+})
+
+test('分散点之间的外包矩形内部均允许查看', () => {
+  const result = computeSpatialScope({
+    documents: [documentWith(
+      { type: 'Point', coordinates: [113.2, 23.1] },
+      { type: 'Point', coordinates: [113.4, 23.3] }
+    )],
+    paddingMeters: 100,
+  })
+  assert.equal(result.status, 'ready')
+
+  const middleTile = tileForCoordinate(113.3, 23.2, Math.max(result.scope.minZoom, 15))
+  assert.equal(classifyTileAgainstScope(result.scope, middleTile).decision, 'allow')
 })
 
 test('空间范围拒绝空几何、非法坐标和不稳定极区', () => {

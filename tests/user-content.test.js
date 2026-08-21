@@ -62,6 +62,9 @@ function createHarness (options = {}) {
       publicAccessPolicy: options.publicAccessPolicy || 'independent',
       maxFilesPerShare: 20,
       accessTtlMs: 1000 * 60 * 60,
+      // Test fixtures explicitly opt in to passwordless links; production
+      // defaults keep this administrator-controlled capability disabled.
+      passwordlessSharingEnabled: true,
       spatialAccessEnabled: true,
       spatialPaddingMeters: 1000,
       spatialMaxAreaKm2: 10000,
@@ -84,6 +87,7 @@ function createHarness (options = {}) {
   return {
     database,
     service,
+    settings,
     one: actor('usr_one'),
     two: actor('usr_two'),
     admin: actor('usr_admin', ['admin.share.moderate']),
@@ -931,12 +935,12 @@ test('password share URL and password copy no longer require the owner to re-ent
   }
 })
 
-test('legacy password shares require one password reset before password copying is available', async () => {
+test('password copying fails closed when the encrypted password copy is unavailable', async () => {
   const harness = createHarness()
   try {
-    const document = harness.service.createKml(harness.one, { name: '旧密码分享', features: [point('legacy-password')] })
+    const document = harness.service.createKml(harness.one, { name: '密码副本异常', features: [point('password-secret-unavailable')] })
     const share = harness.service.createShare(harness.one, {
-      title: '旧密码分享', items: [{ kmlId: document.id }], password: '1234',
+      title: '密码副本异常', items: [{ kmlId: document.id }], password: '1234',
     })
     harness.database.prepare("UPDATE kml_shares SET password_secret = '' WHERE id = ?").run(share.id)
     await assert.rejects(
@@ -1093,6 +1097,82 @@ test('unlimited password authorization requires spatial policy and creates a non
     assert.equal(session.expires_at, null)
     assert.equal(session.revoked_at, null)
     assert.equal(harness.service.getPublicShareManifest(share.publicId, { accessToken: authorization.accessToken }).itemCount, 1)
+  } finally {
+    harness.close()
+  }
+})
+
+test('管理员关闭无密码分享后拒绝新建、移除密码和继续保存无密码分享', () => {
+  const harness = createHarness({ share: { passwordlessSharingEnabled: false } })
+  try {
+    const document = harness.service.createKml(harness.one, { name: '密码策略', features: [point('password-policy')] })
+    assert.throws(
+      () => harness.service.createShare(harness.one, {
+        title: '不应创建', items: [{ kmlId: document.id }],
+      }),
+      error => error.code === 'SHARE_PASSWORDLESS_DISABLED' && error.statusCode === 422
+    )
+
+    harness.settings.share.passwordlessSharingEnabled = true
+    const passwordless = harness.service.createShare(harness.one, {
+      title: '已有无密码链接', items: [{ kmlId: document.id }],
+    })
+    harness.settings.share.passwordlessSharingEnabled = false
+
+    assert.throws(
+      () => harness.service.syncShareContent(harness.one, passwordless.id, {
+        revision: passwordless.revision,
+      }),
+      error => error.code === 'SHARE_PASSWORDLESS_DISABLED' && error.statusCode === 422
+    )
+
+    assert.throws(
+      () => harness.service.rotateShareLink(harness.one, passwordless.id),
+      error => error.code === 'SHARE_PASSWORDLESS_DISABLED' && error.statusCode === 422
+    )
+
+    assert.throws(
+      () => harness.service.updateShare(harness.one, passwordless.id, {
+        revision: passwordless.revision,
+        title: '不允许继续保存',
+      }),
+      error => error.code === 'SHARE_PASSWORDLESS_DISABLED' && error.statusCode === 422
+    )
+
+    const passwordShare = harness.service.createShare(harness.one, {
+      title: '已有密码链接', items: [{ kmlId: document.id }], password: '1234',
+    })
+    assert.throws(
+      () => harness.service.updateShare(harness.one, passwordShare.id, {
+        revision: passwordShare.revision,
+        password: null,
+      }),
+      error => error.code === 'SHARE_PASSWORDLESS_DISABLED' && error.statusCode === 422
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('管理员开启后无密码分享支持不限链接期限，但不限密码授权仍要求密码', () => {
+  const harness = createHarness({ share: { passwordlessSharingEnabled: true } })
+  try {
+    const document = harness.service.createKml(harness.one, { name: '无密码链接', features: [point('passwordless')] })
+    const share = harness.service.createShare(harness.one, {
+      title: '无固定期限无密码', items: [{ kmlId: document.id }], expiresAt: null,
+    })
+    assert.equal(share.passwordProtected, false)
+    assert.equal(share.expiresAt, null)
+    assert.equal(share.passwordAccess.ttlMode, 'not_applicable')
+
+    assert.throws(
+      () => harness.service.createShare(harness.one, {
+        title: '无密码不限授权', items: [{ kmlId: document.id }],
+        spatialAccess: { mode: 'kml_bounds' },
+        passwordAccess: { ttlMode: 'unlimited' },
+      }),
+      error => error.code === 'SHARE_UNLIMITED_ACCESS_REQUIRES_PASSWORD'
+    )
   } finally {
     harness.close()
   }

@@ -71,6 +71,8 @@ export function getShareSpatialConfig (manifest) {
     : null
   const minZoom = Number(spatial.minZoom)
   const valid = Boolean(
+    Number(spatial.version) === 2 &&
+    spatial.geometryType === 'BoundingBox' &&
     cameraBounds && cameraBounds.every(Number.isFinite) &&
     cameraBounds[2] - cameraBounds[0] > 0 &&
     cameraBounds[2] - cameraBounds[0] <= 360 &&
@@ -83,6 +85,8 @@ export function getShareSpatialConfig (manifest) {
     restricted: true,
     valid,
     mode: 'kml_bounds',
+    version: valid ? 2 : null,
+    geometryType: valid ? 'BoundingBox' : null,
     cameraBounds: valid ? cameraBounds : null,
     minZoom: valid ? minZoom : null,
     maxCameraHeight: Number.isFinite(Number(spatial.maxCameraHeight)) ? Number(spatial.maxCameraHeight) : null,

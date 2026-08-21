@@ -216,6 +216,7 @@ test('registration mode and safe default roles are enforced by the service', asy
     mode: 'closed',
     enabled: false,
   })
+  assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, false)
   await assert.rejects(
     service.register({
       username: 'closed.user',
@@ -263,6 +264,33 @@ test('registration mode and safe default roles are enforced by the service', asy
     }),
     matchesError('PERMISSION_DENIED', 403)
   )
+})
+
+test('公开配置和管理员设置暴露无密码分享开关并严格校验布尔值', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+
+  assert.equal(service.getSettings().share.passwordlessSharingEnabled, false)
+  assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, false)
+
+  const enabled = service.updateSettings(rootSession, {
+    share: { passwordlessSharingEnabled: true },
+  })
+  assert.equal(enabled.share.passwordlessSharingEnabled, true)
+  assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, true)
+
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      share: { passwordlessSharingEnabled: 'true' },
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+
+  const disabled = service.updateSettings(rootSession, {
+    share: { passwordlessSharingEnabled: false },
+  })
+  assert.equal(disabled.share.passwordlessSharingEnabled, false)
+  assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, false)
 })
 
 test('user-system health summary is permission-gated and reports operational counts', async t => {

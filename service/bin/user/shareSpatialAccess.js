@@ -4,8 +4,9 @@ const EARTH_RADIUS_METERS = 6371008.8
 const WEB_MERCATOR_MAX_LAT = 85.05112878
 const DEG_TO_RAD = Math.PI / 180
 const RAD_TO_DEG = 180 / Math.PI
-const MAX_GRID_AXIS = 256
 const EPSILON = 1e-7
+
+export const SHARE_SPATIAL_SCOPE_VERSION = 2
 
 function clamp (value, min, max) {
   return Math.max(min, Math.min(max, value))
@@ -48,185 +49,30 @@ function unwrapLongitude (longitude, center) {
   return value
 }
 
-function pointSegmentDistanceSquared (point, start, end) {
-  const dx = end[0] - start[0]
-  const dy = end[1] - start[1]
-  if (Math.abs(dx) < EPSILON && Math.abs(dy) < EPSILON) {
-    return (point[0] - start[0]) ** 2 + (point[1] - start[1]) ** 2
-  }
-  const ratio = clamp(
-    ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (dx * dx + dy * dy),
-    0,
-    1
+export function isCurrentSpatialScope (scope) {
+  return Boolean(
+    scope &&
+    Number(scope.version) === SHARE_SPATIAL_SCOPE_VERSION &&
+    scope.geometryType === 'BoundingBox' &&
+    scope.projection &&
+    Array.isArray(scope.localBounds) &&
+    scope.localBounds.length === 4 &&
+    scope.localBounds.every(value => Number.isFinite(Number(value)))
   )
-  const projected = [start[0] + ratio * dx, start[1] + ratio * dy]
-  return (point[0] - projected[0]) ** 2 + (point[1] - projected[1]) ** 2
-}
-
-function pointInRing (point, ring) {
-  let inside = false
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
-    const currentPoint = ring[index]
-    const previousPoint = ring[previous]
-    const intersects = ((currentPoint[1] > point[1]) !== (previousPoint[1] > point[1])) &&
-      (point[0] < (previousPoint[0] - currentPoint[0]) * (point[1] - currentPoint[1]) /
-        ((previousPoint[1] - currentPoint[1]) || EPSILON) + currentPoint[0])
-    if (intersects) inside = !inside
-  }
-  return inside
-}
-
-function orientation (a, b, c) {
-  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-}
-
-function onSegment (a, b, point) {
-  return Math.abs(orientation(a, b, point)) <= EPSILON &&
-    point[0] >= Math.min(a[0], b[0]) - EPSILON && point[0] <= Math.max(a[0], b[0]) + EPSILON &&
-    point[1] >= Math.min(a[1], b[1]) - EPSILON && point[1] <= Math.max(a[1], b[1]) + EPSILON
-}
-
-function segmentsIntersect (a, b, c, d) {
-  const abC = orientation(a, b, c)
-  const abD = orientation(a, b, d)
-  const cdA = orientation(c, d, a)
-  const cdB = orientation(c, d, b)
-  if (((abC > EPSILON && abD < -EPSILON) || (abC < -EPSILON && abD > EPSILON)) &&
-      ((cdA > EPSILON && cdB < -EPSILON) || (cdA < -EPSILON && cdB > EPSILON))) return true
-  return (Math.abs(abC) <= EPSILON && onSegment(a, b, c)) ||
-    (Math.abs(abD) <= EPSILON && onSegment(a, b, d)) ||
-    (Math.abs(cdA) <= EPSILON && onSegment(c, d, a)) ||
-    (Math.abs(cdB) <= EPSILON && onSegment(c, d, b))
-}
-
-function distanceToRingSquared (point, ring) {
-  let minimum = Number.POSITIVE_INFINITY
-  for (let index = 1; index < ring.length; index += 1) {
-    minimum = Math.min(minimum, pointSegmentDistanceSquared(point, ring[index - 1], ring[index]))
-  }
-  return minimum
-}
-
-function containsPoint (scope, point, extraPadding = 0) {
-  const padding = Number(scope.paddingMeters || 0) + extraPadding
-  const radiusSquared = padding * padding
-  for (const center of scope.primitives.points) {
-    if ((point[0] - center[0]) ** 2 + (point[1] - center[1]) ** 2 <= radiusSquared + EPSILON) return true
-  }
-  for (const segment of scope.primitives.segments) {
-    if (pointSegmentDistanceSquared(point, segment[0], segment[1]) <= radiusSquared + EPSILON) return true
-  }
-  for (const ring of scope.primitives.polygons) {
-    if (pointInRing(point, ring) || distanceToRingSquared(point, ring) <= radiusSquared + EPSILON) return true
-  }
-  return false
-}
-
-function capsuleContainsRectangle (segment, corners, radiusSquared) {
-  return corners.every(point => pointSegmentDistanceSquared(point, segment[0], segment[1]) <= radiusSquared + EPSILON)
-}
-
-function polygonContainsRectangle (ring, corners) {
-  if (!corners.every(point => pointInRing(point, ring))) return false
-  const rectangleEdges = [
-    [corners[0], corners[1]],
-    [corners[1], corners[2]],
-    [corners[2], corners[3]],
-    [corners[3], corners[0]],
-  ]
-  for (let index = 1; index < ring.length; index += 1) {
-    for (const edge of rectangleEdges) {
-      if (segmentsIntersect(ring[index - 1], ring[index], edge[0], edge[1])) return false
-    }
-  }
-  return true
 }
 
 function containsRectangle (scope, corners) {
-  const radiusSquared = Number(scope.paddingMeters || 0) ** 2
-  for (const center of scope.primitives.points) {
-    if (corners.every(point => (point[0] - center[0]) ** 2 + (point[1] - center[1]) ** 2 <= radiusSquared + EPSILON)) {
-      return true
-    }
-  }
-  for (const segment of scope.primitives.segments) {
-    if (capsuleContainsRectangle(segment, corners, radiusSquared)) return true
-  }
-  for (const ring of scope.primitives.polygons) {
-    if (polygonContainsRectangle(ring, corners)) return true
-    for (let index = 1; index < ring.length; index += 1) {
-      if (capsuleContainsRectangle([ring[index - 1], ring[index]], corners, radiusSquared)) return true
-    }
-  }
-  return false
-}
-
-function rectangleContainsPoint (rectangle, point) {
-  return point[0] >= rectangle[0] - EPSILON && point[0] <= rectangle[2] + EPSILON &&
-    point[1] >= rectangle[1] - EPSILON && point[1] <= rectangle[3] + EPSILON
-}
-
-function rectangleEdges (rectangle) {
-  const [west, south, east, north] = rectangle
-  return [
-    [[west, south], [east, south]],
-    [[east, south], [east, north]],
-    [[east, north], [west, north]],
-    [[west, north], [west, south]],
-  ]
-}
-
-function rectangleIntersectsSegment (rectangle, segment, extraPadding = 0) {
-  const padded = [
-    rectangle[0] - extraPadding,
-    rectangle[1] - extraPadding,
-    rectangle[2] + extraPadding,
-    rectangle[3] + extraPadding,
-  ]
-  if (rectangleContainsPoint(padded, segment[0]) || rectangleContainsPoint(padded, segment[1])) return true
-  return rectangleEdges(padded).some(edge => segmentsIntersect(segment[0], segment[1], edge[0], edge[1]))
-}
-
-function rectangleIntersectsCircle (rectangle, center, radius) {
-  const nearest = [
-    clamp(center[0], rectangle[0], rectangle[2]),
-    clamp(center[1], rectangle[1], rectangle[3]),
-  ]
-  return (nearest[0] - center[0]) ** 2 + (nearest[1] - center[1]) ** 2 <= radius ** 2 + EPSILON
-}
-
-function rectangleIntersectsPolygon (rectangle, ring, extraPadding = 0) {
-  const padded = [
-    rectangle[0] - extraPadding,
-    rectangle[1] - extraPadding,
-    rectangle[2] + extraPadding,
-    rectangle[3] + extraPadding,
-  ]
-  if (ring.some(point => rectangleContainsPoint(padded, point))) return true
-  const corners = [
-    [rectangle[0], rectangle[1]], [rectangle[2], rectangle[1]],
-    [rectangle[2], rectangle[3]], [rectangle[0], rectangle[3]],
-  ]
-  if (corners.some(point => pointInRing(point, ring))) return true
-  const edges = rectangleEdges(padded)
-  for (let index = 1; index < ring.length; index += 1) {
-    if (edges.some(edge => segmentsIntersect(ring[index - 1], ring[index], edge[0], edge[1]))) return true
-  }
-  return false
+  const [minX, minY, maxX, maxY] = scope.localBounds
+  return corners.every(point =>
+    point[0] >= minX - EPSILON && point[0] <= maxX + EPSILON &&
+    point[1] >= minY - EPSILON && point[1] <= maxY + EPSILON
+  )
 }
 
 function rectangleIntersectsScope (scope, rectangle) {
-  const padding = Number(scope.paddingMeters || 0)
-  for (const center of scope.primitives.points) {
-    if (rectangleIntersectsCircle(rectangle, center, padding)) return true
-  }
-  for (const segment of scope.primitives.segments) {
-    if (rectangleIntersectsSegment(rectangle, segment, padding)) return true
-  }
-  for (const ring of scope.primitives.polygons) {
-    if (rectangleIntersectsPolygon(rectangle, ring, padding)) return true
-  }
-  return false
+  const bounds = scope.localBounds
+  return rectangle[0] <= bounds[2] + EPSILON && rectangle[2] >= bounds[0] - EPSILON &&
+    rectangle[1] <= bounds[3] + EPSILON && rectangle[3] >= bounds[1] - EPSILON
 }
 
 function projectCoordinate (coordinate, projection) {
@@ -292,36 +138,10 @@ function buildProjection (features) {
   }
 }
 
-function buildPrimitives (features, projection) {
-  const primitives = { points: [], segments: [], polygons: [] }
-  for (const feature of features) {
-    const projected = feature.coordinates.map(coordinate => projectCoordinate(coordinate, projection))
-    if (feature.type === 'Point') {
-      primitives.points.push(projected[0])
-      continue
-    }
-    if (feature.type === 'LineString') {
-      for (let index = 1; index < projected.length; index += 1) {
-        primitives.segments.push([projected[index - 1], projected[index]])
-      }
-      continue
-    }
-    if (feature.type === 'Polygon') {
-      const first = projected[0]
-      const last = projected.at(-1)
-      if (first[0] !== last[0] || first[1] !== last[1]) projected.push([...first])
-      primitives.polygons.push(projected)
-    }
-  }
-  return primitives
-}
-
-function primitiveBounds (primitives, paddingMeters) {
-  const points = [
-    ...primitives.points,
-    ...primitives.segments.flat(),
-    ...primitives.polygons.flat(),
-  ]
+function projectedBounds (features, projection, paddingMeters) {
+  const points = features.flatMap(feature =>
+    feature.coordinates.map(coordinate => projectCoordinate(coordinate, projection))
+  )
   if (!points.length) return null
   return [
     Math.min(...points.map(point => point[0])) - paddingMeters,
@@ -331,63 +151,9 @@ function primitiveBounds (primitives, paddingMeters) {
   ]
 }
 
-function markGridCell (mask, nx, x, y) {
-  if (x < 0 || y < 0 || x >= nx) return
-  mask[y * nx + x] = 1
-}
-
-function estimateUnionArea (scope) {
+function boundingBoxAreaKm2 (scope) {
   const [minX, minY, maxX, maxY] = scope.localBounds
-  const width = Math.max(1, maxX - minX)
-  const height = Math.max(1, maxY - minY)
-  const targetCell = Math.max(scope.paddingMeters / 2, Math.max(width, height) / MAX_GRID_AXIS, 25)
-  const nx = clamp(Math.ceil(width / targetCell), 1, MAX_GRID_AXIS)
-  const ny = clamp(Math.ceil(height / targetCell), 1, MAX_GRID_AXIS)
-  const cellWidth = width / nx
-  const cellHeight = height / ny
-  const cellRadius = Math.hypot(cellWidth, cellHeight) / 2
-  const mask = new Uint8Array(nx * ny)
-  const markPrimitive = (bounds, predicate) => {
-    const fromX = clamp(Math.floor((bounds[0] - minX) / cellWidth), 0, nx - 1)
-    const toX = clamp(Math.floor((bounds[2] - minX) / cellWidth), 0, nx - 1)
-    const fromY = clamp(Math.floor((bounds[1] - minY) / cellHeight), 0, ny - 1)
-    const toY = clamp(Math.floor((bounds[3] - minY) / cellHeight), 0, ny - 1)
-    for (let y = fromY; y <= toY; y += 1) {
-      for (let x = fromX; x <= toX; x += 1) {
-        if (mask[y * nx + x]) continue
-        const center = [minX + (x + 0.5) * cellWidth, minY + (y + 0.5) * cellHeight]
-        if (predicate(center, cellRadius)) markGridCell(mask, nx, x, y)
-      }
-    }
-  }
-  for (const point of scope.primitives.points) {
-    const radius = scope.paddingMeters + cellRadius
-    markPrimitive([point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius], center =>
-      (center[0] - point[0]) ** 2 + (center[1] - point[1]) ** 2 <= radius ** 2)
-  }
-  const markSegment = segment => {
-    const radius = scope.paddingMeters + cellRadius
-    markPrimitive([
-      Math.min(segment[0][0], segment[1][0]) - radius,
-      Math.min(segment[0][1], segment[1][1]) - radius,
-      Math.max(segment[0][0], segment[1][0]) + radius,
-      Math.max(segment[0][1], segment[1][1]) + radius,
-    ], center => pointSegmentDistanceSquared(center, segment[0], segment[1]) <= radius ** 2)
-  }
-  scope.primitives.segments.forEach(markSegment)
-  for (const ring of scope.primitives.polygons) {
-    const xs = ring.map(point => point[0])
-    const ys = ring.map(point => point[1])
-    markPrimitive([
-      Math.min(...xs) - scope.paddingMeters - cellRadius,
-      Math.min(...ys) - scope.paddingMeters - cellRadius,
-      Math.max(...xs) + scope.paddingMeters + cellRadius,
-      Math.max(...ys) + scope.paddingMeters + cellRadius,
-    ], (center, extra) => pointInRing(center, ring) || distanceToRingSquared(center, ring) <= (scope.paddingMeters + extra) ** 2)
-  }
-  let occupied = 0
-  for (const value of mask) occupied += value
-  return occupied * cellWidth * cellHeight / 1_000_000
+  return Math.max(0, maxX - minX) * Math.max(0, maxY - minY) / 1_000_000
 }
 
 function geographicBounds (localBounds, projection) {
@@ -465,17 +231,15 @@ export function computeSpatialScope (options = {}) {
   if (!projection || projection.errorCode) {
     return { status: 'error', reasonCode: projection?.errorCode || 'SHARE_SPATIAL_BOUNDS_EMPTY', invalidFeatureCount }
   }
-  const primitives = buildPrimitives(features, projection)
-  const localBounds = primitiveBounds(primitives, paddingMeters)
+  const localBounds = projectedBounds(features, projection, paddingMeters)
   if (!localBounds) return { status: 'empty', reasonCode: 'SHARE_SPATIAL_BOUNDS_EMPTY', invalidFeatureCount }
   const scope = {
-    version: 1,
+    version: SHARE_SPATIAL_SCOPE_VERSION,
     projection,
-    primitives,
     localBounds,
     paddingMeters,
   }
-  const areaKm2 = estimateUnionArea(scope)
+  const areaKm2 = boundingBoxAreaKm2(scope)
   const diagonalKm = Math.hypot(localBounds[2] - localBounds[0], localBounds[3] - localBounds[1]) / 1000
   const bounds = geographicBounds(localBounds, projection)
   const minZoom = calculateMinZoom(bounds.cameraBounds)
@@ -483,7 +247,8 @@ export function computeSpatialScope (options = {}) {
     sources: options.sourceRevisions || [],
     paddingMeters,
     policyRevision: Number(options.policyRevision || 1),
-    primitives,
+    scopeVersion: SHARE_SPATIAL_SCOPE_VERSION,
+    localBounds,
   })).digest('hex')}`
   return {
     status: 'ready',
@@ -492,7 +257,7 @@ export function computeSpatialScope (options = {}) {
       ...scope,
       ...bounds,
       displayGeometry: bboxDisplayGeometry(bounds.bboxSegments),
-      geometryType: 'PrimitiveUnion',
+      geometryType: 'BoundingBox',
       rawAreaKm2: areaKm2,
       rawDiagonalKm: diagonalKm,
       areaKm2: roundMetric(areaKm2),
@@ -510,8 +275,10 @@ export function computeSpatialScope (options = {}) {
 }
 
 export function publicSpatialScope (scope, revision = 0) {
-  if (!scope || !Array.isArray(scope.cameraBounds)) return null
+  if (!isCurrentSpatialScope(scope) || !Array.isArray(scope.cameraBounds)) return null
   return {
+    version: SHARE_SPATIAL_SCOPE_VERSION,
+    geometryType: 'BoundingBox',
     mode: 'kml_bounds',
     status: 'ready',
     bbox: scope.bbox,
@@ -552,7 +319,9 @@ export function normalizeTileCoordinates (tile = {}) {
 export function classifyTileAgainstScope (scope, tile) {
   const normalized = normalizeTileCoordinates(tile)
   if (!normalized) return { decision: 'invalid', tile: null }
-  if (!scope || !scope.projection || !scope.primitives) return { decision: 'unavailable', tile: normalized }
+  if (!isCurrentSpatialScope(scope)) {
+    return { decision: 'unavailable', tile: normalized }
+  }
   if (normalized.z < Number(scope.minZoom || 0)) return { decision: 'below_min_zoom', tile: normalized }
   const west = tileLongitude(normalized.x, normalized.z)
   const east = tileLongitude(normalized.x + 1, normalized.z)

@@ -6,7 +6,14 @@ import {
   normalizeSpatialAccess,
 } from './model.js'
 
-const SHARE_PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!#$%&*+-=?@_'
+export const SHARE_PASSWORD_LENGTH_OPTIONS = Object.freeze([8, 12, 16, 20, 24, 32])
+const SHARE_PASSWORD_UPPERCASE = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+const SHARE_PASSWORD_LOWERCASE = 'abcdefghijkmnopqrstuvwxyz'
+const SHARE_PASSWORD_DIGITS = '23456789'
+// Query delimiters are intentionally excluded.  The final link is still
+// encoded with encodeURIComponent on the server.
+const SHARE_PASSWORD_SPECIAL_CHARACTERS = '!$*+@'
+const SHARE_PASSWORD_ALPHABET = `${SHARE_PASSWORD_UPPERCASE}${SHARE_PASSWORD_LOWERCASE}${SHARE_PASSWORD_DIGITS}${SHARE_PASSWORD_SPECIAL_CHARACTERS}`
 
 function secureRandomInt (maximum) {
   const limit = Math.floor(0x100000000 / maximum) * maximum
@@ -28,16 +35,20 @@ function shuffleSecure (values) {
   return values
 }
 
-export function generateStrongSharePassword (length = 20) {
-  const size = Math.max(4, Math.min(128, Number.parseInt(length, 10) || 20))
+export function generateStrongSharePassword (length = 12, options = {}) {
+  const size = Math.max(4, Math.min(128, Number.parseInt(length, 10) || 12))
+  const includeSpecialCharacters = options.includeSpecialCharacters !== false
   const groups = [
-    'ABCDEFGHJKLMNPQRSTUVWXYZ',
-    'abcdefghijkmnopqrstuvwxyz',
-    '23456789',
-    '!#$%&*+-=?@_',
+    SHARE_PASSWORD_UPPERCASE,
+    SHARE_PASSWORD_LOWERCASE,
+    SHARE_PASSWORD_DIGITS,
+    ...(includeSpecialCharacters ? [SHARE_PASSWORD_SPECIAL_CHARACTERS] : []),
   ]
+  const alphabet = includeSpecialCharacters
+    ? SHARE_PASSWORD_ALPHABET
+    : `${SHARE_PASSWORD_UPPERCASE}${SHARE_PASSWORD_LOWERCASE}${SHARE_PASSWORD_DIGITS}`
   const result = groups.map(group => group[secureRandomInt(group.length)])
-  while (result.length < size) result.push(SHARE_PASSWORD_ALPHABET[secureRandomInt(SHARE_PASSWORD_ALPHABET.length)])
+  while (result.length < size) result.push(alphabet[secureRandomInt(alphabet.length)])
   return shuffleSecure(result).join('')
 }
 
@@ -77,7 +88,11 @@ export function showAccountPasswordDialog (options = {}) {
             <span>${escapeHtml(options.label || '密码')}</span>
             <input name="password" type="password" minlength="${Number(options.minLength || 1)}" maxlength="128" autocomplete="${escapeHtml(options.autocomplete || 'current-password')}" required>
           </label>
-          ${options.generate ? '<div class="account-password-tools"><button type="button" class="account-secondary-button" data-account-password-action="generate">生成密码</button><button type="button" class="account-secondary-button" data-account-password-action="copy" disabled>复制密码</button></div><small class="account-password-status" data-account-password-status aria-live="polite"></small>' : ''}
+          ${options.generate ? `<div class="account-password-generation-options">
+            <label class="account-dialog-field"><span>密码长度</span><select name="passwordLength">${SHARE_PASSWORD_LENGTH_OPTIONS.map(length => `<option value="${length}" ${Number(options.passwordLength || 12) === length ? 'selected' : ''}>${length} 位</option>`).join('')}</select></label>
+            <label class="account-password-special-option"><input name="passwordIncludeSpecial" type="checkbox" ${options.includeSpecialCharacters !== false ? 'checked' : ''}><span>包含特殊字符</span></label>
+          </div>
+          <div class="account-password-tools"><button type="button" class="account-secondary-button" data-account-password-action="generate">生成密码</button><button type="button" class="account-secondary-button" data-account-password-action="copy" disabled>复制密码</button></div><small class="account-password-status" data-account-password-status aria-live="polite"></small>` : ''}
         </div>
         <div class="app-dialog-actions">
           <button type="button" class="app-dialog-secondary" data-account-password-action="cancel">取消</button>
@@ -119,7 +134,10 @@ export function showAccountPasswordDialog (options = {}) {
       if (!target) return
       if (target.classList.contains('app-dialog-backdrop') && form.contains(event.target)) return
       if (target.dataset.accountPasswordAction === 'generate') {
-        input.value = generateStrongSharePassword(options.passwordLength || 20)
+        input.value = generateStrongSharePassword(
+          form.elements.passwordLength?.value || options.passwordLength || 12,
+          { includeSpecialCharacters: form.elements.passwordIncludeSpecial?.checked !== false },
+        )
         input.type = 'text'
         updateCopyState()
         if (statusNode) statusNode.textContent = '已生成，可直接使用或修改。'
@@ -277,6 +295,17 @@ export function showAccountShareDialog (options = {}) {
       : '<option value="keep" selected>后台未开放，保持现状</option>'
   const passwordTtlMode = share.passwordAccess?.ttlMode || share.passwordAccessTtlMode || 'finite'
   const mode = options.mode === 'create' ? 'create' : 'edit'
+  const passwordlessSharingEnabled = options.passwordlessSharingEnabled === true
+  const hasStoredPassword = share.passwordProtected === true
+  const passwordActionOptions = mode === 'create'
+    ? passwordlessSharingEnabled
+      ? '<option value="keep">不设置</option><option value="change">设置新密码</option>'
+      : '<option value="change" selected>设置新密码</option>'
+    : hasStoredPassword
+      ? `<option value="keep">保持不变</option><option value="change">设置新密码</option>${passwordlessSharingEnabled ? '<option value="remove">移除密码</option>' : ''}`
+      : passwordlessSharingEnabled
+        ? '<option value="keep">保持不设置</option><option value="change">设置新密码</option>'
+        : '<option value="change" selected>设置新密码</option>'
   const center = Array.isArray(viewConfig.center) ? viewConfig.center : []
 
   root.hidden = false
@@ -299,7 +328,7 @@ export function showAccountShareDialog (options = {}) {
               <label class="account-dialog-field"><span>状态</span><select name="status"><option value="active" ${mode === 'create' || share.storedStatus === 'active' ? 'selected' : ''}>分享中</option><option value="paused" ${mode !== 'create' && share.storedStatus !== 'active' ? 'selected' : ''}>暂停</option></select></label>
               <label class="account-dialog-field"><span>允许下载</span><select name="allowDownload"><option value="true" ${share.allowDownload ? 'selected' : ''}>允许</option><option value="false" ${share.allowDownload ? '' : 'selected'}>禁止</option></select></label>
               <label class="account-dialog-field"><span>有效期</span><select name="expiresMode">${mode === 'edit' ? '<option value="keep">保持当前设置</option>' : ''}<option value="none">永不过期</option><option value="7d">从现在起 7 天</option><option value="30d">从现在起 30 天</option><option value="90d">从现在起 90 天</option></select></label>
-              <label class="account-dialog-field"><span>分享密码</span><select name="passwordAction">${mode === 'create' ? '<option value="keep">不设置</option>' : '<option value="keep">保持不变</option>'}<option value="change">设置新密码</option>${mode === 'edit' ? '<option value="remove">移除密码</option>' : ''}</select></label>
+              <label class="account-dialog-field"><span>分享密码</span><select name="passwordAction">${passwordActionOptions}</select></label>
             </div>
           </section>
           <section class="account-share-dialog-section">
@@ -380,10 +409,10 @@ export function showAccountShareDialog (options = {}) {
     const status = preview.status === 'ready' ? '范围正常' : '范围不可用'
     spatialSummaryRoot.textContent = `${status}${preview.areaKm2 != null ? ` · 面积 ${Number(preview.areaKm2).toFixed(1)} km²` : ''}${preview.diagonalKm != null ? ` · 对角线 ${Number(preview.diagonalKm).toFixed(1)} km` : ''}${preview.paddingMeters != null ? ` · 余量 ${Math.round(Number(preview.paddingMeters))} m` : ''}${preview.unlimitedAccessEligible === true ? ' · 可用不限授权' : ''}`
   }
+  const willHavePassword = () => form.elements.passwordAction.value === 'change' ||
+    (mode === 'edit' && hasStoredPassword && form.elements.passwordAction.value !== 'remove')
   const updatePasswordAccessVisibility = () => {
-    const passwordAction = form.elements.passwordAction.value
-    const hasPassword = passwordAction === 'change' ||
-      (mode === 'edit' && share.passwordProtected === true && passwordAction !== 'remove')
+    const hasPassword = willHavePassword()
     passwordAccessField.hidden = !hasPassword
     if (!hasPassword) form.elements.passwordAccessTtlMode.value = 'finite'
   }
@@ -565,7 +594,7 @@ export function showAccountShareDialog (options = {}) {
         showError('不限授权需要先限制地图范围')
         return
       }
-      if (passwordAccessTtlMode === 'unlimited' && (mode === 'create' ? form.elements.passwordAction.value !== 'change' : share.passwordProtected !== true && form.elements.passwordAction.value !== 'change')) {
+      if (passwordAccessTtlMode === 'unlimited' && !willHavePassword()) {
         showError('不限授权需要设置分享密码')
         return
       }

@@ -42,7 +42,10 @@ import {
   spatialAccessLabel,
   spatialStatusLabel,
 } from '../src/account/model.js'
-import { generateStrongSharePassword } from '../src/account/dialogs.js'
+import {
+  generateStrongSharePassword,
+  SHARE_PASSWORD_LENGTH_OPTIONS,
+} from '../src/account/dialogs.js'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -298,6 +301,8 @@ test('空间分享摘要保留空值并区分范围、状态和密码授权', ()
   }), {
     mode: 'kml_bounds',
     status: 'ready',
+    version: null,
+    geometryType: null,
     bbox: null,
     areaKm2: null,
     diagonalKm: null,
@@ -372,7 +377,7 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.match(viewSource, /name="sort"/)
   assert.match(viewSource, /data-account-action="trash-selected-kml"/)
   assert.match(appSource, /for \(const item of selection\.eligible\)/)
-  assert.match(appSource, /showAccountShareDialog\(\{ share, documents \}\)/)
+  assert.match(appSource, /passwordlessSharingEnabled: passwordlessSharingEnabled\(\)/)
   assert.match(dialogSource, /data-account-share-move="up"/)
   assert.match(dialogSource, /data-account-share-visible/)
   assert.match(dialogSource, /data-account-spatial-preview/)
@@ -407,19 +412,31 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.match(viewSource, /analytics\?\.mode/)
   assert.match(dialogSource, /generateStrongSharePassword/)
   assert.match(dialogSource, /data-account-password-action="copy"/)
+  assert.match(dialogSource, /passwordlessSharingEnabled/)
+  assert.match(dialogSource, /hasStoredPassword/)
+  assert.match(dialogSource, /'<option value="change" selected>设置新密码<\/option>'/)
+  assert.match(dialogSource, /passwordAccessTtlMode === 'unlimited' && !willHavePassword\(\)/)
+  assert.match(dialogSource, /passwordLength/)
+  assert.match(dialogSource, /passwordIncludeSpecial/)
   assert.match(dialogSource, /analyticsMode/)
   assert.doesNotMatch(appSource, /state\.auth = await refreshAuthSession\(\)\s*await loadSessions\(\)/)
   assert.doesNotMatch(sessionSource, /export async function logout \(\) \{[\s\S]*?\} finally \{/)
   assert.doesNotMatch(accountSource, /(?:window\.)?(?:alert|confirm|prompt)\s*\(/)
 })
 
-test('分享密码生成器使用安全随机数并覆盖四类字符', () => {
-  const password = generateStrongSharePassword(64)
-  assert.equal(password.length, 64)
+test('分享密码生成器支持长度和特殊字符选项，并排除 URL 查询分隔符', () => {
+  assert.deepEqual(SHARE_PASSWORD_LENGTH_OPTIONS, [8, 12, 16, 20, 24, 32])
+  const password = generateStrongSharePassword(32)
+  assert.equal(password.length, 32)
   assert.match(password, /[A-Z]/)
   assert.match(password, /[a-z]/)
   assert.match(password, /[2-9]/)
-  assert.match(password, /[!#$%&*+\-=\?@_]/)
+  assert.match(password, /[!$*+@]/)
+  assert.doesNotMatch(password, /[?&#%=]/)
+
+  const withoutSpecial = generateStrongSharePassword(16, { includeSpecialCharacters: false })
+  assert.equal(withoutSpecial.length, 16)
+  assert.doesNotMatch(withoutSpecial, /[^A-Za-z2-9]/)
 })
 
 test('两步路公开轨迹导入仅对登录写用户展示并复用同一弹窗契约', () => {

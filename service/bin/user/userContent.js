@@ -16,6 +16,7 @@ import {
 } from '../../../shared/kml-resource-collection.js'
 import {
   computeSpatialScope,
+  isCurrentSpatialScope,
   publicSpatialScope,
   spatialPolicyEligibility,
 } from './shareSpatialAccess.js'
@@ -36,6 +37,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     publicAccessPolicy: 'inherit_site_access',
     maxFilesPerShare: 20,
     accessTtlMs: 1000 * 60 * 60 * 12,
+    // Passwordless links are an explicit administrator opt-in.
+    passwordlessSharingEnabled: false,
     spatialAccessEnabled: true,
     spatialPaddingMeters: 1000,
     spatialMaxAreaKm2: 10000,
@@ -613,6 +616,11 @@ function normalizeSharePassword (value, currentHash) {
   return hashPasswordSync(password, { allowWeak: true, maxLength: 128 })
 }
 
+function assertPasswordlessSharingAllowed (passwordHash, settings) {
+  if (passwordHash || settings.share.passwordlessSharingEnabled === true) return
+  throw spatialError('SHARE_PASSWORDLESS_DISABLED')
+}
+
 function normalizeSpatialAccessMode (value, fallback = 'unrestricted') {
   if (value === undefined) return fallback
   const input = requireObject(value, '空间访问设置格式不正确')
@@ -649,6 +657,7 @@ function spatialError (reasonCode) {
     SHARE_SPATIAL_RECALCULATING: '分享空间范围正在重新计算',
     SHARE_UNLIMITED_ACCESS_DISABLED: '后台未开放不限授权',
     SHARE_UNLIMITED_ACCESS_REQUIRES_PASSWORD: '不限授权需要先设置分享密码',
+    SHARE_PASSWORDLESS_DISABLED: '后台未开放无密码分享',
     SHARE_UNLIMITED_ACCESS_REQUIRES_SPATIAL: '不限授权需要启用空间范围限制',
     SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE: 'KML 范围超过不限授权阈值',
   }
@@ -1026,7 +1035,7 @@ export class UserContentService {
     }
   }
 
-  resolveShareSpatialState (items, mode, settings, options = {}) {
+  resolveShareSpatialState (items, mode, settings) {
     if (mode === 'unrestricted') {
       return {
         status: 'ready',
@@ -1039,9 +1048,7 @@ export class UserContentService {
         errorCode: null,
       }
     }
-    if (settings.share.spatialAccessEnabled !== true && options.allowExisting !== true) {
-      throw spatialError('SHARE_SPATIAL_DISABLED')
-    }
+    if (settings.share.spatialAccessEnabled !== true) throw spatialError('SHARE_SPATIAL_DISABLED')
     const state = this.computeSpatialState(items, settings)
     if (state.status !== 'ready') throw spatialError(state.errorCode)
     return state
@@ -2423,6 +2430,7 @@ export class UserContentService {
     const viewConfig = normalizeViewConfig(input.viewConfig)
     const analyticsConfig = normalizeShareAnalyticsConfig(input.analytics, settings.analytics?.share)
     const passwordHash = normalizeSharePassword(input.password, null)
+    assertPasswordlessSharingAllowed(passwordHash, settings)
     const passwordSecret = passwordHash
       ? encryptSecret(String(input.password), this.shareSecretEncryptionKey)
       : ''
@@ -2598,6 +2606,7 @@ export class UserContentService {
       parseJson(row.analytics_config_json, {})
     )
     const passwordHash = normalizeSharePassword(input.password, row.password_hash)
+    assertPasswordlessSharingAllowed(passwordHash, settings)
     const passwordSecret = input.password === undefined
       ? String(row.password_secret || '')
       : passwordHash
@@ -2605,9 +2614,7 @@ export class UserContentService {
         : ''
     const previousSpatialMode = row.spatial_access_mode || 'unrestricted'
     const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, previousSpatialMode)
-    const spatialState = this.resolveShareSpatialState(spatialItems, spatialAccessMode, settings, {
-      allowExisting: previousSpatialMode === 'kml_bounds' && spatialAccessMode === 'kml_bounds',
-    })
+    const spatialState = this.resolveShareSpatialState(spatialItems, spatialAccessMode, settings)
     let passwordAccessTtlMode = normalizePasswordAccessTtlMode(
       input.passwordAccess,
       row.password_access_ttl_mode || 'finite'
@@ -2737,10 +2744,9 @@ export class UserContentService {
     }))
     const settings = this.getSettings()
     const spatialMode = row.spatial_access_mode || 'unrestricted'
-    const spatialState = this.resolveShareSpatialState(items, spatialMode, settings, {
-      allowExisting: spatialMode === 'kml_bounds',
-    })
+    const spatialState = this.resolveShareSpatialState(items, spatialMode, settings)
     const passwordHash = row.password_hash
+    assertPasswordlessSharingAllowed(passwordHash, settings)
     const ttlMode = row.password_access_ttl_mode || 'finite'
     this.assertPasswordAccessMode(ttlMode, passwordHash, spatialMode, spatialState, settings)
     const previousScope = parseJson(row.spatial_scope_json, null)
@@ -2833,6 +2839,7 @@ export class UserContentService {
     if (row.status === 'revoked') {
       throw createHttpError('已撤销的分享不能轮换链接', 409, 'SHARE_REVOKED')
     }
+    assertPasswordlessSharingAllowed(row.password_hash, this.getSettings())
     const publicId = randomToken(24)
     const now = this.nowIso()
     this.database.transaction(() => {
@@ -2997,8 +3004,7 @@ export class UserContentService {
     const storedRevisions = Array.isArray(scope?.sourceRevisions) ? scope.sourceRevisions : []
     const policyStale = Number(current.access_policy_revision || 1) !== policyRevision ||
       Number(scope?.policyRevision || 0) !== policyRevision
-    const stale = policyStale ||
-      !this.spatialSnapshotEqual(storedRevisions, sourceRevisions)
+    const stale = policyStale || !this.spatialSnapshotEqual(storedRevisions, sourceRevisions)
     this.recordShareRuntimeMetric(current.id, 'spatial_scope_cache', {
       decision: stale ? 'stale' : 'hit',
     })
@@ -3014,7 +3020,7 @@ export class UserContentService {
       }
     }
     const spatialStatus = current?.spatial_status || 'error'
-    if (spatialStatus !== 'ready' || !scope?.projection || !scope?.primitives) {
+    if (spatialStatus !== 'ready' || !isCurrentSpatialScope(scope)) {
       throw spatialError(current?.spatial_error_code || 'SHARE_SPATIAL_RECALCULATING')
     }
     return current
@@ -3231,20 +3237,15 @@ export class UserContentService {
     return { items, page: pageInfo.page, limit: pageInfo.limit, total }
   }
 
-  async createPasswordShareUrl (actor, shareId, suppliedPassword) {
+  async createPasswordShareUrl (actor, shareId) {
     const row = this.requireOwnedShare(actor, shareId)
     if (!row.password_hash) {
       throw createHttpError('该分享未设置密码', 409, 'SHARE_PASSWORD_NOT_SET')
     }
-    const password = suppliedPassword === undefined
-      ? decryptSecret(row.password_secret, this.shareSecretEncryptionKey)
-      : String(suppliedPassword || '')
+    const password = decryptSecret(row.password_secret, this.shareSecretEncryptionKey)
     if (!password || !(await verifyPassword(password, row.password_hash))) {
-      if (suppliedPassword !== undefined) {
-        throw createHttpError('分享密码不正确', 401, 'SHARE_PASSWORD_INVALID')
-      }
       throw createHttpError(
-        '当前分享的密码创建于旧版本，请重新设置一次密码后再复制',
+        '分享密码副本不可用，请重新设置密码或删除后重建分享',
         409,
         'SHARE_PASSWORD_SECRET_UNAVAILABLE'
       )

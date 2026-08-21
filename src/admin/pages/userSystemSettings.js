@@ -133,6 +133,13 @@ export function renderUserSystemSettingsPage (state) {
                     <option value="independent" ${share.publicAccessPolicy === 'independent' ? 'selected' : ''}>分享链接独立访问</option>
                   </select>
                 </label>
+                <label>
+                  <span>无密码分享</span>
+                  <select name="passwordlessSharingEnabled">
+                    <option value="true" ${share.passwordlessSharingEnabled === true ? 'selected' : ''}>允许</option>
+                    <option value="false" ${share.passwordlessSharingEnabled === true ? '' : 'selected'}>禁止</option>
+                  </select>
+                </label>
                 <label><span>单个分享最多 KML 数</span><input name="maxFilesPerShare" type="number" min="1" max="20" value="${Number(share.maxFilesPerShare || 20)}" required></label>
                 <label><span>分享密码授权有效期（小时）</span><input name="shareAccessHours" type="number" min="1" max="168" value="${numberValue(share.accessTtlMs, HOUR_MS)}" required></label>
               </div>
@@ -266,6 +273,7 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
       },
       share: {
         publicAccessPolicy: String(data.get('publicAccessPolicy') || 'inherit_site_access'),
+        passwordlessSharingEnabled: data.get('passwordlessSharingEnabled') === 'true',
         maxFilesPerShare: integerField(data, 'maxFilesPerShare'),
         accessTtlMs: integerField(data, 'shareAccessHours') * HOUR_MS,
         rateLimit: {

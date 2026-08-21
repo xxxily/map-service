@@ -53,6 +53,33 @@ test('边界瓦片遮罩同时保留允许像素并清空范围外像素', async
   assert.equal(stats.channels[3].max, 255)
 })
 
+test('分散点外包矩形内部瓦片不会被遮罩清空', () => {
+  const scope = computeSpatialScope({
+    documents: [{
+      features: [
+        { type: 'Point', coordinates: [113.2, 23.1] },
+        { type: 'Point', coordinates: [113.4, 23.3] },
+      ],
+    }],
+    paddingMeters: 100,
+  }).scope
+  const tile = tileForCoordinate(113.3, 23.2, Math.max(scope.minZoom, 15))
+  const alpha = buildShareTileAlphaMask(scope, tile, 256, 256)
+  assert.equal(alpha.opaquePixels, alpha.totalPixels)
+})
+
+test('边界瓦片遮罩拒绝旧空间范围模型', () => {
+  const scope = computeSpatialScope({
+    documents: [{ features: [{ type: 'Point', coordinates: [113.2644, 23.1291] }] }],
+    paddingMeters: 1000,
+  }).scope
+  const tile = tileForCoordinate(113.2644, 23.1291, Math.max(scope.minZoom, 14))
+  assert.throws(
+    () => buildShareTileAlphaMask({ ...scope, version: 1, geometryType: 'PrimitiveUnion' }, tile, 256, 256),
+    /分享空间范围不可用/
+  )
+})
+
 test('边界瓦片遮罩不会把原图半透明像素变得更不透明', async () => {
   const longitude = 113.2644
   const latitude = 23.1291

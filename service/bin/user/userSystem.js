@@ -47,6 +47,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     publicAccessPolicy: 'inherit_site_access',
     maxFilesPerShare: 20,
     accessTtlMs: 1000 * 60 * 60 * 12,
+    passwordlessSharingEnabled: false,
     spatialAccessEnabled: true,
     spatialPaddingMeters: 1000,
     spatialMaxAreaKm2: 10000,
@@ -473,6 +474,9 @@ export class UserSystemService {
         enabled: settings.registration.mode === 'open',
       },
       passwordPolicy: PASSWORD_POLICY,
+      share: {
+        passwordlessSharingEnabled: settings.share.passwordlessSharingEnabled === true,
+      },
       analytics: publicAnalyticsConfig(settings.analytics),
     }
   }
@@ -564,6 +568,11 @@ export class UserSystemService {
       next.share.publicAccessPolicy = policy
       next.share.maxFilesPerShare = clampInteger(input.share.maxFilesPerShare, current.share.maxFilesPerShare, 1, 20)
       next.share.accessTtlMs = clampInteger(input.share.accessTtlMs, current.share.accessTtlMs, 1000 * 60 * 5, 1000 * 60 * 60 * 24 * 7)
+      next.share.passwordlessSharingEnabled = normalizeBooleanSetting(
+        input.share.passwordlessSharingEnabled,
+        current.share.passwordlessSharingEnabled,
+        '允许无密码分享开关'
+      )
 
       if (input.share.rateLimit !== undefined) {
         if (!input.share.rateLimit || typeof input.share.rateLimit !== 'object' || Array.isArray(input.share.rateLimit)) {

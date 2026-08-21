@@ -229,7 +229,9 @@ async function initLeafletMap () {
       validateCatalog: catalog => {
         const catalogSpatial = catalog?.spatialAccess
         if (restrictedShare) {
-          if (catalogSpatial?.mode !== 'kml_bounds' || catalogSpatial?.status !== 'ready') {
+          if (catalogSpatial?.mode !== 'kml_bounds' || catalogSpatial?.status !== 'ready' ||
+              Number(catalogSpatial.version) !== shareSpatial.version ||
+              catalogSpatial.geometryType !== shareSpatial.geometryType) {
             throw new Error('分享地图空间范围校验失败')
           }
           const catalogBounds = Array.isArray(catalogSpatial.cameraBounds)

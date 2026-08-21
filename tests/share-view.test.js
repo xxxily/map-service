@@ -25,29 +25,34 @@ test('share pages opt out of search engine indexing in HTTP and client fallbacks
 
 test('空间受限分享必须提供 ready 状态的相机边界和最低缩放级别', () => {
   const valid = getShareSpatialConfig({
-    spatialAccess: { mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113, 23], minZoom: 11 },
+    spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113, 23], minZoom: 11 },
   })
   assert.equal(valid.restricted, true)
   assert.equal(valid.valid, true)
   assert.equal(valid.minZoom, 11)
 
   const unavailable = getShareSpatialConfig({
-    spatialAccess: { mode: 'kml_bounds', status: 'error', cameraBounds: [112, 22, 113, 23], minZoom: 11 },
+    spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'error', cameraBounds: [112, 22, 113, 23], minZoom: 11 },
   })
   assert.equal(unavailable.valid, false)
 
   const malformed = getShareSpatialConfig({
-    spatialAccess: { mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113], minZoom: 11 },
+    spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113], minZoom: 11 },
   })
   assert.equal(malformed.valid, false)
 
   const antimeridian = getShareSpatialConfig({
-    spatialAccess: { mode: 'kml_bounds', status: 'ready', cameraBounds: [179, -1, 181, 1], minZoom: 8 },
+    spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [179, -1, 181, 1], minZoom: 8 },
   })
   assert.equal(antimeridian.valid, true)
 
   const oversized = getShareSpatialConfig({
-    spatialAccess: { mode: 'kml_bounds', status: 'ready', cameraBounds: [-181, -1, 181, 1], minZoom: 8 },
+    spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [-181, -1, 181, 1], minZoom: 8 },
   })
   assert.equal(oversized.valid, false)
+
+  const legacy = getShareSpatialConfig({
+    spatialAccess: { version: 1, geometryType: 'PrimitiveUnion', mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113, 23], minZoom: 11 },
+  })
+  assert.equal(legacy.valid, false)
 })

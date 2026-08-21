@@ -6,6 +6,8 @@ const UNSUPPORTED_SHARE_SOURCE_KINDS = new Set([
   'pmtiles-raster',
 ])
 
+const SHARE_SPATIAL_SCOPE_VERSION = 2
+
 const WEB_MERCATOR_COORDINATE_SYSTEMS = new Set([
   'EPSG:3857',
   'EPSG:900913',
@@ -34,6 +36,9 @@ function sanitizeSpatialAccess (value) {
     revision: Math.max(0, Number.parseInt(String(source.revision || 0), 10) || 0),
   }
   if (mode !== 'kml_bounds') return result
+
+  result.version = SHARE_SPATIAL_SCOPE_VERSION
+  result.geometryType = 'BoundingBox'
 
   const bbox = numberArray(source.bbox, 4)
   const cameraBounds = numberArray(source.cameraBounds, 4)

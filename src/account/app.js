@@ -111,6 +111,10 @@ function shareAnalyticsPolicy () {
   return state.auth.config?.analytics?.sharePolicy || {}
 }
 
+function passwordlessSharingEnabled () {
+  return state.auth.config?.share?.passwordlessSharingEnabled === true
+}
+
 function requireCapability (key, message = '当前账号没有执行此操作的权限') {
   if (capabilities()[key]) return true
   setMessage('', message)
@@ -618,6 +622,7 @@ async function createShareFromSelection () {
     },
     documents: state.kml.items,
     analyticsPolicy: shareAnalyticsPolicy(),
+    passwordlessSharingEnabled: passwordlessSharingEnabled(),
     onSpatialPreview: previewItems => accountApi.spatialPreview({
       items: previewItems,
       spatialAccess: { mode: 'kml_bounds' },
@@ -634,6 +639,8 @@ async function createShareFromSelection () {
       autocomplete: 'new-password',
       confirmText: '创建分享',
       generate: true,
+      passwordLength: 12,
+      includeSpecialCharacters: true,
     })
     if (!password) return
   }
@@ -678,10 +685,10 @@ async function editShare (id) {
     return
   }
   const values = await showAccountShareDialog({
-    // showAccountShareDialog({ share, documents }) keeps the edit dialog contract stable.
     share,
     documents,
     analyticsPolicy: shareAnalyticsPolicy(),
+    passwordlessSharingEnabled: passwordlessSharingEnabled(),
     onSpatialPreview: previewItems => accountApi.spatialPreview({
       items: previewItems,
       spatialAccess: { mode: 'kml_bounds' },
@@ -711,6 +718,8 @@ async function editShare (id) {
       minLength: 4,
       autocomplete: 'new-password',
       generate: true,
+      passwordLength: 12,
+      includeSpecialCharacters: true,
     })
     if (!password) return
     body.password = password
