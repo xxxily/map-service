@@ -624,7 +624,7 @@ Content-Type: application/json
 | `POST` | `/kml/shares` | `share.own.manage` | 创建分享包 |
 | `GET` | `/kml/shares/:id` | `share.own.manage` | 获取完整配置 |
 | `GET` | `/kml/shares/:id/access-events` | `share.own.manage` | 获取自己的最近聚合访问记录 |
-| `POST` | `/kml/shares/:id/password-url` | `share.own.manage` | 校验当前分享密码并生成带密码参数的链接 |
+| `POST` | `/kml/shares/:id/password-url` | `share.own.manage` | 获取当前分享密码并生成带密码参数的链接（仅所有者） |
 | `PUT` | `/kml/shares/:id` | `share.own.manage` | 编辑文件、顺序、显隐和视图 |
 | `POST` | `/kml/shares/:id/sync` | `share.own.manage` | 发布当前 KML 内容快照并重新计算分享范围 |
 | `POST` | `/kml/shares/:id/pause` | `share.own.manage` | 暂停分享 |
@@ -673,9 +673,9 @@ Content-Type: application/json
 - `password` 省略表示保持现状，空字符串或 `null` 表示移除密码。
 - `spatialAccess.mode` 支持 `unrestricted` 和 `kml_bounds`；省略时创建默认为 `unrestricted`，更新时保持现状。`kml_bounds` 的范围、面积和对角线只能由服务端根据分享内 active KML 计算。
 - `passwordAccess.ttlMode` 支持 `finite` 和 `unlimited`；无密码时公开视图为 `not_applicable`。`unlimited` 仅在空间受限、范围合规且后台允许时可用，服务端保存时会重新计算，不信任前端预检。
-- 非空分享密码采用独立访问口令规则，长度为 4～128 位；不沿用账号密码的 12 位和常见密码限制，但仍仅保存安全哈希并受独立尝试限流保护。
+- 非空分享密码采用独立访问口令规则，长度为 4～128 位；不沿用账号密码的 12 位和常见密码限制。服务端保存用于访问校验的安全哈希，并另存仅供所有者主动复制的 AES-256-GCM 密文；密文不进入普通接口、日志和审计元数据。
 - `analytics.mode` 支持 `none`、`provider` 和经超级管理员授权的 `custom`。默认 provider 模式只提交网站 ID，脚本来源由管理员固定；公开清单只返回服务端校验后的 descriptor。
-- `password-url` 不从数据库读取密码明文。所有者必须重新提交当前密码，服务端校验成功后仅在本次响应的 `shareUrl` 中编码该密码；响应不另设密码字段，服务端也不保存该明文。
+- `password-url` 不要求所有者再次输入密码。服务端使用稳定密钥加密保存分享密码，普通读取接口不返回该字段；仅所有者主动调用时在 `no-store` 响应中返回 `shareUrl` 和 `password`。历史版本创建、无法完成密文迁移的分享需先重新设置一次密码。
 - active 分享删除到没有有效文件时会自动暂停。
 - `revoked` 不可恢复；`blocked` 只能由管理员解封。
 

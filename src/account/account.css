@@ -1160,22 +1160,63 @@ button:disabled {
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
 }
 
-.account-password-input-row {
+.app-dialog.account-password-dialog {
+  width: min(430px, 100%);
+  padding: 0;
+  overflow: hidden;
+}
+
+.account-password-dialog-heading {
   display: flex;
-  gap: 7px;
-  align-items: stretch;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #e7edeb;
+  padding: 18px 20px 16px;
+  background: #f8fbfa;
 }
 
-.account-password-input-row input {
-  min-width: 0;
-  flex: 1 1 auto;
+.account-password-dialog-heading h2 {
+  margin-bottom: 5px;
 }
 
-.account-password-input-row button {
+.account-password-dialog-heading p {
+  color: #607577;
+  font-size: 12px;
+}
+
+.account-password-dialog-close {
+  display: grid;
+  width: 30px;
+  height: 30px;
   flex: 0 0 auto;
-  min-height: 38px;
-  padding: 0 9px;
-  white-space: nowrap;
+  place-items: center;
+  border: 1px solid #d9e2df;
+  border-radius: 7px;
+  background: #fff;
+  color: #496264;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.account-password-dialog-body {
+  padding: 2px 20px 4px;
+}
+
+.account-password-tools {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.account-password-tools button {
+  min-height: 34px;
+  padding: 0 11px;
+}
+
+.account-password-dialog > .app-dialog-actions {
+  border-top: 1px solid #e7edeb;
+  padding: 14px 20px 18px;
 }
 
 .account-password-status {
@@ -1498,12 +1539,9 @@ body.account-view .app-dialog:not(.account-share-dialog) {
 }
 
 @media (max-width: 720px) {
-  .account-password-input-row {
-    flex-wrap: wrap;
-  }
-
-  .account-password-input-row input {
-    flex-basis: 100%;
+  .account-password-tools {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .account-auth-header,

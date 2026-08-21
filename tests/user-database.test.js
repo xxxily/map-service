@@ -372,7 +372,7 @@ test('UserDatabase v6 backfills published KML snapshots for existing shares', ()
   }
 })
 
-test('UserDatabase v7 adds analytics and access-event fields to a v6 database idempotently', () => {
+test('UserDatabase v8 adds analytics, access-event and encrypted password fields to a v6 database idempotently', () => {
   const rawDatabase = new DatabaseSync(':memory:')
   rawDatabase.exec(`
     PRAGMA foreign_keys = ON;
@@ -403,6 +403,7 @@ test('UserDatabase v7 adds analytics and access-event fields to a v6 database id
     assert.equal(shareColumns.includes('analytics_config_json'), true)
     assert.equal(shareColumns.includes('analytics_disabled'), true)
     assert.equal(shareColumns.includes('analytics_disabled_reason'), true)
+    assert.equal(shareColumns.includes('password_secret'), true)
     const session = database.prepare('SELECT access_method FROM share_access_sessions WHERE id = ?').get('sas_one')
     assert.equal(session.access_method, 'password_form')
     const indexes = database.prepare(`
@@ -411,7 +412,7 @@ test('UserDatabase v7 adds analytics and access-event fields to a v6 database id
       ORDER BY name
     `).all().map(row => row.name)
     assert.deepEqual(indexes, ['idx_share_access_events_aggregate', 'idx_share_access_events_owner'])
-    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 7)
+    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, USER_DATABASE_VERSION)
     assert.doesNotThrow(() => database.migrate())
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'share_access_events'").get().count, 1)
   } finally {

@@ -25,6 +25,7 @@ import KmlShareLinkResolverService from './user/shareLinkResolver.js'
 import { createHttpError, randomToken } from './user/security.js'
 import { buildShareMapCatalog, isShareMapSourceAllowed } from './user/shareMapCatalog.js'
 import { classifyTileAgainstScope } from './user/shareSpatialAccess.js'
+import { shareSpatialTileMasker } from './user/shareSpatialTileMask.js'
 import {
   assertKmlMediaPublicAddress,
   validateKmlMediaResponse,
@@ -85,6 +86,7 @@ const sharedKmlManager = new SharedKmlManager({
 const userContent = new UserContentService({
   database: userDatabase,
   userSystem,
+  shareSecretEncryptionKey: userSystemConfig.shareSecretEncryptionKey,
   // 公开分享路由会异步计算站点访问状态并通过 context.siteAccessGranted 传入。
   isSiteAccessEnabled: () => true,
 })
@@ -442,8 +444,8 @@ const service = {
     return userContent.listShareAccessEvents(actor, id, input)
   },
 
-  createUserKmlSharePasswordUrl (actor, id, password) {
-    return userContent.createPasswordShareUrl(actor, id, password)
+  createUserKmlSharePasswordUrl (actor, id) {
+    return userContent.createPasswordShareUrl(actor, id)
   },
 
   createAnonymousShareVisitorId () {
@@ -515,11 +517,11 @@ const service = {
       userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: classification.decision })
       throw createHttpError('瓦片坐标无效', 400, 'INVALID_TILE_COORDINATES')
     }
-    if (classification.decision === 'allow') {
+    if (classification.decision === 'allow' || classification.decision === 'boundary') {
       userContent.consumeShareRateLimit('tile', share.id, options)
     }
     userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: classification.decision })
-    return classification
+    return { ...classification, spatialScope }
   },
 
   getPublicKmlShareFile (publicId, shareItemId, options) {
@@ -603,6 +605,16 @@ const service = {
       duration: Date.now() - startTime,
     }), request.source)
     return result
+  },
+
+  async fetchPublicKmlShareBoundaryTile (sourceId, tile, options = {}) {
+    const result = await service.fetchTileSource(sourceId, tile, options)
+    const body = await shareSpatialTileMasker.maskRelayResult(result, {
+      scope: options.scope,
+      sourceId,
+      tile,
+    })
+    return { result, body }
   },
 
   async fetchVectorResource (sourceId, resourceType, params = {}, options = {}) {

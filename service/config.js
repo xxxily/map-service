@@ -52,6 +52,8 @@ const config = {
 
     userSystem: {
       databasePath: process.env.MAP_SERVICE_USER_DATABASE || path.resolve(rootPath, './.db/map-service.sqlite'),
+      shareSecretEncryptionKey: process.env.MAP_SERVICE_SHARE_SECRET_KEY ||
+        process.env.MAP_SERVICE_ADMIN_TOKEN_SECRET || 'map-service-dev-share-secret',
       sessionCookieName: 'map_user_session',
       csrfCookieName: 'map_csrf_token',
       shareCookiePrefix: 'map_share_access_',

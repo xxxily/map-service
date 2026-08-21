@@ -161,6 +161,74 @@ function containsRectangle (scope, corners) {
   return false
 }
 
+function rectangleContainsPoint (rectangle, point) {
+  return point[0] >= rectangle[0] - EPSILON && point[0] <= rectangle[2] + EPSILON &&
+    point[1] >= rectangle[1] - EPSILON && point[1] <= rectangle[3] + EPSILON
+}
+
+function rectangleEdges (rectangle) {
+  const [west, south, east, north] = rectangle
+  return [
+    [[west, south], [east, south]],
+    [[east, south], [east, north]],
+    [[east, north], [west, north]],
+    [[west, north], [west, south]],
+  ]
+}
+
+function rectangleIntersectsSegment (rectangle, segment, extraPadding = 0) {
+  const padded = [
+    rectangle[0] - extraPadding,
+    rectangle[1] - extraPadding,
+    rectangle[2] + extraPadding,
+    rectangle[3] + extraPadding,
+  ]
+  if (rectangleContainsPoint(padded, segment[0]) || rectangleContainsPoint(padded, segment[1])) return true
+  return rectangleEdges(padded).some(edge => segmentsIntersect(segment[0], segment[1], edge[0], edge[1]))
+}
+
+function rectangleIntersectsCircle (rectangle, center, radius) {
+  const nearest = [
+    clamp(center[0], rectangle[0], rectangle[2]),
+    clamp(center[1], rectangle[1], rectangle[3]),
+  ]
+  return (nearest[0] - center[0]) ** 2 + (nearest[1] - center[1]) ** 2 <= radius ** 2 + EPSILON
+}
+
+function rectangleIntersectsPolygon (rectangle, ring, extraPadding = 0) {
+  const padded = [
+    rectangle[0] - extraPadding,
+    rectangle[1] - extraPadding,
+    rectangle[2] + extraPadding,
+    rectangle[3] + extraPadding,
+  ]
+  if (ring.some(point => rectangleContainsPoint(padded, point))) return true
+  const corners = [
+    [rectangle[0], rectangle[1]], [rectangle[2], rectangle[1]],
+    [rectangle[2], rectangle[3]], [rectangle[0], rectangle[3]],
+  ]
+  if (corners.some(point => pointInRing(point, ring))) return true
+  const edges = rectangleEdges(padded)
+  for (let index = 1; index < ring.length; index += 1) {
+    if (edges.some(edge => segmentsIntersect(ring[index - 1], ring[index], edge[0], edge[1]))) return true
+  }
+  return false
+}
+
+function rectangleIntersectsScope (scope, rectangle) {
+  const padding = Number(scope.paddingMeters || 0)
+  for (const center of scope.primitives.points) {
+    if (rectangleIntersectsCircle(rectangle, center, padding)) return true
+  }
+  for (const segment of scope.primitives.segments) {
+    if (rectangleIntersectsSegment(rectangle, segment, padding)) return true
+  }
+  for (const ring of scope.primitives.polygons) {
+    if (rectangleIntersectsPolygon(rectangle, ring, padding)) return true
+  }
+  return false
+}
+
 function projectCoordinate (coordinate, projection) {
   const longitude = unwrapLongitude(coordinate[0], projection.centerLongitude)
   return [
@@ -493,9 +561,13 @@ export function classifyTileAgainstScope (scope, tile) {
   const geographicCorners = [[west, north], [east, north], [east, south], [west, south]]
   const corners = geographicCorners.map(coordinate => projectCoordinate(coordinate, scope.projection))
   if (containsRectangle(scope, corners)) return { decision: 'allow', tile: normalized }
-  const center = projectCoordinate([(west + east) / 2, (north + south) / 2], scope.projection)
-  const intersects = corners.some(point => containsPoint(scope, point)) || containsPoint(scope, center)
-  return { decision: intersects ? 'boundary' : 'outside', tile: normalized }
+  const rectangle = [
+    Math.min(...corners.map(point => point[0])),
+    Math.min(...corners.map(point => point[1])),
+    Math.max(...corners.map(point => point[0])),
+    Math.max(...corners.map(point => point[1])),
+  ]
+  return { decision: rectangleIntersectsScope(scope, rectangle) ? 'boundary' : 'outside', tile: normalized }
 }
 
 export function spatialPolicyEligibility (scope, settings = {}) {
@@ -555,6 +627,6 @@ export function spatialPolicyEligibility (scope, settings = {}) {
 }
 
 export const TRANSPARENT_TILE_PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+5u0AAAAASUVORK5CYII=',
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==',
   'base64'
 )

@@ -136,6 +136,32 @@ test('瓦片判定规范化世界环绕并区分允许、边界和范围外', ()
   assert.deepEqual(normalizeTileCoordinates({ z: 2, x: -1, y: 1 }), { z: 2, x: 3, y: 1 })
 })
 
+test('分散点首屏瓦片保持为可遮罩边界而不是误判范围外', () => {
+  const points = Array.from({ length: 140 }, (_, index) => ({
+    type: 'Point',
+    coordinates: [111.0686406 + (index % 14) * 0.036, 22.2961005 + Math.floor(index / 14) * 0.04],
+  }))
+  const result = computeSpatialScope({ documents: [documentWith(...points)], paddingMeters: 1000 })
+  assert.equal(result.status, 'ready')
+  assert.ok(result.scope.minZoom <= 11)
+  const tile = tileForCoordinate(points[0].coordinates[0], points[0].coordinates[1], result.scope.minZoom)
+  assert.equal(classifyTileAgainstScope(result.scope, tile).decision, 'boundary')
+})
+
+test('细线穿过瓦片时即使不命中角点或中心也会判定为边界', () => {
+  const result = computeSpatialScope({
+    documents: [documentWith({
+      type: 'LineString',
+      coordinates: [[113.2001, 23.1001], [113.2999, 23.1001]],
+    })],
+    paddingMeters: 100,
+  })
+  assert.equal(result.status, 'ready')
+  const zoom = Math.max(result.scope.minZoom, 14)
+  const tile = tileForCoordinate(113.25, 23.105, zoom)
+  assert.equal(classifyTileAgainstScope(result.scope, tile).decision, 'boundary')
+})
+
 test('空间和不限授权资格使用总体与更严格阈值', () => {
   const scope = { areaKm2: 10, diagonalKm: 8 }
   const settings = {

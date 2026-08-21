@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 7
+export const USER_DATABASE_VERSION = 8
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -533,6 +533,22 @@ export class UserDatabase {
         `)
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(7, new Date().toISOString())
+      })
+    }
+
+    if (current < 8) {
+      this.transaction(() => {
+        const tableExists = Boolean(this.database.prepare(`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kml_shares'
+        `).get())
+        if (tableExists) {
+          const columns = this.database.prepare('PRAGMA table_info(kml_shares)').all().map(column => column.name)
+          if (!columns.includes('password_secret')) {
+            this.database.exec("ALTER TABLE kml_shares ADD COLUMN password_secret TEXT NOT NULL DEFAULT ''")
+          }
+        }
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(8, new Date().toISOString())
       })
     }
 

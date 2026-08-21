@@ -896,19 +896,16 @@ test('share passwords, pause, rotation and revoke invalidate public access immed
   }
 })
 
-test('password share URL validates the current password and records password-link access', async () => {
+test('password share URL and password copy no longer require the owner to re-enter the password', async () => {
   const harness = createHarness()
   try {
     const document = harness.service.createKml(harness.one, { name: '带密码链接', features: [point('password-link')] })
     const share = harness.service.createShare(harness.one, {
       title: '带密码链接', items: [{ kmlId: document.id }], password: '1234',
     })
-    await assert.rejects(
-      harness.service.createPasswordShareUrl(harness.one, share.id, 'wrong'),
-      error => error.code === 'SHARE_PASSWORD_INVALID' && error.statusCode === 401,
-    )
-    const link = await harness.service.createPasswordShareUrl(harness.one, share.id, '1234')
+    const link = await harness.service.createPasswordShareUrl(harness.one, share.id)
     assert.equal(link.shareUrl, `/share/${share.publicId}?password=1234`)
+    assert.equal(link.password, '1234')
     const authorization = await harness.service.authorizePublicShare(
       share.publicId,
       { password: '1234', accessMethod: 'password_link' },
@@ -929,6 +926,27 @@ test('password share URL validates the current password and records password-lin
       harness.service.authorizePublicShare(share.publicId, { password: '1234' }),
       error => error.code === 'SHARE_PASSWORD_INVALID' && error.statusCode === 401,
     )
+  } finally {
+    harness.close()
+  }
+})
+
+test('legacy password shares require one password reset before password copying is available', async () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '旧密码分享', features: [point('legacy-password')] })
+    const share = harness.service.createShare(harness.one, {
+      title: '旧密码分享', items: [{ kmlId: document.id }], password: '1234',
+    })
+    harness.database.prepare("UPDATE kml_shares SET password_secret = '' WHERE id = ?").run(share.id)
+    await assert.rejects(
+      harness.service.createPasswordShareUrl(harness.one, share.id),
+      error => error.code === 'SHARE_PASSWORD_SECRET_UNAVAILABLE' && error.statusCode === 409,
+    )
+    const current = harness.service.getShare(harness.one, share.id)
+    harness.service.updateShare(harness.one, share.id, { revision: current.revision, password: '5678' })
+    const updated = await harness.service.createPasswordShareUrl(harness.one, share.id)
+    assert.equal(updated.password, '5678')
   } finally {
     harness.close()
   }

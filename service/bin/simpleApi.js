@@ -35,6 +35,7 @@ const ACCESS_VERIFY_LIMIT = {
   blockMs: 1000 * 60 * 15,
 }
 const accessVerifyAttempts = new Map()
+let lastShareTileMaskErrorLogAt = 0
 
 async function requireAccess (req) {
   const accessEnabled = await service.isAccessEnabled()
@@ -542,6 +543,51 @@ function sendTransparentShareTile (res, decision) {
   res.end(TRANSPARENT_TILE_PNG)
 }
 
+async function sendMaskedShareTile (req, res, classification) {
+  try {
+    const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || ''
+    const userAgent = req.headers['user-agent'] || ''
+    const { result, body } = await service.fetchPublicKmlShareBoundaryTile(
+      req.params.sourceId,
+      classification.tile,
+      {
+        scope: classification.spatialScope,
+        scale: req.query.scale,
+        clientIp,
+        userAgent,
+        reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        headers: {
+          'User-Agent': userAgent || 'Mozilla/5.0',
+        },
+      }
+    )
+    if (!body) {
+      sendTransparentShareTile(res, 'boundary-empty')
+      return
+    }
+    res.status(200)
+    res.set({
+      'Content-Type': 'image/png',
+      'Content-Length': String(body.length),
+      'Cache-Control': 'private, no-store',
+      'X-Cache': result.cacheStatus || 'UNKNOWN',
+      'X-Kml-Share-Spatial-Decision': 'boundary',
+    })
+    res.end(body)
+  } catch (error) {
+    const now = Date.now()
+    if (now - lastShareTileMaskErrorLogAt >= 30000) {
+      lastShareTileMaskErrorLogAt = now
+      console.error('[share tile mask error]', {
+        code: String(error?.code || 'SHARE_TILE_MASK_FAILED'),
+        sourceId: String(req.params.sourceId || ''),
+        tile: `${classification.tile.z}/${classification.tile.x}/${classification.tile.y}`,
+      })
+    }
+    sendTransparentShareTile(res, 'boundary-error')
+  }
+}
+
 const userApiRoutes = [
   {
     path: '/auth/config',
@@ -1020,14 +1066,13 @@ const userApiRoutes = [
   {
     path: '/kml/shares/:id/password-url',
     method: 'post',
-    describe: '验证当前分享密码并生成带密码链接',
+    describe: '获取分享密码和带密码链接',
     tags: ['shares'],
     handler: async (req, res) => {
       noStore(res)
       res.jsonSuc(await service.createUserKmlSharePasswordUrl(
         requireUser(req, 'share.own.manage'),
-        req.params.id,
-        req.body?.password
+        req.params.id
       ))
     },
   },
@@ -1157,6 +1202,10 @@ const userApiRoutes = [
         },
         await publicShareContext(req, res)
       )
+      if (classification.decision === 'boundary') {
+        await sendMaskedShareTile(req, res, classification)
+        return
+      }
       if (classification.decision !== 'allow') {
         sendTransparentShareTile(res, classification.decision)
         return

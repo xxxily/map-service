@@ -1,7 +1,7 @@
 # 用户体系部署与运维
 
-> 状态：适用于用户体系一期（SQLite schema v4）  
-> 更新日期：2026-08-05
+> 状态：适用于当前用户体系（SQLite schema v8）  
+> 更新日期：2026-08-21
 
 本文说明用户数据库初始化、首个超级管理员引导、备份、恢复、上线检查和当前运维边界。接口契约见 [用户体系与多 KML 分享 API](./api-user-system.md)。
 
@@ -19,6 +19,14 @@
 MAP_SERVICE_USER_DATABASE=/absolute/path/map-service.sqlite
 ```
 
+密码分享的所有者复制能力需要长期稳定的服务端密钥：
+
+```bash
+MAP_SERVICE_SHARE_SECRET_KEY='replace-with-a-long-random-stable-secret'
+```
+
+未显式配置时会兼容回退使用 `MAP_SERVICE_ADMIN_TOKEN_SECRET`，但生产环境建议单独配置并纳入密钥备份。该值不得随普通发布、进程重建或配置整理发生变化。
+
 如服务位于反向代理后，必须按实际可信代理跳数或网段显式配置 Express 代理信任，例如：
 
 ```bash
@@ -34,12 +42,12 @@ MAP_SERVICE_TRUST_PROXY=loopback,10.0.0.0/8
 - 用户、密码哈希和账号状态。
 - 角色、权限和用户角色关系。
 - 可撤销会话、CSRF 哈希和权限版本。
-- 用户 KML、收藏、分享包和分享密码哈希。
+- 用户 KML、收藏、分享包、分享密码校验哈希，以及仅供所有者主动复制时解密的 AES-256-GCM 密文。
 - 用户体系设置、本地迁移批次和脱敏审计日志。
 
 既有图源、代理、公共 KML和运行设置仍保存在 `.db/admin/`；完整备份必须同时覆盖 SQLite 和 `.db/admin/`。
 
-服务启动时自动创建数据库目录、启用外键、设置 `busy_timeout`、尝试切换 WAL，并按 `schema_migrations` 执行幂等迁移。当前数据库版本为 `4`：v2 为个人 KML 增加用户范围的同步创建键；v3 增加独立创建幂等账本并回填已有映射，使 KML 永久删除后旧 create 请求也不能复活数据；v4 增加 `(ownerId, clientId)` 删除先行墓碑，使删除请求即使早于延迟 create 到达，旧创建也只能返回稳定冲突。
+服务启动时自动创建数据库目录、启用外键、设置 `busy_timeout`、尝试切换 WAL，并按 `schema_migrations` 执行幂等迁移。当前数据库版本为 `8`：v2～v4 完善 KML 同步幂等和删除墓碑；v5 增加空间受限分享与不限固定期授权；v6 增加手动同步的发布快照；v7 增加访问聚合、统计配置和动态限流字段；v8 增加分享密码的所有者专用加密密文。
 
 ## 2. 首个超级管理员
 
@@ -101,6 +109,7 @@ npm run exec
 - HTTPS 终止、反向代理和应用的 Secure Cookie 判断配置一致。
 - 反向代理只在受信边界内设置客户端 IP，并按实际拓扑配置 `MAP_SERVICE_TRUST_PROXY`；应用限流和 Secure Cookie 使用 Express 解析后的 `req.ip` / `req.secure`，不直接信任任意客户端转发头。
 - 不在日志、监控标签、错误页或备份文件名中写入密码、Token、Cookie、CSRF 或分享密码。应用访问日志会脱敏 `password`、`token` 等敏感查询参数；Caddy、Nginx、CDN 和上游负载均衡的访问日志也必须关闭完整查询串记录，或对这些参数执行同等脱敏。
+- `MAP_SERVICE_SHARE_SECRET_KEY` 已持久化备份且发布前后保持一致。更换该密钥不会破坏分享密码的哈希访问验证，但会使已有 `password_secret` 无法解密；所有者需重新设置一次分享密码才能恢复复制密码和带密码链接。
 - 注册默认关闭；需要开放时由拥有 `admin.registration.manage` 的账号显式开启。
 - 普通管理员只分配日常运维权限；用户、角色、注册和根安全策略保留给超级管理员。
 - 站点访问密码、用户会话和分享密码分别测试，确认不存在互相绕过。

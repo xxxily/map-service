@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Readable } from 'node:stream'
 import express from 'express'
+import sharp from 'sharp'
 import commonMethods from '../service/bin/middleware/commonMethods/index.js'
 import service from '../service/bin/service.js'
 import simpleApi from '../service/bin/simpleApi.js'
@@ -486,6 +487,89 @@ test('share spatial preview requires authenticated CSRF-protected owner access',
     assert.equal(result.payload.result.areaKm2, 2.5)
     assert.equal(received.current, session)
     assert.equal(received.input.items[0].kmlId, 'kml-1')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('share password details require owner session, CSRF and permission and return only no-store copy fields', async () => {
+  const session = testSession()
+  let currentSession = session
+  let received = null
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? currentSession : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== currentSession || token !== 'csrf-token') {
+        const error = new Error('请求安全校验失败')
+        error.statusCode = 403
+        error.code = 'CSRF_INVALID'
+        throw error
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      if (permission !== 'share.own.manage' || !current?.user?.permissions?.includes(permission)) {
+        const error = new Error('没有执行此操作的权限')
+        error.statusCode = 403
+        error.code = 'PERMISSION_DENIED'
+        throw error
+      }
+    },
+    createUserKmlSharePasswordUrl: (current, id) => {
+      received = { current, id }
+      return {
+        shareUrl: '/share/public-test?password=secret%3Fvalue',
+        password: 'secret?value',
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    let result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_test/password-url', {
+      method: 'POST',
+    })
+    assert.equal(result.response.status, 401)
+    assert.equal(result.payload.error.code, 'AUTH_REQUIRED')
+
+    result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_test/password-url', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token' },
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'CSRF_INVALID')
+
+    currentSession = {
+      ...session,
+      user: { ...session.user, permissions: ['account.self.read'] },
+    }
+    result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_test/password-url', {
+      method: 'POST',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+      },
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'PERMISSION_DENIED')
+
+    currentSession = session
+    result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_test/password-url', {
+      method: 'POST',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+      },
+    })
+    assert.equal(result.response.status, 200)
+    assert.equal(result.response.headers.get('cache-control'), 'no-store')
+    assert.deepEqual(result.payload.result, {
+      shareUrl: '/share/public-test?password=secret%3Fvalue',
+      password: 'secret?value',
+    })
+    assert.equal(JSON.stringify(result.payload).includes('hash'), false)
+    assert.equal(JSON.stringify(result.payload).includes('secret_cipher'), false)
+    assert.deepEqual(received, { current: session, id: 'shr_test' })
   } finally {
     await new Promise(resolve => server.close(resolve))
     restore()
@@ -1116,8 +1200,83 @@ test('public share tile route returns transparent tile for spatially disallowed 
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('content-type'), 'image/png')
     assert.equal(response.headers.get('x-kml-share-spatial-decision'), 'outside')
-    assert.equal((await response.arrayBuffer()).byteLength, 68)
+    const body = Buffer.from(await response.arrayBuffer())
+    const metadata = await sharp(body).metadata()
+    assert.equal(metadata.format, 'png')
+    assert.equal(metadata.hasAlpha, true)
     assert.equal(relayCalled, false)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('public share boundary tile route returns the server-masked PNG', async () => {
+  let received = null
+  const masked = await sharp({
+    create: { width: 2, height: 2, channels: 4, background: { r: 20, g: 80, b: 40, alpha: 0.5 } },
+  }).png().toBuffer()
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    assertPublicKmlShareMapSource: async () => ({
+      decision: 'boundary',
+      tile: { z: 9, x: 413, y: 223 },
+      spatialScope: { sourceRevisionHash: 'sha256:test' },
+    }),
+    fetchPublicKmlShareBoundaryTile: async (sourceId, tile, options) => {
+      received = { sourceId, tile, scope: options.scope }
+      return { result: { cacheStatus: 'HIT' }, body: masked }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/public/kml-shares/public-123/tiles/road/9/413/223`)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'image/png')
+    assert.equal(response.headers.get('x-kml-share-spatial-decision'), 'boundary')
+    assert.equal(response.headers.get('x-cache'), 'HIT')
+    assert.equal(response.headers.get('cache-control'), 'private, no-store')
+    assert.deepEqual(received, {
+      sourceId: 'road',
+      tile: { z: 9, x: 413, y: 223 },
+      scope: { sourceRevisionHash: 'sha256:test' },
+    })
+    assert.equal(Buffer.compare(Buffer.from(await response.arrayBuffer()), masked), 0)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('public share boundary tile route falls back to a valid transparent PNG when masking fails', async () => {
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    assertPublicKmlShareMapSource: async () => ({
+      decision: 'boundary',
+      tile: { z: 9, x: 413, y: 223 },
+      spatialScope: { sourceRevisionHash: 'sha256:test' },
+    }),
+    fetchPublicKmlShareBoundaryTile: async () => {
+      const error = new Error('瓦片解码失败')
+      error.code = 'SHARE_TILE_MASK_DECODE_FAILED'
+      throw error
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/public/kml-shares/public-123/tiles/road/9/413/223`)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'image/png')
+    assert.equal(response.headers.get('x-kml-share-spatial-decision'), 'boundary-error')
+    assert.equal(response.headers.get('cache-control'), 'private, no-store')
+    const body = Buffer.from(await response.arrayBuffer())
+    const metadata = await sharp(body).metadata()
+    assert.equal(metadata.format, 'png')
+    assert.equal(metadata.hasAlpha, true)
+    const pixel = await sharp(body).raw().toBuffer()
+    assert.equal(pixel[3], 0)
   } finally {
     await new Promise(resolve => server.close(resolve))
     restore()

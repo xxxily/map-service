@@ -16,6 +16,7 @@ const SCRYPT_OPTIONS = Object.freeze({
 })
 
 const PASSWORD_KEY_LENGTH = 64
+const SECRET_AAD = Buffer.from('map-service:kml-share-password:v1', 'utf8')
 const COMMON_PASSWORDS = new Set([
   'admin',
   'admin123',
@@ -44,6 +45,44 @@ export function randomId (prefix, bytes = 18) {
 
 export function hashToken (value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('base64url')
+}
+
+function secretEncryptionKey (secret) {
+  return crypto.createHash('sha256')
+    .update('map-service:share-secret:')
+    .update(String(secret || ''))
+    .digest()
+}
+
+export function encryptSecret (value, secret) {
+  const plaintext = String(value || '')
+  if (!plaintext) return ''
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', secretEncryptionKey(secret), iv)
+  cipher.setAAD(SECRET_AAD)
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return ['aes-256-gcm', '1', iv.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join('$')
+}
+
+export function decryptSecret (value, secret) {
+  const parts = String(value || '').split('$')
+  if (parts.length !== 5 || parts[0] !== 'aes-256-gcm' || parts[1] !== '1') return ''
+  try {
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      secretEncryptionKey(secret),
+      Buffer.from(parts[2], 'base64url')
+    )
+    decipher.setAAD(SECRET_AAD)
+    decipher.setAuthTag(Buffer.from(parts[3], 'base64url'))
+    return Buffer.concat([
+      decipher.update(Buffer.from(parts[4], 'base64url')),
+      decipher.final(),
+    ]).toString('utf8')
+  } catch {
+    return ''
+  }
 }
 
 export function timingSafeStringEqual (left, right) {

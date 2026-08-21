@@ -67,14 +67,18 @@ export function showAccountPasswordDialog (options = {}) {
   root.hidden = false
   root.innerHTML = `
     <div class="app-dialog-backdrop" data-account-password-action="cancel">
-      <form class="app-dialog" role="dialog" aria-modal="true" aria-labelledby="account-password-dialog-title" data-account-password-form>
-        <h2 id="account-password-dialog-title">${escapeHtml(options.title || '验证密码')}</h2>
-        <p>${escapeHtml(options.message || '请输入当前密码继续。')}</p>
-        <label class="account-dialog-field">
-          <span>${escapeHtml(options.label || '密码')}</span>
-          <div class="account-password-input-row"><input name="password" type="password" minlength="${Number(options.minLength || 1)}" maxlength="128" autocomplete="${escapeHtml(options.autocomplete || 'current-password')}" required>${options.generate ? '<button type="button" class="app-dialog-secondary account-password-generate" data-account-password-action="generate">生成密码</button><button type="button" class="app-dialog-secondary account-password-copy" data-account-password-action="copy" hidden>复制</button>' : ''}</div>
-        </label>
-        ${options.generate ? '<small class="account-password-status" data-account-password-status aria-live="polite"></small>' : ''}
+      <form class="app-dialog account-password-dialog" role="dialog" aria-modal="true" aria-labelledby="account-password-dialog-title" data-account-password-form>
+        <div class="account-password-dialog-heading">
+          <div><h2 id="account-password-dialog-title">${escapeHtml(options.title || '验证密码')}</h2><p>${escapeHtml(options.message || '请输入当前密码继续。')}</p></div>
+          <button type="button" class="account-password-dialog-close" data-account-password-action="cancel" aria-label="关闭" title="关闭">×</button>
+        </div>
+        <div class="account-password-dialog-body">
+          <label class="account-dialog-field">
+            <span>${escapeHtml(options.label || '密码')}</span>
+            <input name="password" type="password" minlength="${Number(options.minLength || 1)}" maxlength="128" autocomplete="${escapeHtml(options.autocomplete || 'current-password')}" required>
+          </label>
+          ${options.generate ? '<div class="account-password-tools"><button type="button" class="account-secondary-button" data-account-password-action="generate">生成密码</button><button type="button" class="account-secondary-button" data-account-password-action="copy" disabled>复制密码</button></div><small class="account-password-status" data-account-password-status aria-live="polite"></small>' : ''}
+        </div>
         <div class="app-dialog-actions">
           <button type="button" class="app-dialog-secondary" data-account-password-action="cancel">取消</button>
           <button type="submit" class="app-dialog-primary">${escapeHtml(options.confirmText || '继续')}</button>
@@ -86,12 +90,18 @@ export function showAccountPasswordDialog (options = {}) {
   const input = form.querySelector('input')
   const copyButton = form.querySelector('[data-account-password-action="copy"]')
   const statusNode = form.querySelector('[data-account-password-status]')
+  const updateCopyState = () => {
+    if (copyButton) copyButton.disabled = !input.value
+  }
+  input.addEventListener('input', updateCopyState)
+  updateCopyState()
   input?.focus()
 
   return new Promise(resolve => {
     const cleanup = () => {
       root.removeEventListener('click', onClick)
       form.removeEventListener('submit', onSubmit)
+      input.removeEventListener('input', updateCopyState)
       document.removeEventListener('keydown', onKeydown)
       root.innerHTML = ''
       root.hidden = true
@@ -111,7 +121,7 @@ export function showAccountPasswordDialog (options = {}) {
       if (target.dataset.accountPasswordAction === 'generate') {
         input.value = generateStrongSharePassword(options.passwordLength || 20)
         input.type = 'text'
-        if (copyButton) copyButton.hidden = false
+        updateCopyState()
         if (statusNode) statusNode.textContent = '已生成，可直接使用或修改。'
         input.dispatchEvent(new Event('input', { bubbles: true }))
         input.focus()

@@ -757,15 +757,22 @@ async function syncShareContent (id, revision) {
   render()
 }
 
-async function copyShareUrl (value) {
-  const url = new URL(value, window.location.origin).href
+async function copyTextValue (value, options = {}) {
+  const text = String(value || '')
   try {
-    await navigator.clipboard.writeText(url)
-    setMessage('分享链接已复制', '')
+    await navigator.clipboard.writeText(text)
+    setMessage(options.success || '已复制', '')
     render()
   } catch {
-    await showAlert(url, { title: '分享链接' })
+    await showAlert(text, { title: options.title || '复制内容' })
   }
+}
+
+async function copyShareUrl (value) {
+  return copyTextValue(new URL(value, window.location.origin).href, {
+    success: '分享链接已复制',
+    title: '分享链接',
+  })
 }
 
 async function copyShare (share) {
@@ -778,20 +785,19 @@ async function copyShare (share) {
       choices: [
         { text: '复制普通链接', value: 'plain', class: 'app-dialog-secondary' },
         { text: '复制带密码链接', value: 'password', class: 'app-dialog-primary' },
+        { text: '复制密码', value: 'password-only', class: 'app-dialog-secondary' },
       ],
     })
     if (choice === 'cancel') return
-    if (choice === 'password') {
-      const password = await showAccountPasswordDialog({
-        title: '确认分享密码',
-        message: '输入当前分享密码后生成带密码链接。',
-        label: '当前分享密码',
-      })
-      if (!password) return
-      const result = await runAction(() => accountApi.createSharePasswordUrl(share.id, password), {
-        progress: '正在生成带密码链接…',
+    if (choice === 'password' || choice === 'password-only') {
+      const result = await runAction(() => accountApi.getSharePasswordDetails(share.id), {
+        progress: choice === 'password' ? '正在生成带密码链接…' : '正在读取分享密码…',
       })
       if (!result) return
+      if (choice === 'password-only') {
+        await copyTextValue(result.password, { success: '分享密码已复制', title: '分享密码' })
+        return
+      }
       url = result.shareUrl
     }
   }

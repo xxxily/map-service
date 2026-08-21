@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  decryptSecret,
+  encryptSecret,
   hashPassword,
   hashPasswordSync,
   hashToken,
@@ -13,6 +15,17 @@ import {
   validateUsername,
   verifyPassword,
 } from '../service/bin/user/security.js'
+
+test('user security encrypts share secrets and rejects invalid ciphertext', () => {
+  const encrypted = encryptSecret('share-password-123', 'stable-server-key')
+  assert.notEqual(encrypted, 'share-password-123')
+  assert.equal(decryptSecret(encrypted, 'stable-server-key'), 'share-password-123')
+  assert.equal(decryptSecret(encrypted, 'wrong-server-key'), '')
+
+  const parts = encrypted.split('$')
+  parts[4] = `${parts[4].slice(0, -1)}${parts[4].endsWith('A') ? 'B' : 'A'}`
+  assert.equal(decryptSecret(parts.join('$'), 'stable-server-key'), '')
+})
 
 test('user security normalizes public identity fields', () => {
   assert.equal(normalizeUsername('  Map.User  '), 'map.user')

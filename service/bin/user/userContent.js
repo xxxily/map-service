@@ -1,5 +1,7 @@
 import {
   createHttpError,
+  decryptSecret,
+  encryptSecret,
   hashPasswordSync,
   hashToken,
   randomId,
@@ -750,6 +752,7 @@ export class UserContentService {
     this.shareManifestLimiter = new FixedWindowLimiter(options.shareManifestRateLimit || SHARE_MANIFEST_RATE_LIMIT, this.clock)
     this.useRuntimeTileRateLimit = options.shareTileRateLimit === undefined
     this.useRuntimeManifestRateLimit = options.shareManifestRateLimit === undefined
+    this.shareSecretEncryptionKey = String(options.shareSecretEncryptionKey || 'map-service-dev-share-secret')
     // IP fallback digests are keyed per process so low-entropy addresses are
     // not directly reversible from the persisted access-event table.
     this.sharePrivacySecret = String(options.sharePrivacySecret || randomToken(32))
@@ -2420,6 +2423,9 @@ export class UserContentService {
     const viewConfig = normalizeViewConfig(input.viewConfig)
     const analyticsConfig = normalizeShareAnalyticsConfig(input.analytics, settings.analytics?.share)
     const passwordHash = normalizeSharePassword(input.password, null)
+    const passwordSecret = passwordHash
+      ? encryptSecret(String(input.password), this.shareSecretEncryptionKey)
+      : ''
     const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, 'unrestricted')
     const spatialState = this.resolveShareSpatialState(items, spatialAccessMode, settings)
     let passwordAccessTtlMode = normalizePasswordAccessTtlMode(input.passwordAccess, 'finite')
@@ -2440,15 +2446,15 @@ export class UserContentService {
       this.database.prepare(`
         INSERT INTO kml_shares(
           id, public_id, owner_id, title, description, status, access_mode,
-          password_hash, allow_download, expires_at, view_config_json, revision,
+          password_hash, password_secret, allow_download, expires_at, view_config_json, revision,
           spatial_access_mode, password_access_ttl_mode, spatial_scope_json,
           spatial_scope_revision, spatial_status, spatial_error_code,
           password_version, access_policy_revision, content_revision, content_published_at,
           analytics_config_json, analytics_disabled, analytics_disabled_reason,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'public_link', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, 0, '', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, 'public_link', ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, 0, '', ?, ?)
       `).run(
-        id, publicId, ownerId, title, description, status, passwordHash,
+        id, publicId, ownerId, title, description, status, passwordHash, passwordSecret,
         allowDownload ? 1 : 0, expiresAt, JSON.stringify(viewConfig),
         spatialAccessMode, passwordAccessTtlMode, JSON.stringify(spatialState.scope || {}),
         spatialScopeRevision, spatialState.status, spatialState.errorCode || '',
@@ -2592,6 +2598,11 @@ export class UserContentService {
       parseJson(row.analytics_config_json, {})
     )
     const passwordHash = normalizeSharePassword(input.password, row.password_hash)
+    const passwordSecret = input.password === undefined
+      ? String(row.password_secret || '')
+      : passwordHash
+        ? encryptSecret(String(input.password), this.shareSecretEncryptionKey)
+        : ''
     const previousSpatialMode = row.spatial_access_mode || 'unrestricted'
     const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, previousSpatialMode)
     const spatialState = this.resolveShareSpatialState(spatialItems, spatialAccessMode, settings, {
@@ -2630,7 +2641,7 @@ export class UserContentService {
     this.database.transaction(() => {
       this.database.prepare(`
         UPDATE kml_shares SET
-          title = ?, description = ?, status = ?, password_hash = ?, allow_download = ?,
+          title = ?, description = ?, status = ?, password_hash = ?, password_secret = ?, allow_download = ?,
           expires_at = ?, view_config_json = ?, spatial_access_mode = ?,
           password_access_ttl_mode = ?, spatial_scope_json = ?, spatial_scope_revision = ?,
           spatial_status = ?, spatial_error_code = ?, password_version = ?,
@@ -2639,7 +2650,7 @@ export class UserContentService {
           revision = revision + 1, updated_at = ?
         WHERE id = ?
       `).run(
-        title, description, status, passwordHash, allowDownload ? 1 : 0,
+        title, description, status, passwordHash, passwordSecret, allowDownload ? 1 : 0,
         expiresAt, JSON.stringify(viewConfig), spatialAccessMode,
         passwordAccessTtlMode, JSON.stringify(spatialState.scope || {}), spatialScopeRevision,
         spatialState.status, spatialState.errorCode || '', passwordVersion,
@@ -3220,20 +3231,28 @@ export class UserContentService {
     return { items, page: pageInfo.page, limit: pageInfo.limit, total }
   }
 
-  createPasswordShareUrl (actor, shareId, password) {
+  async createPasswordShareUrl (actor, shareId, suppliedPassword) {
     const row = this.requireOwnedShare(actor, shareId)
     if (!row.password_hash) {
       throw createHttpError('该分享未设置密码', 409, 'SHARE_PASSWORD_NOT_SET')
     }
-    if (!String(password || '')) {
-      throw createHttpError('请输入当前分享密码', 400, 'VALIDATION_FAILED')
-    }
-    return verifyPassword(String(password), row.password_hash).then(valid => {
-      if (!valid) throw createHttpError('分享密码不正确', 401, 'SHARE_PASSWORD_INVALID')
-      return {
-        shareUrl: `/share/${row.public_id}?password=${encodeURIComponent(String(password))}`,
+    const password = suppliedPassword === undefined
+      ? decryptSecret(row.password_secret, this.shareSecretEncryptionKey)
+      : String(suppliedPassword || '')
+    if (!password || !(await verifyPassword(password, row.password_hash))) {
+      if (suppliedPassword !== undefined) {
+        throw createHttpError('分享密码不正确', 401, 'SHARE_PASSWORD_INVALID')
       }
-    })
+      throw createHttpError(
+        '当前分享的密码创建于旧版本，请重新设置一次密码后再复制',
+        409,
+        'SHARE_PASSWORD_SECRET_UNAVAILABLE'
+      )
+    }
+    return {
+      shareUrl: `/share/${row.public_id}?password=${encodeURIComponent(password)}`,
+      password,
+    }
   }
 
   setShareAnalyticsDisabled (actor, shareId, input = {}) {
