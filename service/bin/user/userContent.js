@@ -1228,9 +1228,11 @@ export class UserContentService {
     const downgraded = ttlMode === 'unlimited' && (!row.password_hash || state.status !== 'ready' ||
       !state.eligibility.unlimitedAccessEligible)
     if (downgraded) ttlMode = 'finite'
-    const shouldPause = ['empty', 'error', 'out_of_policy'].includes(state.status) && row.status === 'active'
-    const nextStatus = shouldPause ? 'paused' : row.status
-    const revisionChanged = scopeChanged || policyChanged || downgraded || nextStatus !== row.status
+    // Spatial diagnostics must not change the share lifecycle. A source edit,
+    // transient geometry failure, or policy mismatch is reported through the
+    // spatial status while pause/block/revoke remain explicit actions.
+    const nextStatus = row.status
+    const revisionChanged = scopeChanged || policyChanged || downgraded
     let committed = false
     let revokedUnlimitedSessions = 0
 
@@ -1352,11 +1354,7 @@ export class UserContentService {
         (!row.password_hash || state.status !== 'ready' || !state.eligibility.unlimitedAccessEligible)
       const revokesUnlimited = (row.password_access_ttl_mode || 'finite') === 'unlimited' &&
         (downgraded || policyChanged)
-      const nextStatus = ['empty', 'error', 'out_of_policy'].includes(state.status) && row.status === 'active'
-        ? 'paused'
-        : row.status
-
-      if (scopeChanged || policyChanged || downgraded || nextStatus !== row.status) stats.affectedShares += 1
+      if (scopeChanged || policyChanged || downgraded) stats.affectedShares += 1
       if (downgraded) stats.downgradedShares += 1
       if (revokesUnlimited) {
         stats.revokedUnlimitedSessions += Number(this.database.prepare(`
@@ -1380,19 +1378,8 @@ export class UserContentService {
   refreshShareAfterContentChange (shareId) {
     const row = this.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(shareId)
     if (!row) return null
-    const activeCount = Number(this.database.prepare(`
-      SELECT COUNT(*) AS count
-      FROM kml_share_items i
-      JOIN kml_documents k ON k.id = i.kml_id
-      WHERE i.share_id = ? AND k.status = 'active'
-    `).get(shareId)?.count || 0)
-    if (activeCount === 0 && row.status === 'active') {
-      this.database.prepare(`
-        UPDATE kml_shares
-        SET status = 'paused', revision = revision + 1, updated_at = ?
-        WHERE id = ?
-      `).run(this.nowIso(), shareId)
-    }
+    // Revalidation updates only spatial diagnostics and authorization
+    // metadata. It never implicitly pauses or deletes a share.
     return this.revalidateSpatialShare(shareId)
   }
 
@@ -1819,15 +1806,16 @@ export class UserContentService {
     const shares = this.database.prepare(`
       SELECT DISTINCT share_id FROM kml_share_items WHERE kml_id = ?
     `).all(kmlId).map(row => row.share_id)
-    this.database.prepare('DELETE FROM kml_share_items WHERE kml_id = ?').run(kmlId)
+    // Keep the share item and its published snapshot. A source moving to the
+    // recycle bin is a private-data lifecycle change, not an instruction to
+    // revoke or rewrite an already published link.
     const now = this.nowIso()
     shares.forEach(shareId => {
       this.database.prepare(`
         UPDATE kml_shares
-        SET content_revision = content_revision + 1, content_published_at = ?,
-            updated_at = ?
+        SET updated_at = ?
         WHERE id = ?
-      `).run(now, now, shareId)
+      `).run(now, shareId)
       this.refreshShareAfterContentChange(shareId)
     })
     return shares.length
@@ -1935,6 +1923,13 @@ export class UserContentService {
     const shareIds = this.database.prepare(`
       SELECT DISTINCT share_id FROM kml_share_items WHERE kml_id = ?
     `).all(row.id).map(item => item.share_id)
+    if (shareIds.length > 0) {
+      throw createHttpError(
+        '该 KML 仍被分享引用，请先删除分享或将其替换为其他 KML 后再永久删除',
+        409,
+        'KML_REFERENCED_BY_SHARE'
+      )
+    }
     this.database.transaction(() => {
       this.database.prepare(`
         UPDATE kml_sync_create_keys SET deleted_at = ? WHERE kml_id = ?
@@ -1948,7 +1943,6 @@ export class UserContentService {
         metadata: { featureCount: Number(row.feature_count), byteSize: Number(row.byte_size) },
       })
     })
-    shareIds.forEach(shareId => this.refreshShareAfterContentChange(shareId))
     return { id: row.id, status: 'deleted' }
   }
 
@@ -2293,7 +2287,7 @@ export class UserContentService {
       SELECT i.*, k.name AS kml_name, k.description AS kml_description,
              k.status AS kml_status, k.feature_count, k.byte_size, k.revision
       FROM kml_share_items i
-      JOIN kml_documents k ON k.id = i.kml_id
+      LEFT JOIN kml_documents k ON k.id = i.kml_id
       WHERE i.share_id = ?
       ORDER BY i.position, i.id
     `).all(shareId).map(row => {
@@ -2641,7 +2635,9 @@ export class UserContentService {
       }
       status = normalizeEnum(input.status, SHARE_EDITABLE_STATUSES, row.status, '分享状态不正确')
     }
-    if (items.length === 0 && status === 'active') status = 'paused'
+    if (items.length === 0) {
+      throw createHttpError('分享包至少需要一个 KML；如不再需要该链接请直接删除分享', 409, 'SHARE_EMPTY')
+    }
     const now = this.nowIso()
     const title = normalizeText(input.title, { fallback: row.title, minLength: 1, maxLength: 200 })
     const description = normalizeText(input.description, { fallback: row.description, maxLength: 5000 })
@@ -2886,10 +2882,10 @@ export class UserContentService {
     const row = this.requireOwnedShare(actor, shareId)
     const count = Number(this.database.prepare(`
       SELECT COUNT(*) AS count
-      FROM kml_share_items i JOIN kml_documents k ON k.id = i.kml_id
-      WHERE i.share_id = ? AND k.status = 'active'
+      FROM kml_share_items
+      WHERE share_id = ? AND published_revision > 0
     `).get(row.id)?.count || 0)
-    if (count === 0) throw createHttpError('分享包没有可用 KML', 409, 'SHARE_EMPTY')
+    if (count === 0) throw createHttpError('分享包没有可恢复的已发布内容', 409, 'SHARE_EMPTY')
     return this.updateShare(actor, row.id, { revision: row.revision, status: 'active' })
   }
 
@@ -2934,6 +2930,59 @@ export class UserContentService {
       })
     })
     return this.getShare(actor, row.id)
+  }
+
+  clearShareRuntimeMetrics (shareId) {
+    const prefix = `${String(shareId || '')}:`
+    for (const key of this.shareRuntimeMetrics.keys()) {
+      if (key.startsWith(prefix)) this.shareRuntimeMetrics.delete(key)
+    }
+  }
+
+  deleteShareRecord (actor, row, action = 'share.delete') {
+    const itemCount = Number(this.database.prepare(
+      'SELECT COUNT(*) AS count FROM kml_share_items WHERE share_id = ?'
+    ).get(row.id)?.count || 0)
+    const sessionCount = Number(this.database.prepare(
+      'SELECT COUNT(*) AS count FROM share_access_sessions WHERE share_id = ?'
+    ).get(row.id)?.count || 0)
+    const eventCount = Number(this.database.prepare(
+      'SELECT COUNT(*) AS count FROM share_access_events WHERE share_id = ?'
+    ).get(row.id)?.count || 0)
+    const ownerId = row.owner_id
+    this.database.transaction(() => {
+      this.insertAudit({
+        actorUserId: this.actorUser(actor).id,
+        action,
+        targetType: 'kml-share',
+        targetId: row.id,
+        metadata: {
+          ownerId,
+          publicId: row.public_id,
+          itemCount,
+          sessionCount,
+          eventCount,
+        },
+      })
+      const result = this.database.prepare('DELETE FROM kml_shares WHERE id = ?').run(row.id)
+      if (Number(result.changes || 0) !== 1) {
+        throw createHttpError('分享不存在', 404, 'RESOURCE_NOT_FOUND')
+      }
+    })
+    this.clearShareRuntimeMetrics(row.id)
+    return {
+      id: row.id,
+      status: 'deleted',
+      deletedItems: itemCount,
+      deletedAccessSessions: sessionCount,
+      deletedAccessEvents: eventCount,
+      sourceKmlPreserved: true,
+    }
+  }
+
+  deleteShare (actor, shareId) {
+    const row = this.requireOwnedShare(actor, shareId)
+    return this.deleteShareRecord(actor, row, 'share.delete')
   }
 
   listSharesForModeration (actor, input = {}) {
@@ -3007,6 +3056,13 @@ export class UserContentService {
       this.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(row.id),
       { includeItems: true }
     )
+  }
+
+  deleteShareForAdmin (actor, shareId) {
+    this.assertPermission(actor, 'admin.share.moderate')
+    const row = this.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(String(shareId || ''))
+    if (!row) throw createHttpError('分享不存在', 404, 'RESOURCE_NOT_FOUND')
+    return this.deleteShareRecord(actor, row, 'admin.share.delete')
   }
 
   unblockShare (actor, shareId) {
@@ -3202,12 +3258,7 @@ export class UserContentService {
       WHERE i.share_id = ?
     `).get(row.id)?.count || 0)
     if (count === 0) {
-      if (row.status === 'active') {
-        this.database.prepare(`
-          UPDATE kml_shares SET status = 'paused', revision = revision + 1, updated_at = ? WHERE id = ?
-        `).run(this.nowIso(), row.id)
-      }
-      throw createHttpError('分享已暂停', 410, 'SHARE_PAUSED')
+      throw createHttpError('分享没有已发布内容', 409, 'SHARE_EMPTY')
     }
     return count
   }
@@ -3215,12 +3266,7 @@ export class UserContentService {
   ensurePublicItems (row) {
     const items = this.publicShareItems(row.id)
     if (items.length === 0) {
-      if (row.status === 'active') {
-        this.database.prepare(`
-          UPDATE kml_shares SET status = 'paused', revision = revision + 1, updated_at = ? WHERE id = ?
-        `).run(this.nowIso(), row.id)
-      }
-      throw createHttpError('分享已暂停', 410, 'SHARE_PAUSED')
+      throw createHttpError('分享没有已发布内容', 409, 'SHARE_EMPTY')
     }
     return items
   }

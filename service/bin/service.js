@@ -440,6 +440,10 @@ const service = {
     return userContent.updateShare(actor, id, input, context)
   },
 
+  deleteUserKmlShare (actor, id, context) {
+    return userContent.deleteShare(actor, id, context)
+  },
+
   listUserKmlShareAccessEvents (actor, id, input) {
     return userContent.listShareAccessEvents(actor, id, input)
   },
@@ -546,6 +550,10 @@ const service = {
 
   blockUserKmlShare (actor, id, input, context) {
     return userContent.blockShare(actor, id, input, context)
+  },
+
+  deleteUserKmlShareAsAdmin (actor, id, context) {
+    return userContent.deleteShareForAdmin(actor, id, context)
   },
 
   unblockUserKmlShare (actor, id, context) {

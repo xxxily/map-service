@@ -126,6 +126,7 @@ export const adminApi = {
   updateUserSystemSettings: (body) => requestAdminApi('/admin/user-system/settings', { method: 'PUT', body }),
   listUserShares: (params = {}) => requestAdminApi(`/admin/kml/shares${queryString(params)}`),
   getShareRuntimeMetrics: () => requestAdminApi('/admin/kml/shares/runtime-metrics'),
+  deleteUserShare: (id) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   blockUserShare: (id, reason) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/block`, { method: 'POST', body: { reason } }),
   unblockUserShare: (id) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/unblock`, { method: 'POST' }),
   setUserShareAnalyticsDisabled: (id, body = {}) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/analytics`, { method: 'PUT', body }),

@@ -641,6 +641,7 @@ Content-Type: application/json
 | `GET` | `/kml/shares/:id/access-events` | `share.own.manage` | 获取自己的最近聚合访问记录 |
 | `POST` | `/kml/shares/:id/password-url` | `share.own.manage` | 获取当前分享密码并生成带密码参数的链接（仅所有者） |
 | `PUT` | `/kml/shares/:id` | `share.own.manage` | 编辑文件、顺序、显隐和视图 |
+| `DELETE` | `/kml/shares/:id` | `share.own.manage` | 永久删除自己的分享及其访问数据，不影响原始 KML |
 | `POST` | `/kml/shares/:id/sync` | `share.own.manage` | 发布当前 KML 内容快照并重新计算分享范围 |
 | `POST` | `/kml/shares/:id/pause` | `share.own.manage` | 暂停分享 |
 | `POST` | `/kml/shares/:id/resume` | `share.own.manage` | 恢复分享 |
@@ -696,7 +697,9 @@ Content-Type: application/json
 - 浏览器密码生成器默认生成 12 位，可选 8、12、16、20、24、32 位，并可关闭特殊字符。启用特殊字符时只使用 `!$*+@`，排除 `?`、`&`、`#`、`%`、`=` 等查询分隔符；服务端生成带密码链接时仍必须使用 `encodeURIComponent`。
 - `analytics.mode` 支持 `none`、`provider` 和经超级管理员授权的 `custom`。默认 provider 模式只提交网站 ID，脚本来源由管理员固定；公开清单只返回服务端校验后的 descriptor。
 - `password-url` 不要求所有者再次输入密码。服务端使用稳定密钥加密保存分享密码，普通读取接口不返回该字段；仅所有者主动调用时在 `no-store` 响应中返回 `shareUrl` 和 `password`。当前没有正式用户，不为缺少密码密文的旧测试分享保留兼容流程；直接删除并重新创建分享。
-- active 分享删除到没有有效文件时会自动暂停。
+- 源 KML 修改、几何重算失败、公开读取异常或暂时没有可计算几何时，active 分享不会自动暂停，也不会丢失分享设置或已发布快照。只有用户显式暂停、管理员封禁或用户撤销会停止分享；到期单独按 `expired` 处理。
+- 更新分享不允许保存空 `items`；没有可用已发布项目时，恢复和同步返回 `409 SHARE_EMPTY`，但不隐式改写分享状态。用户不再需要链接时使用 DELETE。
+- DELETE 成功后会删除分享行以及级联的 `kml_share_items`、`share_access_sessions`、`share_access_events`，并清理内存运行指标；不会删除 `kml_documents`。旧 `publicId` 立即返回 `404 RESOURCE_NOT_FOUND`。
 - `revoked` 不可恢复；`blocked` 只能由管理员解封。
 
 内容同步请求：
@@ -913,6 +916,7 @@ Content-Type: application/json
 | --- | --- | --- | --- |
 | `GET` | `/admin/kml/shares` | `admin.share.moderate` | 按用户、状态、搜索条件分页查看分享 |
 | `GET` | `/admin/kml/shares/runtime-metrics` | `admin.share.moderate` | 查看内存有界的分享瓦片判定、范围拒绝和限流聚合指标 |
+| `DELETE` | `/admin/kml/shares/:id` | `admin.share.moderate` | 删除任意分享及其访问数据，不影响原始 KML |
 | `POST` | `/admin/kml/shares/:id/block` | `admin.share.moderate` | 封禁并记录原因 |
 | `POST` | `/admin/kml/shares/:id/unblock` | `admin.share.moderate` | 解封后进入 paused，由所有者决定恢复 |
 | `PUT` | `/admin/kml/shares/:id/analytics` | `admin.share.moderate` | 逐分享禁用或恢复统计脚本 |
@@ -948,6 +952,7 @@ Content-Type: application/json
 | `409` | `LAST_SUPER_ADMIN` | 操作会移除最后一个有效超级管理员 |
 | `409` | `SHARE_SPATIAL_RECALCULATING` | 空间范围正在重算，暂不能安全访问 |
 | `410` | `SHARE_PAUSED` / `SHARE_EXPIRED` | 分享暂停或过期 |
+| `409` | `SHARE_EMPTY` | 分享没有可恢复或可发布的有效项目 |
 | `410` | `SHARE_SPATIAL_UNAVAILABLE` | 分享地图范围不可安全使用 |
 | `400` | `SHARE_SPATIAL_MODE_INVALID` | 空间访问模式不受支持 |
 | `400` | `SHARE_PASSWORD_ACCESS_MODE_INVALID` | 密码授权模式不受支持 |

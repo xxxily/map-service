@@ -1092,6 +1092,20 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/kml/shares/:id',
+    method: 'delete',
+    describe: '删除个人分享包及访问数据',
+    tags: ['shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.deleteUserKmlShare(
+        requireUser(req, 'share.own.manage'),
+        req.params.id,
+        requestContext(req)
+      ))
+    },
+  },
+  {
     path: '/kml/shares/:id/pause',
     method: 'post',
     describe: '暂停个人分享包',
@@ -1491,6 +1505,20 @@ const userApiRoutes = [
         requireAdmin(req, 'admin.share.moderate'),
         req.params.id,
         req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/admin/kml/shares/:id',
+    method: 'delete',
+    describe: '删除用户 KML 分享及访问数据',
+    tags: ['admin-shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.deleteUserKmlShareAsAdmin(
+        requireAdmin(req, 'admin.share.moderate'),
+        req.params.id,
         requestContext(req)
       ))
     },
