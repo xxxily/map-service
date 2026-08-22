@@ -41,6 +41,7 @@ import {
   parseBoundedInteger,
 } from './map/location-track.js'
 import { initDesktopShiftDragRotate } from './map/desktop-rotation.js'
+import { installRotatedShareBounds } from './map/rotated-share-bounds.js'
 import { getKmlLeafletPerformanceOptions } from './map/kml-performance.js'
 import { installStableTrackpadWheelZoom } from './map/trackpad-wheel-zoom.js'
 import { loadGlobalAnalytics } from './analytics.js'
@@ -213,6 +214,14 @@ async function initLeafletMap () {
     attributionControl: false,
     keyboardPanDelta: 480,
   }).setMaxBounds(restrictedBounds || [[-90, 0], [90, 360]])
+
+  // leaflet-rotate changes the rendered pane geometry but leaves Leaflet's
+  // axis-aligned maxBounds math untouched. Spatial shares need the rotated
+  // viewport footprint for drag, inertia, zoom and bearing reset alike.
+  const rotatedShareBounds = restrictedShare
+    ? installRotatedShareBounds(map)
+    : null
+  map.on('unload', () => rotatedShareBounds?.destroy())
 
   if (restrictedShare && !useUrlView) {
     map.fitBounds(restrictedBounds, { animate: false, padding: [24, 24] })
