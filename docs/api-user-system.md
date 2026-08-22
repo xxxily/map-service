@@ -656,7 +656,7 @@ Content-Type: application/json
   "password": "optional-share-password",
   "allowDownload": true,
   "expiresAt": "2026-12-31T16:00:00.000Z",
-  "spatialAccess": { "mode": "kml_bounds" },
+  "spatialAccess": { "mode": "kml_bounds", "unrestrictedTileMaxZoom": 8 },
   "passwordAccess": { "ttlMode": "unlimited" },
   "analytics": { "mode": "provider", "websiteId": "573277f7-4747-4871-abf4-24406a67707e" },
   "viewConfig": {
@@ -687,7 +687,7 @@ Content-Type: application/json
 - `expiresAt=null` 表示分享链接没有固定到期时间，与是否设置密码独立；管理员允许时，无密码分享同样可使用 `expiresAt=null`。
 - `spatialAccess.mode` 支持 `unrestricted` 和 `kml_bounds`；省略时创建默认为 `unrestricted`，更新时保持现状。`kml_bounds` 的范围、面积和对角线只能由服务端根据分享内 active KML 计算。
 - `kml_bounds` 的权威范围是全部 KML 有效坐标形成的轴对齐外包矩形，并在四边扩展管理员余量；最外层点位或线段之间的矩形内部全部可查看，不再按点位周边或几何缓冲联合区域授权。
-- `spatialAccess.unrestrictedTileMaxZoom` 可选，必须是 `0～24` 的整数；`z <=` 该值时范围外低缩放瓦片以 `allow_unrestricted` 受控回源，`z >` 该值时继续执行外包矩形限制。省略或为 `null` 表示严格模式。该字段只影响底图瓦片，不扩大 KML 内容、媒体或相机中心的可访问范围。
+- `spatialAccess.unrestrictedTileMaxZoom` 可选，基础取值为 `0～24` 的整数，且不得高于当前分享计算出的 `minZoom`；`z <=` 该值时范围外低缩放瓦片以 `allow_unrestricted` 受控回源，`z >` 该值时继续执行外包矩形限制。省略或为 `null` 表示严格模式。该字段只影响底图瓦片，不扩大 KML 内容、媒体或相机中心的可访问范围。
 - `passwordAccess.ttlMode` 支持 `finite` 和 `unlimited`；无密码时公开视图为 `not_applicable`。`unlimited` 仅在空间受限、范围合规且后台允许时可用，服务端保存时会重新计算，不信任前端预检。
 - 非空分享密码采用独立访问口令规则，长度为 4～128 位；不沿用账号密码的 12 位和常见密码限制。服务端保存用于访问校验的安全哈希，并另存仅供所有者主动复制的 AES-256-GCM 密文；密文不进入普通接口、日志和审计元数据。
 - 浏览器密码生成器默认生成 12 位，可选 8、12、16、20、24、32 位，并可关闭特殊字符。启用特殊字符时只使用 `!$*+@`，排除 `?`、`&`、`#`、`%`、`=` 等查询分隔符；服务端生成带密码链接时仍必须使用 `encodeURIComponent`。
@@ -729,9 +729,24 @@ Content-Type: application/json
 
 公开清单使用分享项 ID `shareItemId` 引用文件，不返回所有者邮箱、内部用户 ID、内部 KML ID、密码哈希、管理备注或代理凭据。分享 scoped catalog 当前只包含后台已发布、前台可见且受控的栅格图源；任意 URL、未公开图源和矢量图源不会通过分享接口暴露。
 
-公开查看页在取得各分享文件后直接使用响应中的脱敏要素进行只读渲染，不再调用传统公共 KML 的内容接口。2D 和 3D 均展示完整要素列表并复用常规 KML 的定位、信息窗口、详情和媒体预览交互；不提供新增、编辑、拖拽或删除。视口初始化优先使用合法 URL `coords`（空间受限分享还必须位于允许矩形且不低于 `minZoom`）；没有合法 URL `coords` 时，若存在有效的默认可见 KML，则适配其联合几何范围，否则使用分享 `viewConfig.center` / `viewConfig.zoom` 或系统默认视图兜底。图层初始化独立按 URL `layer` → 分享 `viewConfig.layerId` → 默认图层执行。URL 状态非法或越界时安全回退，刷新、2D/3D 路由切换均保留 `coords` 和 `layer`。
+公开查看页在取得各分享文件后直接使用响应中的脱敏要素进行只读渲染，不再调用传统公共 KML 的内容接口。2D 和 3D 均展示完整要素列表并复用常规 KML 的定位、信息窗口、详情和媒体预览交互；不提供新增、编辑、拖拽或删除。视口初始化优先使用合法 URL `coords`（空间受限分享还必须位于允许矩形且不低于有效最低缩放；未设置放宽时为 `minZoom`，设置后为两者较小值）；没有合法 URL `coords` 时，若存在有效的默认可见 KML，则适配其联合几何范围，否则使用分享 `viewConfig.center` / `viewConfig.zoom` 或系统默认视图兜底。图层初始化独立按 URL `layer` → 分享 `viewConfig.layerId` → 默认图层执行。URL 状态非法或越界时安全回退，刷新、2D/3D 路由切换均保留 `coords` 和 `layer`。
 
-空间受限分享的公开清单和 catalog 返回脱敏 `spatialAccess` 摘要，包括固定的 `version: 2`、`geometryType: "BoundingBox"`，以及外包矩形的 `bbox`、`bboxSegments`、`cameraBounds`、`displayGeometry`、`paddingMeters`、`minZoom`、`unrestrictedTileMaxZoom`、`maxCameraHeight`、范围版本和状态；不返回内部投影、`localBounds`、源 revision hash 或管理员阈值。分享瓦片请求会规范化世界环绕 `x`：`z <= unrestrictedTileMaxZoom` 的范围外低缩放瓦片以 `allow_unrestricted` 直接回源，较高层级继续执行外包矩形限制，边界瓦片执行 Alpha 遮罩，范围外或严格模式下低于 `minZoom` 的瓦片返回透明占位，并带 `X-Kml-Share-Spatial-Decision` 响应头。前端相机仍由 KML 外包矩形 `maxBounds` 限制，不能移动到不可视区域；所有瓦片仍需经过分享鉴权、受控图源校验和限流。
+空间受限分享的公开清单和 catalog 返回脱敏 `spatialAccess` 摘要，包括固定的 `version: 2`、`geometryType: "BoundingBox"`，以及外包矩形的 `bbox`、`bboxSegments`、`cameraBounds`、`displayGeometry`、`paddingMeters`、`minZoom`、`unrestrictedTileMaxZoom`、`maxCameraHeight`、范围版本和状态；不返回内部投影、`localBounds`、源 revision hash 或管理员阈值。分享瓦片请求会规范化世界环绕 `x`：设置放宽阈值时，`z <= unrestrictedTileMaxZoom` 的范围外低缩放瓦片以 `allow_unrestricted` 直接回源（包括接口主动请求的更低层级），`z > unrestrictedTileMaxZoom` 继续执行外包矩形限制；未设置阈值时，低于 `minZoom` 的瓦片返回透明占位。边界瓦片执行 Alpha 遮罩，并带 `X-Kml-Share-Spatial-Decision` 响应头。前端相机最低缩放使用 `unrestrictedTileMaxZoom`（未设置时为 `minZoom`），但 `maxBounds` 仍由 KML 外包矩形固定，不能移动到不可视区域；所有瓦片仍需经过分享鉴权、受控图源校验和限流。
+
+公开响应中的 `spatialAccess` 结构示例：
+
+```json
+{
+  "version": 2,
+  "geometryType": "BoundingBox",
+  "mode": "kml_bounds",
+  "status": "ready",
+  "cameraBounds": [113.12, 22.95, 113.48, 23.31],
+  "minZoom": 11,
+  "unrestrictedTileMaxZoom": 8,
+  "revision": 4
+}
+```
 
 空间受限分享加载时强制使用 2D，避免 3D 全球地形或影像链路形成未校验的资源入口。
 

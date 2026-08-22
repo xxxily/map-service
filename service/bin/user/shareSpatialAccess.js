@@ -56,6 +56,12 @@ function unwrapLongitude (longitude, center) {
 }
 
 export function isCurrentSpatialScope (scope) {
+  const minZoom = Number(scope?.minZoom)
+  const rawUnrestrictedTileMaxZoom = scope?.unrestrictedTileMaxZoom
+  const unrestrictedTileMaxZoom = normalizeUnrestrictedTileMaxZoom(rawUnrestrictedTileMaxZoom)
+  const hasValidUnrestrictedTileMaxZoom = rawUnrestrictedTileMaxZoom === undefined ||
+    rawUnrestrictedTileMaxZoom === null ||
+    (unrestrictedTileMaxZoom !== null && unrestrictedTileMaxZoom <= minZoom)
   return Boolean(
     scope &&
     Number(scope.version) === SHARE_SPATIAL_SCOPE_VERSION &&
@@ -64,8 +70,9 @@ export function isCurrentSpatialScope (scope) {
     Array.isArray(scope.localBounds) &&
     scope.localBounds.length === 4 &&
     scope.localBounds.every(value => Number.isFinite(Number(value))) &&
-    (scope.unrestrictedTileMaxZoom === undefined || scope.unrestrictedTileMaxZoom === null ||
-      normalizeUnrestrictedTileMaxZoom(scope.unrestrictedTileMaxZoom) !== null)
+    Number.isSafeInteger(minZoom) &&
+    minZoom >= 0 && minZoom <= 24 &&
+    hasValidUnrestrictedTileMaxZoom
   )
 }
 
@@ -257,6 +264,9 @@ export function computeSpatialScope (options = {}) {
   const diagonalKm = Math.hypot(localBounds[2] - localBounds[0], localBounds[3] - localBounds[1]) / 1000
   const bounds = geographicBounds(localBounds, projection)
   const minZoom = calculateMinZoom(bounds.cameraBounds)
+  if (unrestrictedTileMaxZoom !== null && unrestrictedTileMaxZoom > minZoom) {
+    return { status: 'error', reasonCode: 'SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH' }
+  }
   const sourceRevisionHash = `sha256:${crypto.createHash('sha256').update(JSON.stringify({
     sources: options.sourceRevisions || [],
     paddingMeters,
@@ -340,10 +350,13 @@ export function classifyTileAgainstScope (scope, tile) {
     return { decision: 'unavailable', tile: normalized }
   }
   const unrestrictedTileMaxZoom = normalizeUnrestrictedTileMaxZoom(scope.unrestrictedTileMaxZoom)
-  if (unrestrictedTileMaxZoom !== null && normalized.z <= unrestrictedTileMaxZoom) {
-    return { decision: 'allow_unrestricted', tile: normalized }
+  if (unrestrictedTileMaxZoom !== null && unrestrictedTileMaxZoom <= Number(scope.minZoom)) {
+    if (normalized.z <= unrestrictedTileMaxZoom) {
+      return { decision: 'allow_unrestricted', tile: normalized }
+    }
+  } else if (normalized.z < Number(scope.minZoom || 0)) {
+    return { decision: 'below_min_zoom', tile: normalized }
   }
-  if (normalized.z < Number(scope.minZoom || 0)) return { decision: 'below_min_zoom', tile: normalized }
   const west = tileLongitude(normalized.x, normalized.z)
   const east = tileLongitude(normalized.x + 1, normalized.z)
   const north = tileLatitude(normalized.y, normalized.z)

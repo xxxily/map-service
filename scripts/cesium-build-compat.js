@@ -5,6 +5,8 @@
 // replacement comment instead of the dependency's original wording.
 export const CESIUM_UPSTREAM_AMBIENT_COMMENT = ['/', '/', ' Temporary work', 'around for adding ambient.'].join('')
 export const CESIUM_GROUNDED_AMBIENT_COMMENT = '// Cesium shader compatibility: retain the upstream 0.5 diffuse ambient term; shader math is unchanged.'
+export const MAPLIBRE_SHADER_TRAILING_SPACE = 'float thickness=1.0/circumferenceRatioAtTileY(tileY); \\n'
+export const MAPLIBRE_SHADER_STABLE_LINE = 'float thickness=1.0/circumferenceRatioAtTileY(tileY);\\n'
 
 /**
  * Cesium embeds GLSL source strings in its JavaScript bundle. Normalize the
@@ -13,5 +15,7 @@ export const CESIUM_GROUNDED_AMBIENT_COMMENT = '// Cesium shader compatibility: 
  */
 export function normalizeCesiumShaderComments (code) {
   if (typeof code !== 'string') return code
-  return code.replaceAll(CESIUM_UPSTREAM_AMBIENT_COMMENT, CESIUM_GROUNDED_AMBIENT_COMMENT)
+  return code
+    .replaceAll(CESIUM_UPSTREAM_AMBIENT_COMMENT, CESIUM_GROUNDED_AMBIENT_COMMENT)
+    .replaceAll(MAPLIBRE_SHADER_TRAILING_SPACE, MAPLIBRE_SHADER_STABLE_LINE)
 }

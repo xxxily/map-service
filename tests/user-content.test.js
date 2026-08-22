@@ -1106,6 +1106,18 @@ test('低缩放瓦片放宽阈值只接受 0～24 的整数', () => {
         error => error.code === 'SHARE_SPATIAL_TILE_ZOOM_INVALID'
       )
     }
+    const base = harness.service.getSpatialPreview(harness.one, {
+      spatialAccess: { mode: 'kml_bounds' },
+      items: [{ kmlId: document.id }],
+    })
+    assert.throws(
+      () => harness.service.createShare(harness.one, {
+        title: '超过最低层级',
+        items: [{ kmlId: document.id }],
+        spatialAccess: { mode: 'kml_bounds', unrestrictedTileMaxZoom: base.minZoom + 1 },
+      }),
+      error => error.code === 'SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH'
+    )
   } finally {
     harness.close()
   }

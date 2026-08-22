@@ -665,6 +665,8 @@ function spatialError (reasonCode) {
     SHARE_SPATIAL_POLAR_UNSUPPORTED: '当前 KML 接近极区，无法安全限制地图范围',
     SHARE_SPATIAL_ANTIMERIDIAN_UNSTABLE: '当前 KML 跨越范围过大，无法安全限制地图范围',
     SHARE_SPATIAL_PADDING_INVALID: '空间边界余量配置不正确',
+    SHARE_SPATIAL_TILE_ZOOM_INVALID: '范围外底图放宽级别需为 0～24 的整数',
+    SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH: '范围外底图放宽级别不能高于当前分享最低缩放级别',
     SHARE_SPATIAL_POLICY_INVALID: '空间访问策略配置不正确',
     SHARE_SPATIAL_RECALCULATING: '分享空间范围正在重新计算',
     SHARE_UNLIMITED_ACCESS_DISABLED: '后台未开放不限授权',

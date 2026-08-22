@@ -588,6 +588,7 @@ export function showAccountShareDialog (options = {}) {
       if (event.target.name === 'passwordAccessTtlMode' && event.target.value === 'unlimited' && form.elements.spatialAccessMode.value !== 'kml_bounds') {
         form.elements.spatialAccessMode.value = 'kml_bounds'
         form.elements.mapMode.value = '2d'
+        updateSpatialTileZoomVisibility()
         scheduleSpatialPreview()
       }
     }

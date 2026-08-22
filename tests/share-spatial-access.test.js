@@ -70,6 +70,26 @@ test('旧空间范围模型不会被当前瓦片判定继续使用', () => {
   assert.equal(classifyTileAgainstScope(legacy, tile).decision, 'unavailable')
 })
 
+test('当前空间范围拒绝非法最低缩放和越界放宽阈值', () => {
+  const current = computeSpatialScope({
+    documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],
+    paddingMeters: 1000,
+  }).scope
+
+  for (const minZoom of [Number.NaN, -1, 1.5, 25]) {
+    const invalid = { ...current, minZoom }
+    assert.equal(isCurrentSpatialScope(invalid), false)
+    assert.equal(publicSpatialScope(invalid, 1), null)
+  }
+
+  const invalidThreshold = {
+    ...current,
+    unrestrictedTileMaxZoom: current.minZoom + 1,
+  }
+  assert.equal(isCurrentSpatialScope(invalidThreshold), false)
+  assert.equal(publicSpatialScope(invalidThreshold, 1), null)
+})
+
 test('分散点之间的外包矩形内部均允许查看', () => {
   const result = computeSpatialScope({
     documents: [documentWith(
@@ -179,10 +199,27 @@ test('低缩放范围外瓦片可按分享阈值直接放宽，高缩放仍受�
 
   const lowZoomTile = { z: 8, x: 0, y: 0 }
   assert.equal(classifyTileAgainstScope(result.scope, lowZoomTile).decision, 'allow_unrestricted')
+  assert.equal(classifyTileAgainstScope(result.scope, { z: 7, x: 0, y: 0 }).decision, 'allow_unrestricted')
+  assert.equal(classifyTileAgainstScope(result.scope, { z: 9, x: 0, y: 0 }).decision, 'outside')
+  assert.equal(classifyTileAgainstScope(result.scope, { z: 24, x: 0, y: 0 }).decision, 'outside')
 
   const highZoom = Math.max(result.scope.minZoom, 17)
   const highZoomTile = { z: highZoom, x: 0, y: 0 }
   assert.equal(classifyTileAgainstScope(result.scope, highZoomTile).decision, 'outside')
+})
+
+test('低缩放放宽阈值不能高于分享最低缩放级别', () => {
+  const base = computeSpatialScope({
+    documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],
+    paddingMeters: 3000,
+  })
+  const result = computeSpatialScope({
+    documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],
+    paddingMeters: 3000,
+    unrestrictedTileMaxZoom: base.scope.minZoom + 1,
+  })
+  assert.equal(result.status, 'error')
+  assert.equal(result.reasonCode, 'SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH')
 })
 
 test('未设置低缩放放宽阈值时保持低于最低缩放拒绝', () => {
