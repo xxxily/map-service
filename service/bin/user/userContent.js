@@ -44,6 +44,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     spatialPaddingMeters: 1000,
     spatialMaxAreaKm2: 10000,
     spatialMaxDiagonalKm: 300,
+    spatialUnrestrictedTileMaxZoom: 14,
     unlimitedAccessEnabled: false,
     unlimitedAccessMaxAreaKm2: 2000,
     unlimitedAccessMaxDiagonalKm: 100,
@@ -666,7 +667,7 @@ function spatialError (reasonCode) {
     SHARE_SPATIAL_ANTIMERIDIAN_UNSTABLE: '当前 KML 跨越范围过大，无法安全限制地图范围',
     SHARE_SPATIAL_PADDING_INVALID: '空间边界余量配置不正确',
     SHARE_SPATIAL_TILE_ZOOM_INVALID: '范围外底图放宽级别需为 0～24 的整数',
-    SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH: '范围外底图放宽级别不能高于当前分享最低缩放级别',
+    SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH: '范围外底图放宽级别不能高于管理员设置的最大级别',
     SHARE_SPATIAL_POLICY_INVALID: '空间访问策略配置不正确',
     SHARE_SPATIAL_RECALCULATING: '分享空间范围正在重新计算',
     SHARE_UNLIMITED_ACCESS_DISABLED: '后台未开放不限授权',
@@ -946,6 +947,14 @@ export class UserContentService {
     return settings.share || DEFAULT_SETTINGS.share
   }
 
+  cappedSpatialTileZoom (value, settings = this.getSettings()) {
+    const zoom = normalizeUnrestrictedTileMaxZoom(value)
+    if (zoom === null) return null
+    const configuredMax = normalizeUnrestrictedTileMaxZoom(this.spatialSettings(settings).spatialUnrestrictedTileMaxZoom) ??
+      DEFAULT_SETTINGS.share.spatialUnrestrictedTileMaxZoom
+    return Math.min(zoom, configuredMax)
+  }
+
   shareItemsForSpatialScope (shareId) {
     return this.database.prepare(`
       SELECT i.kml_id, i.published_revision, i.published_snapshot_json
@@ -977,6 +986,21 @@ export class UserContentService {
 
   computeSpatialState (items, settings = this.getSettings(), options = {}) {
     const shareSettings = this.spatialSettings(settings)
+    const unrestrictedTileMaxZoom = normalizeUnrestrictedTileMaxZoom(options.unrestrictedTileMaxZoom)
+    const configuredMaxZoom = normalizeUnrestrictedTileMaxZoom(shareSettings.spatialUnrestrictedTileMaxZoom) ??
+      DEFAULT_SETTINGS.share.spatialUnrestrictedTileMaxZoom
+    if (unrestrictedTileMaxZoom !== null && unrestrictedTileMaxZoom > configuredMaxZoom) {
+      return {
+        status: 'error',
+        scope: null,
+        eligibility: {
+          spatialAccessEligible: false,
+          unlimitedAccessEligible: false,
+          reasonCode: 'SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH',
+        },
+        errorCode: 'SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH',
+      }
+    }
     const documents = (items || []).map(item => ({
       features: Array.isArray(item.features) ? item.features : [],
     }))
@@ -985,7 +1009,7 @@ export class UserContentService {
       paddingMeters: shareSettings.spatialPaddingMeters,
       sourceRevisions: (items || []).map(item => ({ id: item.kmlId, revision: item.revision })),
       policyRevision: shareSettings.spatialPolicyRevision,
-      unrestrictedTileMaxZoom: options.unrestrictedTileMaxZoom,
+      unrestrictedTileMaxZoom,
       computedAt: this.nowIso(),
     })
     if (result.status !== 'ready') {
@@ -1189,7 +1213,7 @@ export class UserContentService {
     const sourceRevisions = items.map(item => ({ id: item.kmlId, revision: Number(item.revision) }))
     const previousScope = parseJson(row.spatial_scope_json, null)
     const state = this.computeSpatialState(items, settings, {
-      unrestrictedTileMaxZoom: previousScope?.unrestrictedTileMaxZoom,
+      unrestrictedTileMaxZoom: this.cappedSpatialTileZoom(previousScope?.unrestrictedTileMaxZoom, settings),
     })
     const previousHash = previousScope?.sourceRevisionHash || ''
     const nextHash = state.scope?.sourceRevisionHash || ''
@@ -1317,7 +1341,7 @@ export class UserContentService {
     rows.forEach(row => {
       const previousScope = parseJson(row.spatial_scope_json, null)
       const state = this.computeSpatialState(this.shareItemsForSpatialScope(row.id), settings, {
-        unrestrictedTileMaxZoom: previousScope?.unrestrictedTileMaxZoom,
+        unrestrictedTileMaxZoom: this.cappedSpatialTileZoom(previousScope?.unrestrictedTileMaxZoom, settings),
       })
       const scopeChanged = (previousScope?.sourceRevisionHash || '') !== (state.scope?.sourceRevisionHash || '') ||
         row.spatial_status !== state.status ||
@@ -2641,7 +2665,7 @@ export class UserContentService {
     const spatialAccess = normalizeSpatialAccessSettings(
       input.spatialAccess,
       previousSpatialMode,
-      previousScope?.unrestrictedTileMaxZoom
+      this.cappedSpatialTileZoom(previousScope?.unrestrictedTileMaxZoom, settings)
     )
     const spatialAccessMode = spatialAccess.mode
     const spatialState = this.resolveShareSpatialState(spatialItems, spatialAccessMode, settings, spatialAccess)
@@ -2777,7 +2801,7 @@ export class UserContentService {
     const spatialMode = row.spatial_access_mode || 'unrestricted'
     const previousScope = parseJson(row.spatial_scope_json, null)
     const spatialState = this.resolveShareSpatialState(items, spatialMode, settings, {
-      unrestrictedTileMaxZoom: previousScope?.unrestrictedTileMaxZoom,
+      unrestrictedTileMaxZoom: this.cappedSpatialTileZoom(previousScope?.unrestrictedTileMaxZoom, settings),
     })
     const passwordHash = row.password_hash
     assertPasswordlessSharingAllowed(passwordHash, settings)

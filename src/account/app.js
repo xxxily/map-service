@@ -115,6 +115,11 @@ function passwordlessSharingEnabled () {
   return state.auth.config?.share?.passwordlessSharingEnabled === true
 }
 
+function spatialTileZoomMax () {
+  const value = Number(state.auth.config?.share?.spatialUnrestrictedTileMaxZoom)
+  return Number.isSafeInteger(value) && value >= 0 && value <= 24 ? value : 14
+}
+
 function requireCapability (key, message = '当前账号没有执行此操作的权限') {
   if (capabilities()[key]) return true
   setMessage('', message)
@@ -623,6 +628,7 @@ async function createShareFromSelection () {
     documents: state.kml.items,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
+    spatialUnrestrictedTileMaxZoom: spatialTileZoomMax(),
     onSpatialPreview: (previewItems, spatialOptions = {}) => accountApi.spatialPreview({
       items: previewItems,
       spatialAccess: { mode: 'kml_bounds', ...(spatialOptions.unrestrictedTileMaxZoom == null ? {} : { unrestrictedTileMaxZoom: spatialOptions.unrestrictedTileMaxZoom }) },
@@ -689,6 +695,7 @@ async function editShare (id) {
     documents,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
+    spatialUnrestrictedTileMaxZoom: spatialTileZoomMax(),
     onSpatialPreview: (previewItems, spatialOptions = {}) => accountApi.spatialPreview({
       items: previewItems,
       spatialAccess: { mode: 'kml_bounds', ...(spatialOptions.unrestrictedTileMaxZoom == null ? {} : { unrestrictedTileMaxZoom: spatialOptions.unrestrictedTileMaxZoom }) },

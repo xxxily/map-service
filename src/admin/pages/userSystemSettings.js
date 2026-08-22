@@ -177,6 +177,7 @@ export function renderUserSystemSettingsPage (state) {
                   <label><span>边界余量（米）</span><input name="spatialPaddingMeters" type="number" min="50" max="10000" step="1" value="${Number(share.spatialPaddingMeters || 1000)}" required></label>
                   <label><span>最大面积（km²）</span><input name="spatialMaxAreaKm2" type="number" min="1" max="500000" step="0.1" value="${Number(share.spatialMaxAreaKm2 || 10000)}" required></label>
                   <label><span>最大对角线（km）</span><input name="spatialMaxDiagonalKm" type="number" min="1" max="5000" step="0.1" value="${Number(share.spatialMaxDiagonalKm || 300)}" required></label>
+                  <label><span>范围外底图放宽最大级别</span><input name="spatialUnrestrictedTileMaxZoom" type="number" min="0" max="24" step="1" value="${Number(share.spatialUnrestrictedTileMaxZoom ?? 14)}" required></label>
                   <label><span>不限授权</span><select name="unlimitedAccessEnabled"><option value="true" ${share.unlimitedAccessEnabled === true ? 'selected' : ''}>允许</option><option value="false" ${share.unlimitedAccessEnabled !== true ? 'selected' : ''}>关闭</option></select></label>
                   <label><span>不限授权最大面积（km²）</span><input name="unlimitedAccessMaxAreaKm2" type="number" min="1" max="${Number(share.spatialMaxAreaKm2 || 10000)}" step="0.1" value="${Number(share.unlimitedAccessMaxAreaKm2 || 2000)}" required></label>
                   <label><span>不限授权最大对角线（km）</span><input name="unlimitedAccessMaxDiagonalKm" type="number" min="1" max="${Number(share.spatialMaxDiagonalKm || 300)}" step="0.1" value="${Number(share.unlimitedAccessMaxDiagonalKm || 100)}" required></label>
@@ -205,6 +206,7 @@ const SPATIAL_POLICY_FIELDS = [
   'spatialPaddingMeters',
   'spatialMaxAreaKm2',
   'spatialMaxDiagonalKm',
+  'spatialUnrestrictedTileMaxZoom',
   'unlimitedAccessEnabled',
   'unlimitedAccessMaxAreaKm2',
   'unlimitedAccessMaxDiagonalKm',
@@ -227,6 +229,7 @@ function isRestrictiveSpatialPolicyChange (currentShare = {}, nextShare = {}) {
   return [
     'spatialMaxAreaKm2',
     'spatialMaxDiagonalKm',
+    'spatialUnrestrictedTileMaxZoom',
     'unlimitedAccessMaxAreaKm2',
     'unlimitedAccessMaxDiagonalKm',
   ].some(key => Number(nextShare[key]) < Number(currentShare[key]))
@@ -300,10 +303,16 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
     if (isSuperAdmin(state)) {
       const spatialMaxAreaKm2 = numberField(data, 'spatialMaxAreaKm2')
       const spatialMaxDiagonalKm = numberField(data, 'spatialMaxDiagonalKm')
+      const spatialUnrestrictedTileMaxZoom = numberField(data, 'spatialUnrestrictedTileMaxZoom')
       const unlimitedAccessMaxAreaKm2 = numberField(data, 'unlimitedAccessMaxAreaKm2')
       const unlimitedAccessMaxDiagonalKm = numberField(data, 'unlimitedAccessMaxDiagonalKm')
-      if (![spatialMaxAreaKm2, spatialMaxDiagonalKm, unlimitedAccessMaxAreaKm2, unlimitedAccessMaxDiagonalKm].every(Number.isFinite)) {
+      if (![spatialMaxAreaKm2, spatialMaxDiagonalKm, spatialUnrestrictedTileMaxZoom, unlimitedAccessMaxAreaKm2, unlimitedAccessMaxDiagonalKm].every(Number.isFinite)) {
         setNotice('', '空间策略阈值必须是有效数字')
+        renderDashboard()
+        return true
+      }
+      if (!Number.isSafeInteger(spatialUnrestrictedTileMaxZoom) || spatialUnrestrictedTileMaxZoom < 0 || spatialUnrestrictedTileMaxZoom > 24) {
+        setNotice('', '范围外底图放宽最大级别需为 0～24 的整数')
         renderDashboard()
         return true
       }
@@ -316,6 +325,7 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
       body.share.spatialPaddingMeters = numberField(data, 'spatialPaddingMeters')
       body.share.spatialMaxAreaKm2 = spatialMaxAreaKm2
       body.share.spatialMaxDiagonalKm = spatialMaxDiagonalKm
+      body.share.spatialUnrestrictedTileMaxZoom = spatialUnrestrictedTileMaxZoom
       body.share.unlimitedAccessEnabled = data.get('unlimitedAccessEnabled') === 'true'
       body.share.unlimitedAccessMaxAreaKm2 = unlimitedAccessMaxAreaKm2
       body.share.unlimitedAccessMaxDiagonalKm = unlimitedAccessMaxDiagonalKm

@@ -83,7 +83,7 @@ export function getShareSpatialConfig (manifest) {
     cameraBounds[3] >= -90 && cameraBounds[3] <= 90 &&
     cameraBounds[1] < cameraBounds[3] &&
     Number.isFinite(minZoom) && minZoom >= 0 && minZoom <= 24 &&
-    (unrestrictedTileMaxZoom === null || (Number.isSafeInteger(unrestrictedTileMaxZoom) && unrestrictedTileMaxZoom >= 0 && unrestrictedTileMaxZoom <= 24 && unrestrictedTileMaxZoom <= minZoom))
+    (unrestrictedTileMaxZoom === null || (Number.isSafeInteger(unrestrictedTileMaxZoom) && unrestrictedTileMaxZoom >= 0 && unrestrictedTileMaxZoom <= 24))
   )
   return {
     restricted: true,

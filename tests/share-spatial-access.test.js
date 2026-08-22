@@ -70,7 +70,7 @@ test('旧空间范围模型不会被当前瓦片判定继续使用', () => {
   assert.equal(classifyTileAgainstScope(legacy, tile).decision, 'unavailable')
 })
 
-test('当前空间范围拒绝非法最低缩放和越界放宽阈值', () => {
+test('当前空间范围拒绝非法最低缩放和越界放宽阈值，但允许高于最低缩放级别', () => {
   const current = computeSpatialScope({
     documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],
     paddingMeters: 1000,
@@ -82,12 +82,18 @@ test('当前空间范围拒绝非法最低缩放和越界放宽阈值', () => {
     assert.equal(publicSpatialScope(invalid, 1), null)
   }
 
-  const invalidThreshold = {
+  const validThreshold = {
     ...current,
     unrestrictedTileMaxZoom: current.minZoom + 1,
   }
-  assert.equal(isCurrentSpatialScope(invalidThreshold), false)
-  assert.equal(publicSpatialScope(invalidThreshold, 1), null)
+  assert.equal(isCurrentSpatialScope(validThreshold), true)
+  assert.equal(publicSpatialScope(validThreshold, 1).unrestrictedTileMaxZoom, current.minZoom + 1)
+
+  for (const invalidValue of [-1, 1.5, 25, 'abc']) {
+    const invalidThreshold = { ...current, unrestrictedTileMaxZoom: invalidValue }
+    assert.equal(isCurrentSpatialScope(invalidThreshold), false)
+    assert.equal(publicSpatialScope(invalidThreshold, 1), null)
+  }
 })
 
 test('分散点之间的外包矩形内部均允许查看', () => {
@@ -208,7 +214,7 @@ test('低缩放范围外瓦片可按分享阈值直接放宽，高缩放仍受�
   assert.equal(classifyTileAgainstScope(result.scope, highZoomTile).decision, 'outside')
 })
 
-test('低缩放放宽阈值不能高于分享最低缩放级别', () => {
+test('低缩放放宽阈值可以高于分享最低缩放级别', () => {
   const base = computeSpatialScope({
     documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],
     paddingMeters: 3000,
@@ -218,8 +224,8 @@ test('低缩放放宽阈值不能高于分享最低缩放级别', () => {
     paddingMeters: 3000,
     unrestrictedTileMaxZoom: base.scope.minZoom + 1,
   })
-  assert.equal(result.status, 'error')
-  assert.equal(result.reasonCode, 'SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH')
+  assert.equal(result.status, 'ready')
+  assert.equal(result.scope.unrestrictedTileMaxZoom, base.scope.minZoom + 1)
 })
 
 test('未设置低缩放放宽阈值时保持低于最低缩放拒绝', () => {

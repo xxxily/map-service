@@ -69,6 +69,7 @@ function createHarness (options = {}) {
       spatialPaddingMeters: 1000,
       spatialMaxAreaKm2: 10000,
       spatialMaxDiagonalKm: 300,
+      spatialUnrestrictedTileMaxZoom: 14,
       unlimitedAccessEnabled: true,
       unlimitedAccessMaxAreaKm2: 2000,
       unlimitedAccessMaxDiagonalKm: 100,
@@ -1089,7 +1090,7 @@ test('空间受限分享保存低缩放瓦片放宽阈值并在公开视图返�
   }
 })
 
-test('低缩放瓦片放宽阈值只接受 0～24 的整数', () => {
+test('低缩放瓦片放宽阈值受管理员最大级别限制，且只接受整数', () => {
   const harness = createHarness()
   try {
     const document = harness.service.createKml(harness.one, {
@@ -1106,18 +1107,43 @@ test('低缩放瓦片放宽阈值只接受 0～24 的整数', () => {
         error => error.code === 'SHARE_SPATIAL_TILE_ZOOM_INVALID'
       )
     }
-    const base = harness.service.getSpatialPreview(harness.one, {
-      spatialAccess: { mode: 'kml_bounds' },
+    const allowed = harness.service.createShare(harness.one, {
+      title: '管理员上限内的阈值',
       items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds', unrestrictedTileMaxZoom: 14 },
     })
+    assert.equal(allowed.spatialAccess.unrestrictedTileMaxZoom, 14)
+
     assert.throws(
       () => harness.service.createShare(harness.one, {
-        title: '超过最低层级',
+        title: '超过管理员上限',
         items: [{ kmlId: document.id }],
-        spatialAccess: { mode: 'kml_bounds', unrestrictedTileMaxZoom: base.minZoom + 1 },
+        spatialAccess: { mode: 'kml_bounds', unrestrictedTileMaxZoom: 15 },
       }),
       error => error.code === 'SHARE_SPATIAL_TILE_ZOOM_TOO_HIGH'
     )
+  } finally {
+    harness.close()
+  }
+})
+
+test('管理员下调放宽最大级别时存量分享自动收敛', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '收敛阈值路线',
+      features: [point('cap-threshold')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '待收敛分享',
+      items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds', unrestrictedTileMaxZoom: 14 },
+    })
+    harness.settings.share.spatialUnrestrictedTileMaxZoom = 12
+    harness.settings.share.spatialPolicyRevision = 2
+    const result = harness.service.revalidateSpatialShare(share.id, harness.settings)
+    assert.equal(result.affected, true)
+    assert.equal(harness.service.getPublicShareManifest(share.publicId).spatialAccess.unrestrictedTileMaxZoom, 12)
   } finally {
     harness.close()
   }

@@ -50,10 +50,11 @@ test('空间受限分享必须提供 ready 状态的相机边界和最低缩放�
   })
   assert.equal(malformed.valid, false)
 
-  const thresholdTooHigh = getShareSpatialConfig({
+  const thresholdAboveMinZoom = getShareSpatialConfig({
     spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113, 23], minZoom: 11, unrestrictedTileMaxZoom: 12 },
   })
-  assert.equal(thresholdTooHigh.valid, false)
+  assert.equal(thresholdAboveMinZoom.valid, true)
+  assert.equal(thresholdAboveMinZoom.effectiveMinZoom, 11)
 
   const antimeridian = getShareSpatialConfig({
     spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [179, -1, 181, 1], minZoom: 8 },

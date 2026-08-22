@@ -335,6 +335,7 @@
 | `spatialPaddingMeters` | `1000` | 50～10000 米 | KML 几何外侧统一边界余量，由服务端使用 |
 | `spatialMaxAreaKm2` | `10000` | 1～500000 平方公里 | 启用空间限制允许的最大面积 |
 | `spatialMaxDiagonalKm` | `300` | 1～5000 公里 | 启用空间限制允许的最大对角线距离 |
+| `spatialUnrestrictedTileMaxZoom` | `14` | 0～24 的整数 | 分享所有者可配置的范围外底图放宽最大级别；单个分享值不得超过此管理员上限，可高于该分享计算出的 `minZoom` |
 | `unlimitedAccessEnabled` | `false` | 布尔值 | 是否允许合规空间受限分享使用不限密码授权 |
 | `unlimitedAccessMaxAreaKm2` | `2000` | 1～`spatialMaxAreaKm2` | 不限授权允许的最大面积 |
 | `unlimitedAccessMaxDiagonalKm` | `100` | 1～`spatialMaxDiagonalKm` | 不限授权允许的最大对角线距离 |
@@ -347,6 +348,7 @@
 - 仅超级管理员或具备等价安全策略权限的账号可以修改。
 - 保存前要求最近再验证。
 - 缩小阈值或关闭不限授权前，显示受影响分享数量和将被撤销的不限会话数量。
+- 下调 `spatialUnrestrictedTileMaxZoom` 时，存量分享已保存的 `unrestrictedTileMaxZoom` 自动收敛到新上限，不将分享标记为不可用。
 - 保存成功后立即提升空间策略版本，并安排存量分享重新评估。
 - 禁止使用浏览器原生 `alert`、`confirm`、`prompt`，继续复用统一 Dialog。
 
@@ -452,10 +454,10 @@ v1.5.28 起采用边界瓦片服务端遮罩：`allow` 原样返回受控图源�
 ### 12.4 低缩放级别
 
 - 服务端根据完整相机包络计算空间受限分享可用的最低缩放级别；该层级允许通过边界遮罩显示矩形内像素，不要求整张原始瓦片完全落入外包矩形。
-- 分享所有者可选填 `unrestrictedTileMaxZoom`（基础取值为整数 `0～24`，且不得高于当前分享计算出的 `minZoom`）。设置后，`z <= unrestrictedTileMaxZoom` 的范围外瓦片允许通过受控图源直接回源；`z > unrestrictedTileMaxZoom` 仍按 KML 外包矩形执行 `allow`、`boundary` 或 `outside` 判定。
+- 分享所有者可选填 `unrestrictedTileMaxZoom`（基础取值为整数 `0～24`，且不得高于管理员配置的 `spatialUnrestrictedTileMaxZoom`，默认 `14`）。该值可以高于当前分享计算出的 `minZoom`。设置后，`z <= unrestrictedTileMaxZoom` 的范围外瓦片允许通过受控图源直接回源；`z > unrestrictedTileMaxZoom` 仍按 KML 外包矩形执行 `allow`、`boundary` 或 `outside` 判定。
 - 未设置 `unrestrictedTileMaxZoom` 时保持严格模式：低于 `minZoom` 的瓦片请求返回范围拒绝，不回源；设置放宽阈值后，所有 `z <= unrestrictedTileMaxZoom` 的范围外瓦片均使用 `allow_unrestricted` 直接回源，`z > unrestrictedTileMaxZoom` 才重新执行外包矩形判定。
 - 放宽只改变服务端瓦片请求能力，不改变 KML 内容、文件、媒体或相机授权边界；所有请求仍需通过分享授权、图源 catalog、坐标校验和分享瓦片限流。
-- 公开清单或 catalog 返回 `minZoom` 和 `unrestrictedTileMaxZoom`。前端相机最低缩放使用 `unrestrictedTileMaxZoom`（未设置时使用 `minZoom`），但 `maxBounds` 继续固定为 KML 外包矩形，用户不能拖动到 KML 不可视范围。
+- 公开清单或 catalog 返回 `minZoom` 和 `unrestrictedTileMaxZoom`。前端相机有效最低缩放为 `minZoom` 与放宽阈值（如有）中的较小值，未设置阈值时使用 `minZoom`；`maxBounds` 继续固定为 KML 外包矩形，用户不能拖动到 KML 不可视范围。
 - 低缩放放宽瓦片使用 `allow_unrestricted` 判定，直接回源且不进入边界 Alpha 遮罩；仍返回 `Cache-Control: private, no-store`。
 - 该设置用于低缩放周边底图体验和减少不必要的高清瓦片请求，不允许借此放大后查看 KML 范围外高清地图。
 
@@ -469,7 +471,7 @@ v1.5.28 起采用边界瓦片服务端遮罩：`allow` 原样返回受控图源�
 
 ## 13. 2D 分享页行为
 
-- URL 不含合法 `coords` 时，首屏自动适配全部有效分享 KML 坐标形成的外包矩形，并包含管理员配置的边界余量；URL 含合法 `coords` 时恢复参数中的中心、缩放和旋转，不得被自动适配覆盖。`layer` 参数独立按 URL → 分享配置 → 默认图层优先恢复；非法或越界状态安全回退。
+- URL 不含合法 `coords` 时，首屏自动适配全部有效分享 KML 坐标形成的外包矩形，并包含管理员配置的边界余量；URL 含合法 `coords` 时恢复参数中的中心、缩放和旋转，不得被自动适配覆盖。空间受限分享的有效最低缩放为 `minZoom` 与放宽阈值中的较小值。`layer` 参数独立按 URL → 分享配置 → 默认图层优先恢复；非法或越界状态安全回退。
 - 地图中心、拖动惯性、键盘移动、缩放、旋转和 URL 参数恢复后均需校验允许区域。
 - 尝试越界时将相机限制在最近合法位置，使用非阻塞短反馈，不产生持续遮挡地图的横幅。
 - 关闭世界环绕和重复世界副本。
@@ -738,7 +740,7 @@ v1.5.28 起采用边界瓦片服务端遮罩：`allow` 原样返回受控图源�
 规则：
 
 - `spatialAccess.mode` 省略时，创建默认 `unrestricted`，更新保持现状。
-- `spatialAccess.unrestrictedTileMaxZoom` 可选，基础取值为 `0～24` 的整数，且不得高于当前分享计算出的 `minZoom`；`z <=` 该值时范围外底图瓦片允许受控回源，`z >` 该值时继续执行外包矩形限制。省略或为 `null` 表示严格模式。
+- `spatialAccess.unrestrictedTileMaxZoom` 可选，基础取值为 `0～24` 的整数，且不得高于管理员配置的 `share.spatialUnrestrictedTileMaxZoom`（默认 `14`）；该值可以高于当前分享计算出的 `minZoom`。`z <=` 该值时范围外底图瓦片允许受控回源，`z >` 该值时继续执行外包矩形限制。省略或为 `null` 表示严格模式。
 - `passwordAccess.ttlMode` 省略时，创建默认 `finite`，更新保持现状。
 - 未设置分享密码时提交 `unlimited` 返回校验错误，不静默忽略。
 - 客户端提交的 `geometry`、`bbox`、面积和对角线字段一律拒绝或忽略，不能写入权威范围。

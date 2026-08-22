@@ -217,6 +217,7 @@ test('registration mode and safe default roles are enforced by the service', asy
     enabled: false,
   })
   assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, false)
+  assert.equal(service.getPublicConfig().share.spatialUnrestrictedTileMaxZoom, 14)
   await assert.rejects(
     service.register({
       username: 'closed.user',
@@ -291,6 +292,25 @@ test('公开配置和管理员设置暴露无密码分享开关并严格校验�
   })
   assert.equal(disabled.share.passwordlessSharingEnabled, false)
   assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, false)
+})
+
+test('管理员可调整范围外底图放宽最大级别并拒绝非法值', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+
+  assert.equal(service.getSettings().share.spatialUnrestrictedTileMaxZoom, 14)
+  const updated = service.updateSettings(rootSession, {
+    share: { spatialUnrestrictedTileMaxZoom: 18 },
+  })
+  assert.equal(updated.share.spatialUnrestrictedTileMaxZoom, 18)
+  assert.equal(service.getPublicConfig().share.spatialUnrestrictedTileMaxZoom, 18)
+
+  for (const value of [-1, 1.5, 25, '18.5']) {
+    assert.throws(
+      () => service.updateSettings(rootSession, { share: { spatialUnrestrictedTileMaxZoom: value } }),
+      matchesError('VALIDATION_FAILED', 400)
+    )
+  }
 })
 
 test('user-system health summary is permission-gated and reports operational counts', async t => {

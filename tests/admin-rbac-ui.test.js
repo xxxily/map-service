@@ -67,6 +67,7 @@ test('空间分享策略只对超级管理员呈现', () => {
         spatialPaddingMeters: 1000,
         spatialMaxAreaKm2: 10000,
         spatialMaxDiagonalKm: 300,
+        spatialUnrestrictedTileMaxZoom: 14,
         unlimitedAccessEnabled: true,
         unlimitedAccessMaxAreaKm2: 2000,
         unlimitedAccessMaxDiagonalKm: 100,
@@ -79,6 +80,7 @@ test('空间分享策略只对超级管理员呈现', () => {
   assert.doesNotMatch(securityHtml, /name="spatialAccessEnabled"/)
   assert.match(superHtml, /name="spatialAccessEnabled"/)
   assert.match(superHtml, /name="unlimitedAccessMaxAreaKm2"/)
+  assert.match(superHtml, /name="spatialUnrestrictedTileMaxZoom"[^>]*max="24"/)
   assert.equal(typeof adminApi.previewUserSystemSettings, 'function')
 })
 

@@ -52,6 +52,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     spatialPaddingMeters: 1000,
     spatialMaxAreaKm2: 10000,
     spatialMaxDiagonalKm: 300,
+    spatialUnrestrictedTileMaxZoom: 14,
     unlimitedAccessEnabled: false,
     unlimitedAccessMaxAreaKm2: 2000,
     unlimitedAccessMaxDiagonalKm: 100,
@@ -72,6 +73,7 @@ const SPATIAL_SHARE_SETTING_KEYS = Object.freeze([
   'spatialPaddingMeters',
   'spatialMaxAreaKm2',
   'spatialMaxDiagonalKm',
+  'spatialUnrestrictedTileMaxZoom',
   'unlimitedAccessEnabled',
   'unlimitedAccessMaxAreaKm2',
   'unlimitedAccessMaxDiagonalKm',
@@ -134,6 +136,15 @@ function normalizeNumberSetting (value, fallback, min, max, label) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
     throw createHttpError(`${label}需在 ${min}～${max} 之间`, 400, 'VALIDATION_FAILED')
+  }
+  return parsed
+}
+
+function normalizeIntegerSetting (value, fallback, min, max, label) {
+  if (value === undefined) return Number(fallback)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw createHttpError(`${label}需为 ${min}～${max} 的整数`, 400, 'VALIDATION_FAILED')
   }
   return parsed
 }
@@ -476,6 +487,7 @@ export class UserSystemService {
       passwordPolicy: PASSWORD_POLICY,
       share: {
         passwordlessSharingEnabled: settings.share.passwordlessSharingEnabled === true,
+        spatialUnrestrictedTileMaxZoom: Number(settings.share.spatialUnrestrictedTileMaxZoom),
       },
       analytics: publicAnalyticsConfig(settings.analytics),
     }
@@ -615,6 +627,13 @@ export class UserSystemService {
         1,
         5000,
         '空间限制最大对角线'
+      )
+      next.share.spatialUnrestrictedTileMaxZoom = normalizeIntegerSetting(
+        input.share.spatialUnrestrictedTileMaxZoom,
+        current.share.spatialUnrestrictedTileMaxZoom,
+        0,
+        24,
+        '范围外底图放宽最大级别'
       )
       next.share.unlimitedAccessEnabled = normalizeBooleanSetting(
         input.share.unlimitedAccessEnabled,

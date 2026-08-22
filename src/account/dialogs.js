@@ -288,6 +288,10 @@ export function showAccountShareDialog (options = {}) {
   const analyticsPolicy = options.analyticsPolicy || {}
   const analytics = share.analytics || {}
   const selectedAnalyticsMode = analyticsModeValue(share)
+  const configuredSpatialTileZoomMax = Number(options.spatialUnrestrictedTileMaxZoom)
+  const spatialTileZoomMax = Number.isSafeInteger(configuredSpatialTileZoomMax) && configuredSpatialTileZoomMax >= 0 && configuredSpatialTileZoomMax <= 24
+    ? configuredSpatialTileZoomMax
+    : 14
   const analyticsModeOptions = analyticsPolicy.enabled === true
     ? `<option value="none" ${selectedAnalyticsMode === 'none' ? 'selected' : ''}>不启用</option><option value="provider" ${selectedAnalyticsMode === 'provider' ? 'selected' : ''}>托管服务</option>${analyticsPolicy.customScriptEnabled === true ? `<option value="custom" ${selectedAnalyticsMode === 'custom' ? 'selected' : ''}>自定义脚本</option>` : ''}`
     : selectedAnalyticsMode === 'none'
@@ -356,7 +360,7 @@ export function showAccountShareDialog (options = {}) {
             <h3>访问范围</h3>
             <div class="account-share-dialog-columns">
               <label class="account-dialog-field"><span>地图范围</span><select name="spatialAccessMode"><option value="unrestricted" ${spatialAccess.mode !== 'kml_bounds' ? 'selected' : ''}>不限制</option><option value="kml_bounds" ${spatialAccess.mode === 'kml_bounds' ? 'selected' : ''}>限制在 KML 区域</option></select></label>
-              <label class="account-dialog-field" data-account-spatial-tile-zoom-field><span>范围外底图放宽到缩放级别</span><input name="unrestrictedTileMaxZoom" type="number" min="0" max="24" step="1" value="${escapeHtml(spatialAccess.unrestrictedTileMaxZoom ?? '')}" placeholder="不放宽"></label>
+              <label class="account-dialog-field" data-account-spatial-tile-zoom-field><span>范围外底图放宽到缩放级别</span><input name="unrestrictedTileMaxZoom" type="number" min="0" max="${spatialTileZoomMax}" step="1" value="${escapeHtml(spatialAccess.unrestrictedTileMaxZoom ?? '')}" placeholder="不放宽"></label>
               <label class="account-dialog-field" data-account-password-access-field><span>密码授权</span><select name="passwordAccessTtlMode"><option value="finite" ${passwordTtlMode !== 'unlimited' ? 'selected' : ''}>按后台有效期</option><option value="unlimited" ${passwordTtlMode === 'unlimited' ? 'selected' : ''}>不限固定期限</option></select></label>
             </div>
             <p data-account-spatial-summary>${spatialAccess.mode === 'kml_bounds'
@@ -633,6 +637,11 @@ export function showAccountShareDialog (options = {}) {
           const zoom = Number(rawZoom)
           if (!Number.isSafeInteger(zoom) || zoom < 0 || zoom > 24) {
             showError('范围外底图放宽级别需为 0～24 的整数')
+            form.elements.unrestrictedTileMaxZoom.focus()
+            return
+          }
+          if (zoom > spatialTileZoomMax) {
+            showError(`范围外底图放宽级别不能高于管理员设置的最大级别（${spatialTileZoomMax}）`)
             form.elements.unrestrictedTileMaxZoom.focus()
             return
           }
