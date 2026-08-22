@@ -41,7 +41,10 @@ import {
   parseBoundedInteger,
 } from './map/location-track.js'
 import { initDesktopShiftDragRotate } from './map/desktop-rotation.js'
-import { installRotatedShareBounds } from './map/rotated-share-bounds.js'
+import {
+  ROTATED_SHARE_BOUNDS_VISCOSITY,
+  installRotatedShareBounds,
+} from './map/rotated-share-bounds.js'
 import { getKmlLeafletPerformanceOptions } from './map/kml-performance.js'
 import { installStableTrackpadWheelZoom } from './map/trackpad-wheel-zoom.js'
 import { loadGlobalAnalytics } from './analytics.js'
@@ -204,7 +207,7 @@ async function initLeafletMap () {
     zoom: useUrlView ? urlState.coords.zoom : (Number.isFinite(shareZoom) ? shareZoom : defaultView.zoom),
     minZoom: restrictedShare ? shareSpatial.effectiveMinZoom : undefined,
     maxBounds: restrictedBounds || undefined,
-    maxBoundsViscosity: restrictedShare ? 1 : 0,
+    maxBoundsViscosity: restrictedShare ? ROTATED_SHARE_BOUNDS_VISCOSITY : 0,
     worldCopyJump: false,
     bearing: useUrlView ? urlState.coords.bearing : (Number.isFinite(shareBearing) ? shareBearing : (defaultView.bearing || 0)),
     rotate: true,

@@ -1,6 +1,11 @@
 const DEG_TO_RAD = Math.PI / 180
 const EPSILON = 1
 
+// Keep a small amount of overscroll at the edge so users can see that the
+// boundary was reached. Leaflet animates the view back inside maxBounds after
+// the drag ends; a value of 1 would remove that visual feedback entirely.
+export const ROTATED_SHARE_BOUNDS_VISCOSITY = 0.75
+
 function finiteNumber (value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? number : fallback
@@ -53,11 +58,14 @@ export function getRotatedViewportHalfSize (size, bearing = 0) {
   }
 }
 
-function clampAxis (value, minimum, maximum) {
+function clampAxis (value, minimum, maximum, fallbackMinimum, fallbackMaximum) {
   if (minimum <= maximum) return Math.max(minimum, Math.min(maximum, value))
-  // At this zoom the viewport is larger than the allowed envelope. There is
-  // no fully contained center, so keep the envelope centered and stable.
-  return (minimum + maximum) / 2
+  // At this zoom the rotated viewport is larger than the allowed envelope on
+  // this axis, so there is no fully contained center interval. Keep the
+  // center inside the authorized envelope instead of collapsing it to a
+  // single midpoint; otherwise KML points near the envelope corners become
+  // impossible to bring into view.
+  return Math.max(fallbackMinimum, Math.min(fallbackMaximum, value))
 }
 
 export function limitRotatedCenterPoint (center, projectedBounds, viewportSize, bearing = 0) {
@@ -67,8 +75,20 @@ export function limitRotatedCenterPoint (center, projectedBounds, viewportSize, 
   const halfSize = getRotatedViewportHalfSize(viewportSize, bearing)
   const centerPoint = point(center)
   return {
-    x: clampAxis(centerPoint.x, normalizedBounds[0] + halfSize.x, normalizedBounds[2] - halfSize.x),
-    y: clampAxis(centerPoint.y, normalizedBounds[1] + halfSize.y, normalizedBounds[3] - halfSize.y),
+    x: clampAxis(
+      centerPoint.x,
+      normalizedBounds[0] + halfSize.x,
+      normalizedBounds[2] - halfSize.x,
+      normalizedBounds[0],
+      normalizedBounds[2],
+    ),
+    y: clampAxis(
+      centerPoint.y,
+      normalizedBounds[1] + halfSize.y,
+      normalizedBounds[3] - halfSize.y,
+      normalizedBounds[1],
+      normalizedBounds[3],
+    ),
   }
 }
 
@@ -215,6 +235,9 @@ export function installRotatedShareBounds (map, options = {}) {
   const draggable = drag?._draggable
   let dragState = null
   const defaultPreDragLimit = drag?._onPreDragLimit
+  const invalidateDragState = () => {
+    dragState = null
+  }
   const onDragStart = () => {
     if (!draggable || !draggable._startPos || typeof map.getCenter !== 'function') return
     const startPosition = draggable._startPos.clone?.() || point(draggable._startPos)
@@ -264,6 +287,18 @@ export function installRotatedShareBounds (map, options = {}) {
     else draggable._newPos = { x: dragState.startPosition.x + appliedOffset.x, y: dragState.startPosition.y + appliedOffset.y }
   }
   const onDragEnd = () => { dragState = null }
+  const onRotate = () => {
+    invalidateDragState()
+    enforceCurrentView()
+  }
+  const onZoomEnd = () => {
+    invalidateDragState()
+    enforceCurrentView()
+  }
+  const onResize = () => {
+    invalidateDragState()
+    enforceCurrentView()
+  }
 
   if (draggable) {
     if (defaultPreDragLimit) draggable.off('predrag', defaultPreDragLimit, drag)
@@ -271,10 +306,13 @@ export function installRotatedShareBounds (map, options = {}) {
   }
   map.on('dragstart', onDragStart)
   map.on('dragend', onDragEnd)
-  map.on('rotate', enforceCurrentView)
-  map.on('zoomend', enforceCurrentView)
-  map.on('resize', enforceCurrentView)
-  map.on('moveend', enforceCurrentView)
+  // A rotate/zoom/resize can move the pane or change the projected envelope
+  // while Leaflet still retains draggable internals. Never reuse a snapshot
+  // captured before that transition for the next predrag frame.
+  map.on('zoomstart', invalidateDragState)
+  map.on('rotate', onRotate)
+  map.on('zoomend', onZoomEnd)
+  map.on('resize', onResize)
   enforceCurrentView()
 
   return {
@@ -285,10 +323,10 @@ export function installRotatedShareBounds (map, options = {}) {
       map.panBy = originalPanBy
       map.off('dragstart', onDragStart)
       map.off('dragend', onDragEnd)
-      map.off('rotate', enforceCurrentView)
-      map.off('zoomend', enforceCurrentView)
-      map.off('resize', enforceCurrentView)
-      map.off('moveend', enforceCurrentView)
+      map.off('zoomstart', invalidateDragState)
+      map.off('rotate', onRotate)
+      map.off('zoomend', onZoomEnd)
+      map.off('resize', onResize)
       if (draggable) {
         draggable.off('predrag', onPreDrag)
         if (defaultPreDragLimit) draggable.on('predrag', defaultPreDragLimit, drag)

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  ROTATED_SHARE_BOUNDS_VISCOSITY,
   getRotatedViewportHalfSize,
   getRotatedPanTargetPoint,
   installRotatedShareBounds,
@@ -33,11 +34,26 @@ test('旋转后的中心限制使用屏幕四角包络，而不是固定的轴�
   assert.ok(Math.abs(quarterTurn.y - 600) < 1e-9)
 })
 
-test('视口大于授权矩形时中心保持稳定，不在旋转后产生来回跳动', () => {
-  const first = limitRotatedCenterPoint({ x: 10, y: 20 }, [0, 0, 400, 300], { x: 1200, y: 700 }, 90)
-  const second = limitRotatedCenterPoint(first, [0, 0, 400, 300], { x: 1200, y: 700 }, 0)
-  assert.deepEqual(first, { x: 200, y: 150 })
-  assert.deepEqual(second, { x: 200, y: 150 })
+test('旋转视口包络大于授权轴时中心仍可在授权范围内移动', () => {
+  const bounds = [0, 0, 1000, 1000]
+  const size = { x: 800, y: 800 }
+
+  // 45° 时旋转视口 AABB 为约 1131×1131，无法完整放入范围。
+  // 此时仍应允许中心在授权矩形内移动，确保四角 KML 内容可达。
+  assert.deepEqual(
+    limitRotatedCenterPoint({ x: 100, y: 900 }, bounds, size, 45),
+    { x: 100, y: 900 },
+  )
+  assert.deepEqual(
+    limitRotatedCenterPoint({ x: -200, y: 1400 }, bounds, size, 45),
+    { x: 0, y: 1000 },
+  )
+
+  // 归北后视口能完整放入，恢复严格的完整视口约束。
+  assert.deepEqual(
+    limitRotatedCenterPoint({ x: 100, y: 900 }, bounds, size, 0),
+    { x: 400, y: 600 },
+  )
 })
 
 test('惯性/键盘平移偏移量按当前 bearing 转回投影坐标后再限制', () => {
@@ -157,12 +173,12 @@ test('controller 只接管旋转窄视口的超大非动画 panBy，并在销毁
   assert.equal(map.panBy, originalPanBy)
 })
 
-test('拖到旋转视口边缘时即使 maxBoundsViscosity 为 1 也保留回弹反馈位移', () => {
+test('拖到旋转视口边缘时保留阻尼位移供松手回弹', () => {
   const listeners = new Map()
   const predragListeners = []
   const draggable = {
     _startPos: { x: 0, y: 0 },
-    _newPos: { x: 500, y: 0 },
+    _newPos: { x: Math.SQRT1_2 * 500, y: Math.SQRT1_2 * 500 },
     on: (event, handler) => {
       if (event === 'predrag') predragListeners.push(handler)
       return draggable
@@ -178,7 +194,7 @@ test('拖到旋转视口边缘时即使 maxBoundsViscosity 为 1 也保留回弹
   const map = {
     _rotate: true,
     _loaded: true,
-    options: { maxBounds: bounds, maxBoundsViscosity: 1 },
+    options: { maxBounds: bounds, maxBoundsViscosity: ROTATED_SHARE_BOUNDS_VISCOSITY },
     dragging: { _draggable: draggable },
     _limitCenter: center => center,
     _limitOffset: offset => offset,
@@ -204,9 +220,108 @@ test('拖到旋转视口边缘时即使 maxBoundsViscosity 为 1 也保留回弹
   predragListeners[0]()
 
   // A hard clamp leaves the pointer at the exact boundary and feels frozen.
-  // Spatial shares must retain a small resisted overscroll even though their
-  // Leaflet maxBoundsViscosity is 1, then settle back on drag end.
+  // Spatial shares retain a small resisted overscroll, then settle back on
+  // drag end through Leaflet's native maxBounds animation.
+  assert.ok(ROTATED_SHARE_BOUNDS_VISCOSITY > 0 && ROTATED_SHARE_BOUNDS_VISCOSITY < 1)
   assert.ok(draggable._newPos.x > 0)
-  assert.ok(draggable._newPos.x < 500)
+  assert.ok(draggable._newPos.x < Math.SQRT1_2 * 500)
+  assert.ok(draggable._newPos.y > 0)
+  assert.ok(draggable._newPos.y < Math.SQRT1_2 * 500)
+  controller.destroy()
+})
+
+test('controller 不监听 moveend 抢断 Leaflet 原生边界回弹', () => {
+  const listeners = new Map()
+  const bounds = {
+    getNorthWest: () => ({ x: 0, y: 0 }),
+    getNorthEast: () => ({ x: 1000, y: 0 }),
+    getSouthWest: () => ({ x: 0, y: 1000 }),
+    getSouthEast: () => ({ x: 1000, y: 1000 }),
+  }
+  const map = {
+    _rotate: true,
+    _loaded: false,
+    options: { maxBounds: bounds, maxBoundsViscosity: ROTATED_SHARE_BOUNDS_VISCOSITY },
+    _limitCenter: center => center,
+    _limitOffset: offset => offset,
+    panBy: () => map,
+    project: value => ({ x: Number(value.x), y: Number(value.y) }),
+    unproject: value => ({ x: Number(value.x), y: Number(value.y) }),
+    getBearing: () => 45,
+    getCenter: () => ({ x: 500, y: 500 }),
+    getZoom: () => 10,
+    getSize: () => ({ x: 400, y: 400 }),
+    on: (event, handler) => {
+      listeners.set(event, handler)
+      return map
+    },
+    off: () => map,
+  }
+
+  const controller = installRotatedShareBounds(map)
+  assert.equal(listeners.has('moveend'), false)
+  assert.equal(listeners.has('rotate'), true)
+  assert.equal(listeners.has('zoomend'), true)
+  assert.equal(listeners.has('resize'), true)
+  controller.destroy()
+})
+
+test('旋转、缩放或调整尺寸后会废弃旧拖拽快照', () => {
+  const listeners = new Map()
+  const predragListeners = []
+  const draggable = {
+    _startPos: { x: 0, y: 0 },
+    _newPos: { x: 100, y: 0 },
+    on: (event, handler) => {
+      if (event === 'predrag') predragListeners.push(handler)
+      return draggable
+    },
+    off: () => draggable,
+  }
+  const bounds = {
+    getNorthWest: () => ({ x: 0, y: 0 }),
+    getNorthEast: () => ({ x: 2000, y: 0 }),
+    getSouthWest: () => ({ x: 0, y: 2000 }),
+    getSouthEast: () => ({ x: 2000, y: 2000 }),
+  }
+  let bearing = 0
+  let zoom = 10
+  let size = { x: 400, y: 400 }
+  const map = {
+    _rotate: true,
+    _loaded: false,
+    options: { maxBounds: bounds, maxBoundsViscosity: ROTATED_SHARE_BOUNDS_VISCOSITY },
+    dragging: { _draggable: draggable },
+    _limitCenter: center => center,
+    _limitOffset: offset => offset,
+    panBy: () => map,
+    project: value => ({ x: Number(value.x), y: Number(value.y) }),
+    unproject: value => ({ x: Number(value.x), y: Number(value.y) }),
+    getBearing: () => bearing,
+    getCenter: () => ({ x: 1000, y: 1000 }),
+    getZoom: () => zoom,
+    getSize: () => size,
+    on: (event, handler) => {
+      listeners.set(event, handler)
+      return map
+    },
+    off: () => map,
+  }
+
+  const controller = installRotatedShareBounds(map)
+  listeners.get('dragstart')()
+  bearing = 90
+  zoom = 12
+  size = { x: 800, y: 300 }
+  listeners.get('rotate')()
+  listeners.get('zoomstart')()
+  listeners.get('zoomend')()
+  listeners.get('resize')()
+  draggable._newPos = { x: 100, y: 0 }
+  predragListeners[0]()
+
+  // The previous drag started at bearing 0. Clearing it means this frame is
+  // ignored instead of applying stale zoom/bearing/projected bounds.
+  assert.deepEqual(draggable._newPos, { x: 100, y: 0 })
   controller.destroy()
 })

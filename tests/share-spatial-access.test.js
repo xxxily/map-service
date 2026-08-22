@@ -58,6 +58,28 @@ test('空间范围按全部点线面生成外包矩形和公开相机摘要', ()
   assert.equal(Object.hasOwn(publicScope, 'sourceRevisionHash'), false)
 })
 
+test('标准嵌套 Polygon 环坐标会递归纳入空间范围', () => {
+  const result = computeSpatialScope({
+    documents: [documentWith({
+      type: 'Polygon',
+      coordinates: [[[
+        113.25, 23.12,
+      ], [
+        113.29, 23.12,
+      ], [
+        113.29, 23.16,
+      ], [
+        113.25, 23.12,
+      ]]],
+    })],
+    paddingMeters: 1000,
+  })
+
+  assert.equal(result.status, 'ready')
+  assert.ok(result.scope.cameraBounds[0] < 113.25)
+  assert.ok(result.scope.cameraBounds[2] > 113.29)
+})
+
 test('旧空间范围模型不会被当前瓦片判定继续使用', () => {
   const current = computeSpatialScope({
     documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],

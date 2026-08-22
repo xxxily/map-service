@@ -105,9 +105,19 @@ function unprojectCoordinate (coordinate, projection) {
 }
 
 function featureCoordinates (feature) {
-  if (feature?.type === 'Point') return [feature.coordinates]
-  if (feature?.type === 'LineString' || feature?.type === 'Polygon') return feature.coordinates
-  return []
+  if (!Array.isArray(feature?.coordinates)) return []
+  const coordinates = []
+  const collect = value => {
+    if (!Array.isArray(value)) return
+    if (value.length >= 2 && !Array.isArray(value[0]) && !Array.isArray(value[1])) {
+      coordinates.push(value)
+      return
+    }
+    value.forEach(collect)
+  }
+  collect(feature.coordinates)
+  if (feature?.type === 'Point' && coordinates.length > 1) return []
+  return coordinates
 }
 
 function collectFeatures (documents) {
