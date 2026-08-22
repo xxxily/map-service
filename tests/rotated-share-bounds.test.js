@@ -63,6 +63,34 @@ test('旋转向量保持可逆，归北后边界计算可恢复原始方向', ()
   assert.ok(Math.abs(restored.y - original.y) < 1e-9)
 })
 
+test('连续旋转和缩放后每一帧都按最新视口包络限制中心', () => {
+  const bounds = [0, 0, 4000, 3000]
+  const sizes = [
+    { x: 1200, y: 700 },
+    { x: 900, y: 1200 },
+    { x: 1600, y: 800 },
+  ]
+  const bearings = [0, 37, 91, 179, 241, 315, 0]
+  let center = { x: -500, y: 4200 }
+
+  for (let index = 0; index < bearings.length; index += 1) {
+    const size = sizes[index % sizes.length]
+    const bearing = bearings[index]
+    center = limitRotatedCenterPoint(center, bounds, size, bearing)
+    const half = getRotatedViewportHalfSize(size, bearing)
+    assert.ok(center.x >= bounds[0] + half.x - 1e-9)
+    assert.ok(center.x <= bounds[2] - half.x + 1e-9)
+    assert.ok(center.y >= bounds[1] + half.y - 1e-9)
+    assert.ok(center.y <= bounds[3] - half.y + 1e-9)
+
+    // Simulate a zoom recalculation followed by another large pan. The
+    // result must be bounded from the current zoom/bearing, not stale state.
+    center = limitRotatedCenterPoint({ x: center.x + 5000, y: center.y - 5000 }, bounds, size, bearing)
+    assert.ok(center.x <= bounds[2] - half.x + 1e-9)
+    assert.ok(center.y >= bounds[1] + half.y - 1e-9)
+  }
+})
+
 test('窄视口非动画平移按 bearing 转换目标中心，避免 Leaflet 超大偏移分支丢失旋转', () => {
   const northUp = getRotatedPanTargetPoint({ x: 1200, y: 900 }, { x: 500, y: 0 }, 0)
   assert.deepEqual(northUp, { x: 1700, y: 900 })
@@ -127,4 +155,58 @@ test('controller 只接管旋转窄视口的超大非动画 panBy，并在销毁
 
   controller.destroy()
   assert.equal(map.panBy, originalPanBy)
+})
+
+test('拖到旋转视口边缘时即使 maxBoundsViscosity 为 1 也保留回弹反馈位移', () => {
+  const listeners = new Map()
+  const predragListeners = []
+  const draggable = {
+    _startPos: { x: 0, y: 0 },
+    _newPos: { x: 500, y: 0 },
+    on: (event, handler) => {
+      if (event === 'predrag') predragListeners.push(handler)
+      return draggable
+    },
+    off: () => draggable,
+  }
+  const bounds = {
+    getNorthWest: () => ({ x: 0, y: 0 }),
+    getNorthEast: () => ({ x: 1000, y: 0 }),
+    getSouthWest: () => ({ x: 0, y: 1000 }),
+    getSouthEast: () => ({ x: 1000, y: 1000 }),
+  }
+  const map = {
+    _rotate: true,
+    _loaded: true,
+    options: { maxBounds: bounds, maxBoundsViscosity: 1 },
+    dragging: { _draggable: draggable },
+    _limitCenter: center => center,
+    _limitOffset: offset => offset,
+    panBy: () => map,
+    project: value => ({ x: Number(value.x), y: Number(value.y) }),
+    unproject: value => ({ x: Number(value.x), y: Number(value.y) }),
+    getBearing: () => 45,
+    // Start exactly at the rotated west edge, then drag farther outward.
+    // This is the state that previously felt completely frozen.
+    getCenter: () => ({ x: 282.842712474619, y: 500 }),
+    getZoom: () => 10,
+    getSize: () => ({ x: 400, y: 400 }),
+    setView: () => map,
+    on: (event, handler) => {
+      listeners.set(event, handler)
+      return map
+    },
+    off: () => map,
+  }
+
+  const controller = installRotatedShareBounds(map)
+  listeners.get('dragstart')()
+  predragListeners[0]()
+
+  // A hard clamp leaves the pointer at the exact boundary and feels frozen.
+  // Spatial shares must retain a small resisted overscroll even though their
+  // Leaflet maxBoundsViscosity is 1, then settle back on drag end.
+  assert.ok(draggable._newPos.x > 0)
+  assert.ok(draggable._newPos.x < 500)
+  controller.destroy()
 })
