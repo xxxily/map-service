@@ -1315,6 +1315,45 @@ test('public share tile route relays the normalized world-wrapped x coordinate',
   }
 })
 
+test('public share unrestricted low-zoom tile route relays without boundary masking', async () => {
+  let received = null
+  let masked = false
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    assertPublicKmlShareMapSource: async () => ({
+      decision: 'allow_unrestricted',
+      tile: { z: 8, x: 0, y: 0 },
+      spatialScope: { sourceRevisionHash: 'sha256:test' },
+    }),
+    fetchPublicKmlShareBoundaryTile: async () => {
+      masked = true
+      throw new Error('不应执行边界遮罩')
+    },
+    fetchTileSource: async (sourceId, tile) => {
+      received = { sourceId, tile }
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'image/png' },
+        cacheStatus: 'MISS',
+        stream: Readable.from([Buffer.from('tile')]),
+      }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/public/kml-shares/public-123/tiles/road/8/0/0`)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('x-kml-share-spatial-decision'), 'allow_unrestricted')
+    assert.equal(response.headers.get('cache-control'), 'private, no-store')
+    assert.deepEqual(received, { sourceId: 'road', tile: { z: 8, x: 0, y: 0 } })
+    assert.equal(masked, false)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('public share routes preserve manifest and tile rate-limit error codes', async () => {
   const manifestError = new Error('分享数据请求过于频繁，请稍后再试')
   manifestError.statusCode = 429

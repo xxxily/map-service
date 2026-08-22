@@ -517,7 +517,7 @@ const service = {
       userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: classification.decision })
       throw createHttpError('瓦片坐标无效', 400, 'INVALID_TILE_COORDINATES')
     }
-    if (classification.decision === 'allow' || classification.decision === 'boundary') {
+    if (classification.decision === 'allow' || classification.decision === 'allow_unrestricted' || classification.decision === 'boundary') {
       userContent.consumeShareRateLimit('tile', share.id, options)
     }
     userContent.recordShareRuntimeMetric(share.id, 'tile_decision', { sourceId, decision: classification.decision })

@@ -452,9 +452,12 @@ v1.5.28 起采用边界瓦片服务端遮罩：`allow` 原样返回受控图源�
 ### 12.4 低缩放级别
 
 - 服务端根据完整相机包络计算空间受限分享可用的最低缩放级别；该层级允许通过边界遮罩显示矩形内像素，不要求整张原始瓦片完全落入外包矩形。
-- 低于该级别的瓦片请求返回范围拒绝，不回源。
-- 公开清单或 catalog 返回 `minZoom`，前端不得允许继续缩小地图查看更大范围。
-- 最低缩放级别是地图资源泄露控制，不只是一项界面偏好。
+- 分享所有者可选填 `unrestrictedTileMaxZoom`（整数 `0～24`）。设置后，`z <= unrestrictedTileMaxZoom` 的范围外瓦片允许通过受控图源直接回源；`z > unrestrictedTileMaxZoom` 仍按 KML 外包矩形执行 `allow`、`boundary` 或 `outside` 判定。
+- 未设置 `unrestrictedTileMaxZoom` 时保持严格模式：低于 `minZoom` 的瓦片请求返回范围拒绝，不回源。
+- 放宽只改变服务端瓦片请求能力，不改变 KML 内容、文件、媒体或相机授权边界；所有请求仍需通过分享授权、图源 catalog、坐标校验和分享瓦片限流。
+- 公开清单或 catalog 返回 `minZoom` 和 `unrestrictedTileMaxZoom`。前端相机最低缩放使用 `min(minZoom, unrestrictedTileMaxZoom)`（未设置时使用 `minZoom`），但 `maxBounds` 继续固定为 KML 外包矩形，用户不能拖动到 KML 不可视范围。
+- 低缩放放宽瓦片使用 `allow_unrestricted` 判定，直接回源且不进入边界 Alpha 遮罩；仍返回 `Cache-Control: private, no-store`。
+- 该设置用于低缩放周边底图体验和减少不必要的高清瓦片请求，不允许借此放大后查看 KML 范围外高清地图。
 
 ### 12.5 缓存隔离
 
@@ -600,6 +603,7 @@ v1.5.28 起采用边界瓦片服务端遮罩：`allow` 原样返回受控图源�
   "paddingMeters": 1000,
   "areaKm2": 428.6,
   "diagonalKm": 54.2,
+  "unrestrictedTileMaxZoom": 8,
   "sourceRevisionHash": "sha256:...",
   "policyRevision": 3,
   "computedAt": "2026-08-15T08:00:00.000Z"
@@ -682,6 +686,7 @@ v1.5.28 起采用边界瓦片服务端遮罩：`allow` 原样返回受控图源�
     "paddingMeters": 1000,
     "areaKm2": 428.6,
     "diagonalKm": 54.2,
+    "unrestrictedTileMaxZoom": 8,
     "spatialAccessEligible": true,
     "unlimitedAccessEligible": true,
     "reasonCode": null
@@ -731,6 +736,7 @@ v1.5.28 起采用边界瓦片服务端遮罩：`allow` 原样返回受控图源�
 规则：
 
 - `spatialAccess.mode` 省略时，创建默认 `unrestricted`，更新保持现状。
+- `spatialAccess.unrestrictedTileMaxZoom` 可选，取值为 `0～24` 的整数；`z <=` 该值时范围外底图瓦片允许受控回源，`z >` 该值时继续执行外包矩形限制。省略或为 `null` 表示严格模式。
 - `passwordAccess.ttlMode` 省略时，创建默认 `finite`，更新保持现状。
 - 未设置分享密码时提交 `unlimited` 返回校验错误，不静默忽略。
 - 客户端提交的 `geometry`、`bbox`、面积和对角线字段一律拒绝或忽略，不能写入权威范围。
@@ -799,6 +805,7 @@ v1.5.28 起采用边界瓦片服务端遮罩：`allow` 原样返回受控图源�
     "displayGeometry": {},
     "paddingMeters": 1000,
     "minZoom": 11,
+    "unrestrictedTileMaxZoom": 8,
     "maxCameraHeight": 18000,
     "revision": 4
   },

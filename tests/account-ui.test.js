@@ -308,6 +308,7 @@ test('空间分享摘要保留空值并区分范围、状态和密码授权', ()
     diagonalKm: null,
     paddingMeters: null,
     minZoom: null,
+    unrestrictedTileMaxZoom: null,
     maxCameraHeight: null,
     displayGeometry: null,
     revision: 0,

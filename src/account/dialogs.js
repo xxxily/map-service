@@ -356,6 +356,7 @@ export function showAccountShareDialog (options = {}) {
             <h3>访问范围</h3>
             <div class="account-share-dialog-columns">
               <label class="account-dialog-field"><span>地图范围</span><select name="spatialAccessMode"><option value="unrestricted" ${spatialAccess.mode !== 'kml_bounds' ? 'selected' : ''}>不限制</option><option value="kml_bounds" ${spatialAccess.mode === 'kml_bounds' ? 'selected' : ''}>限制在 KML 区域</option></select></label>
+              <label class="account-dialog-field" data-account-spatial-tile-zoom-field><span>范围外底图放宽到缩放级别</span><input name="unrestrictedTileMaxZoom" type="number" min="0" max="24" step="1" value="${escapeHtml(spatialAccess.unrestrictedTileMaxZoom ?? '')}" placeholder="不放宽"></label>
               <label class="account-dialog-field" data-account-password-access-field><span>密码授权</span><select name="passwordAccessTtlMode"><option value="finite" ${passwordTtlMode !== 'unlimited' ? 'selected' : ''}>按后台有效期</option><option value="unlimited" ${passwordTtlMode === 'unlimited' ? 'selected' : ''}>不限固定期限</option></select></label>
             </div>
             <p data-account-spatial-summary>${spatialAccess.mode === 'kml_bounds'
@@ -391,11 +392,14 @@ export function showAccountShareDialog (options = {}) {
   const errorRoot = root.querySelector('[data-account-share-error]')
   const spatialSummaryRoot = root.querySelector('[data-account-spatial-summary]')
   const spatialPreviewButton = root.querySelector('[data-account-spatial-preview]')
+  const spatialTileZoomField = root.querySelector('[data-account-spatial-tile-zoom-field]')
   const passwordAccessField = root.querySelector('[data-account-password-access-field]')
   const analyticsModeField = form.elements.analyticsMode
   const analyticsProviderField = root.querySelector('[data-account-analytics-provider-field]')
   const analyticsCustomField = root.querySelector('[data-account-analytics-custom-field]')
-  let previewKey = spatialAccess.mode === 'kml_bounds' ? selectedItems.map(item => item.kmlId).join(',') : ''
+  let previewKey = spatialAccess.mode === 'kml_bounds'
+    ? `${selectedItems.map(item => item.kmlId).join(',')}|${spatialAccess.unrestrictedTileMaxZoom ?? ''}`
+    : ''
   let latestPreview = spatialAccess.mode === 'kml_bounds' && spatialAccess.status === 'ready' ? spatialAccess : null
   let previewSequence = 0
   let previewTimer = null
@@ -416,6 +420,9 @@ export function showAccountShareDialog (options = {}) {
     passwordAccessField.hidden = !hasPassword
     if (!hasPassword) form.elements.passwordAccessTtlMode.value = 'finite'
   }
+  const updateSpatialTileZoomVisibility = () => {
+    if (spatialTileZoomField) spatialTileZoomField.hidden = form.elements.spatialAccessMode.value !== 'kml_bounds'
+  }
   const updateAnalyticsVisibility = () => {
     const mode = analyticsModeField?.value || 'none'
     if (analyticsProviderField) analyticsProviderField.hidden = mode !== 'provider'
@@ -435,13 +442,18 @@ export function showAccountShareDialog (options = {}) {
       spatialSummaryRoot.textContent = '请选择 KML 后计算范围'
       return
     }
-    const key = selectedItems.map(item => item.kmlId).join(',')
+    const key = `${selectedItems.map(item => item.kmlId).join(',')}|${form.elements.unrestrictedTileMaxZoom?.value.trim() || ''}`
     previewKey = key
     const sequence = ++previewSequence
     spatialPreviewButton.disabled = true
     spatialSummaryRoot.textContent = '正在计算范围…'
     try {
-      const preview = await options.onSpatialPreview(selectedItems.map(item => ({ kmlId: item.kmlId })))
+      const rawZoom = form.elements.unrestrictedTileMaxZoom?.value.trim() || ''
+      const unrestrictedTileMaxZoom = rawZoom === '' ? null : Number(rawZoom)
+      const preview = await options.onSpatialPreview(
+        selectedItems.map(item => ({ kmlId: item.kmlId })),
+        { unrestrictedTileMaxZoom }
+      )
       if (sequence !== previewSequence || key !== previewKey) return
       if (preview?.spatialAccessEligible === false || preview?.status !== 'ready') {
         renderPreview({ ...preview, status: preview?.status || 'error' })
@@ -462,6 +474,7 @@ export function showAccountShareDialog (options = {}) {
     previewTimer = setTimeout(() => { requestSpatialPreview() }, 120)
   }
   updatePasswordAccessVisibility()
+  updateSpatialTileZoomVisibility()
   updateAnalyticsVisibility()
   spatialPreviewButton.hidden = spatialAccess.mode !== 'kml_bounds'
 
@@ -565,7 +578,9 @@ export function showAccountShareDialog (options = {}) {
         latestPreview = null
         spatialSummaryRoot.textContent = restricted ? '保存前将重新计算范围' : '地图范围不限制'
         scheduleSpatialPreview()
+        updateSpatialTileZoomVisibility()
       }
+      if (event.target.name === 'unrestrictedTileMaxZoom') scheduleSpatialPreview()
       if (event.target.name === 'passwordAction') {
         updatePasswordAccessVisibility()
       }
@@ -599,7 +614,7 @@ export function showAccountShareDialog (options = {}) {
         return
       }
       if (spatialAccessMode === 'kml_bounds') {
-        const key = selectedItems.map(item => item.kmlId).join(',')
+        const key = `${selectedItems.map(item => item.kmlId).join(',')}|${form.elements.unrestrictedTileMaxZoom?.value.trim() || ''}`
         if (!latestPreview || previewKey !== key || latestPreview.status !== 'ready') {
           showError('请先完成范围计算')
           scheduleSpatialPreview()
@@ -608,6 +623,19 @@ export function showAccountShareDialog (options = {}) {
         if (passwordAccessTtlMode === 'unlimited' && latestPreview.unlimitedAccessEligible !== true) {
           showError('当前范围不能使用不限授权')
           return
+        }
+      }
+      let unrestrictedTileMaxZoom = null
+      if (spatialAccessMode === 'kml_bounds') {
+        const rawZoom = form.elements.unrestrictedTileMaxZoom.value.trim()
+        if (rawZoom !== '') {
+          const zoom = Number(rawZoom)
+          if (!Number.isSafeInteger(zoom) || zoom < 0 || zoom > 24) {
+            showError('范围外底图放宽级别需为 0～24 的整数')
+            form.elements.unrestrictedTileMaxZoom.focus()
+            return
+          }
+          unrestrictedTileMaxZoom = zoom
         }
       }
       if (form.elements.analyticsMode.value === 'provider' && !form.elements.analyticsWebsiteId.value.trim()) {
@@ -642,7 +670,7 @@ export function showAccountShareDialog (options = {}) {
             : form.elements.analyticsMode.value === 'custom'
               ? { mode: 'custom', script: form.elements.analyticsCustomScript.value.trim() }
               : { mode: 'none' },
-          spatialAccess: { mode: spatialAccessMode },
+          spatialAccess: { mode: spatialAccessMode, ...(spatialAccessMode === 'kml_bounds' ? { unrestrictedTileMaxZoom } : {}) },
           passwordAccess: { ttlMode: passwordAccessTtlMode },
           items: buildShareUpdateItems(selectedItems),
           viewConfig: buildShareViewConfig(viewInput, viewConfig),

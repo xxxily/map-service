@@ -1,3 +1,5 @@
+import { normalizeUnrestrictedTileMaxZoom } from './shareSpatialAccess.js'
+
 const UNSUPPORTED_SHARE_SOURCE_KINDS = new Set([
   'mvt',
   'vector-tilejson',
@@ -51,6 +53,7 @@ function sanitizeSpatialAccess (value) {
   if (source.displayGeometry && typeof source.displayGeometry === 'object' && !Array.isArray(source.displayGeometry)) {
     result.displayGeometry = source.displayGeometry
   }
+  result.unrestrictedTileMaxZoom = normalizeUnrestrictedTileMaxZoom(source.unrestrictedTileMaxZoom)
   for (const key of ['paddingMeters', 'areaKm2', 'diagonalKm', 'minZoom', 'maxCameraHeight']) {
     const number = finiteNumber(source[key])
     if (number !== null) result[key] = number

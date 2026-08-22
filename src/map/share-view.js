@@ -70,6 +70,9 @@ export function getShareSpatialConfig (manifest) {
     ? spatial.cameraBounds.map(Number)
     : null
   const minZoom = Number(spatial.minZoom)
+  const unrestrictedTileMaxZoom = spatial.unrestrictedTileMaxZoom === null || spatial.unrestrictedTileMaxZoom === undefined || spatial.unrestrictedTileMaxZoom === ''
+    ? null
+    : Number(spatial.unrestrictedTileMaxZoom)
   const valid = Boolean(
     Number(spatial.version) === 2 &&
     spatial.geometryType === 'BoundingBox' &&
@@ -79,7 +82,8 @@ export function getShareSpatialConfig (manifest) {
     cameraBounds[1] >= -90 && cameraBounds[1] <= 90 &&
     cameraBounds[3] >= -90 && cameraBounds[3] <= 90 &&
     cameraBounds[1] < cameraBounds[3] &&
-    Number.isFinite(minZoom) && minZoom >= 0 && minZoom <= 24
+    Number.isFinite(minZoom) && minZoom >= 0 && minZoom <= 24 &&
+    (unrestrictedTileMaxZoom === null || (Number.isSafeInteger(unrestrictedTileMaxZoom) && unrestrictedTileMaxZoom >= 0 && unrestrictedTileMaxZoom <= 24))
   )
   return {
     restricted: true,
@@ -89,6 +93,8 @@ export function getShareSpatialConfig (manifest) {
     geometryType: valid ? 'BoundingBox' : null,
     cameraBounds: valid ? cameraBounds : null,
     minZoom: valid ? minZoom : null,
+    unrestrictedTileMaxZoom: valid ? unrestrictedTileMaxZoom : null,
+    effectiveMinZoom: valid ? Math.min(minZoom, unrestrictedTileMaxZoom ?? minZoom) : null,
     maxCameraHeight: Number.isFinite(Number(spatial.maxCameraHeight)) ? Number(spatial.maxCameraHeight) : null,
     reasonCode: valid ? null : 'SHARE_SPATIAL_UNAVAILABLE',
   }

@@ -8,6 +8,12 @@ const EPSILON = 1e-7
 
 export const SHARE_SPATIAL_SCOPE_VERSION = 2
 
+export function normalizeUnrestrictedTileMaxZoom (value) {
+  if (value === null || value === undefined || value === '') return null
+  const zoom = Number(value)
+  return Number.isSafeInteger(zoom) && zoom >= 0 && zoom <= 24 ? zoom : null
+}
+
 function clamp (value, min, max) {
   return Math.max(min, Math.min(max, value))
 }
@@ -57,7 +63,9 @@ export function isCurrentSpatialScope (scope) {
     scope.projection &&
     Array.isArray(scope.localBounds) &&
     scope.localBounds.length === 4 &&
-    scope.localBounds.every(value => Number.isFinite(Number(value)))
+    scope.localBounds.every(value => Number.isFinite(Number(value))) &&
+    (scope.unrestrictedTileMaxZoom === undefined || scope.unrestrictedTileMaxZoom === null ||
+      normalizeUnrestrictedTileMaxZoom(scope.unrestrictedTileMaxZoom) !== null)
   )
 }
 
@@ -225,6 +233,12 @@ export function computeSpatialScope (options = {}) {
   if (!Number.isFinite(paddingMeters) || paddingMeters <= 0) {
     return { status: 'error', reasonCode: 'SHARE_SPATIAL_PADDING_INVALID' }
   }
+  const unrestrictedTileMaxZoom = normalizeUnrestrictedTileMaxZoom(options.unrestrictedTileMaxZoom)
+  if (options.unrestrictedTileMaxZoom !== undefined &&
+      options.unrestrictedTileMaxZoom !== null && options.unrestrictedTileMaxZoom !== '' &&
+      unrestrictedTileMaxZoom === null) {
+    return { status: 'error', reasonCode: 'SHARE_SPATIAL_TILE_ZOOM_INVALID' }
+  }
   const { features, invalidFeatureCount } = collectFeatures(options.documents || [])
   if (!features.length) return { status: 'empty', reasonCode: 'SHARE_SPATIAL_BOUNDS_EMPTY', invalidFeatureCount }
   const projection = buildProjection(features)
@@ -246,6 +260,7 @@ export function computeSpatialScope (options = {}) {
   const sourceRevisionHash = `sha256:${crypto.createHash('sha256').update(JSON.stringify({
     sources: options.sourceRevisions || [],
     paddingMeters,
+    unrestrictedTileMaxZoom,
     policyRevision: Number(options.policyRevision || 1),
     scopeVersion: SHARE_SPATIAL_SCOPE_VERSION,
     localBounds,
@@ -263,6 +278,7 @@ export function computeSpatialScope (options = {}) {
       areaKm2: roundMetric(areaKm2),
       diagonalKm: roundMetric(diagonalKm),
       minZoom,
+      unrestrictedTileMaxZoom,
       maxCameraHeight: Math.max(2000, Math.round(diagonalKm * 2500)),
       crossesAntimeridian: projection.crossesAntimeridian,
       sourceRevisions: Array.isArray(options.sourceRevisions) ? options.sourceRevisions : [],
@@ -289,6 +305,7 @@ export function publicSpatialScope (scope, revision = 0) {
     areaKm2: Number(scope.areaKm2),
     diagonalKm: Number(scope.diagonalKm),
     minZoom: Number(scope.minZoom),
+    unrestrictedTileMaxZoom: normalizeUnrestrictedTileMaxZoom(scope.unrestrictedTileMaxZoom),
     maxCameraHeight: Number(scope.maxCameraHeight),
     crossesAntimeridian: Boolean(scope.crossesAntimeridian),
     revision: Number(revision || 0),
@@ -321,6 +338,10 @@ export function classifyTileAgainstScope (scope, tile) {
   if (!normalized) return { decision: 'invalid', tile: null }
   if (!isCurrentSpatialScope(scope)) {
     return { decision: 'unavailable', tile: normalized }
+  }
+  const unrestrictedTileMaxZoom = normalizeUnrestrictedTileMaxZoom(scope.unrestrictedTileMaxZoom)
+  if (unrestrictedTileMaxZoom !== null && normalized.z <= unrestrictedTileMaxZoom) {
+    return { decision: 'allow_unrestricted', tile: normalized }
   }
   if (normalized.z < Number(scope.minZoom || 0)) return { decision: 'below_min_zoom', tile: normalized }
   const west = tileLongitude(normalized.x, normalized.z)

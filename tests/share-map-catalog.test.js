@@ -51,6 +51,7 @@ test('公开分享底图目录拒绝非 Web Mercator 图源并携带脱敏空间
       mode: 'kml_bounds',
       status: 'ready',
       areaKm2: 1,
+      unrestrictedTileMaxZoom: 8,
       internalScope: { primitives: ['secret'] },
       sourceRevisionHash: 'sha256:secret',
     },
@@ -65,6 +66,7 @@ test('公开分享底图目录拒绝非 Web Mercator 图源并携带脱敏空间
     geometryType: 'BoundingBox',
     revision: 0,
     areaKm2: 1,
+    unrestrictedTileMaxZoom: 8,
     crossesAntimeridian: false,
     unlimitedAccessEligible: false,
   })

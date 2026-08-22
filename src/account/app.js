@@ -623,9 +623,9 @@ async function createShareFromSelection () {
     documents: state.kml.items,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
-    onSpatialPreview: previewItems => accountApi.spatialPreview({
+    onSpatialPreview: (previewItems, spatialOptions = {}) => accountApi.spatialPreview({
       items: previewItems,
-      spatialAccess: { mode: 'kml_bounds' },
+      spatialAccess: { mode: 'kml_bounds', ...(spatialOptions.unrestrictedTileMaxZoom == null ? {} : { unrestrictedTileMaxZoom: spatialOptions.unrestrictedTileMaxZoom }) },
     }),
   })
   if (!values) return
@@ -689,9 +689,9 @@ async function editShare (id) {
     documents,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
-    onSpatialPreview: previewItems => accountApi.spatialPreview({
+    onSpatialPreview: (previewItems, spatialOptions = {}) => accountApi.spatialPreview({
       items: previewItems,
-      spatialAccess: { mode: 'kml_bounds' },
+      spatialAccess: { mode: 'kml_bounds', ...(spatialOptions.unrestrictedTileMaxZoom == null ? {} : { unrestrictedTileMaxZoom: spatialOptions.unrestrictedTileMaxZoom }) },
     }),
   })
   if (!values) return

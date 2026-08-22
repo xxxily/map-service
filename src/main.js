@@ -190,7 +190,7 @@ async function initLeafletMap () {
   const restrictedCenter = restrictedBounds
     ? [(restrictedBounds[0][0] + restrictedBounds[1][0]) / 2, (restrictedBounds[0][1] + restrictedBounds[1][1]) / 2]
     : null
-  const useUrlView = urlState.hasUrlCoords && (!restrictedShare || isMapViewInsideBounds(urlState.coords, restrictedBounds, shareSpatial.minZoom))
+  const useUrlView = urlState.hasUrlCoords && (!restrictedShare || isMapViewInsideBounds(urlState.coords, restrictedBounds, shareSpatial.effectiveMinZoom))
   const initialLayerName = urlState.hasUrlLayer
     ? urlState.layerName
     : (shareViewConfig.layerId || defaultView.layerName)
@@ -201,7 +201,7 @@ async function initLeafletMap () {
       ? (useUrlView ? urlState.coords.center : restrictedCenter)
       : (useUrlView ? urlState.coords.center : shareCenter || defaultView.center),
     zoom: useUrlView ? urlState.coords.zoom : (Number.isFinite(shareZoom) ? shareZoom : defaultView.zoom),
-    minZoom: restrictedShare ? shareSpatial.minZoom : undefined,
+    minZoom: restrictedShare ? shareSpatial.effectiveMinZoom : undefined,
     maxBounds: restrictedBounds || undefined,
     maxBoundsViscosity: restrictedShare ? 1 : 0,
     worldCopyJump: false,
@@ -251,7 +251,8 @@ async function initLeafletMap () {
             : null
           const sameBounds = catalogBounds?.length === 4 &&
             shareSpatial.cameraBounds?.every((value, index) => Math.abs(Number(value) - catalogBounds[index]) < 1e-7)
-          if (!sameBounds || Number(catalogSpatial.minZoom) !== Number(shareSpatial.minZoom)) {
+          if (!sameBounds || Number(catalogSpatial.minZoom) !== Number(shareSpatial.minZoom) ||
+              Number(catalogSpatial.unrestrictedTileMaxZoom ?? -1) !== Number(shareSpatial.unrestrictedTileMaxZoom ?? -1)) {
             throw new Error('分享地图空间范围版本不一致')
           }
         }

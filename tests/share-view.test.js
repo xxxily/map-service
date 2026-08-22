@@ -32,11 +32,13 @@ test('分享页 2D/3D 重定向保留坐标、层级和底图参数', () => {
 
 test('空间受限分享必须提供 ready 状态的相机边界和最低缩放级别', () => {
   const valid = getShareSpatialConfig({
-    spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113, 23], minZoom: 11 },
+    spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'ready', cameraBounds: [112, 22, 113, 23], minZoom: 11, unrestrictedTileMaxZoom: 8 },
   })
   assert.equal(valid.restricted, true)
   assert.equal(valid.valid, true)
   assert.equal(valid.minZoom, 11)
+  assert.equal(valid.unrestrictedTileMaxZoom, 8)
+  assert.equal(valid.effectiveMinZoom, 8)
 
   const unavailable = getShareSpatialConfig({
     spatialAccess: { version: 2, geometryType: 'BoundingBox', mode: 'kml_bounds', status: 'error', cameraBounds: [112, 22, 113, 23], minZoom: 11 },

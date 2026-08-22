@@ -1206,10 +1206,11 @@ const userApiRoutes = [
         await sendMaskedShareTile(req, res, classification)
         return
       }
-      if (classification.decision !== 'allow') {
+      if (classification.decision !== 'allow' && classification.decision !== 'allow_unrestricted') {
         sendTransparentShareTile(res, classification.decision)
         return
       }
+      res.set('X-Kml-Share-Spatial-Decision', classification.decision)
       await sendControlledTileSource(req, res, classification.tile, {
         cacheControl: 'private, no-store',
       })

@@ -168,6 +168,32 @@ test('瓦片判定规范化世界环绕并区分允许、边界和范围外', ()
   assert.deepEqual(normalizeTileCoordinates({ z: 2, x: -1, y: 1 }), { z: 2, x: 3, y: 1 })
 })
 
+test('低缩放范围外瓦片可按分享阈值直接放宽，高缩放仍受外包矩形限制', () => {
+  const result = computeSpatialScope({
+    documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],
+    paddingMeters: 3000,
+    unrestrictedTileMaxZoom: 8,
+  })
+  assert.equal(result.status, 'ready')
+  assert.equal(result.scope.unrestrictedTileMaxZoom, 8)
+
+  const lowZoomTile = { z: 8, x: 0, y: 0 }
+  assert.equal(classifyTileAgainstScope(result.scope, lowZoomTile).decision, 'allow_unrestricted')
+
+  const highZoom = Math.max(result.scope.minZoom, 17)
+  const highZoomTile = { z: highZoom, x: 0, y: 0 }
+  assert.equal(classifyTileAgainstScope(result.scope, highZoomTile).decision, 'outside')
+})
+
+test('未设置低缩放放宽阈值时保持低于最低缩放拒绝', () => {
+  const result = computeSpatialScope({
+    documents: [documentWith({ type: 'Point', coordinates: [113.2644, 23.1291] })],
+    paddingMeters: 3000,
+  })
+  const tile = tileForCoordinate(113.2644, 23.1291, Math.max(0, result.scope.minZoom - 1))
+  assert.equal(classifyTileAgainstScope(result.scope, tile).decision, 'below_min_zoom')
+})
+
 test('分散点首屏瓦片保持为可遮罩边界而不是误判范围外', () => {
   const points = Array.from({ length: 140 }, (_, index) => ({
     type: 'Point',

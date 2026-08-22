@@ -1063,6 +1063,54 @@ test('spatial preview returns a safe bounds summary and rejects empty or oversiz
   }
 })
 
+test('空间受限分享保存低缩放瓦片放宽阈值并在公开视图返回', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '低缩放底图路线',
+      features: [point('low-zoom')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '低缩放底图分享',
+      items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds', unrestrictedTileMaxZoom: 8 },
+    })
+    assert.equal(share.spatialAccess.unrestrictedTileMaxZoom, 8)
+    const manifest = harness.service.getPublicShareManifest(share.publicId)
+    assert.equal(manifest.spatialAccess.unrestrictedTileMaxZoom, 8)
+
+    const updated = harness.service.updateShare(harness.one, share.id, {
+      revision: share.revision,
+      spatialAccess: { mode: 'kml_bounds', unrestrictedTileMaxZoom: 6 },
+    })
+    assert.equal(updated.spatialAccess.unrestrictedTileMaxZoom, 6)
+  } finally {
+    harness.close()
+  }
+})
+
+test('低缩放瓦片放宽阈值只接受 0～24 的整数', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '低缩放阈值校验',
+      features: [point('threshold')],
+    })
+    for (const value of [-1, 1.5, 25, 'abc']) {
+      assert.throws(
+        () => harness.service.createShare(harness.one, {
+          title: `非法阈值 ${value}`,
+          items: [{ kmlId: document.id }],
+          spatialAccess: { mode: 'kml_bounds', unrestrictedTileMaxZoom: value },
+        }),
+        error => error.code === 'SHARE_SPATIAL_TILE_ZOOM_INVALID'
+      )
+    }
+  } finally {
+    harness.close()
+  }
+})
+
 test('unlimited password authorization requires spatial policy and creates a non-expiring session', async () => {
   const harness = createHarness()
   try {

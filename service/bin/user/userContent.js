@@ -17,6 +17,7 @@ import {
 import {
   computeSpatialScope,
   isCurrentSpatialScope,
+  normalizeUnrestrictedTileMaxZoom,
   publicSpatialScope,
   spatialPolicyEligibility,
 } from './shareSpatialAccess.js'
@@ -621,8 +622,10 @@ function assertPasswordlessSharingAllowed (passwordHash, settings) {
   throw spatialError('SHARE_PASSWORDLESS_DISABLED')
 }
 
-function normalizeSpatialAccessMode (value, fallback = 'unrestricted') {
-  if (value === undefined) return fallback
+function normalizeSpatialAccessSettings (value, fallbackMode = 'unrestricted', fallbackZoom = null) {
+  if (value === undefined) {
+    return { mode: fallbackMode, unrestrictedTileMaxZoom: fallbackMode === 'kml_bounds' ? fallbackZoom : null }
+  }
   const input = requireObject(value, '空间访问设置格式不正确')
   const forbiddenFields = ['geometry', 'displayGeometry', 'bbox', 'bboxSegments', 'cameraBounds', 'areaKm2', 'diagonalKm']
   if (forbiddenFields.some(field => Object.hasOwn(input, field))) {
@@ -632,7 +635,16 @@ function normalizeSpatialAccessMode (value, fallback = 'unrestricted') {
   if (!SPATIAL_ACCESS_MODES.has(mode)) {
     throw createHttpError('空间访问模式不正确', 400, 'SHARE_SPATIAL_MODE_INVALID')
   }
-  return mode
+  const hasZoom = Object.hasOwn(input, 'unrestrictedTileMaxZoom')
+  const rawZoom = hasZoom ? input.unrestrictedTileMaxZoom : fallbackZoom
+  const unrestrictedTileMaxZoom = normalizeUnrestrictedTileMaxZoom(rawZoom)
+  if (hasZoom && rawZoom !== null && rawZoom !== undefined && rawZoom !== '' && unrestrictedTileMaxZoom === null) {
+    throw createHttpError('低缩放瓦片放宽级别需为 0～24 的整数', 400, 'SHARE_SPATIAL_TILE_ZOOM_INVALID')
+  }
+  return {
+    mode,
+    unrestrictedTileMaxZoom: mode === 'kml_bounds' ? unrestrictedTileMaxZoom : null,
+  }
 }
 
 function normalizePasswordAccessTtlMode (value, fallback = 'finite') {
@@ -961,7 +973,7 @@ export class UserContentService {
     return JSON.stringify(left || []) === JSON.stringify(right || [])
   }
 
-  computeSpatialState (items, settings = this.getSettings()) {
+  computeSpatialState (items, settings = this.getSettings(), options = {}) {
     const shareSettings = this.spatialSettings(settings)
     const documents = (items || []).map(item => ({
       features: Array.isArray(item.features) ? item.features : [],
@@ -971,6 +983,7 @@ export class UserContentService {
       paddingMeters: shareSettings.spatialPaddingMeters,
       sourceRevisions: (items || []).map(item => ({ id: item.kmlId, revision: item.revision })),
       policyRevision: shareSettings.spatialPolicyRevision,
+      unrestrictedTileMaxZoom: options.unrestrictedTileMaxZoom,
       computedAt: this.nowIso(),
     })
     if (result.status !== 'ready') {
@@ -1010,10 +1023,10 @@ export class UserContentService {
     this.assertPermission(actor, 'share.own.manage')
     requireObject(input)
     const ownerId = this.actorUser(actor).id
-    const mode = normalizeSpatialAccessMode(input.spatialAccess, 'unrestricted')
-    if (mode === 'unrestricted') {
+    const spatialAccess = normalizeSpatialAccessSettings(input.spatialAccess, 'unrestricted')
+    if (spatialAccess.mode === 'unrestricted') {
       return {
-        mode,
+        mode: spatialAccess.mode,
         status: 'ready',
         spatialAccessEligible: false,
         unlimitedAccessEligible: false,
@@ -1023,10 +1036,10 @@ export class UserContentService {
     const settings = this.getSettings()
     if (settings.share.spatialAccessEnabled !== true) throw spatialError('SHARE_SPATIAL_DISABLED')
     const items = this.normalizeSpatialPreviewItems(ownerId, input.items)
-    const state = this.computeSpatialState(items, settings)
+    const state = this.computeSpatialState(items, settings, spatialAccess)
     if (state.status !== 'ready') throw spatialError(state.errorCode)
     return {
-      mode,
+      mode: spatialAccess.mode,
       status: state.status,
       ...publicSpatialScope(state.scope, 0),
       spatialAccessEligible: state.eligibility.spatialAccessEligible,
@@ -1035,7 +1048,7 @@ export class UserContentService {
     }
   }
 
-  resolveShareSpatialState (items, mode, settings) {
+  resolveShareSpatialState (items, mode, settings, options = {}) {
     if (mode === 'unrestricted') {
       return {
         status: 'ready',
@@ -1049,7 +1062,7 @@ export class UserContentService {
       }
     }
     if (settings.share.spatialAccessEnabled !== true) throw spatialError('SHARE_SPATIAL_DISABLED')
-    const state = this.computeSpatialState(items, settings)
+    const state = this.computeSpatialState(items, settings, options)
     if (state.status !== 'ready') throw spatialError(state.errorCode)
     return state
   }
@@ -1172,15 +1185,19 @@ export class UserContentService {
     }
     const items = this.shareItemsForSpatialScope(shareId)
     const sourceRevisions = items.map(item => ({ id: item.kmlId, revision: Number(item.revision) }))
-    const state = this.computeSpatialState(items, settings)
     const previousScope = parseJson(row.spatial_scope_json, null)
+    const state = this.computeSpatialState(items, settings, {
+      unrestrictedTileMaxZoom: previousScope?.unrestrictedTileMaxZoom,
+    })
     const previousHash = previousScope?.sourceRevisionHash || ''
     const nextHash = state.scope?.sourceRevisionHash || ''
     const policyRevision = Number(settings.share.spatialPolicyRevision || 1)
     const policyChanged = Number(row.access_policy_revision || 1) !== policyRevision ||
       (options.policyChanged === true && Number(row.access_policy_revision || 1) !== policyRevision)
     const scopeChanged = previousHash !== nextHash || row.spatial_status !== state.status ||
-      Number(previousScope?.paddingMeters || 0) !== Number(state.scope?.paddingMeters || 0)
+      Number(previousScope?.paddingMeters || 0) !== Number(state.scope?.paddingMeters || 0) ||
+      normalizeUnrestrictedTileMaxZoom(previousScope?.unrestrictedTileMaxZoom) !==
+        normalizeUnrestrictedTileMaxZoom(state.scope?.unrestrictedTileMaxZoom)
     let ttlMode = row.password_access_ttl_mode || 'finite'
     const downgraded = ttlMode === 'unlimited' && (!row.password_hash || state.status !== 'ready' ||
       !state.eligibility.unlimitedAccessEligible)
@@ -1296,11 +1313,15 @@ export class UserContentService {
     }
 
     rows.forEach(row => {
-      const state = this.computeSpatialState(this.shareItemsForSpatialScope(row.id), settings)
       const previousScope = parseJson(row.spatial_scope_json, null)
+      const state = this.computeSpatialState(this.shareItemsForSpatialScope(row.id), settings, {
+        unrestrictedTileMaxZoom: previousScope?.unrestrictedTileMaxZoom,
+      })
       const scopeChanged = (previousScope?.sourceRevisionHash || '') !== (state.scope?.sourceRevisionHash || '') ||
         row.spatial_status !== state.status ||
-        Number(previousScope?.paddingMeters || 0) !== Number(state.scope?.paddingMeters || 0)
+        Number(previousScope?.paddingMeters || 0) !== Number(state.scope?.paddingMeters || 0) ||
+        normalizeUnrestrictedTileMaxZoom(previousScope?.unrestrictedTileMaxZoom) !==
+          normalizeUnrestrictedTileMaxZoom(state.scope?.unrestrictedTileMaxZoom)
       const downgraded = (row.password_access_ttl_mode || 'finite') === 'unlimited' &&
         (!row.password_hash || state.status !== 'ready' || !state.eligibility.unlimitedAccessEligible)
       const revokesUnlimited = (row.password_access_ttl_mode || 'finite') === 'unlimited' &&
@@ -2434,8 +2455,9 @@ export class UserContentService {
     const passwordSecret = passwordHash
       ? encryptSecret(String(input.password), this.shareSecretEncryptionKey)
       : ''
-    const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, 'unrestricted')
-    const spatialState = this.resolveShareSpatialState(items, spatialAccessMode, settings)
+    const spatialAccess = normalizeSpatialAccessSettings(input.spatialAccess, 'unrestricted')
+    const spatialAccessMode = spatialAccess.mode
+    const spatialState = this.resolveShareSpatialState(items, spatialAccessMode, settings, spatialAccess)
     let passwordAccessTtlMode = normalizePasswordAccessTtlMode(input.passwordAccess, 'finite')
     this.assertPasswordAccessMode(
       passwordAccessTtlMode,
@@ -2613,8 +2635,14 @@ export class UserContentService {
         ? encryptSecret(String(input.password), this.shareSecretEncryptionKey)
         : ''
     const previousSpatialMode = row.spatial_access_mode || 'unrestricted'
-    const spatialAccessMode = normalizeSpatialAccessMode(input.spatialAccess, previousSpatialMode)
-    const spatialState = this.resolveShareSpatialState(spatialItems, spatialAccessMode, settings)
+    const previousScope = parseJson(row.spatial_scope_json, null)
+    const spatialAccess = normalizeSpatialAccessSettings(
+      input.spatialAccess,
+      previousSpatialMode,
+      previousScope?.unrestrictedTileMaxZoom
+    )
+    const spatialAccessMode = spatialAccess.mode
+    const spatialState = this.resolveShareSpatialState(spatialItems, spatialAccessMode, settings, spatialAccess)
     let passwordAccessTtlMode = normalizePasswordAccessTtlMode(
       input.passwordAccess,
       row.password_access_ttl_mode || 'finite'
@@ -2631,11 +2659,12 @@ export class UserContentService {
       settings
     )
     if (!passwordHash) passwordAccessTtlMode = 'finite'
-    const previousScope = parseJson(row.spatial_scope_json, null)
     const scopeChanged = previousSpatialMode !== spatialAccessMode ||
       (previousScope?.sourceRevisionHash || '') !== (spatialState.scope?.sourceRevisionHash || '') ||
       row.spatial_status !== spatialState.status ||
-      Number(previousScope?.paddingMeters || 0) !== Number(spatialState.scope?.paddingMeters || 0)
+      Number(previousScope?.paddingMeters || 0) !== Number(spatialState.scope?.paddingMeters || 0) ||
+      normalizeUnrestrictedTileMaxZoom(previousScope?.unrestrictedTileMaxZoom) !==
+        normalizeUnrestrictedTileMaxZoom(spatialState.scope?.unrestrictedTileMaxZoom)
     const spatialScopeRevision = Number(row.spatial_scope_revision || 0) + (scopeChanged ? 1 : 0)
     const passwordChanged = input.password !== undefined
     const passwordVersion = Number(row.password_version || 1) + (passwordChanged ? 1 : 0)
@@ -2744,16 +2773,20 @@ export class UserContentService {
     }))
     const settings = this.getSettings()
     const spatialMode = row.spatial_access_mode || 'unrestricted'
-    const spatialState = this.resolveShareSpatialState(items, spatialMode, settings)
+    const previousScope = parseJson(row.spatial_scope_json, null)
+    const spatialState = this.resolveShareSpatialState(items, spatialMode, settings, {
+      unrestrictedTileMaxZoom: previousScope?.unrestrictedTileMaxZoom,
+    })
     const passwordHash = row.password_hash
     assertPasswordlessSharingAllowed(passwordHash, settings)
     const ttlMode = row.password_access_ttl_mode || 'finite'
     this.assertPasswordAccessMode(ttlMode, passwordHash, spatialMode, spatialState, settings)
-    const previousScope = parseJson(row.spatial_scope_json, null)
     const scopeChanged = spatialMode === 'kml_bounds' && (
       (previousScope?.sourceRevisionHash || '') !== (spatialState.scope?.sourceRevisionHash || '') ||
       row.spatial_status !== spatialState.status ||
-      Number(previousScope?.paddingMeters || 0) !== Number(spatialState.scope?.paddingMeters || 0)
+      Number(previousScope?.paddingMeters || 0) !== Number(spatialState.scope?.paddingMeters || 0) ||
+      normalizeUnrestrictedTileMaxZoom(previousScope?.unrestrictedTileMaxZoom) !==
+        normalizeUnrestrictedTileMaxZoom(spatialState.scope?.unrestrictedTileMaxZoom)
     )
     const now = this.nowIso()
     const policyRevision = Number(settings.share.spatialPolicyRevision || 1)

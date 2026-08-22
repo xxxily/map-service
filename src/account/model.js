@@ -301,6 +301,7 @@ export function normalizeSpatialAccess (share = {}) {
     diagonalKm: optionalFiniteNumber(spatial.diagonalKm),
     paddingMeters: optionalFiniteNumber(spatial.paddingMeters),
     minZoom: optionalFiniteNumber(spatial.minZoom),
+    unrestrictedTileMaxZoom: optionalFiniteNumber(spatial.unrestrictedTileMaxZoom),
     maxCameraHeight: optionalFiniteNumber(spatial.maxCameraHeight),
     displayGeometry: spatial.displayGeometry || null,
     revision: Number(spatial.revision || share.spatialScopeRevision || 0),
