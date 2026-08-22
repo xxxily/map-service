@@ -718,6 +718,8 @@ Content-Type: application/json
 | `GET` | `/public/kml-shares/:publicId/map/catalog` | 同上 | 获取分享页可用的脱敏底图目录 |
 | `GET` | `/public/kml-shares/:publicId/tiles/:sourceId/:z/:x/:y` | 同上 | 读取分享目录内受控栅格瓦片 |
 
+分享页面 `GET /share/:publicId` 会在首个 HTML 响应中按分享设置的 `title`、`description` 生成页面标题和社交元信息。响应包含 `description`、`keywords`、`author`、`application-name`、`robots`、`theme-color`、Canonical、`image_src`、Open Graph、Twitter Card、`itemprop` 和 JSON-LD（`WebPage`、`Map`、`WebSite`）字段；Canonical、`og:url` 和 `twitter:url` 只保留不含密码、坐标、图层等查询参数的稳定分享地址。分享标题和说明会按安全文本规则清洗后写入属性，密码、Token、所有者信息和内部 KML 字段不会进入 HTML。分享暂停、撤销、过期、封禁或没有已发布内容时不注入分享专属元信息，继续返回通用应用壳并保持 `noindex, nofollow`。
+
 密码请求：
 
 ```json

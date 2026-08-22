@@ -480,6 +480,10 @@ const service = {
     return userContent.getPublicShareManifest(publicId, options)
   },
 
+  getPublicKmlShareMetadata (publicId) {
+    return userContent.getPublicShareMetadata(publicId)
+  },
+
   assertPublicKmlShareRequest (publicId, options) {
     return userContent.assertPublicShareRequest(publicId, options)
   },

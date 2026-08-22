@@ -3157,6 +3157,22 @@ export class UserContentService {
     }
   }
 
+  getPublicShareMetadata (publicId) {
+    const row = this.publicShareRow(publicId)
+    if (!row || this.effectiveShareStatus(row) !== 'active') return null
+    const itemCount = Number(this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM kml_share_items
+      WHERE share_id = ?
+    `).get(row.id)?.count || 0)
+    if (itemCount <= 0) return null
+    return {
+      publicId: row.public_id,
+      title: row.title,
+      description: row.description,
+    }
+  }
+
   assertPublicShareTileRequest (publicId, sourceId, context = {}) {
     const share = this.assertPublicShareRequest(publicId, context)
     // Explicit constructor overrides are reserved for deterministic service

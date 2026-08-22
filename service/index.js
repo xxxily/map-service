@@ -15,12 +15,44 @@ import cors from 'cors'
 import corsOpts from './cors.conf.js'
 import baseConfig from './config.js'
 import simpleApi from './bin/simpleApi.js'
+import service from './bin/service.js'
 import cronJob from './bin/cronJob/index.js'
 import visitRecorder from './bin/visitRecorder.js'
 import commonMethods from './bin/middleware/commonMethods/index.js'
+import { getSharePageCanonicalUrl, renderSharePageHtml } from '../shared/share-page-metadata.js'
 
 const serviceConfig = baseConfig.staticService
 const app = express()
+
+function requestOrigin (req) {
+  const protocol = req.protocol === 'https' ? 'https' : 'http'
+  const host = String(req.get('host') || '').trim()
+  try {
+    return new URL(`${protocol}://${host}`).origin
+  } catch {
+    return 'https://map.anzz.site'
+  }
+}
+
+async function sendSharePage (req, res, options = {}) {
+  const publicId = options.publicId || req.params.publicId
+  const fileName = options.fileName || 'index.html'
+  const templatePath = path.join(serviceConfig.appDir, fileName)
+  const html = await fs.readFile(templatePath, 'utf8')
+  let metadata = null
+  try {
+    metadata = service.getPublicKmlShareMetadata(publicId)
+  } catch (error) {
+    serviceConfig.debug && console.error('分享页元信息读取失败，返回通用应用壳', error)
+  }
+  const rendered = metadata
+    ? renderSharePageHtml(html, {
+        ...metadata,
+        canonicalUrl: getSharePageCanonicalUrl(metadata.publicId, { origin: requestOrigin(req) }),
+      })
+    : html
+  res.type('html').send(rendered)
+}
 
 if (serviceConfig.trustProxy) {
   app.set('trust proxy', serviceConfig.trustProxy)
@@ -124,6 +156,20 @@ const index = {
     /* 注册服务前端页面服务 */
     if (serviceConfig.appDir) {
       fs.ensureDirSync(serviceConfig.appDir)
+      app.get('/share/:publicId', (req, res) => {
+        res.set('Cache-Control', 'no-cache')
+        res.set('X-Robots-Tag', 'noindex, nofollow')
+        res.set('Referrer-Policy', 'no-referrer')
+        return sendSharePage(req, res)
+      })
+      app.get('/3d', (req, res, next) => {
+        const publicId = String(req.query.share || '').trim()
+        if (!publicId) return next()
+        res.set('Cache-Control', 'no-cache')
+        res.set('X-Robots-Tag', 'noindex, nofollow')
+        res.set('Referrer-Policy', 'no-referrer')
+        return sendSharePage(req, res, { fileName: '3d.html', publicId })
+      })
       app.use('/', express.static(serviceConfig.appDir, appOptions))
       app.get('/3d', (req, res) => {
         res.set('Cache-Control', 'no-cache')
@@ -135,12 +181,6 @@ const index = {
       })
       app.get(['/account', '/account/:tab'], (req, res) => {
         res.set('Cache-Control', 'no-cache')
-        res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
-      })
-      app.get('/share/:publicId', (req, res) => {
-        res.set('Cache-Control', 'no-cache')
-        res.set('X-Robots-Tag', 'noindex, nofollow')
-        res.set('Referrer-Policy', 'no-referrer')
         res.sendFile(path.join(serviceConfig.appDir, 'index.html'))
       })
     }

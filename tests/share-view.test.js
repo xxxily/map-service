@@ -23,6 +23,18 @@ test('share pages opt out of search engine indexing in HTTP and client fallbacks
   assert.match(serverSource, /res\.set\('X-Robots-Tag', 'noindex, nofollow'\)/)
 })
 
+test('分享 manifest 加载后同步更新页面标题和社交元信息', () => {
+  const source = readFileSync(new URL('../src/map/share-view.js', import.meta.url), 'utf8')
+  assert.match(source, /applySharePageMetadata\(/)
+  assert.match(source, /manifest\.title/)
+  assert.match(source, /manifest\.description/)
+})
+
+test('服务端 3D 分享入口也在静态回退前注入分享元信息', () => {
+  const source = readFileSync(new URL('../service/index.js', import.meta.url), 'utf8')
+  assert.match(source, /app\.get\('\/3d', \(req, res, next\) => \{[\s\S]*req\.query\.share[\s\S]*fileName: '3d\.html'/)
+})
+
 test('分享页 2D/3D 重定向保留坐标、层级和底图参数', () => {
   const source = readFileSync(new URL('../src/map/share-view.js', import.meta.url), 'utf8')
   assert.match(source, /url\.pathname = `\/share\/\$\{encodeURIComponent\(publicId\)\}`[\s\S]*url\.searchParams\.delete\('share'\)/)

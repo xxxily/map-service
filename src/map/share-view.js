@@ -1,5 +1,6 @@
 import { apiRequest } from '../auth/api.js'
 import { loadAnalyticsScript } from '../analytics.js'
+import { applySharePageMetadata, getSharePageCanonicalUrl } from '../../shared/share-page-metadata.js'
 
 let activeShare = null
 
@@ -207,6 +208,11 @@ export async function prepareShareView (init) {
         return
       }
       activeShare = { publicId, manifest }
+      applySharePageMetadata({
+        title: manifest.title,
+        description: manifest.description,
+        canonicalUrl: getSharePageCanonicalUrl(publicId, window.location),
+      })
       loadAnalyticsScript(manifest.analytics)
       await init()
     } catch (error) {

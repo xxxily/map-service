@@ -14,6 +14,7 @@
 
 - KML 修改先保存到个人空间，不自动改变已经对外发布的分享内容。
 - 分享所有者通过“同步内容”显式发布当前 KML；同步失败时旧分享继续可用。
+- 分享页面首个 HTML 响应应使用分享设置中的标题和说明生成可供社交平台识别的页面标题、Canonical、Open Graph、Twitter Card、基础 `itemprop` 和 JSON-LD 元信息；不把密码、坐标、图层等查询参数写入规范 URL。
 - KML 面板点击要素后能及时定位，新增或编辑要素后保持用户当前地图视图。
 - 桌面 2D 支持连续快速滚轮缩放，不因上一段动画或 KML 要素渲染丢失输入。
 - 媒体预览优先显示点位名称，仍为无名称点位保留稳定序号回退。
@@ -32,6 +33,7 @@
 ### 3.2 非本期范围
 
 - 分享快照历史版本浏览、回滚或定时发布。
+- 为每个分享单独上传或编辑社交卡片图片；当前统一使用站点受控的地图应用图标作为预览图。
 - 多人审批、草稿分支和逐要素发布。
 - 改变分享链接首次打开时对默认可见 KML 执行联合范围适配的行为。
 - 改变 720 云、抖音等 provider 的 URL 识别规则。
@@ -120,6 +122,15 @@ X-CSRF-Token: <csrf>
 - 缩略轨道优先显示点位名称；无名称时显示两位序号。
 - 名称按钮使用受控宽度和单行省略，不得挤压导航或导致轨道换行。
 - 点位名称编辑后重新打开预览必须显示新名称，轨道 DOM 缓存签名应包含名称。
+
+### 5.5 分享页面元信息
+
+- 服务端 `GET /share/:publicId` 在返回 HTML 前读取 active 分享的标题和说明；分享标题作为 `<title>`、`og:title`、`twitter:title` 和 JSON-LD `name`。
+- 分享说明经纯文本清洗和长度限制后作为 `description`、`og:description`、`twitter:description` 和 JSON-LD `description`；不得把用户输入当作 HTML、脚本或 JSON 结构执行。
+- 页面输出 `canonical`、`image_src`、`og:site_name`、`og:type`、`og:url`、`og:image`、`og:image:secure_url`、尺寸与 alt、`twitter:card`、`twitter:url`、`twitter:image`、`itemprop` 和 `WebPage`/`Map`/`WebSite` JSON-LD。预览图使用受控站点图标，暂不允许分享者提交任意图片 URL。
+- Canonical、`og:url` 和 `twitter:url` 仅使用 `/share/:publicId` 稳定路径，移除 `password`、`coords`、`layer` 等查询参数；页面继续发送 `X-Robots-Tag: noindex, nofollow` 和 `Referrer-Policy: no-referrer`。
+- 密码保护分享在密码验证前也允许公开读取最小化标题/说明，用于生成社交卡片；暂停、撤销、过期、封禁或没有已发布内容的分享不得泄露专属元信息。
+- 浏览器完成公开 manifest 加载后再次同步更新 `document.title` 和所有元信息，保证客户端导航、2D/3D 切换与首屏 HTML 一致。
 
 ## 6. 2D 连续缩放与 KML 性能
 

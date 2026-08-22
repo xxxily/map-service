@@ -683,6 +683,32 @@ test('multi-KML shares expose only public item IDs and detach trashed files', ()
   }
 })
 
+test('公开分享页元信息在密码验证前可用且仅对 active 分享公开', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '带密码路线',
+      features: [point('metadata-point')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '分享标题',
+      description: '<p>社交卡片说明</p>',
+      items: [{ kmlId: document.id }],
+      password: 'metadata-password',
+    })
+    assert.deepEqual(harness.service.getPublicShareMetadata(share.publicId), {
+      publicId: share.publicId,
+      title: '分享标题',
+      description: '<p>社交卡片说明</p>',
+    })
+
+    harness.service.pauseShare(harness.one, share.id)
+    assert.equal(harness.service.getPublicShareMetadata(share.publicId), null)
+  } finally {
+    harness.close()
+  }
+})
+
 test('shared KML edits remain private until an atomic manual content sync publishes them', () => {
   const harness = createHarness()
   try {
