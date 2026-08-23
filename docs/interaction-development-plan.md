@@ -26,13 +26,13 @@
 | 阶段 | 内容 | 状态 | 开始/完成 | 预计耗时 | 验收出口 |
 | --- | --- | --- | --- | --- | --- |
 | Phase 0 | 需求、状态机、权限、资源引用、第三方 POC | 已完成 | 2026-08-22 / 2026-08-23 | 约 1 天 | `npm run check`、`npm test`、`npm run build` |
-| Phase 1A | 共享契约、数据模型、SQLite v9 迁移、加密/脱敏 | 进行中 | 2026-08-23 | 1-2 天 | 迁移幂等、纯函数和数据库测试 |
+| Phase 1A | 共享契约、独立 interaction.sqlite（版本 1）、加密/脱敏 | 进行中 | 2026-08-23 | 1-2 天 | 迁移幂等、纯函数和数据库测试 |
 | Phase 1B | Comment/Moderation/Report/Adapter 服务与 outbox | 待开始 | - | 2-4 天 | 服务单测、事务/重试/权限测试 |
 | Phase 1C | `/api/v1` 公开 facade 与管理 API | 待开始 | - | 1-2 天 | API 集成测试、鉴权/CSRF/防枚举 |
 | Phase 1D | 媒体预览留言/信息/举报交互，2D/3D 共用 | 待开始 | - | 2-4 天 | UI 单测、浏览器冒烟、键盘/移动端验收 |
 | Phase 1E | 管理后台留言审核、举报工单、策略页面 | 待开始 | - | 2-4 天 | RBAC/UI/API 联测 |
 | Phase 1F | 保留策略、指标、日志脱敏、部署与恢复演练 | 待开始 | - | 1-2 天 | worker 重启、数据保留、备份恢复 |
-| Phase 2 | Artalk 实例部署、适配器联调、导入导出恢复 | 待开始 | - | 1-3 天 | CORS/CSRF、webhook、恢复演练 |
+| Phase 2 | Artalk 生产接入、适配器联调、导入导出恢复 | 待开始 | - | 1-3 天 | CORS/CSRF、webhook、恢复演练 |
 | Phase 3 | AI provider、提示词版本、预算熔断、自动审核增强 | 待开始 | - | 2-4 天 | 正常/超时/坏 JSON/低置信度/人工覆盖 |
 
 ## 3. 当前执行批次
@@ -57,12 +57,13 @@
 - [x] 完成 Artalk、Remark42、Isso、Cusdis POC；确定 Artalk 为首选。
 - [x] 补充 Phase 0 纯函数、资源引用、POC 和 RBAC 回归测试。
 - [x] 运行 `npm run check`、`npm test`（765/765）、`npm run build`。
-- [ ] 提交 Phase 0 变更并记录提交号（本次准备提交；进度文档单独随提交更新）。
+- [x] 提交 Phase 0 契约与 POC 变更并记录提交号：`840f713`。
+- [ ] 提交 Phase 0 公开快照资源引用集成与回归测试。
 
 ### 4.2 Phase 1A：领域契约与持久化
 
 - [ ] 新增安全文本、联系方式、游标、幂等键和资源范围校验纯函数。
-- [ ] 新增 interaction 独立 schema/迁移版本（目标 v9），迁移可重复执行且失败可回滚。
+- [ ] 新增独立 `interaction.sqlite` schema/迁移版本 1，迁移可重复执行且失败可回滚；不改 UserDatabase 版本。
 - [ ] 建立 `comments`、`comment_moderation_decisions`、`comment_outbox`、策略/关键词版本表。
 - [ ] 建立 `reports`、`report_events` 表和必要索引。
 - [ ] 联系方式和受限原文加密存储，哈希用于限流/去重，公开 serializer 默认去除 PII。
@@ -111,7 +112,8 @@
 
 ### 4.8 Phase 2/3：Artalk 与 AI
 
-- [ ] 使用受控 HTTPS origin 部署 Artalk，不让浏览器直接持有内部密钥。
+- [ ] （Phase 1A spike）锁定 Artalk 版本，验证容器健康、HTTP API/OpenAPI 契约和 export/import smoke。
+- [ ] （Phase 2）使用受控 HTTPS origin 部署 Artalk，不让浏览器直接持有内部密钥。
 - [ ] 完成 Adapter 页面键、外部用户/匿名字段、审核同步、CORS/CSRF 联调。
 - [ ] 完成评论/审核历史导入导出和恢复演练；失败则回退内部 headless Comment Service。
 - [ ] 接入 AI provider registry、密钥引用、提示词版本、结构化 JSON 校验、超时/重试/预算熔断。
@@ -145,7 +147,7 @@
 | --- | --- | --- |
 | 2026-08-23 | 建立全局执行清单；确定 Artalk 首选，采用内部服务为最终事实源 | 本文档、需求文档 v1.0 |
 | 2026-08-23 | Phase 0 验证完成 | `npm run check`、`npm test` 765/765、`npm run build` |
-| 待补 | Phase 0 相关提交 | 待执行 |
+| 2026-08-23 | Phase 0 相关内容提交；独立 interaction DB、Artalk spike 决策冻结 | `840f713` |
 
 ## 8. 下一步执行顺序
 

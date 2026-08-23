@@ -61,6 +61,15 @@ test('后台导航按细粒度权限过滤，超级管理员可访问全部页�
   )
 })
 
+test('角色编辑器权限目录与服务端权限种子保持一致', () => {
+  const frontendPermissions = ADMIN_PERMISSION_CATALOG.map(([code]) => code)
+  const backendPermissions = PERMISSIONS
+    .map(permission => permission.code)
+    .filter(code => code !== 'system.super_admin')
+
+  assert.deepEqual(frontendPermissions, backendPermissions)
+})
+
 test('空间分享策略只对超级管理员呈现', () => {
   const settings = {
     userSystemSettings: {

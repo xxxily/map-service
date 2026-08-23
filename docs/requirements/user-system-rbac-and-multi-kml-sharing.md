@@ -167,6 +167,13 @@
 | `admin.role.manage` | 创建角色、修改权限和分配管理角色 | 否 | 否 | 是 |
 | `admin.registration.manage` | 控制注册开关和默认注册角色 | 否 | 否 | 是 |
 | `admin.security.manage` | 管理会话策略、访问策略和关键安全设置 | 否 | 否 | 是 |
+| `admin.comment.read` | 查看留言及其审核信息 | 否 | 是 | 是 |
+| `admin.comment.moderate` | 审核、重新标注和处理留言 | 否 | 是 | 是 |
+| `admin.comment.policy.manage` | 管理匿名留言、发布和人工复核策略 | 否 | 否 | 是 |
+| `admin.moderation.ai.manage` | 管理留言 AI 审核服务、模型和提示词 | 否 | 否 | 是 |
+| `admin.moderation.keyword.manage` | 管理留言关键词和敏感词审核规则 | 否 | 否 | 是 |
+| `admin.report.read` | 查看内容举报及举报人联系信息 | 否 | 是 | 是 |
+| `admin.report.manage` | 受理、处置和关闭内容举报 | 否 | 是 | 是 |
 | `kml.any.read` | 因运维或合规需要读取任意用户 KML | 否 | 默认否 | 是 |
 | `kml.any.manage` | 管理任意用户 KML及其归属 | 否 | 默认否 | 是 |
 | `system.super_admin` | 根级业务权限 | 否 | 否 | 是 |

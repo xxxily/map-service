@@ -103,6 +103,13 @@ admin.user.manage
 admin.role.manage
 admin.registration.manage
 admin.security.manage
+admin.comment.read
+admin.comment.moderate
+admin.comment.policy.manage
+admin.moderation.ai.manage
+admin.moderation.keyword.manage
+admin.report.read
+admin.report.manage
 kml.any.read
 kml.any.manage
 system.super_admin
@@ -733,6 +740,24 @@ Content-Type: application/json
 响应包含 `ttlMode` 和 `expiresAt`：`finite` 使用管理员配置的有限授权时长，`unlimited` 的 `expiresAt` 为 `null` 但仍受分享生命周期、策略版本、密码版本和服务端撤销控制。
 
 公开清单使用分享项 ID `shareItemId` 引用文件，不返回所有者邮箱、内部用户 ID、内部 KML ID、密码哈希、管理备注或代理凭据。分享 scoped catalog 当前只包含后台已发布、前台可见且受控的栅格图源；任意 URL、未公开图源和矢量图源不会通过分享接口暴露。
+
+公开文件 `GET /public/kml-shares/:publicId/files/:shareItemId` 返回的每个 Feature 可能包含交互资源元数据：
+
+```json
+{
+  "id": "point-one",
+  "resourceRefs": {
+    "version": 1,
+    "featureId": "point-one",
+    "media": [
+      { "mediaId": "media_<opaque>", "sourceId": "description-link-1", "sourceType": "description-link", "type": "image" }
+    ],
+    "complete": true
+  }
+}
+```
+
+`resourceRefs.featureId` 保留现有 Feature ID；`mediaId` 是稳定 opaque 标识，不是数组索引，也不包含原始 URL。服务端在分享创建、内容同步和公开读取前校验资源元数据；校验失败返回 `409 PUBLISHED_RESOURCE_REFERENCE_INVALID`（发布边界）或 `503 PUBLISHED_RESOURCE_REFERENCE_INVALID`（公开读取），不会静默修复已存在但不一致的引用。旧快照缺少元数据时只按当前已发布内容兼容派生，分享别名轮换不改变内部资源身份。
 
 公开查看页在取得各分享文件后直接使用响应中的脱敏要素进行只读渲染，不再调用传统公共 KML 的内容接口。2D 和 3D 均展示完整要素列表并复用常规 KML 的定位、信息窗口、详情和媒体预览交互；不提供新增、编辑、拖拽或删除。视口初始化优先使用合法 URL `coords`（空间受限分享还必须位于允许矩形且不低于有效最低缩放；有效最低缩放为 `minZoom` 与放宽阈值中的较小值，未设置放宽时为 `minZoom`）；没有合法 URL `coords` 时，若存在有效的默认可见 KML，则适配其联合几何范围，否则使用分享 `viewConfig.center` / `viewConfig.zoom` 或系统默认视图兜底。图层初始化独立按 URL `layer` → 分享 `viewConfig.layerId` → 默认图层执行。URL 状态非法或越界时安全回退，刷新、2D/3D 路由切换均保留 `coords` 和 `layer`。
 

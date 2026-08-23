@@ -663,6 +663,8 @@ test('multi-KML shares expose only public item IDs and detach trashed files', ()
 
     const publicFile = harness.service.getPublicShareFile(share.publicId, manifest.items[0].shareItemId)
     assert.equal(publicFile.features.length, 1)
+    assert.equal(publicFile.features[0].resourceRefs.featureId, 'second')
+    assert.equal(publicFile.features[0].resourceRefs.media.length, 0)
     assert.equal('ownerId' in publicFile, false)
     assert.equal('kmlId' in publicFile, false)
     assert.equal('syncClientId' in publicFile, false)
@@ -1370,6 +1372,179 @@ test('public share files strip legacy resource collection credentials from snaps
     const publicFile = harness.service.getPublicShareFile(share.publicId, itemId)
     assert.equal(Object.hasOwn(publicFile.features[0], 'resourceCollection'), false)
     assert.doesNotMatch(JSON.stringify(publicFile), /secret|token=/i)
+  } finally {
+    harness.close()
+  }
+})
+
+test('tampered published media references fail closed for manifest and file without repairing the snapshot', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '资源引用篡改',
+      features: [point('tampered-media', 113.2, 23.1)],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '资源引用篡改',
+      items: [{ kmlId: document.id }],
+    })
+    const itemId = share.items[0].id
+    const row = harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id = ?').get(itemId)
+    const snapshot = JSON.parse(row.published_snapshot_json)
+    snapshot.features[0].description = '<img src="https://cdn.example.com/photo.jpg">'
+    snapshot.features[0].resourceRefs.media = [{
+      ...snapshot.features[0].resourceRefs.media[0],
+      mediaId: 'media_tampered',
+    }]
+    const tamperedJson = JSON.stringify(snapshot)
+    harness.database.prepare('UPDATE kml_share_items SET published_snapshot_json = ? WHERE id = ?')
+      .run(tamperedJson, itemId)
+
+    for (const read of [
+      () => harness.service.getPublicShareManifest(share.publicId),
+      () => harness.service.getPublicShareFile(share.publicId, itemId),
+    ]) {
+      assert.throws(read, error => error.statusCode === 503 && error.code === 'PUBLISHED_RESOURCE_REFERENCE_INVALID')
+    }
+    assert.equal(
+      harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id = ?').get(itemId).published_snapshot_json,
+      tamperedJson
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('sync rejects illegal or duplicate resource identities and preserves the published snapshot', () => {
+  for (const features of [
+    [{ type: 'Point', name: '缺失 ID', coordinates: [113.2, 23.1] }],
+    [point('duplicate'), point('duplicate', 113.3, 23.2)],
+  ]) {
+    const harness = createHarness()
+    try {
+      const document = harness.service.createKml(harness.one, {
+        name: '同步资源引用校验',
+        features: [point('original')],
+      })
+      const share = harness.service.createShare(harness.one, {
+        title: '同步资源引用校验',
+        items: [{ kmlId: document.id }],
+      })
+      const itemId = share.items[0].id
+      const before = harness.database.prepare(
+        'SELECT published_snapshot_json, published_revision FROM kml_share_items WHERE id = ?'
+      ).get(itemId)
+      harness.database.prepare(`
+        UPDATE kml_documents
+        SET features_json = ?, feature_count = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `).run(JSON.stringify(features), features.length, '2026-08-05T08:01:00.000Z', document.id)
+      const currentShare = harness.service.getShare(harness.one, share.id)
+      assert.throws(
+        () => harness.service.syncShareContent(harness.one, share.id, { revision: currentShare.revision }),
+        error => error.statusCode === 409 && error.code === 'PUBLISHED_RESOURCE_REFERENCE_INVALID'
+      )
+      const after = harness.database.prepare(
+        'SELECT published_snapshot_json, published_revision FROM kml_share_items WHERE id = ?'
+      ).get(itemId)
+      assert.deepEqual(after, before)
+    } finally {
+      harness.close()
+    }
+  }
+})
+
+test('legacy published snapshots without resource references remain readable without database repair', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '旧资源快照',
+      features: [point('legacy-no-refs')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '旧资源快照',
+      items: [{ kmlId: document.id }],
+    })
+    const itemId = share.items[0].id
+    const row = harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id = ?').get(itemId)
+    const legacy = JSON.parse(row.published_snapshot_json)
+    delete legacy.resourceRefsVersion
+    delete legacy.features[0].resourceRefs
+    const legacyJson = JSON.stringify(legacy)
+    harness.database.prepare('UPDATE kml_share_items SET published_snapshot_json = ? WHERE id = ?')
+      .run(legacyJson, itemId)
+
+    const manifest = harness.service.getPublicShareManifest(share.publicId)
+    const file = harness.service.getPublicShareFile(share.publicId, itemId)
+    assert.equal(manifest.itemCount, 1)
+    assert.equal(file.features[0].resourceRefs.featureId, 'legacy-no-refs')
+    assert.equal(
+      harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id = ?').get(itemId).published_snapshot_json,
+      legacyJson
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('partially present published resource references are not repaired as legacy snapshots', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '不完整资源快照',
+      features: [point('partial-refs')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '不完整资源快照',
+      items: [{ kmlId: document.id }],
+    })
+    const itemId = share.items[0].id
+    const row = harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id = ?').get(itemId)
+    const snapshot = JSON.parse(row.published_snapshot_json)
+    delete snapshot.features[0].resourceRefs.media
+    const partialJson = JSON.stringify(snapshot)
+    harness.database.prepare('UPDATE kml_share_items SET published_snapshot_json = ? WHERE id = ?')
+      .run(partialJson, itemId)
+
+    assert.throws(
+      () => harness.service.getPublicShareManifest(share.publicId),
+      error => error.statusCode === 503 && error.code === 'PUBLISHED_RESOURCE_REFERENCE_INVALID'
+    )
+    assert.equal(
+      harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id = ?').get(itemId).published_snapshot_json,
+      partialJson
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('corrupt published snapshots fail closed for manifest and file', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '损坏快照',
+      features: [point('corrupt-snapshot')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '损坏快照',
+      items: [{ kmlId: document.id }],
+    })
+    const itemId = share.items[0].id
+    const corruptJson = '{"features":'
+    harness.database.prepare('UPDATE kml_share_items SET published_snapshot_json = ? WHERE id = ?')
+      .run(corruptJson, itemId)
+
+    for (const read of [
+      () => harness.service.getPublicShareManifest(share.publicId),
+      () => harness.service.getPublicShareFile(share.publicId, itemId),
+    ]) {
+      assert.throws(read, error => error.statusCode === 503 && error.code === 'PUBLISHED_RESOURCE_REFERENCE_INVALID')
+    }
+    assert.equal(
+      harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id = ?').get(itemId).published_snapshot_json,
+      corruptJson
+    )
   } finally {
     harness.close()
   }

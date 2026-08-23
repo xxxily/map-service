@@ -10,6 +10,10 @@ import {
 } from './security.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
 import {
+  decoratePublishedSnapshot,
+  inspectPublishedResourceReferences,
+} from '../../../shared/interaction-resource-ref.js'
+import {
   normalizeKmlResourceCollection,
   serializeKmlResourceCollection,
   tryNormalizeKmlResourceCollection,
@@ -297,6 +301,37 @@ function sanitizePublishedKmlFeatures (value) {
     else delete feature.resourceCollection
     return feature
   })
+}
+
+function preparePublishedInteractionSnapshot (snapshot, options = {}) {
+  const source = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+    ? snapshot
+    : {}
+  const sanitized = {
+    ...source,
+    features: Array.isArray(source.features)
+      ? sanitizePublishedKmlFeatures(source.features)
+      : source.features,
+  }
+  const hasExistingResourceRefs = sanitized.resourceRefsVersion !== undefined ||
+    (Array.isArray(sanitized.features) && sanitized.features.some(feature => (
+      feature && typeof feature === 'object' && feature.resourceRefs !== undefined
+    )))
+  const prepared = options.force === true || !hasExistingResourceRefs
+    ? decoratePublishedSnapshot(sanitized, { force: options.force === true })
+    : sanitized
+  const issues = inspectPublishedResourceReferences(prepared, options)
+  if (issues.length) {
+    const statusCode = options.phase === 'publish' ? 409 : 503
+    throw createHttpError(
+      options.phase === 'publish'
+        ? `公开快照资源引用校验失败：${issues[0].message}`
+        : '公开分享资源引用暂不可用',
+      statusCode,
+      'PUBLISHED_RESOURCE_REFERENCE_INVALID'
+    )
+  }
+  return prepared
 }
 
 function serializedByteSize (value) {
@@ -2422,7 +2457,7 @@ export class UserContentService {
   }
 
   publishedSnapshotFromDocument (row) {
-    return {
+    return preparePublishedInteractionSnapshot({
       name: row.name,
       description: row.description || '',
       coordCorrection: row.coord_correction,
@@ -2436,10 +2471,35 @@ export class UserContentService {
       byteSize: Number(row.byte_size || 0),
       revision: Number(row.revision || 0),
       updatedAt: row.updated_at,
-    }
+    }, { force: true, phase: 'publish' })
   }
 
   replaceShareItems (shareId, items, publishedAt = this.nowIso()) {
+    const share = this.database.prepare('SELECT public_id FROM kml_shares WHERE id = ?').get(shareId)
+    const preparedItems = items.map(item => {
+      const snapshot = item.publishedSnapshot?.resourceRefsVersion === undefined
+        ? decoratePublishedSnapshot(item.publishedSnapshot)
+        : item.publishedSnapshot
+      return {
+        ...item,
+        id: item.id || randomId('shi'),
+        publishedSnapshot: snapshot,
+      }
+    })
+    preparedItems.forEach(item => {
+      const issues = inspectPublishedResourceReferences(item.publishedSnapshot, {
+        requireShareIds: true,
+        sharePublicId: share?.public_id,
+        shareItemId: item.id,
+      })
+      if (issues.length) {
+        throw createHttpError(
+          `公开快照资源引用校验失败：${issues[0].message}`,
+          409,
+          'PUBLISHED_RESOURCE_REFERENCE_INVALID'
+        )
+      }
+    })
     this.database.prepare('DELETE FROM kml_share_items WHERE share_id = ?').run(shareId)
     const insert = this.database.prepare(`
       INSERT INTO kml_share_items(
@@ -2447,9 +2507,9 @@ export class UserContentService {
         published_revision, published_snapshot_json, published_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    items.forEach(item => {
+    preparedItems.forEach(item => {
       insert.run(
-        item.id || randomId('shi'), shareId, item.kmlId, item.position,
+        item.id, shareId, item.kmlId, item.position,
         item.visibleByDefault ? 1 : 0, item.displayName,
         item.publishedRevision ?? item.revision,
         JSON.stringify(item.publishedSnapshot),
@@ -3182,17 +3242,25 @@ export class UserContentService {
     return share
   }
 
-  publicShareItems (shareId) {
+  publicShareItems (shareId, options = {}) {
     return this.database.prepare(`
       SELECT i.id AS share_item_id, i.position, i.visible_by_default, i.display_name,
              i.published_revision, i.published_snapshot_json, i.published_at
       FROM kml_share_items i
       WHERE i.share_id = ?
       ORDER BY i.position, i.id
-    `).all(shareId).map(row => ({
-      ...row,
-      snapshot: parseJson(row.published_snapshot_json, {}),
-    }))
+    `).all(shareId).map(row => {
+      const parsedSnapshot = parseJson(row.published_snapshot_json, {})
+      const snapshot = options.validateInteraction === true
+        ? preparePublishedInteractionSnapshot(parsedSnapshot, {
+            phase: 'read',
+            requireShareIds: options.requireShareIds === true,
+            sharePublicId: options.sharePublicId,
+            shareItemId: row.share_item_id,
+          })
+        : parsedSnapshot
+      return { ...row, snapshot }
+    })
   }
 
   ensurePublicItemCount (row) {
@@ -3213,7 +3281,11 @@ export class UserContentService {
   }
 
   ensurePublicItems (row) {
-    const items = this.publicShareItems(row.id)
+    const items = this.publicShareItems(row.id, {
+      validateInteraction: true,
+      requireShareIds: true,
+      sharePublicId: row.public_id,
+    })
     if (items.length === 0) {
       if (row.status === 'active') {
         this.database.prepare(`
@@ -3415,7 +3487,11 @@ export class UserContentService {
   getPublicShareFile (publicId, shareItemId, context = {}) {
     const row = this.publicShareRow(publicId)
     const current = this.assertPublicShareAccess(row, context)
-    const item = this.publicShareItems(current.id).find(candidate => candidate.share_item_id === String(shareItemId || ''))
+    const item = this.publicShareItems(current.id, {
+      validateInteraction: true,
+      requireShareIds: true,
+      sharePublicId: current.public_id,
+    }).find(candidate => candidate.share_item_id === String(shareItemId || ''))
     if (!item) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
     return {
       ...this.publicItemSummary(item),

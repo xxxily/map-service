@@ -47,3 +47,4 @@
 - [访问控制加固](./access-control-hardening.md)
 - [KML 分享密码链接、访问记录、统计脚本与瓦片限流](./kml-share-password-links-access-analytics-and-rate-limits.md)（v1.5.28 修订实现）
 - [轨迹渲染视口过滤与 LOD 分级优化](./track-rendering-viewport-lod.md)
+- [KML 点位留言、内容举报与审核治理](./kml-comments-and-reports.md)（Phase 0 已完成；Phase 1 待实施）
