@@ -126,6 +126,23 @@ test('buildFeatureContentView masks sensitive query params in public output', ()
   assert.equal(view.contentSummary.videoCount, 1)
 })
 
+test('feature content cache invalidates when a mutable feature ID changes', () => {
+  const feature = {
+    id: 'feature-before',
+    description: '<img src="https://cdn.example.com/a.jpg">',
+  }
+  const before = buildFeatureContentView(feature)
+  feature.id = 'feature-after'
+  const after = buildFeatureContentView(feature)
+
+  assert.equal(before.featureId, 'feature-before')
+  assert.equal(after.featureId, 'feature-after')
+  assert.notEqual(
+    before.groups.find(group => group.type === 'image').items[0].mediaId,
+    after.groups.find(group => group.type === 'image').items[0].mediaId,
+  )
+})
+
 test('feature content can skip collection classification for map hot paths', () => {
   const feature = {
     description: 'https://cdn.example.com/cover.jpg',

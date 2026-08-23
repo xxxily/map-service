@@ -18,6 +18,13 @@ export const PERMISSIONS = Object.freeze([
   ['admin.role.manage', '管理角色和权限'],
   ['admin.registration.manage', '管理注册策略'],
   ['admin.security.manage', '管理安全策略'],
+  ['admin.comment.read', '查看留言'],
+  ['admin.comment.moderate', '审核和处理留言'],
+  ['admin.comment.policy.manage', '管理留言策略'],
+  ['admin.moderation.ai.manage', '管理 AI 审核配置'],
+  ['admin.moderation.keyword.manage', '管理关键词审核规则'],
+  ['admin.report.read', '查看内容举报'],
+  ['admin.report.manage', '处理内容举报'],
   ['kml.any.read', '读取任意用户 KML'],
   ['kml.any.manage', '管理任意用户 KML'],
   ['system.super_admin', '超级管理员根权限'],
@@ -42,6 +49,10 @@ export const ADMIN_PERMISSIONS = Object.freeze([
   'admin.public_kml.manage',
   'admin.share.moderate',
   'admin.audit.read',
+  'admin.comment.read',
+  'admin.comment.moderate',
+  'admin.report.read',
+  'admin.report.manage',
 ])
 
 export const SUPER_ADMIN_PERMISSIONS = Object.freeze(PERMISSIONS.map(item => item.code))

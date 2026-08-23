@@ -15,6 +15,8 @@ import {
 import { renderUsersPage } from '../src/admin/pages/users.js'
 import { renderUserSystemSettingsPage } from '../src/admin/pages/userSystemSettings.js'
 import { renderShareModerationPage } from '../src/admin/pages/shareModeration.js'
+import { ADMIN_PERMISSION_CATALOG } from '../src/admin/pages/roles.js'
+import { PERMISSIONS } from '../service/bin/user/permissions.js'
 
 function sessionWith (...permissions) {
   return {

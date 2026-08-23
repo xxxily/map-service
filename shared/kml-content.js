@@ -1,5 +1,6 @@
 import { getTrustedKmlShareEmbed, resolveKnownKmlShareLink } from './kml-share-links.js'
 import { tryNormalizeKmlResourceCollection } from './kml-resource-collection.js'
+import { createStableInteractionId, normalizeInteractionFeatureId } from './interaction-resource-id.js'
 
 const URL_LIMIT = 50
 const KML_MEDIA_RELAY_ENDPOINT = '/api/v1/kml/media'
@@ -468,6 +469,39 @@ function createContentItem (parsed, index, options = {}) {
   }
 }
 
+/**
+ * Return a deterministic opaque media identifier for interaction services.
+ * The source key deliberately includes the normalized media URL for
+ * description links and the collection item ID for collection resources.
+ * `featureId` is part of the namespace, so identical URLs on two points do
+ * not share a thread accidentally.
+ */
+export function createInteractionMediaId (featureId, item, occurrence = 0) {
+  const sourceType = String(item?.sourceType || 'description').trim() || 'description'
+  const type = String(item?.type || 'unknown').trim() || 'unknown'
+  const source = sourceType === 'resource-collection'
+    ? String(item?.collectionItemId || item?.id || occurrence).trim()
+    : String(item?.canonicalUrl || item?.displayUrl || item?.url || '').trim()
+  const duplicateSuffix = Number(occurrence) > 0 ? `|${Number(occurrence)}` : ''
+  return createStableInteractionId('media', `${normalizeInteractionFeatureId(featureId)}|${sourceType}|${type}|${source}${duplicateSuffix}`)
+}
+
+function attachInteractionMediaId (featureId, item, occurrence = 0) {
+  return {
+    ...item,
+    mediaId: item?.mediaId || createInteractionMediaId(featureId, item, occurrence),
+  }
+}
+
+function interactionMediaSourceKey (item) {
+  const sourceType = String(item?.sourceType || 'description').trim() || 'description'
+  const type = String(item?.type || 'unknown').trim() || 'unknown'
+  const source = sourceType === 'resource-collection'
+    ? String(item?.collectionItemId || item?.id || '').trim()
+    : String(item?.canonicalUrl || item?.displayUrl || item?.url || '').trim()
+  return `${sourceType}|${type}|${source}`
+}
+
 export function classifyContentUrl (value, options = {}) {
   const parsed = normalizeUrl(value)
   if (!parsed) {
@@ -514,7 +548,7 @@ export function buildResourceCollectionContentView (resourceCollection, options 
       collectionItemId: resource.id,
       sourceType: 'resource-collection',
     }
-    groupMap.get(item.type)?.items.push(item)
+    groupMap.get(item.type)?.items.push(attachInteractionMediaId(options.featureId, item))
   })
   const contentSummary = {
     imageCount: groupMap.get('image').items.length,
@@ -558,6 +592,7 @@ function getFeatureContentViewCacheKey (feature, options = {}) {
     ? options.iframeAllowlist.map(value => String(value || '').trim()).join(',')
     : String(options.iframeAllowlist || '')
   return {
+    id: String(feature?.id || ''),
     description: String(feature?.description || ''),
     styleUrl: String(feature?.styleUrl || ''),
     resourceCollection: feature?.resourceCollection || null,
@@ -569,6 +604,7 @@ function getFeatureContentViewCacheKey (feature, options = {}) {
 
 function isFeatureContentViewCacheKeyEqual (left, right) {
   return Boolean(left && right) &&
+    left.id === right.id &&
     left.description === right.description &&
     left.styleUrl === right.styleUrl &&
     left.resourceCollection === right.resourceCollection &&
@@ -582,6 +618,7 @@ function buildFeatureContentViewUncached (feature, options = {}) {
   const embeddedShareSourceUrls = getEmbeddedShareSourceUrls(references)
   const styleType = inferKmlStyleContentType(feature?.styleUrl)
   const rejected = []
+  const mediaOccurrences = new Map()
   const groups = CONTENT_GROUP_ORDER.map(type => ({
     type,
     title: CONTENT_GROUP_TITLES[type],
@@ -612,7 +649,13 @@ function buildFeatureContentViewUncached (feature, options = {}) {
       })
       return
     }
-    groupMap.get(classified.item.type)?.items.push(classified.item)
+    const item = classified.item
+    const sourceKey = interactionMediaSourceKey(item)
+    const occurrence = Number(mediaOccurrences.get(sourceKey) || 0)
+    mediaOccurrences.set(sourceKey, occurrence + 1)
+    groupMap.get(item.type)?.items.push(
+      attachInteractionMediaId(feature?.id, item, occurrence)
+    )
   })
 
   const collectionItems = options.includeResourceCollections === false
@@ -641,7 +684,10 @@ function buildFeatureContentViewUncached (feature, options = {}) {
       collectionItemId: String(resource?.id || ''),
       sourceType: 'resource-collection',
     }
-    groupMap.get(item.type)?.items.push(item)
+    const sourceKey = interactionMediaSourceKey(item)
+    const occurrence = Number(mediaOccurrences.get(sourceKey) || 0)
+    mediaOccurrences.set(sourceKey, occurrence + 1)
+    groupMap.get(item.type)?.items.push(attachInteractionMediaId(feature?.id, item, occurrence))
   })
 
   const contentSummary = {

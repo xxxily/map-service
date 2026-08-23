@@ -1,4 +1,5 @@
-import { buildFeatureContentView } from '../../shared/kml-content.js'
+import { buildFeatureContentView, createInteractionMediaId } from '../../shared/kml-content.js'
+import { normalizeInteractionFeatureId } from '../../shared/interaction-resource-id.js'
 import { getKmlFeatureDisplayName } from './kml-feature-name.js'
 
 export const KML_PREVIEWABLE_MEDIA_TYPES = ['image', 'video', 'audio', 'iframe']
@@ -59,6 +60,7 @@ export function flattenKmlFeatureMediaItems (feature, view, options = {}) {
   const contentView = view || buildFeatureContentView(feature, options.contentOptions)
   const featureName = getKmlFeatureDisplayName(feature)
   const featureId = String(feature?.id || '')
+  const resourceFeatureId = normalizeInteractionFeatureId(featureId)
   const orderedItems = []
 
   ;(contentView?.groups || []).forEach((group, groupIndex) => {
@@ -67,11 +69,13 @@ export function flattenKmlFeatureMediaItems (feature, view, options = {}) {
       const itemTitle = String(item?.title || '').trim()
       orderedItems.push({
         ...item,
+        mediaId: item?.mediaId || createInteractionMediaId(featureId, item),
         title: itemTitle && itemTitle !== getUrlHostname(item?.url)
           ? itemTitle
           : featureName,
         type: group.type,
         featureId,
+        resourceFeatureId,
         featureName,
         featureType: String(feature?.type || ''),
         sourceOrder: getSourceOrder(item, groupIndex, itemIndex),

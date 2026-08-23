@@ -37,6 +37,8 @@ X-CSRF-Token: <csrf-token>
 
 管理接口统一位于 `/api/v1/admin`，服务端按权限码鉴权；角色显示名或角色代码本身不替代权限判定。`system.super_admin` 拥有全部业务权限。旧管理 Bearer Token 已统一失效，管理员必须重新登录并使用 Cookie 会话；前端不得在 `localStorage` 保存管理 Token。
 
+公开 KML 分享文件中的 Feature 可带 `resourceRefs` 交互元数据。该元数据只包含稳定 Feature/Media opaque ID、媒体类型和来源类别，不包含内部 KML ID、联系方式、Token 或原始认证信息；资源引用校验失败时服务端 fail-closed，不会返回不一致的公开快照。
+
 前台地图访问控制由 `/api/v1/access/*` 维护；如果后台启用了访问密码，前台公开 catalog 和图源瓦片接口需要浏览器携带 `map_access_token` HttpOnly Cookie。站点访问 Cookie、用户会话 Cookie和分享授权 Cookie互不替代。
 
 首次初始化用户数据库且尚无有效超级管理员时，可使用以下环境变量引导创建首个超级管理员：
