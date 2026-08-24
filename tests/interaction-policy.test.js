@@ -74,6 +74,8 @@ test('report types and target scopes are explicit', () => {
   assert.ok(REPORT_STATUSES.includes('investigating'))
   assert.ok(REPORT_ACTIONS.includes('block_share'))
   assert.equal(canTransitionReportStatus('new', 'triaged'), true)
+  assert.equal(canTransitionReportStatus('new', 'investigating'), true)
+  assert.equal(canTransitionReportStatus('new', 'actioned'), true)
   assert.equal(canTransitionReportStatus('closed', 'actioned'), false)
   assert.ok(Object.isFrozen(REPORT_STATUS_TRANSITIONS))
   assert.deepEqual(DEFAULT_INTERACTION_RETENTION, {

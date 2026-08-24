@@ -69,7 +69,7 @@ test('copyright report requires rights/contact and admin projections redact repo
 test('report actions enforce transitions, duplicate linkage and audit events', () => {
   const { database, service } = harness()
   try {
-    const make = request => service.submitReport({ resource: RESOURCE, clientKey: request, body: { resourceRef: RESOURCE.resourceRef, type: 'privacy', description: `隐私举报 ${request}`, consent: true, clientRequestId: request }, now: NOW }).report
+    const make = request => service.submitReport({ resource: RESOURCE, clientKey: request, body: { resourceRef: RESOURCE.resourceRef, type: 'privacy', description: `隐私举报 ${request}`, email: `${request}@example.com`, consent: true, clientRequestId: request }, now: NOW }).report
     const original = make('req-original')
     const duplicate = make('req-duplicate')
     const actor = { user: { id: 'usr_admin' } }
@@ -80,5 +80,23 @@ test('report actions enforce transitions, duplicate linkage and audit events', (
     assert.equal(row.duplicate_of, original.id)
     assert.equal(database.prepare("SELECT COUNT(*) count FROM report_events WHERE report_id = ? AND action = 'mark_duplicate'").get(duplicate.id).count, 1)
     assert.throws(() => service.action(actor, original.id, { action: 'hide_media', reason: '尚未接入' }), error => error.code === 'VALIDATION_FAILED')
+
+    const governance = make('req-governance')
+    let applied = null
+    const actioned = service.action(actor, governance.id, {
+      action: 'pause_share',
+      reason: '先暂停分享等待复核',
+      beforeApply: input => { applied = input },
+    })
+    assert.equal(actioned.status, 'actioned')
+    assert.equal(applied.action, 'pause_share')
+    assert.equal(applied.report.id, governance.id)
+
+    const followUp = make('req-follow-up')
+    const investigating = service.action(actor, followUp.id, {
+      action: 'request_more_info',
+      reason: '需要举报人补充证据',
+    })
+    assert.equal(investigating.status, 'investigating')
   } finally { database.close() }
 })

@@ -91,7 +91,7 @@ export const REPORT_STATUSES = Object.freeze([
 ])
 
 export const REPORT_STATUS_TRANSITIONS = deepFreeze({
-  new: ['triaged', 'duplicate', 'dismissed', 'closed'],
+  new: ['triaged', 'investigating', 'actioned', 'duplicate', 'dismissed', 'closed'],
   triaged: ['investigating', 'actioned', 'dismissed', 'duplicate', 'closed'],
   investigating: ['actioned', 'dismissed', 'duplicate', 'closed'],
   actioned: ['investigating', 'closed'],
