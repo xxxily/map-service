@@ -55,6 +55,7 @@ const RULE_ACTION_TO_MODERATION = Object.freeze({
 
 const MAX_PATTERN_SEGMENTS = 16
 const MAX_TERM_LENGTH = 128
+const MAX_RULE_METADATA_LENGTH = 128
 
 /** Normalize text the same way on the rule side and the content side. */
 export function normalizeModerationText (value) {
@@ -116,6 +117,50 @@ function ruleIsInEffect (rule, now) {
   return true
 }
 
+function normalizeKeywordRules (rules = []) {
+  if (!Array.isArray(rules)) throw interactionHttpError('关键词规则必须是数组', 'VALIDATION_FAILED')
+  return rules.map((rule, index) => {
+    const term = normalizeModerationText(rule?.term ?? rule?.normalizedTerm)
+    if (!term) throw interactionHttpError(`第 ${index + 1} 条关键词规则缺少词条`, 'VALIDATION_FAILED')
+    if (term.length > MAX_TERM_LENGTH) {
+      throw interactionHttpError(`第 ${index + 1} 条关键词规则词条过长`, 'CONTENT_TOO_LARGE')
+    }
+    const matchType = String(rule?.matchType || rule?.match_type || 'phrase')
+    if (!['exact', 'phrase', 'pattern'].includes(matchType)) {
+      throw interactionHttpError(`第 ${index + 1} 条关键词规则匹配方式不合法`, 'VALIDATION_FAILED')
+    }
+    if (matchType === 'pattern' && term.split('*').length > MAX_PATTERN_SEGMENTS) {
+      throw interactionHttpError(`第 ${index + 1} 条关键词规则通配符过多`, 'VALIDATION_FAILED')
+    }
+    const level = String(rule?.level || '')
+    if (!['risk', 'violation', 'illegal_or_ip', 'spam'].includes(level)) {
+      throw interactionHttpError(`第 ${index + 1} 条关键词规则风险等级不合法`, 'VALIDATION_FAILED')
+    }
+    const action = String(rule?.action || '')
+    if (!['reject', 'quarantine', 'flag', 'replace'].includes(action)) {
+      throw interactionHttpError(`第 ${index + 1} 条关键词规则处置动作不合法`, 'VALIDATION_FAILED')
+    }
+    const category = String(rule?.category || '')
+    const replacement = String(rule?.replacement || '')
+    const id = String(rule?.id || rule?.ruleId || `draft_${index + 1}`)
+    if (category.length > MAX_RULE_METADATA_LENGTH || replacement.length > MAX_RULE_METADATA_LENGTH || id.length > MAX_RULE_METADATA_LENGTH) {
+      throw interactionHttpError(`第 ${index + 1} 条关键词规则元数据过长`, 'CONTENT_TOO_LARGE')
+    }
+    return {
+      id,
+      term,
+      matchType,
+      level,
+      action,
+      category,
+      replacement,
+      enabled: rule?.enabled === false ? 0 : 1,
+      startsAt: rule?.startsAt || rule?.starts_at || null,
+      endsAt: rule?.endsAt || rule?.ends_at || null,
+    }
+  })
+}
+
 export class ModerationService {
   constructor (options = {}) {
     if (!options.database) throw new Error('ModerationService 需要 database')
@@ -146,6 +191,10 @@ export class ModerationService {
     `).all(version)
   }
 
+  prepareKeywordRules (rules) {
+    return normalizeKeywordRules(rules)
+  }
+
   /**
    * Publish a keyword rule set as a new active version.
    * Terms are normalized here so screening never has to normalize rules at
@@ -158,38 +207,7 @@ export class ModerationService {
     if (!Number.isSafeInteger(sourcePolicyVersion) || sourcePolicyVersion < 1) {
       throw interactionHttpError('关键词规则必须绑定有效的策略版本', 'VALIDATION_FAILED')
     }
-    const normalized = rules.map((rule, index) => {
-      const term = normalizeModerationText(rule?.term ?? rule?.normalizedTerm)
-      if (!term) throw interactionHttpError(`第 ${index + 1} 条关键词规则缺少词条`, 'VALIDATION_FAILED')
-      if (term.length > MAX_TERM_LENGTH) {
-        throw interactionHttpError(`第 ${index + 1} 条关键词规则词条过长`, 'CONTENT_TOO_LARGE')
-      }
-      const matchType = String(rule?.matchType || 'phrase')
-      if (!['exact', 'phrase', 'pattern'].includes(matchType)) {
-        throw interactionHttpError(`第 ${index + 1} 条关键词规则匹配方式不合法`, 'VALIDATION_FAILED')
-      }
-      if (matchType === 'pattern' && term.split('*').length > MAX_PATTERN_SEGMENTS) {
-        throw interactionHttpError(`第 ${index + 1} 条关键词规则通配符过多`, 'VALIDATION_FAILED')
-      }
-      const level = String(rule?.level || '')
-      if (!['risk', 'violation', 'illegal_or_ip', 'spam'].includes(level)) {
-        throw interactionHttpError(`第 ${index + 1} 条关键词规则风险等级不合法`, 'VALIDATION_FAILED')
-      }
-      const action = String(rule?.action || '')
-      if (!['reject', 'quarantine', 'flag', 'replace'].includes(action)) {
-        throw interactionHttpError(`第 ${index + 1} 条关键词规则处置动作不合法`, 'VALIDATION_FAILED')
-      }
-      return {
-        term,
-        matchType,
-        level,
-        action,
-        category: String(rule?.category || ''),
-        replacement: String(rule?.replacement || ''),
-        startsAt: rule?.startsAt || null,
-        endsAt: rule?.endsAt || null,
-      }
-    })
+    const normalized = normalizeKeywordRules(rules)
 
     // A content-addressed hash makes an unchanged republish detectable and
     // ties every decision to the exact rule text that produced it.
@@ -282,6 +300,65 @@ export class ModerationService {
       // decision record must not leak the keyword list to API consumers.
       reasonCodes: [...new Set(matches.map(match => `KEYWORD:${match.category || match.ruleId}`))],
       keywordPolicyVersion: version.version,
+      matches,
+    }
+  }
+
+  /**
+   * Dry-run a moderation rule set without writing a rule version or a
+   * moderation decision.  This is deliberately separate from `screenText`
+   * so the admin preview can evaluate an unsaved draft while public comment
+   * requests continue to use only the active persisted version.
+   */
+  previewText (body, rules = null, options = {}) {
+    if (!Array.isArray(rules)) return this.screenText(body, options)
+    const now = options.now || this.now()
+    const normalizedBody = normalizeModerationText(body)
+    const matches = []
+    const preparedRules = Array.isArray(options.preparedRules) ? options.preparedRules : normalizeKeywordRules(rules)
+    for (const input of preparedRules) {
+      const rule = {
+        id: input.id,
+        normalized_term: input.term,
+        match_type: input.matchType,
+        category: input.category,
+        level: input.level,
+        action: input.action,
+        replacement: input.replacement,
+        enabled: input.enabled,
+        starts_at: input.startsAt,
+        ends_at: input.endsAt,
+      }
+      if (!ruleIsInEffect(rule, now) || !ruleMatches(normalizedBody, rule)) continue
+      matches.push({
+        ruleId: rule.id,
+        level: rule.level,
+        action: rule.action,
+        category: rule.category,
+        matchType: rule.match_type,
+      })
+    }
+    if (!matches.length) {
+      return {
+        level: 'normal',
+        action: 'approve',
+        reasonCodes: [],
+        keywordPolicyVersion: null,
+        matches: [],
+      }
+    }
+    const winner = matches.reduce((best, candidate) => {
+      const bestScore = LEVEL_SEVERITY[best.level] ?? 0
+      const score = LEVEL_SEVERITY[candidate.level] ?? 0
+      if (score > bestScore) return candidate
+      if (score === bestScore && candidate.ruleId < best.ruleId) return candidate
+      return best
+    })
+    return {
+      level: winner.level,
+      action: RULE_ACTION_TO_MODERATION[winner.action] || 'review',
+      reasonCodes: [...new Set(matches.map(match => `KEYWORD:${match.category || match.ruleId}`))],
+      keywordPolicyVersion: null,
       matches,
     }
   }
@@ -421,7 +498,16 @@ export class ModerationService {
   claimEvents (options = {}) {
     const now = options.now || this.now()
     const limit = Number.isSafeInteger(options.limit) && options.limit > 0 ? Math.min(options.limit, 100) : 20
+    const lockTtlMs = Number.isFinite(Number(options.lockTtlMs)) ? Math.max(1_000, Number(options.lockTtlMs)) : 60_000
+    const staleBefore = new Date(new Date(now).getTime() - lockTtlMs).toISOString()
     return this.database.transaction(() => {
+      // A process crash can leave an event in `processing`; recycle only locks
+      // older than the bounded lease so an active provider call is not duplicated.
+      this.database.prepare(`
+        UPDATE comment_outbox
+        SET status = 'pending', locked_at = NULL, available_at = ?, updated_at = ?
+        WHERE status = 'processing' AND locked_at IS NOT NULL AND locked_at < ?
+      `).run(now, now, staleBefore)
       const rows = this.database.prepare(`
         SELECT id, event_type, aggregate_id, comment_id, dedupe_key, payload_json, attempts
         FROM comment_outbox

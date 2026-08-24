@@ -21,6 +21,7 @@ import {
 import {
   DEFAULT_INTERACTION_POLICY,
   MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH,
+  MODERATION_LEVELS,
   MODERATION_ACTIONS,
   resolveModerationAction,
 } from '../../../shared/interaction-policy.js'
@@ -47,6 +48,8 @@ export const INTERACTION_ERROR_STATUS = Object.freeze({
   CONTENT_TOO_LARGE: 413,
   RATE_LIMITED: 429,
   INTERACTION_SERVICE_UNAVAILABLE: 503,
+  AI_REVIEW_IN_PROGRESS: 409,
+  PROMPT_VERSION_IMMUTABLE: 409,
 })
 
 const DEFAULT_ERROR_STATUS = 400
@@ -114,6 +117,53 @@ export function normalizeInteractionPolicyForPublish (input) {
   }
 
   const policy = createMutableInteractionPolicy(input)
+
+  const moderation = policy.moderation || {}
+  const ai = moderation.ai || {}
+  if (typeof ai.enabled !== 'boolean') {
+    throw interactionHttpError('AI 审核开关必须是布尔值', 'VALIDATION_FAILED')
+  }
+  const boundedString = (value, label, maxLength = 64, required = false) => {
+    if (typeof value !== 'string') throw interactionHttpError(`${label}必须是字符串`, 'VALIDATION_FAILED')
+    const normalized = value.trim()
+    if (required && !normalized) throw interactionHttpError(`${label}不能为空`, 'VALIDATION_FAILED')
+    if (normalized.length > maxLength) throw interactionHttpError(`${label}不能超过 ${maxLength} 个字符`, 'VALIDATION_FAILED')
+    return normalized
+  }
+  ai.providerId = boundedString(ai.providerId, 'AI provider ID', 100)
+  ai.promptVersion = boundedString(ai.promptVersion, 'AI 提示词版本', 64, true)
+  ai.policyVersion = boundedString(ai.policyVersion, 'AI 策略版本标识', 64, true)
+  const boundedInteger = (value, label, min, max) => {
+    const number = Number(value)
+    if (!Number.isInteger(number) || number < min || number > max) {
+      throw interactionHttpError(`${label}必须是 ${min} 到 ${max} 的整数`, 'VALIDATION_FAILED')
+    }
+    return number
+  }
+  ai.timeoutMs = boundedInteger(ai.timeoutMs, 'AI 超时', 100, 120000)
+  ai.maxAttempts = boundedInteger(ai.maxAttempts, 'AI 最大尝试次数', 1, 4)
+  ai.dailyBudget = boundedInteger(ai.dailyBudget, 'AI 每日预算', 0, 1000000)
+  ai.maxConcurrency = boundedInteger(ai.maxConcurrency, 'AI 最大并发数', 1, 128)
+
+  const actions = moderation.actions || {}
+  for (const level of MODERATION_LEVELS) {
+    if (!MODERATION_ACTIONS.includes(actions[level])) {
+      throw interactionHttpError(`AI 等级 ${level} 的动作不合法`, 'VALIDATION_FAILED')
+    }
+  }
+  if (actions.unknown !== 'review') {
+    throw interactionHttpError('unknown 等级只能进入人工复核', 'VALIDATION_FAILED')
+  }
+  if (!['review', 'quarantine'].includes(actions.illegal_or_ip)) {
+    throw interactionHttpError('illegal_or_ip 等级只能进入复核或隔离', 'VALIDATION_FAILED')
+  }
+  if (!Array.isArray(moderation.autoApproveLevels) || moderation.autoApproveLevels.some(level => !MODERATION_LEVELS.includes(level))) {
+    throw interactionHttpError('AI 自动放行等级不合法', 'VALIDATION_FAILED')
+  }
+  if (moderation.autoApproveLevels.includes('unknown') || moderation.autoApproveLevels.includes('illegal_or_ip')) {
+    throw interactionHttpError('unknown 和 illegal_or_ip 不允许自动放行', 'VALIDATION_FAILED')
+  }
+  policy.moderation.ai = ai
   const description = policy.mediaDetails?.generalDescription
   if (typeof description !== 'string') {
     throw interactionHttpError('媒体详情通用说明必须是字符串', 'VALIDATION_FAILED')

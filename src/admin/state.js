@@ -56,7 +56,13 @@ export const adminState = {
   interactionCommentFilters: { moderationStatus: '', contentStatus: '', canonicalShareId: '', shareItemId: '', featureId: '' },
   interactionReportFilters: { status: '', reportType: '', priority: '', scope: '', canonicalShareId: '' },
   interactionPolicy: null,
+  interactionAiSettings: null,
+  interactionAiImpact: null,
+  interactionAiPrompts: null,
   interactionKeywords: null,
+  interactionKeywordPreview: null,
+  interactionAiProviders: null,
+  artalkStatus: null,
   interactionCommentDetail: null,
   interactionReportDetail: null,
   precacheForm: {

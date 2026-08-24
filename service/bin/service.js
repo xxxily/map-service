@@ -23,6 +23,7 @@ import { TwoBuluImportService } from './user/twoBuluImport.js'
 import TwoBuluImportCoordinator from './user/twoBuluImportCoordinator.js'
 import KmlShareLinkResolverService from './user/shareLinkResolver.js'
 import InteractionService from './interaction/interactionService.js'
+import ArtalkMirror from './interaction/artalkMirror.js'
 import { createHttpError, randomToken } from './user/security.js'
 import { buildShareMapCatalog, isShareMapSourceAllowed } from './user/shareMapCatalog.js'
 import { classifyTileAgainstScope } from './user/shareSpatialAccess.js'
@@ -108,6 +109,8 @@ const interaction = new InteractionService({
   userContent,
   config: serviceConfig.interaction || {},
 })
+const artalkMirrorConfig = serviceConfig.interaction?.artalkMirror || {}
+const artalkMirror = new ArtalkMirror(artalkMirrorConfig)
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
 
@@ -210,6 +213,61 @@ function writeSourceAccessLog (entry, source) {
 }
 
 const service = {
+  getArtalkMirrorStatus () {
+    if (artalkMirror.enabled) interaction.ensureReady()
+    return artalkMirror.status(interaction)
+  },
+
+  checkArtalkMirrorHealth () {
+    if (artalkMirror.enabled) interaction.ensureReady()
+    return artalkMirror.health(interaction)
+  },
+
+  drainArtalkMirror (options = {}) {
+    return artalkMirror.drainOnce(interaction, {
+      limit: Number(options.limit || artalkMirrorConfig.batchSize || 20),
+      ...options,
+    })
+  },
+
+  async verifyArtalkMirror (actor, context = {}) {
+    const result = await this.checkArtalkMirrorHealth()
+    userContent.insertAudit({
+      actorUserId: actor?.user?.id || actor?.id || null,
+      action: 'interaction.artalk.verify',
+      targetType: 'comment_provider',
+      targetId: 'artalk',
+      metadata: { ok: result.ok === true, enabled: result.enabled === true, configured: result.configured === true },
+      ipSummary: context.ipSummary || '',
+    })
+    return result
+  },
+
+  async drainArtalkMirrorForAdmin (actor, options = {}, context = {}) {
+    const result = await this.drainArtalkMirror({
+      limit: Number(options.limit || artalkMirrorConfig.batchSize || 20),
+      reconcileLimit: Number(options.reconcileLimit || 100),
+      reconcile: true,
+      force: options.force === true,
+    })
+    userContent.insertAudit({
+      actorUserId: actor?.user?.id || actor?.id || null,
+      action: 'interaction.artalk.drain',
+      targetType: 'comment_provider',
+      targetId: 'artalk',
+      metadata: {
+        claimed: Number(result.claimed || 0),
+        sent: Number(result.sent || 0),
+        failed: Number(result.failed || 0),
+        reconciled: Number(result.reconciled || 0),
+        reconcileFailed: Number(result.reconcileFailed || 0),
+        force: options.force === true,
+      },
+      ipSummary: context.ipSummary || '',
+    })
+    return result
+  },
+
   getUserSystemConfig () {
     return {
       sessionCookieName: userSystemConfig.sessionCookieName || 'map_user_session',
@@ -605,6 +663,10 @@ const service = {
     return interaction.reprocessComment(actor, id, context)
   },
 
+  replayInteractionAiReview (actor, id, context) {
+    return interaction.replayAiReviewForAdmin(actor, id, context)
+  },
+
   deleteInteractionCommentForAdmin (actor, id, context) {
     return interaction.deleteCommentForAdmin(actor, id, context)
   },
@@ -613,8 +675,24 @@ const service = {
     return interaction.getInteractionPolicyForAdmin()
   },
 
+  getInteractionAiPolicyForAdmin () {
+    return interaction.getAiPolicyForAdmin()
+  },
+
   publishInteractionPolicy (actor, input, context) {
     return interaction.publishInteractionPolicy(actor, input, context)
+  },
+
+  publishInteractionAiPolicy (actor, input, context) {
+    return interaction.publishAiPolicy(actor, input, context)
+  },
+
+  listInteractionAiPromptVersionsForAdmin () {
+    return interaction.listAiPromptVersionsForAdmin()
+  },
+
+  publishInteractionAiPromptVersion (actor, input, context) {
+    return interaction.publishAiPromptVersion(actor, input, context)
   },
 
   getInteractionKeywordRulesForAdmin () {
@@ -623,6 +701,18 @@ const service = {
 
   publishInteractionKeywordRules (actor, rules, options, context) {
     return interaction.publishKeywordRules(actor, rules, options, context)
+  },
+
+  previewInteractionKeywordRules (input) {
+    return interaction.previewKeywordRules(input)
+  },
+
+  previewInteractionModerationImpact (input) {
+    return interaction.previewModerationImpact(input)
+  },
+
+  replayInteractionModerationEvents (actor, input, context) {
+    return interaction.replayFailedModerationEvents(actor, input, context)
   },
 
   listInteractionAiProvidersForAdmin () {

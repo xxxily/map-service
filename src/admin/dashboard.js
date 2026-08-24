@@ -221,7 +221,11 @@ function addAuthorizedLoaders (loaders) {
   if (can('admin.comment.read')) loaders.push(['interactionComments', () => adminApi.listInteractionComments({ page: 1, limit: 20 })])
   if (can('admin.report.read')) loaders.push(['interactionReports', () => adminApi.listInteractionReports({ page: 1, limit: 20 })])
   if (can('admin.comment.read') || can('admin.comment.policy.manage')) loaders.push(['interactionPolicy', () => adminApi.interactionPolicy()])
+  if (can('admin.moderation.ai.manage')) loaders.push(['interactionAiSettings', () => adminApi.interactionAiSettings()])
+  if (can('admin.moderation.ai.manage')) loaders.push(['interactionAiPrompts', () => adminApi.interactionAiPrompts()])
   if (can('admin.moderation.keyword.manage')) loaders.push(['interactionKeywords', () => adminApi.interactionKeywords()])
+  if (can('admin.moderation.ai.manage')) loaders.push(['interactionAiProviders', () => adminApi.interactionAiProviders()])
+  if (can('admin.comment.policy.manage')) loaders.push(['artalkStatus', () => adminApi.artalkStatus()])
 }
 
 async function loadDashboard () {

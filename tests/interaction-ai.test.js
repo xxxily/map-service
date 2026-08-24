@@ -41,6 +41,25 @@ test('provider registry fails closed without allowlist and enforces provider-spe
   assert.equal(registry.get('two').state.used, 1)
 })
 
+test('registry enforces one shared daily budget across multiple providers', async () => {
+  let used = 0
+  const registry = new AiProviderRegistry({
+    allowHosts: ['example.test'],
+    budget: 2,
+    budgetStore: () => {
+      if (used >= 2) return false
+      used += 1
+      return true
+    },
+  })
+  registry.register({ id: 'shared-one', endpoint: 'https://example.test', secretRef: 'env://AI_KEY', dailyBudget: 0, request: async () => ({ ok: true }) })
+  registry.register({ id: 'shared-two', endpoint: 'https://example.test', secretRef: 'env://AI_KEY', dailyBudget: 0, request: async () => ({ ok: true }) })
+  await registry.run('shared-one', async provider => provider.request())
+  await registry.run('shared-two', async provider => provider.request())
+  await assert.rejects(() => registry.run('shared-one', async provider => provider.request()), /budget exhausted/iu)
+  assert.equal(used, 2)
+})
+
 test('zero daily budget is unlimited and provider verification expires', async () => {
   let now = Date.parse('2026-08-24T00:00:00.000Z')
   const adapters = {

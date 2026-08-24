@@ -1,10 +1,10 @@
 # 第三方评论系统 POC 评审（2026-08）
 
-> 评审日期：2026-08-22（Asia/Shanghai）
+> 评审日期：2026-08-22；161 实测更新：2026-08-25（Asia/Shanghai）
 >
 > 范围：Remark42、Artalk、Isso、Cusdis。只采用项目官方仓库、官方文档和 GitHub 官方 API 作为证据。这里的“匿名”指不要求第三方社交登录即可提交评论；是否要求昵称、邮箱或验证码另行说明。
 >
-> 状态：Phase 0 评审已完成；真实 provider 部署与联调属于 Phase 1，尚未接入生产。
+> 状态：Phase 0 评审已完成；Artalk `2.10.0` 已在 161 完成隔离 sidecar 部署、运维实测和 map-service 单向镜像接入，公开生产页面嵌入仍延期。
 
 ## 结论摘要
 
@@ -24,7 +24,7 @@ Artalk 在当前四个候选中同时满足：MIT 许可证、活跃版本发布
 
 | 候选 | 当前版本/维护证据 | 许可证与热度 | 匿名与审核 | API / 导出 | POC 结论 |
 |---|---|---|---|---|---|
-| **Artalk** | v2.10.0，2026-07-24 发布；最近提交同日（GitHub 官方 Release/Commits） | MIT；约 2,319 stars、204 forks；非 archived | 默认填写昵称和邮箱即可评论、无需邮箱验证；可启用“Allow Anonymous Comments”；支持审核队列、关键词、Akismet、腾讯/阿里内容安全和验证码 | 官方 OpenAPI HTTP API；Dashboard/CLI 导入导出，统一 `.artrans` 格式 | **候选评审通过，首选**；待 Phase 1 实测 |
+| **Artalk** | v2.10.0，2026-07-24 发布；最近提交同日（GitHub 官方 Release/Commits） | MIT；约 2,319 stars、204 forks；非 archived | 默认填写昵称和邮箱即可评论、无需邮箱验证；可启用“Allow Anonymous Comments”；支持审核队列、关键词、Akismet、腾讯/阿里内容安全和验证码 | 官方 OpenAPI HTTP API；Dashboard/CLI 导入导出，统一 `.artrans` 格式 | **候选评审与 161 隔离实测通过，首选**；公开生产接入延期 |
 | **Remark42** | v1.16.4，2026-07-10 发布；2026-08-22 仍有提交 | MIT；约 5,584 stars、443 forks；非 archived | 可开启 `AUTH_ANON=true`；也支持 OAuth、邮箱；管理员可删除评论、封禁用户，支持审核/反垃圾文档 | `/api/v1` API；`/api/v1/admin/export` 可导出 JSON stream/gzip；自动备份和 Disqus/WordPress 导入 | **候选评审通过，第二候选**；待 Phase 1 实测，需先解决 OAuth 与反向代理安全配置 |
 | **Isso** | v0.14.0，2026-03-26 发布；2026-08-21 仍有提交 | MIT；约 5,303 stars、463 forks；非 archived | 官方定位支持 anonymous comments；SQLite；支持 moderation queue，待审核评论不会公开；用户默认 15 分钟内可编辑/删除 | 有公开 Server API；支持 Disqus/WordPress 导入。官方文档未展示通用 bulk export/备份格式，需 POC 自行验证 SQLite 备份与 API 覆盖 | **候选评审有条件保留**；待 Phase 1 实测，适合低复杂度站点，不作为主方案 |
 | **Cusdis** | 最新 Release v1.3.0（2021-11-30）；仓库 archived，官方 README 明确 deprecated；虽有 2026 README 提交，但不是功能维护 | GPL-3.0；约 2,781 stars、297 forks；archived | 不要求登录即可评论；无 spam filter，评论须手工审核且审批前不显示 | 官方 README 只列 webhook/基础能力；导出需给 `hi@cusdis.com` 发邮件并指定格式，没有自助 API/格式承诺 | **不通过，排除** |
@@ -39,7 +39,7 @@ Artalk 在当前四个候选中同时满足：MIT 许可证、活跃版本发布
 - **API/导出**：官方提供 OpenAPI HTTP API；数据迁移文档定义 `.artrans` 标准 JSON 数组，并支持 Dashboard/CLI 导入、`artalk export` 导出，可将其他系统转换后导入。来源：[HTTP API](https://artalk.js.org/http-api.html)、[Data Migration](https://artalk.js.org/en/guide/transfer.html)。
 - **集成风险**：前端约 40KB、Go 服务、Docker 部署简单；但 v2 API 有明确版本变更提示，客户端和服务端应锁定同一 minor/release，OIDC SSO 需要额外 issuer 和 token exchange 配置。来源：[README 安装与集成](https://github.com/ArtalkJS/Artalk#installation)、[v2.10.0 迁移说明](https://artalk.js.org/en/guide/releases/v2.10.0)、[HTTP API SSO](https://artalk.js.org/http-api.html)。
 
-**候选评审结论**：能力和许可证检查通过，列为首选；尚未完成真实部署验收。Phase 1 必须验证匿名发帖、pending 审核、管理员删除/恢复、API 分页/鉴权、`.artrans` 导出再导入，以及前端跨域/CORS 和反向代理配置。
+**候选评审结论**：能力、许可证和 161 隔离部署验收通过，列为首选。实测覆盖免社交登录提交、pending 审核隔离、管理员审核/删除、API 分页/鉴权、`.artrans` 导出后导入隔离 SQLite、容器重启持久化和 CORS 可信来源；map-service 进一步完成内部审核结果到 Artalk 的单向镜像闭环。尚未验收的是公开 HTTPS origin、双向 webhook 和公开页面嵌入体验；因此仍不得绕过 Interaction Adapter。
 
 ### 2. Remark42
 
@@ -72,7 +72,7 @@ Artalk 在当前四个候选中同时满足：MIT 许可证、活跃版本发布
 
 ## 最终建议与落地顺序
 
-1. **Phase 1 先做 Artalk 实测**：以匿名评论、pending 审核、管理员删除、HTTP API、`.artrans` 导出/导入和反向代理为验收主线。通过后再锁定 Artalk 版本并提交供应链审批。
+1. **保留 Artalk 161 隔离 sidecar**：已锁定 `2.10.0` 和镜像 digest，已接入 map-service 单向镜像用于适配器、迁移和运维回归；公开页面仍使用内部 Interaction Service。
 2. **保留 Remark42 备选**：当需求更看重 OAuth provider 丰富度、成熟备份/恢复、Disqus/WordPress 迁移时再做 provider 实测；部署前必须完成可信代理与安全公告核对。
 3. **不投入 Cusdis POC**；Isso 仅在需要极简匿名评论、可接受自行验证导出和 SQLite 运维时考虑。
 
@@ -88,10 +88,10 @@ provider locator，不启动第三方服务，也不新增生产运行时依赖�
 - `publicId` 轮换只改变外部访问别名，不改变 `canonicalShareId`，所以同一分享的留言线程和举报工单不丢失；Comment/Report 持久化只把 `share_public_id` 作为提交/审计快照。
 - Artalk 使用 `pageKey`，Remark42 使用受控同源 URL；两者都声明 `authMode=interaction-adapter`、
   `moderationAuthority=internal`，表示第三方不能绕过本项目的分享授权和最终审核状态。
-- POC 明确拒绝 HTTP、带账号密码的 provider origin，以及未知 provider；真实部署还必须补做 CORS、
-  CSRF、匿名联系方式脱敏、审核 webhook 双向同步和导入导出恢复演练。
+- POC 明确拒绝 HTTP、带账号密码的 provider origin，以及未知 provider；真实单向镜像已经完成 CORS、
+  CSRF、匿名联系方式不外发和导入导出恢复演练，双向 webhook 与公开嵌入仍需后续独立评审。
 
-Phase 0 POC 自动化验收覆盖：链接轮换后的线程稳定性、跨 provider key 一致性、媒体范围拒绝、HTTPS origin 校验和未知 provider 拒绝。它不等同于第三方服务已部署或生产可用；真实 provider API、审核同步、CORS/CSRF、数据导出恢复和隐私字段验收在 Phase 1 完成。
+Phase 0 POC 自动化验收覆盖：链接轮换后的线程稳定性、跨 provider key 一致性、媒体范围拒绝、HTTPS origin 校验和未知 provider 拒绝。161 已进一步完成真实 provider API、内部到 Artalk 的单向审核同步、CORS/CSRF、数据导出恢复和隐私字段验收；这仍不等同于公开生产嵌入或双向同步可用。
 
 ## 来源索引（官方/upstream）
 

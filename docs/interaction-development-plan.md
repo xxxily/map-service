@@ -4,13 +4,13 @@
 > 
 > 首选留言方案：Artalk（通过 Interaction Adapter 接入；内部服务掌握最终审核、资源身份和审计事实）。
 > 
-> 当前状态：Phase 0、Phase 1A-F、Phase 2 受控 POC 与 Phase 3 AI 审核均已完成；Artalk 生产部署仍明确延期，不作为内部事实源的上线前置条件。
+> 当前状态：Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测与 Phase 3 AI 审核均已完成；Artalk 已通过 Interaction Adapter 以单向镜像接入 161 内测，公开生产部署仍明确延期，不作为内部事实源的上线前置条件。
 >
 > 部署、初始化、接入、备份恢复和 agent 执行入口见 [交互功能部署与接入手册](./interaction-deployment-and-integration.md)。
 > 
 > 首次建立：2026-08-23（Asia/Shanghai）
 > 
-> 最近更新：2026-08-24
+> 最近更新：2026-08-25
 
 ## 1. 交付目标
 
@@ -34,8 +34,8 @@
 | Phase 1D | 媒体预览留言/信息/举报交互，2D/3D 共用 | 已完成 | 2026-08-23 / 2026-08-23 | 2-4 天 | UI、窄屏、焦点、故障降级和真实契约测试通过 |
 | Phase 1E | 管理后台留言审核、举报工单、策略页面 | 已完成 | 2026-08-23 / 2026-08-23 | 2-4 天 | RBAC/UI/API 联测通过 |
 | Phase 1F | 保留策略、指标、日志脱敏、部署与恢复演练 | 已完成 | 2026-08-23 / 2026-08-23 | 1-2 天 | 保留、指标、备份恢复和迁移回滚测试通过 |
-| Phase 2 | Artalk 版本/API/export-import 受控 POC 与适配边界 | 已完成（生产部署延期） | 2026-08-23 / 2026-08-23 | 1-3 天 | 官方版本、OpenAPI、CLI smoke；Docker 运行条件缺失已记录 |
-| Phase 3 | AI provider、提示词版本、预算熔断、自动审核增强 | 已完成 | 2026-08-23 / 2026-08-24 | 2-4 天 | 正常/超时/坏 JSON/低置信度/人工覆盖/加密保留通过 |
+| Phase 2 | Artalk 版本/API/export-import 受控 POC 与适配边界 | 已完成（161 隔离 sidecar 实测，公开接入延期） | 2026-08-23 / 2026-08-25 | 1-3 天 | 官方版本、OpenAPI、CLI smoke、161 API/审核/导入导出/持久化验证 |
+| Phase 3 | AI provider、提示词版本、预算熔断、自动审核增强 | 已完成 | 2026-08-23 / 2026-08-25 | 2-4 天 | 正常/超时/坏 JSON/低置信度/人工覆盖/加密保留/后台运行策略同步通过；后台入口 `/admin/interaction-ai` |
 
 ## 3. 当前执行批次
 
@@ -121,11 +121,13 @@
 ### 4.8 Phase 2/3：Artalk 与 AI
 
 - [x] （Phase 2 POC）锁定 Artalk 版本，验证容器/API/OpenAPI 契约和 export/import smoke。
-- [ ] （明确延期）使用受控 HTTPS origin 部署 Artalk；当前内部 headless Comment Service 继续作为事实源。
+- [x] 在 161 以固定 `2.10.0` 镜像 digest 部署隔离 sidecar，完成 pending、审核/删除、导入导出、持久化和 CORS 验收。
+- [ ] （明确延期）使用受控 HTTPS origin 对公开生产页面接入 Artalk；当前内部 headless Comment Service 继续作为事实源。
 - [x] 完成 Adapter 页面键、外部用户/匿名字段、审核同步边界和 CORS/CSRF 设计联调。
 - [x] 完成评论/审核历史导入导出边界与恢复 smoke；生产迁移需独立维护窗口。
 - [x] 接入 AI provider registry、密钥引用、提示词版本、结构化 JSON 校验、超时/重试/预算熔断。
 - [x] AI 原文脱敏、`unknown` fail-closed、人工覆盖和 30 天原始结果保留。
+- [x] 后台提供规则试运行、AI 影响预览、提示词版本、失败事件重放和单条 AI 重放入口。
 
 ## 5. 关键架构不变量
 
@@ -160,7 +162,8 @@
 | 2026-08-23 | Phase 1A 完成独立交互契约与 SQLite v1 实现 | 定向测试 28/28、全量测试 778/778、`npm run check`、`npm run build` |
 | 2026-08-23 | Phase 1B/C 留言垂直切片接入 | Interaction Adapter、Comment/Moderation Service、outbox、公开留言策略/列表/计数/提交及管理审核/重新审核/策略/关键词 API；重新审核按内容与当前策略版本幂等并保留决策链 |
 | 2026-08-23 | Phase 0 相关内容提交；独立 interaction DB、Artalk spike 决策冻结 | `840f713` |
+| 2026-08-25 | Phase 3 运营工具闭环；Artalk 2.10.0 完成 161 隔离 sidecar 实测 | 定向测试、Artrans 导入导出、SQLite 重启持久化、CORS 和 1Panel 模板验收 |
 
 ## 8. 收尾与延期事项
 
-Phase 0、Phase 1A-F、Phase 2 受控 POC 和 Phase 3 AI 审核均已完成；最终质量门需保留全量测试、静态检查、构建、清理报告、独立代码/架构审查和架构不变量审计的证据。Artalk 真实生产部署仍明确延期，不作为内部服务事实源或本阶段交付的前置条件；后续部署必须沿用已锁定的 `2.10.0` 版本、受控 HTTPS origin 和现有 Interaction Adapter 边界。
+Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测和 Phase 3 AI 审核均已完成；最终质量门需保留全量测试、静态检查、构建、清理报告、独立代码/架构审查和架构不变量审计的证据。Artalk 已在 161 通过内部单向镜像闭环验收，公开生产接入仍明确延期；后续公开接入必须沿用已锁定的 `2.10.0` 版本、受控 HTTPS origin 和现有 Interaction Adapter 边界。

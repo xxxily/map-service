@@ -483,6 +483,45 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_comment_decisions_idempotency
   WHERE idempotency_key <> '';
 `
 
+const AI_REVIEW_SCHEMA = `
+CREATE TABLE IF NOT EXISTS ai_review_claims (
+  idempotency_key TEXT PRIMARY KEY,
+  comment_id TEXT NOT NULL,
+  content_revision INTEGER NOT NULL CHECK (content_revision > 0),
+  policy_revision TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'completed', 'failed')),
+  decision_id TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts > 0),
+  last_error TEXT NOT NULL DEFAULT '',
+  claimed_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ai_review_claims_comment
+  ON ai_review_claims(comment_id, content_revision, updated_at);
+
+CREATE TABLE IF NOT EXISTS ai_budget_usage (
+  day TEXT PRIMARY KEY,
+  used INTEGER NOT NULL DEFAULT 0 CHECK (used >= 0),
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artalk_comment_projections (
+  comment_id TEXT PRIMARY KEY,
+  provider_comment_id INTEGER,
+  page_key TEXT NOT NULL DEFAULT '',
+  state_hash TEXT NOT NULL DEFAULT '',
+  projection_status TEXT NOT NULL DEFAULT 'unknown' CHECK (projection_status IN ('unknown', 'visible', 'removed', 'failed')),
+  last_error TEXT NOT NULL DEFAULT '',
+  synced_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artalk_projection_provider_comment
+  ON artalk_comment_projections(provider_comment_id) WHERE provider_comment_id IS NOT NULL;
+`
+
 const AI_PROVIDER_COLUMNS = Object.freeze([
   ['name', "TEXT NOT NULL DEFAULT ''"],
   ['endpoint', "TEXT NOT NULL DEFAULT ''"],
@@ -560,6 +599,7 @@ export function ensureAiSchema (database) {
   ).get()
   if (!decisionTableExists) database.exec(AI_DECISION_SCHEMA)
   else addMissingColumns(database, 'comment_moderation_decisions', AI_DECISION_COLUMNS)
+  database.exec(AI_REVIEW_SCHEMA)
   addMissingColumns(database, 'comments', COMMENT_COLUMNS)
 
   // Older development snapshots called this field raw_result_encrypted.  Move

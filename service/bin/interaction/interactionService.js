@@ -27,11 +27,17 @@ import {
   InteractionPolicyStore,
   createMutableInteractionPolicy,
   interactionHttpError,
+  normalizeInteractionPolicyForPublish,
   resolveInitialModerationState,
 } from './commentPolicy.js'
 import { createHttpError } from '../user/security.js'
 import { encryptInteractionSecret } from './security.js'
-import { emptyAiScores } from '../../../shared/interaction-ai.js'
+import { AI_PROMPT_VERSION, emptyAiScores } from '../../../shared/interaction-ai.js'
+
+const MAX_KEYWORD_PREVIEW_TEXT_LENGTH = 10_000
+const MAX_KEYWORD_PREVIEW_RULES = 5_000
+const MAX_IMPACT_PREVIEW_COMMENTS = 10_000
+const AI_REVIEW_LOCK_TTL_MS = 10 * 60 * 1000
 
 function actorUserId (actor) {
   return actor?.user?.id || actor?.id || ''
@@ -103,7 +109,10 @@ export class InteractionService {
     this.providerAdapters = options.providerAdapters || createServerProviderAdapters({ secretResolver: options.secretResolver })
     this.secretResolver = options.secretResolver
     this.aiEngine = options.aiEngine || null
+    this.aiEngineInjected = Boolean(options.aiEngine)
+    this.aiRuntimeConfig = null
     this.aiTasks = new Set()
+    this.aiReviewTasks = new Map()
     this.aiProviderConfigs = Array.isArray(this.config.ai?.providers) ? this.config.ai.providers : []
     this.aiClosing = false
     this.aiRawResultsDays = Math.max(1, Number(this.config.retention?.aiRawResultsDays) || 30)
@@ -116,7 +125,10 @@ export class InteractionService {
 
   /** Open the interaction database and build the services on first use. */
   ensureReady () {
-    if (this.comments && this.reports) return this
+    if (this.comments && this.reports) {
+      this.syncAiRuntimePolicy()
+      return this
+    }
     if (!this.secret) {
       throw interactionHttpError('交互服务未配置加密密钥', 'INTERACTION_SERVICE_UNAVAILABLE')
     }
@@ -143,6 +155,20 @@ export class InteractionService {
           this.database.prepare('UPDATE ai_provider_configs SET daily_budget_day = ?, daily_budget_used = ?, updated_at = ? WHERE id = ?')
             .run(state.budgetDay, state.used, this.now(), provider.id)
         },
+        budgetStore: (day, budget) => {
+          if (!this.database || !Number.isFinite(budget)) return true
+          const now = this.now()
+          return this.database.transaction(() => {
+            this.database.prepare(`
+              INSERT INTO ai_budget_usage(day, used, updated_at) VALUES (?, 1, ?)
+              ON CONFLICT(day) DO UPDATE SET used = used + 1, updated_at = excluded.updated_at
+            `).run(day, now)
+            const used = Number(this.database.prepare('SELECT used FROM ai_budget_usage WHERE day = ?').get(day)?.used || 0)
+            if (used <= budget) return true
+            this.database.prepare('UPDATE ai_budget_usage SET used = used - 1, updated_at = ? WHERE day = ?').run(now, day)
+            return false
+          })
+        },
         onVerificationExpired: provider => {
           if (!this.database) return
           this.database.prepare(`
@@ -157,17 +183,6 @@ export class InteractionService {
         try { this.aiRegistry.register(provider) } catch { /* invalid config remains fail-closed */ }
       }
       this.loadPersistedAiProviders()
-    }
-    if (!this.aiEngine && this.config.ai?.enabled === true) {
-      const providerId = this.config.ai.providerId || this.aiRegistry.defaultProviderId
-      this.aiEngine = new AiModerationEngine({
-        registry: this.aiRegistry,
-        providerId,
-        timeoutMs: this.config.ai.timeoutMs,
-        retries: Math.max(0, Number(this.config.ai.maxAttempts || 1) - 1),
-        promptVersion: this.config.ai.promptVersion,
-        policyVersion: this.config.ai.policyVersion || this.config.ai.promptVersion,
-      })
     }
     if (!this.comments) this.comments = new CommentService({
       database: this.database,
@@ -184,7 +199,61 @@ export class InteractionService {
       now: this.now,
       reportsDays: this.config.retention?.reportsDays,
     })
+    this.syncAiRuntimePolicy()
     return this
+  }
+
+  /**
+   * Resolve the active policy's AI section and apply it to the in-process
+   * engine. The published policy is the runtime source of truth; environment
+   * configuration is only a bootstrap fallback before a policy exists.
+   */
+  getEffectiveAiConfig () {
+    const configured = this.config.ai && typeof this.config.ai === 'object' ? this.config.ai : {}
+    const active = this.policyStore?.getActiveVersion?.()
+    const activePrompt = this.database?.prepare('SELECT version FROM ai_prompt_versions WHERE active = 1').get()
+    if (!active) return { ...configured, ...(activePrompt?.version ? { promptVersion: activePrompt.version } : {}) }
+    try {
+      const policy = createMutableInteractionPolicy(JSON.parse(active.policy_json || '{}'))
+      const result = { ...configured, ...(policy.moderation?.ai || {}) }
+      if (activePrompt?.version) result.promptVersion = activePrompt.version
+      return result
+    } catch {
+      return { ...configured, enabled: false }
+    }
+  }
+
+  syncAiRuntimePolicy () {
+    if (!this.aiRegistry || !this.policyStore || this.aiEngineInjected) return
+    const ai = this.getEffectiveAiConfig()
+    this.aiRuntimeConfig = ai
+    this.aiRegistry.configureRuntimeLimits({ budget: ai.dailyBudget, maxConcurrency: ai.maxConcurrency })
+    if (ai.enabled !== true) {
+      this.aiEngine = null
+      return
+    }
+    const providerId = String(ai.providerId || this.aiRegistry.defaultProviderId || '')
+    const options = {
+      registry: this.aiRegistry,
+      providerId,
+      timeoutMs: ai.timeoutMs,
+      retries: Math.max(0, Number(ai.maxAttempts || 1) - 1),
+      promptVersion: ai.promptVersion,
+      policyVersion: ai.policyVersion || ai.promptVersion,
+      runtimeOverrides: {
+        timeoutMs: ai.timeoutMs,
+        maxAttempts: ai.maxAttempts,
+      },
+    }
+    if (!this.aiEngine) this.aiEngine = new AiModerationEngine(options)
+    else {
+      this.aiEngine.providerId = options.providerId
+      this.aiEngine.timeoutMs = Math.max(100, Number(options.timeoutMs) || 3000)
+      this.aiEngine.retries = Math.max(0, Math.min(3, Number(options.retries) || 0))
+      this.aiEngine.promptVersion = String(options.promptVersion || this.aiEngine.promptVersion)
+      this.aiEngine.policyVersion = String(options.policyVersion || this.aiEngine.promptVersion)
+      this.aiEngine.runtimeOverrides = { ...options.runtimeOverrides }
+    }
   }
 
   backfillCommentRetention () {
@@ -214,6 +283,7 @@ export class InteractionService {
     this.comments = null
     this.reports = null
     this.aiTasks.clear()
+    this.aiReviewTasks.clear()
     this.aiRegistry = null
     this.aiEngine = null
     this.aiClosing = false
@@ -350,7 +420,7 @@ export class InteractionService {
       clientKey,
       aiEnabled: Boolean(this.aiEngine),
     })
-    if (result.created && this.aiEngine) this.scheduleAiReview(result.comment, context)
+    if (result.created && this.aiEngine) this.scheduleAiReview(result.comment, context).catch(() => {})
 
     // The API never echoes the comment back: a pending comment is not public,
     // and returning it would leak moderation state to the author's page.
@@ -362,12 +432,29 @@ export class InteractionService {
     }
   }
 
-  scheduleAiReview (comment, context = {}) {
-    if (!this.aiEngine || !comment || this.aiClosing) return Promise.resolve(null)
+  scheduleAiReview (comment, context = {}, options = {}) {
+    const engine = this.aiEngine
+    if (!engine || !comment || this.aiClosing) return Promise.resolve(null)
+    const commentId = String(comment.id || '')
+    const contentRevision = Number(comment.content_revision || 1)
+    const policyVersion = Number(this.policyStore?.getActiveVersion?.()?.version || 0)
+    const providerRevision = this.database?.prepare('SELECT updated_at FROM ai_provider_configs WHERE id = ?').get(String(engine.providerId || ''))?.updated_at || ''
+    const policyRevision = `${policyVersion}:${String(engine.policyVersion || '')}:${String(engine.promptVersion || '')}:${String(engine.providerId || '')}:${providerRevision}`
+    const idempotencyKey = String(options.idempotencyKey || `ai:${commentId}:${contentRevision}:${policyRevision}`)
+    const inProcess = this.aiReviewTasks.get(idempotencyKey)
+    if (inProcess) return inProcess
+    const current = this.database?.prepare('SELECT content_status FROM comments WHERE id = ?').get(commentId)
+    if (current?.content_status === 'deleted' || (options.admin && current?.content_status !== 'active')) {
+      if (options.admin) throw interactionHttpError('已删除或隐藏的留言不能重新发送给 AI', 'COMMENT_POLICY_BLOCKED')
+      return Promise.resolve({ skipped: true, reason: 'COMMENT_NOT_ACTIVE' })
+    }
+    const claim = this.claimAiReview({ ...comment, id: commentId, content_revision: contentRevision }, idempotencyKey, policyRevision)
+    if (claim.state === 'completed') return Promise.resolve({ ...claim.decision, created: false, replayed: true })
+    if (claim.state === 'in_progress') return Promise.resolve({ inProgress: true, decisionId: '', replayed: false })
     const task = Promise.resolve().then(async () => {
       let decision
       try {
-        decision = await this.aiEngine.decide({
+        decision = await engine.decide({
           body: comment.body_normalized,
           context: {
             language: context.language,
@@ -382,10 +469,10 @@ export class InteractionService {
           confidence: 0,
           suggestedAction: 'review',
           reasonCodes: ['AI_UNAVAILABLE'],
-          policyVersion: this.aiEngine.policyVersion,
-          providerId: this.aiEngine.providerId,
+          policyVersion: engine.policyVersion,
+          providerId: engine.providerId,
           model: '',
-          promptVersion: this.aiEngine.promptVersion,
+          promptVersion: engine.promptVersion,
           rawResult: null,
           resultHash: '',
           error: String(error?.message || error),
@@ -396,34 +483,132 @@ export class InteractionService {
       const expiresAt = rawResult
         ? new Date(new Date(now).getTime() + this.aiRawResultsDays * 86_400_000).toISOString()
         : null
-      const audit = this.moderation.recordAiDecision({
-        commentId: comment.id,
-        contentRevision: comment.content_revision,
-        level: decision.level,
-        scores: decision.scores,
-        confidence: decision.confidence,
-        reasonCodes: decision.reasonCodes,
-        suggestedAction: decision.suggestedAction,
-        policyVersion: decision.policyVersion,
-        providerId: decision.providerId,
-        model: decision.model,
-        promptVersion: decision.promptVersion,
-        resultHash: decision.resultHash,
-        rawResultCiphertext: rawResult ? encryptInteractionSecret(rawResult, this.secret, 'ai-raw-result') : '',
-        rawResultExpiresAt: expiresAt,
-        idempotencyKey: `ai:${comment.id}:${comment.content_revision}:${decision.promptVersion}`,
-        now,
+      const audit = this.database.transaction(() => {
+        const result = this.moderation.recordAiDecision({
+          commentId,
+          contentRevision,
+          level: decision.level,
+          scores: decision.scores,
+          confidence: decision.confidence,
+          reasonCodes: decision.reasonCodes,
+          suggestedAction: decision.suggestedAction,
+          policyVersion: decision.policyVersion,
+          providerId: decision.providerId,
+          model: decision.model,
+          promptVersion: decision.promptVersion,
+          resultHash: decision.resultHash,
+          rawResultCiphertext: rawResult ? encryptInteractionSecret(rawResult, this.secret, 'ai-raw-result') : '',
+          rawResultExpiresAt: expiresAt,
+          idempotencyKey,
+          now,
+        })
+        this.completeAiReviewClaim(idempotencyKey, result.id)
+        return result
       })
       return { ...decision, decisionId: audit.id, created: audit.created }
-    }).catch(error => ({ level: 'unknown', suggestedAction: 'review', reasonCodes: ['AI_AUDIT_FAILED'], error: String(error?.message || error) }))
+    }).catch(error => {
+      this.failAiReviewClaim(idempotencyKey, error)
+      throw error
+    })
     this.aiTasks.add(task)
-    task.finally(() => this.aiTasks.delete(task)).catch(() => {})
+    this.aiReviewTasks.set(idempotencyKey, task)
+    task.finally(() => {
+      this.aiTasks.delete(task)
+      this.aiReviewTasks.delete(idempotencyKey)
+    }).catch(() => {})
     return task
+  }
+
+  claimAiReview (comment, idempotencyKey, policyRevision) {
+    const now = this.now()
+    const staleBefore = new Date(Date.parse(now) - AI_REVIEW_LOCK_TTL_MS).toISOString()
+    return this.database.transaction(() => {
+      const existingDecision = this.database.prepare(`
+        SELECT id, level, suggested_action, reason_codes_json, prompt_version, provider_id, model
+        FROM comment_moderation_decisions
+        WHERE comment_id = ? AND content_revision = ? AND stage = 'ai' AND idempotency_key = ?
+      `).get(comment.id, comment.content_revision, idempotencyKey)
+      if (existingDecision) {
+        this.database.prepare(`
+          INSERT INTO ai_review_claims(idempotency_key, comment_id, content_revision, policy_revision, status, decision_id, claimed_at, updated_at)
+          VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)
+          ON CONFLICT(idempotency_key) DO UPDATE SET status = 'completed', decision_id = excluded.decision_id,
+            last_error = '', updated_at = excluded.updated_at
+        `).run(idempotencyKey, comment.id, comment.content_revision, policyRevision, existingDecision.id, now, now)
+        let reasonCodes = []
+        try { reasonCodes = JSON.parse(existingDecision.reason_codes_json || '[]') } catch {}
+        return { state: 'completed', decision: { decisionId: existingDecision.id, level: existingDecision.level, suggestedAction: existingDecision.suggested_action, reasonCodes, promptVersion: existingDecision.prompt_version, providerId: existingDecision.provider_id, model: existingDecision.model } }
+      }
+      const claim = this.database.prepare('SELECT * FROM ai_review_claims WHERE idempotency_key = ?').get(idempotencyKey)
+      if (!claim) {
+        this.database.prepare(`
+          INSERT INTO ai_review_claims(idempotency_key, comment_id, content_revision, policy_revision, status, claimed_at, updated_at)
+          VALUES (?, ?, ?, ?, 'processing', ?, ?)
+        `).run(idempotencyKey, comment.id, comment.content_revision, policyRevision, now, now)
+        return { state: 'claimed' }
+      }
+      if (claim.status === 'processing' && String(claim.updated_at) > staleBefore) return { state: 'in_progress' }
+      this.database.prepare(`
+        UPDATE ai_review_claims
+        SET status = 'processing', attempts = attempts + 1, last_error = '', claimed_at = ?, updated_at = ?
+        WHERE idempotency_key = ?
+      `).run(now, now, idempotencyKey)
+      return { state: 'claimed' }
+    })
+  }
+
+  completeAiReviewClaim (idempotencyKey, decisionId) {
+    this.database.prepare(`
+      UPDATE ai_review_claims SET status = 'completed', decision_id = ?, last_error = '', updated_at = ?
+      WHERE idempotency_key = ?
+    `).run(String(decisionId || ''), this.now(), idempotencyKey)
+  }
+
+  failAiReviewClaim (idempotencyKey, error) {
+    if (!this.database) return
+    this.database.prepare(`
+      UPDATE ai_review_claims SET status = 'failed', last_error = ?, updated_at = ?
+      WHERE idempotency_key = ?
+    `).run(String(error?.message || error || 'AI 审核失败').slice(0, 500), this.now(), idempotencyKey)
+  }
+
+  async replayAiReviewForAdmin (actor, id, context = {}) {
+    this.ensureReady()
+    if (!this.aiEngine) throw interactionHttpError('AI 审核当前未启用或没有可用 provider', 'INTERACTION_SERVICE_UNAVAILABLE')
+    const comment = this.database.prepare(`
+      SELECT id, content_revision, body_normalized, moderation_status, content_status
+      FROM comments WHERE id = ?
+    `).get(String(id || ''))
+    if (!comment) throw interactionHttpError('留言不存在', 'RESOURCE_NOT_FOUND')
+    if (comment.content_status !== 'active') throw interactionHttpError('已删除或隐藏的留言不能重新发送给 AI', 'COMMENT_POLICY_BLOCKED')
+    const decision = await this.scheduleAiReview(comment, context, { admin: true })
+    if (decision?.inProgress) throw interactionHttpError('该留言正在进行 AI 审核，请稍后重试', 'AI_REVIEW_IN_PROGRESS')
+    if (!decision?.decisionId) throw interactionHttpError('AI 审核决策未能持久化', 'INTERACTION_SERVICE_UNAVAILABLE')
+    this.adapter.insertAudit({
+      actorUserId: actorUserId(actor) || null,
+      action: 'moderation.ai.replay',
+      targetType: 'comment',
+      targetId: comment.id,
+      metadata: {
+        decisionId: decision?.decisionId || '',
+        level: decision?.level || 'unknown',
+        reasonCodes: Array.isArray(decision?.reasonCodes) ? decision.reasonCodes : [],
+      },
+      ipSummary: context.ipSummary || '',
+    })
+    return {
+      commentId: comment.id,
+      replayed: true,
+      decisionId: decision?.decisionId || '',
+      level: decision?.level || 'unknown',
+      suggestedAction: decision?.suggestedAction || 'review',
+      reasonCodes: Array.isArray(decision?.reasonCodes) ? decision.reasonCodes : [],
+    }
   }
 
   async flushAiReviews () {
     const tasks = [...this.aiTasks]
-    return Promise.all(tasks)
+    return Promise.allSettled(tasks)
   }
 
   serializeAiRawResult (value) {
@@ -485,7 +670,7 @@ export class InteractionService {
       const { secretRef, ...publicProvider } = provider
       return publicProvider
     })
-    return { enabled: this.config.ai?.enabled === true, defaultProviderId: this.aiRegistry.defaultProviderId, providers }
+    return { enabled: this.getEffectiveAiConfig().enabled === true, defaultProviderId: this.aiRegistry.defaultProviderId, providers }
   }
 
   configureAiProviderForAdmin (actor, input = {}, context = {}) {
@@ -501,12 +686,19 @@ export class InteractionService {
     const secretRef = String(input.secretRef || existing?.secret_ref || '').trim()
     if (!secretRef) throw interactionHttpError('新增 AI provider 必须提供 secretRef', 'VALIDATION_FAILED')
     const adapterId = String(input.adapterId || existing?.adapter_id || 'openai-compatible').trim()
+    const aiConfig = this.getEffectiveAiConfig()
     const effectiveModel = String(input.model ?? existing?.model ?? '')
-    const effectivePromptVersion = String(input.promptVersion ?? existing?.prompt_version ?? this.config.ai?.promptVersion ?? 'interaction-moderation-v1')
-    const effectiveTimeoutMs = Number(input.timeoutMs ?? existing?.timeout_ms ?? this.config.ai?.timeoutMs ?? 3000)
-    const effectiveMaxAttempts = Number(input.maxAttempts ?? existing?.max_attempts ?? this.config.ai?.maxAttempts ?? 2)
-    const effectiveDailyBudget = Number(input.dailyBudget ?? existing?.daily_budget ?? this.config.ai?.dailyBudget ?? 0)
-    const effectiveMaxConcurrency = Number(input.maxConcurrency ?? existing?.max_concurrency ?? this.config.ai?.maxConcurrency ?? 2)
+    const effectivePromptVersion = String(input.promptVersion ?? existing?.prompt_version ?? aiConfig.promptVersion ?? 'interaction-moderation-v1')
+    const effectiveTimeoutMs = Number(input.timeoutMs ?? existing?.timeout_ms ?? aiConfig.timeoutMs ?? 3000)
+    const effectiveMaxAttempts = Number(input.maxAttempts ?? existing?.max_attempts ?? aiConfig.maxAttempts ?? 2)
+    const effectiveDailyBudget = Number(input.dailyBudget ?? existing?.daily_budget ?? aiConfig.dailyBudget ?? 0)
+    const effectiveMaxConcurrency = Number(input.maxConcurrency ?? existing?.max_concurrency ?? aiConfig.maxConcurrency ?? 2)
+    if (!id || id.length > 100) throw interactionHttpError('AI provider ID 必须是 1 到 100 个字符', 'VALIDATION_FAILED')
+    if (!effectivePromptVersion.trim() || effectivePromptVersion.trim().length > 64) throw interactionHttpError('AI provider 提示词版本必须是 1 到 64 个字符', 'VALIDATION_FAILED')
+    if (!Number.isInteger(effectiveTimeoutMs) || effectiveTimeoutMs < 100 || effectiveTimeoutMs > 120000) throw interactionHttpError('AI provider 超时必须是 100 到 120000 的整数', 'VALIDATION_FAILED')
+    if (!Number.isInteger(effectiveMaxAttempts) || effectiveMaxAttempts < 1 || effectiveMaxAttempts > 4) throw interactionHttpError('AI provider 最大尝试次数必须是 1 到 4 的整数', 'VALIDATION_FAILED')
+    if (!Number.isInteger(effectiveDailyBudget) || effectiveDailyBudget < 0 || effectiveDailyBudget > 1000000) throw interactionHttpError('AI provider 每日预算必须是 0 到 1000000 的整数', 'VALIDATION_FAILED')
+    if (!Number.isInteger(effectiveMaxConcurrency) || effectiveMaxConcurrency < 1 || effectiveMaxConcurrency > 128) throw interactionHttpError('AI provider 并发数必须是 1 到 128 的整数', 'VALIDATION_FAILED')
     const effectiveRedaction = JSON.stringify(input.redaction ?? (existing ? (() => {
       try { return JSON.parse(existing.redaction_json || '{}') } catch { return {} }
     })() : {}))
@@ -576,7 +768,7 @@ export class InteractionService {
         provider.timeoutMs, provider.maxAttempts,
         Number.isFinite(effectiveDailyBudget) && effectiveDailyBudget > 0 ? Math.floor(effectiveDailyBudget) : 0,
         provider.state.maxConcurrency,
-        effectivePromptVersion,
+        effectivePromptVersion.trim(),
         effectiveRedaction, provider.healthStatus, provider.lastVerifiedAt || null, adapterId,
         provider.state.budgetDay, provider.state.used, existing?.created_at || now, now
       )
@@ -784,19 +976,140 @@ export class InteractionService {
     }
   }
 
-  publishInteractionPolicy (actor, policy, context = {}) {
+  getAiPolicyForAdmin () {
+    this.ensureReady()
+    const active = this.policyStore.getActiveVersion()
+    if (!active) {
+      const policy = createMutableInteractionPolicy({})
+      const activePrompt = this.database.prepare('SELECT version FROM ai_prompt_versions WHERE active = 1').get()
+      if (activePrompt?.version) policy.moderation.ai.promptVersion = activePrompt.version
+      return { version: 0, published: false, ai: policy.moderation.ai, actions: policy.moderation.actions, autoApproveLevels: policy.moderation.autoApproveLevels }
+    }
+    let parsed = {}
+    try { parsed = JSON.parse(active.policy_json || '{}') } catch { throw interactionHttpError('留言策略解析失败', 'INTERACTION_SERVICE_UNAVAILABLE') }
+    const policy = createMutableInteractionPolicy(parsed)
+    const activePrompt = this.database.prepare('SELECT version FROM ai_prompt_versions WHERE active = 1').get()
+    if (activePrompt?.version) policy.moderation.ai.promptVersion = activePrompt.version
+    return {
+      version: active.version,
+      published: true,
+      ai: policy.moderation.ai,
+      actions: policy.moderation.actions,
+      autoApproveLevels: policy.moderation.autoApproveLevels,
+      createdAt: active.created_at,
+      createdBy: active.created_by || '',
+    }
+  }
+
+  publishInteractionPolicy (actor, policy, context = {}, options = {}) {
     this.ensureReady()
     const actorId = actorUserId(actor)
     const version = this.policyStore.publish(policy, { createdBy: actorId })
+    this.syncAiRuntimePolicy()
     this.adapter.insertAudit({
       actorUserId: actorId || null,
-      action: 'comment.policy.publish',
+      action: options.auditAction || 'comment.policy.publish',
       targetType: 'interaction_policy',
       targetId: String(version),
-      metadata: { version },
+      metadata: { version, ...(options.auditMetadata || {}) },
       ipSummary: context.ipSummary || '',
     })
     return { version }
+  }
+
+  publishAiPolicy (actor, input = {}, context = {}) {
+    this.ensureReady()
+    const active = this.policyStore.getActiveVersion()
+    let current = createMutableInteractionPolicy({})
+    if (active) {
+      try { current = createMutableInteractionPolicy(JSON.parse(active.policy_json || '{}')) } catch { throw interactionHttpError('留言策略解析失败', 'INTERACTION_SERVICE_UNAVAILABLE') }
+    }
+    const source = input && typeof input === 'object' ? input : {}
+    const moderationPatch = source.moderation && typeof source.moderation === 'object' ? source.moderation : source
+    const next = createMutableInteractionPolicy({
+      ...current,
+      moderation: {
+        ...current.moderation,
+        ...(Object.hasOwn(moderationPatch, 'ai') ? { ai: moderationPatch.ai } : {}),
+        ...(Object.hasOwn(moderationPatch, 'actions') ? { actions: moderationPatch.actions } : {}),
+        ...(Object.hasOwn(moderationPatch, 'autoApproveLevels') ? { autoApproveLevels: moderationPatch.autoApproveLevels } : {}),
+      },
+    })
+    const result = this.publishInteractionPolicy(actor, next, context, {
+      auditAction: 'moderation.ai.policy.publish',
+      auditMetadata: { fields: ['ai', 'actions', 'autoApproveLevels'] },
+    })
+    return { ...result, ...this.getAiPolicyForAdmin() }
+  }
+
+  listAiPromptVersionsForAdmin () {
+    this.ensureReady()
+    const rows = this.database.prepare(`
+      SELECT version, prompt_hash, active, created_by, created_at
+      FROM ai_prompt_versions
+      ORDER BY active DESC, created_at DESC, version DESC
+    `).all()
+    if (!rows.length) {
+      return {
+        activeVersion: AI_PROMPT_VERSION,
+        versions: [{
+          version: AI_PROMPT_VERSION,
+          promptHash: '',
+          active: true,
+          createdAt: '',
+          createdBy: '',
+          bootstrap: true,
+        }],
+      }
+    }
+    return {
+      activeVersion: rows.find(row => row.active === 1)?.version || '',
+      versions: rows.map(row => ({
+        version: row.version,
+        promptHash: row.prompt_hash,
+        active: row.active === 1,
+        createdAt: row.created_at,
+        createdBy: row.created_by || '',
+        bootstrap: false,
+      })),
+    }
+  }
+
+  publishAiPromptVersion (actor, input = {}, context = {}) {
+    this.ensureReady()
+    const version = String(input.version || '').trim()
+    const promptHash = String(input.promptHash || '').trim()
+    if (!version || version.length > 64 || !/^[A-Za-z0-9._:-]+$/.test(version)) {
+      throw interactionHttpError('提示词版本必须是 1 到 64 位的字母、数字或 ._:-', 'VALIDATION_FAILED')
+    }
+    if (!/^sha256:[a-f0-9]{64}$/i.test(promptHash)) {
+      throw interactionHttpError('提示词哈希必须使用 sha256:<64位十六进制>', 'VALIDATION_FAILED')
+    }
+    const actorId = actorUserId(actor)
+    const now = this.now()
+    const existing = this.database.prepare('SELECT prompt_hash, active FROM ai_prompt_versions WHERE version = ?').get(version)
+    if (existing && String(existing.prompt_hash).toLowerCase() !== promptHash.toLowerCase()) {
+      throw interactionHttpError('同一提示词版本不能修改哈希；请使用新的版本标识', 'PROMPT_VERSION_IMMUTABLE')
+    }
+    if (existing?.active === 1) return this.listAiPromptVersionsForAdmin()
+    this.database.transaction(() => {
+      this.database.prepare('UPDATE ai_prompt_versions SET active = 0 WHERE active = 1').run()
+      this.database.prepare(`
+        INSERT INTO ai_prompt_versions(version, prompt_hash, active, created_by, created_at)
+        VALUES (?, ?, 1, ?, ?)
+        ON CONFLICT(version) DO UPDATE SET active = 1
+      `).run(version, promptHash.toLowerCase(), actorId, now)
+    })
+    this.syncAiRuntimePolicy()
+    this.adapter.insertAudit({
+      actorUserId: actorId || null,
+      action: 'moderation.ai.prompt.publish',
+      targetType: 'ai_prompt_version',
+      targetId: version,
+      metadata: { version, promptHash: promptHash.toLowerCase() },
+      ipSummary: context.ipSummary || '',
+    })
+    return this.listAiPromptVersionsForAdmin()
   }
 
   getKeywordRulesForAdmin () {
@@ -820,6 +1133,147 @@ export class InteractionService {
         endsAt: rule.ends_at || '',
       })),
     }
+  }
+
+  previewKeywordRules (input = {}) {
+    this.ensureReady()
+    const text = String(input.text || '')
+    if (!text.trim()) throw interactionHttpError('试运行文本不能为空', 'VALIDATION_FAILED')
+    if ([...text].length > MAX_KEYWORD_PREVIEW_TEXT_LENGTH) {
+      throw interactionHttpError(`试运行文本不能超过 ${MAX_KEYWORD_PREVIEW_TEXT_LENGTH} 个字符`, 'CONTENT_TOO_LARGE')
+    }
+    const rules = Object.hasOwn(input, 'rules') ? input.rules : null
+    if (rules !== null && !Array.isArray(rules)) throw interactionHttpError('试运行规则必须是数组', 'VALIDATION_FAILED')
+    if (Array.isArray(rules) && rules.length > MAX_KEYWORD_PREVIEW_RULES) {
+      throw interactionHttpError(`试运行规则不能超过 ${MAX_KEYWORD_PREVIEW_RULES} 条`, 'CONTENT_TOO_LARGE')
+    }
+    const result = this.moderation.previewText(text, rules, { now: this.now() })
+    return {
+      dryRun: true,
+      source: Array.isArray(rules) ? 'draft' : 'active',
+      normalizedLength: [...String(text).normalize('NFKC').trim()].length,
+      level: result.level,
+      action: result.action,
+      reasonCodes: result.reasonCodes,
+      keywordPolicyVersion: result.keywordPolicyVersion,
+      matches: result.matches.map(match => ({
+        ruleId: match.ruleId,
+        level: match.level,
+        action: match.action,
+        category: match.category,
+        matchType: match.matchType,
+      })),
+    }
+  }
+
+  previewModerationImpact (input = {}) {
+    this.ensureReady()
+    const activeRow = this.policyStore.getActiveVersion()
+    let current = createMutableInteractionPolicy({})
+    if (activeRow) {
+      try { current = createMutableInteractionPolicy(JSON.parse(activeRow.policy_json || '{}')) } catch { throw interactionHttpError('留言策略解析失败', 'INTERACTION_SERVICE_UNAVAILABLE') }
+    }
+    const source = input && typeof input === 'object' ? input : {}
+    const moderationPatch = source.moderation && typeof source.moderation === 'object' ? source.moderation : source
+    const candidateInput = source.policy && typeof source.policy === 'object'
+      ? source.policy
+      : (source.moderation && typeof source.moderation === 'object'
+          ? { ...current, ...source, moderation: { ...current.moderation, ...source.moderation } }
+          : { ...current, moderation: { ...current.moderation, ...moderationPatch } })
+    let proposed
+    try {
+      proposed = normalizeInteractionPolicyForPublish(candidateInput)
+    } catch (error) {
+      throw error
+    }
+    if (Array.isArray(source.rules) && source.rules.length > MAX_KEYWORD_PREVIEW_RULES) {
+      throw interactionHttpError(`影响预览规则不能超过 ${MAX_KEYWORD_PREVIEW_RULES} 条`, 'CONTENT_TOO_LARGE')
+    }
+    const rows = this.database.prepare(`
+      SELECT moderation_status, moderation_level, canonical_share_id, body_normalized
+      FROM comments
+      WHERE content_status <> 'deleted'
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(MAX_IMPACT_PREVIEW_COMMENTS)
+    const counts = Object.fromEntries(['pending', 'approved', 'rejected', 'quarantined', 'spam', 'orphaned'].map(status => [status, 0]))
+    const levels = Object.fromEntries(['normal', 'risk', 'violation', 'illegal_or_ip', 'spam', 'unknown'].map(level => [level, 0]))
+    const affectedShares = new Set()
+    let automaticActionChanges = 0
+    let draftMatchedComments = 0
+    const draftRules = Array.isArray(source.rules) ? this.moderation.prepareKeywordRules(source.rules) : null
+    for (const row of rows) {
+      counts[row.moderation_status] = (counts[row.moderation_status] || 0) + 1
+      levels[row.moderation_level] = (levels[row.moderation_level] || 0) + 1
+      const oldAction = current.moderation?.actions?.[row.moderation_level] || 'review'
+      let nextLevel = row.moderation_level
+      if (draftRules) {
+        const draft = this.moderation.previewText(row.body_normalized, draftRules, { now: this.now(), preparedRules: draftRules })
+        nextLevel = draft.level
+        if (draft.matches.length) draftMatchedComments += 1
+      }
+      const nextAction = proposed.moderation?.actions?.[nextLevel] || 'review'
+      if (oldAction !== nextAction || nextLevel !== row.moderation_level) {
+        automaticActionChanges += 1
+        affectedShares.add(row.canonical_share_id)
+      }
+    }
+    const failedOutbox = Number(this.database.prepare("SELECT COUNT(*) AS count FROM comment_outbox WHERE status = 'failed'").get()?.count || 0)
+    const queuedOutbox = Number(this.database.prepare("SELECT COUNT(*) AS count FROM comment_outbox WHERE status IN ('pending', 'processing')").get()?.count || 0)
+    const keywordRulesDraftProvided = Array.isArray(source.rules)
+    const keywordRuleCount = keywordRulesDraftProvided ? source.rules.length : Number(this.moderation.activeKeywordVersion()?.version ? this.moderation.keywordRules(this.moderation.activeKeywordVersion().version).length : 0)
+    return {
+      preview: true,
+      currentPolicyVersion: Number(activeRow?.version || 0),
+      scannedComments: rows.length,
+      scanTruncated: rows.length >= MAX_IMPACT_PREVIEW_COMMENTS,
+      counts,
+      levels,
+      pendingReview: counts.pending + counts.quarantined,
+      automaticActionChanges,
+      affectedShares: affectedShares.size,
+      wouldEnableAi: current.moderation?.ai?.enabled !== true && proposed.moderation?.ai?.enabled === true,
+      wouldDisableAi: current.moderation?.ai?.enabled === true && proposed.moderation?.ai?.enabled !== true,
+      providerChanged: String(current.moderation?.ai?.providerId || '') !== String(proposed.moderation?.ai?.providerId || ''),
+      promptVersionChanged: String(current.moderation?.ai?.promptVersion || '') !== String(proposed.moderation?.ai?.promptVersion || ''),
+      keywordRulesDraftProvided,
+      keywordRuleCount,
+      draftMatchedComments,
+      impactEstimated: true,
+      outbox: { queued: queuedOutbox, failed: failedOutbox },
+      historyReprocessRequired: automaticActionChanges > 0 || keywordRulesDraftProvided,
+      historyReprocessAutomatic: false,
+    }
+  }
+
+  replayFailedModerationEvents (actor, input = {}, context = {}) {
+    this.ensureReady()
+    const limit = Math.min(100, Math.max(1, Number(input.limit) || 20))
+    const now = this.now()
+    const rows = this.database.prepare(`
+      SELECT id FROM comment_outbox
+      WHERE status = 'failed'
+      ORDER BY updated_at, created_at
+      LIMIT ?
+    `).all(limit)
+    if (rows.length) {
+      const update = this.database.prepare(`
+        UPDATE comment_outbox
+        SET status = 'pending', attempts = 0, available_at = ?, locked_at = NULL,
+            last_error = '', updated_at = ?
+        WHERE id = ? AND status = 'failed'
+      `)
+      this.database.transaction(() => rows.forEach(row => update.run(now, now, row.id)))
+    }
+    this.adapter.insertAudit({
+      actorUserId: actorUserId(actor) || null,
+      action: 'moderation.outbox.replay',
+      targetType: 'comment_outbox',
+      targetId: rows.length ? rows.map(row => row.id).join(',') : 'none',
+      metadata: { requestedLimit: limit, replayed: rows.length },
+      ipSummary: context.ipSummary || '',
+    })
+    return { replayed: rows.length, eventIds: rows.map(row => row.id) }
   }
 
   publishKeywordRules (actor, rules, options = {}, context = {}) {

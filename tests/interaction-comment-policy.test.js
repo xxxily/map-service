@@ -125,6 +125,51 @@ test('published media details description is trimmed and validated at the servic
   )
 })
 
+test('published AI policy is normalized and rejects unsafe automation rules', () => {
+  const normalized = normalizeInteractionPolicyForPublish({
+    moderation: {
+      ai: {
+        enabled: true,
+        providerId: ' provider-main ',
+        promptVersion: ' prompt-v2 ',
+        policyVersion: ' policy-v2 ',
+        timeoutMs: 8000,
+        maxAttempts: 2,
+        dailyBudget: 10,
+        maxConcurrency: 4,
+      },
+      autoApproveLevels: ['normal'],
+    },
+  })
+  assert.equal(normalized.moderation.ai.providerId, 'provider-main')
+  assert.equal(normalized.moderation.ai.promptVersion, 'prompt-v2')
+  assert.equal(normalized.moderation.ai.maxConcurrency, 4)
+
+  for (const overrides of [
+    { ai: { enabled: 'true' } },
+    { ai: { timeoutMs: 99 } },
+    { ai: { maxAttempts: 5 } },
+    { ai: { promptVersion: '' } },
+  ]) {
+    assert.throws(
+      () => normalizeInteractionPolicyForPublish({ moderation: overrides }),
+      error => error.code === 'VALIDATION_FAILED' && error.statusCode === 400,
+    )
+  }
+  assert.throws(
+    () => normalizeInteractionPolicyForPublish({ moderation: { actions: { unknown: 'approve' } } }),
+    error => error.code === 'VALIDATION_FAILED',
+  )
+  assert.throws(
+    () => normalizeInteractionPolicyForPublish({ moderation: { actions: { illegal_or_ip: 'reject' } } }),
+    error => error.code === 'VALIDATION_FAILED',
+  )
+  assert.throws(
+    () => normalizeInteractionPolicyForPublish({ moderation: { autoApproveLevels: ['unknown'] } }),
+    error => error.code === 'VALIDATION_FAILED',
+  )
+})
+
 test('author context is derived from the session and never from the request body', () => {
   assert.deepEqual(resolveCommentAuthorContext(null), {
     authorType: 'anonymous', authorUserId: '', displayName: '',

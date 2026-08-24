@@ -284,6 +284,53 @@ test('keyword screening is deterministic, versioned and never auto-approves an u
   }
 })
 
+test('keyword dry-run evaluates draft rules without persisting a version or decision', () => {
+  const harness = createHarness()
+  try {
+    publishPolicy(harness)
+    const before = harness.database.prepare('SELECT COUNT(*) AS count FROM moderation_keyword_versions').get().count
+    const preview = harness.moderation.previewText('这是一个违规内容', [
+      { id: 'draft-rule', term: '违规', matchType: 'phrase', level: 'violation', action: 'quarantine', category: 'safety' },
+    ], { now: TEST_NOW })
+    assert.equal(preview.level, 'violation')
+    assert.equal(preview.action, 'quarantine')
+    assert.equal(preview.matches[0].ruleId, 'draft-rule')
+    assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM moderation_keyword_versions').get().count, before)
+    assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM comment_moderation_decisions').get().count, 0)
+  } finally { harness.close() }
+})
+
+test('AI prompt versions and moderation impact previews are auditable and read-only', () => {
+  const harness = createHarness()
+  const audits = []
+  const interaction = new InteractionService({
+    userContent: { insertAudit: entry => audits.push(entry) },
+    config: { secretEncryptionKey: TEST_SECRET },
+    database: harness.database,
+    policyStore: harness.policyStore,
+    moderation: harness.moderation,
+    comments: harness.comments,
+    reports: { submitReport: () => {} },
+    now: () => TEST_NOW,
+  })
+  try {
+    publishPolicy(harness)
+    const prompt = interaction.publishAiPromptVersion({ user: { id: 'usr_admin' } }, {
+      version: 'interaction-moderation-v2',
+      promptHash: `sha256:${'a'.repeat(64)}`,
+    })
+    assert.equal(prompt.activeVersion, 'interaction-moderation-v2')
+    const preview = interaction.previewModerationImpact({
+      ai: { enabled: true, promptVersion: 'interaction-moderation-v2', policyVersion: 'policy-v2' },
+    })
+    assert.equal(preview.preview, true)
+    assert.equal(preview.wouldEnableAi, true)
+    assert.equal(preview.historyReprocessAutomatic, false)
+    assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM comments').get().count, 0)
+    assert.ok(audits.some(entry => entry.action === 'moderation.ai.prompt.publish'))
+  } finally { harness.close() }
+})
+
 test('admin reprocess uses the current keyword policy and is idempotent per content and policy revision', () => {
   const harness = createHarness()
   const audits = []
@@ -449,6 +496,220 @@ test('AI provider failure records a fail-closed audit and close waits for review
   // A fresh in-memory database is unnecessary here; the task's completion is
   // proven by close() resolving only after the fail-closed audit was written.
   await task
+})
+
+test('admin AI replay is idempotent and refuses hidden comments', async () => {
+  const harness = createHarness()
+  publishPolicy(harness)
+  const comment = harness.comments.submitComment({
+    resource: RESOURCE,
+    body: submission({ body: '可重放的 AI 留言。', clientRequestId: 'req-ai-replay' }),
+    clientKey: 'visitor-ai-replay',
+  }).comment
+  let calls = 0
+  const interaction = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET },
+    database: harness.database,
+    policyStore: harness.policyStore,
+    moderation: harness.moderation,
+    comments: harness.comments,
+    aiEngine: {
+      providerId: 'provider-replay',
+      promptVersion: 'prompt-replay',
+      policyVersion: 'policy-replay',
+      decide: async () => {
+        calls += 1
+        return {
+          level: 'normal',
+          scores: { spam: 0, toxicity: 0, violence: 0, sexual: 0, illegalOrIp: 0, privacy: 0 },
+          confidence: 0.99,
+          reasonCodes: [],
+          suggestedAction: 'approve',
+          policyVersion: 'policy-replay',
+          providerId: 'provider-replay',
+          model: 'model-replay',
+          promptVersion: 'prompt-replay',
+          rawResult: { level: 'normal' },
+          resultHash: 'sha256:replay',
+        }
+      },
+    },
+    now: () => TEST_NOW,
+  })
+  try {
+    const first = await interaction.replayAiReviewForAdmin({ user: { id: 'usr_replay' } }, comment.id)
+    const second = await interaction.replayAiReviewForAdmin({ user: { id: 'usr_replay' } }, comment.id)
+    assert.equal(first.decisionId, second.decisionId)
+    assert.equal(calls, 1)
+    assert.equal(harness.database.prepare('SELECT status FROM ai_review_claims WHERE comment_id = ?').get(comment.id).status, 'completed')
+
+    harness.moderation.applyHumanDecision({
+      commentId: comment.id,
+      moderationStatus: 'pending',
+      contentStatus: 'hidden',
+      level: 'unknown',
+      suggestedAction: 'review',
+      actorUserId: 'usr_replay',
+      idempotencyKey: 'hide-before-ai-replay',
+      now: TEST_NOW,
+    })
+    await assert.rejects(
+      () => interaction.replayAiReviewForAdmin({ user: { id: 'usr_replay' } }, comment.id),
+      error => error.code === 'COMMENT_POLICY_BLOCKED' && error.statusCode === 403,
+    )
+  } finally {
+    await interaction.close()
+  }
+})
+
+test('AI decision persistence failure leaves a retryable failed claim instead of reporting success', async () => {
+  const harness = createHarness()
+  publishPolicy(harness)
+  const comment = harness.comments.submitComment({
+    resource: RESOURCE,
+    body: submission({ body: '持久化失败测试。', clientRequestId: 'req-ai-persist-failure' }),
+    clientKey: 'visitor-ai-persist-failure',
+  }).comment
+  const interaction = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET },
+    database: harness.database,
+    policyStore: harness.policyStore,
+    moderation: harness.moderation,
+    comments: harness.comments,
+    aiEngine: {
+      providerId: 'provider-persist-failure',
+      promptVersion: 'prompt-persist-failure',
+      policyVersion: 'policy-persist-failure',
+      decide: async () => ({
+        level: 'risk', scores: {}, confidence: 0.9, reasonCodes: ['TOXICITY'],
+        suggestedAction: 'review', policyVersion: 'policy-persist-failure',
+        providerId: 'provider-persist-failure', model: '', promptVersion: 'prompt-persist-failure',
+        rawResult: null, resultHash: 'sha256:persist-failure',
+      }),
+    },
+    now: () => TEST_NOW,
+  })
+  harness.moderation.recordAiDecision = () => { throw new Error('decision write failed') }
+  try {
+    await assert.rejects(
+      () => interaction.replayAiReviewForAdmin({ user: { id: 'usr_replay' } }, comment.id),
+      /decision write failed/,
+    )
+    const claim = harness.database.prepare('SELECT status, last_error FROM ai_review_claims WHERE comment_id = ?').get(comment.id)
+    assert.equal(claim.status, 'failed')
+    assert.match(claim.last_error, /decision write failed/)
+  } finally {
+    await interaction.close()
+  }
+})
+
+test('published AI policy is applied to the runtime engine and disabling it stops new scheduling', async () => {
+  const harness = createHarness()
+  const registry = new AiProviderRegistry({
+    allowHosts: ['ai.example.test'],
+    now: () => Date.parse(TEST_NOW),
+    adapters: {
+      test: {
+        create: () => ({ request: async () => ({}), healthCheck: async () => true }),
+      },
+    },
+  })
+  registry.register({
+    id: 'provider-policy',
+    endpoint: 'https://ai.example.test/v1',
+    secretRef: 'vault://ai/policy',
+    adapterId: 'test',
+    enabled: true,
+    isDefault: true,
+    healthStatus: 'verified',
+    lastVerifiedAt: TEST_NOW,
+  })
+  const interaction = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET, ai: { enabled: true, allowHosts: ['ai.example.test'] } },
+    database: harness.database,
+    policyStore: harness.policyStore,
+    moderation: harness.moderation,
+    comments: harness.comments,
+    reports: { submitReport: () => {} },
+    aiRegistry: registry,
+    now: () => TEST_NOW,
+  })
+  try {
+    interaction.ensureReady()
+    // Before a first policy is published, deployment environment values remain
+    // the bootstrap fallback for backward-compatible operation.
+    assert.ok(interaction.aiEngine)
+
+    interaction.publishInteractionPolicy({ user: { id: 'usr_admin' } }, {
+      moderation: {
+        ai: {
+          enabled: true,
+          providerId: 'provider-policy',
+          promptVersion: 'prompt-policy-v2',
+          policyVersion: 'policy-v2',
+          timeoutMs: 9000,
+          maxAttempts: 3,
+          dailyBudget: 7,
+          maxConcurrency: 4,
+        },
+      },
+    })
+    assert.ok(interaction.aiEngine)
+    assert.equal(interaction.aiEngine.providerId, 'provider-policy')
+    assert.equal(interaction.aiEngine.promptVersion, 'prompt-policy-v2')
+    assert.equal(interaction.aiEngine.policyVersion, 'policy-v2')
+    assert.equal(interaction.aiEngine.timeoutMs, 9000)
+    assert.equal(interaction.aiEngine.retries, 2)
+    assert.equal(registry.budget, 7)
+    assert.equal(registry.maxConcurrency, 4)
+    assert.equal(registry.get('provider-policy').state.budget, 7)
+    assert.equal(registry.get('provider-policy').state.maxConcurrency, 4)
+
+    interaction.publishInteractionPolicy({ user: { id: 'usr_admin' } }, {
+      moderation: { ai: { enabled: false } },
+    })
+    assert.equal(interaction.aiEngine, null)
+    assert.equal(interaction.aiRuntimeConfig.enabled, false)
+  } finally {
+    await interaction.close()
+  }
+})
+
+test('prompt versions are immutable and impact preview evaluates draft rules against stored comments', () => {
+  const harness = createHarness()
+  const interaction = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET },
+    database: harness.database,
+    policyStore: harness.policyStore,
+    moderation: harness.moderation,
+    comments: harness.comments,
+    now: () => TEST_NOW,
+  })
+  try {
+    const policyVersion = publishPolicy(harness, { comments: { moderationRequired: false } })
+    harness.moderation.publishKeywordRules([], { sourcePolicyVersion: policyVersion, now: TEST_NOW })
+    harness.comments.submitComment({
+      resource: RESOURCE,
+      body: submission({ body: '草案规则应该命中这条留言。', clientRequestId: 'req-impact-draft' }),
+      clientKey: 'visitor-impact-draft',
+    })
+    interaction.publishAiPromptVersion({ user: { id: 'usr_prompt' } }, { version: 'prompt-immutable', promptHash: `sha256:${'a'.repeat(64)}` })
+    assert.throws(
+      () => interaction.publishAiPromptVersion({ user: { id: 'usr_prompt' } }, { version: 'prompt-immutable', promptHash: `sha256:${'b'.repeat(64)}` }),
+      error => error.code === 'PROMPT_VERSION_IMMUTABLE' && error.statusCode === 409,
+    )
+    const preview = interaction.previewModerationImpact({
+      moderation: { ai: { enabled: true, promptVersion: 'prompt-immutable', policyVersion: 'policy-impact' } },
+      rules: [{ id: 'draft-impact', term: '草案规则', matchType: 'phrase', level: 'risk', action: 'quarantine', category: 'safety' }],
+    })
+    assert.equal(preview.impactEstimated, true)
+    assert.equal(preview.draftMatchedComments, 1)
+    assert.equal(preview.historyReprocessAutomatic, false)
+  } finally { harness.close() }
 })
 
 test('AI provider configuration persists across restart and PUT preserves an existing secret reference', async () => {
@@ -966,6 +1227,31 @@ test('outbox events drain, dedupe and back off on failure', async () => {
   } finally {
     harness.close()
   }
+})
+
+test('stale processing outbox leases are recycled after a worker crash', () => {
+  const harness = createHarness()
+  try {
+    publishPolicy(harness)
+    const created = harness.comments.submitComment({
+      resource: RESOURCE,
+      body: submission({ clientRequestId: 'req-stale-outbox' }),
+      clientKey: 'visitor-stale-outbox',
+    }).comment
+    harness.database.prepare("UPDATE comment_outbox SET status = 'sent', sent_at = ?, updated_at = ? WHERE comment_id = ?")
+      .run(TEST_NOW, TEST_NOW, created.id)
+    const event = harness.moderation.enqueueEvent({ commentId: created.id, eventType: 'comment.stale', revision: 1 })
+    const first = harness.moderation.claimEvents({ now: TEST_NOW, limit: 1 })
+    assert.equal(first[0].id, event.id)
+    harness.database.prepare('UPDATE comment_outbox SET locked_at = ?, updated_at = ? WHERE id = ?')
+      .run('2026-08-22T23:00:00.000Z', '2026-08-22T23:00:00.000Z', event.id)
+    const recycled = harness.moderation.claimEvents({ now: TEST_NOW, lockTtlMs: 1_000, limit: 1 })
+    assert.equal(recycled.length, 1)
+    assert.equal(recycled[0].id, event.id)
+    const row = harness.database.prepare('SELECT status, attempts FROM comment_outbox WHERE id = ?').get(event.id)
+    assert.equal(row.status, 'processing')
+    assert.equal(row.attempts, 2)
+  } finally { harness.close() }
 })
 
 test('interaction adapter resolves canonical thread identity and fails closed on unknown resources', () => {

@@ -1770,6 +1770,21 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/admin/comments/:id/ai-replay',
+    method: 'post',
+    describe: '重新执行留言 AI 审核并追加决策链',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.ai.replay')
+      res.jsonSuc(await service.replayInteractionAiReview(
+        actor,
+        req.params.id,
+        requestContext(req)
+      ))
+    },
+  },
+  {
     path: '/admin/comments/:id',
     method: 'delete',
     describe: '软删除留言',
@@ -1789,6 +1804,65 @@ const userApiRoutes = [
       noStore(res)
       requireInteractionAdmin(req, 'moderation.settings.read')
       res.jsonSuc(service.getInteractionPolicyForAdmin())
+    },
+  },
+  {
+    path: '/admin/moderation/ai/settings',
+    method: 'get',
+    describe: '获取 AI 审核运行策略',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'moderation.ai.settings.read')
+      res.jsonSuc(service.getInteractionAiPolicyForAdmin())
+    },
+  },
+  {
+    path: '/admin/moderation/ai/settings',
+    method: 'put',
+    describe: '发布 AI 审核运行策略',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.ai.settings.write')
+      res.jsonSuc(service.publishInteractionAiPolicy(actor, req.body || {}, requestContext(req)))
+    },
+  },
+  {
+    path: '/admin/moderation/ai/impact-preview',
+    method: 'post',
+    describe: '预览 AI 审核策略变更影响',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireAnyUserPermission(req, [
+        'admin.comment.policy.manage',
+        'admin.moderation.ai.manage',
+        'admin.moderation.keyword.manage',
+      ])
+      res.jsonSuc(service.previewInteractionModerationImpact(req.body || {}))
+    },
+  },
+  {
+    path: '/admin/moderation/ai/prompts',
+    method: 'get',
+    describe: '获取 AI 提示词版本元数据',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'moderation.ai.prompts')
+      res.jsonSuc(service.listInteractionAiPromptVersionsForAdmin())
+    },
+  },
+  {
+    path: '/admin/moderation/ai/prompts',
+    method: 'post',
+    describe: '发布 AI 提示词版本元数据',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.ai.prompts')
+      res.status(201).jsonSuc(service.publishInteractionAiPromptVersion(actor, req.body || {}, requestContext(req)))
     },
   },
   {
@@ -1854,6 +1928,28 @@ const userApiRoutes = [
         { changeReason: body.changeReason || '' },
         requestContext(req)
       ))
+    },
+  },
+  {
+    path: '/admin/moderation/keywords/preview',
+    method: 'post',
+    describe: '试运行关键词规则，不写入留言或规则版本',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'moderation.keywords.preview')
+      res.jsonSuc(service.previewInteractionKeywordRules(req.body || {}))
+    },
+  },
+  {
+    path: '/admin/moderation/events/replay',
+    method: 'post',
+    describe: '重新入队失败的审核事件',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.outbox.replay')
+      res.jsonSuc(service.replayInteractionModerationEvents(actor, req.body || {}, requestContext(req)))
     },
   },
   {
@@ -1923,6 +2019,44 @@ const userApiRoutes = [
       noStore(res)
       const actor = requireInteractionAdmin(req, 'moderation.providers')
       res.jsonSuc(service.setDefaultInteractionAiProvider(actor, req.params.id, requestContext(req)))
+    },
+  },
+  {
+    path: '/admin/comment-providers/artalk/status',
+    method: 'get',
+    describe: '获取 Artalk 镜像状态（脱敏）',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'comment.providers.status')
+      res.jsonSuc(service.getArtalkMirrorStatus())
+    },
+  },
+  {
+    path: '/admin/comment-providers/artalk/verify',
+    method: 'post',
+    describe: '验证 Artalk 镜像连接',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'comment.providers.verify')
+      res.jsonSuc(await service.verifyArtalkMirror(actor, requestContext(req)))
+    },
+  },
+  {
+    path: '/admin/comment-providers/artalk/drain',
+    method: 'post',
+    describe: '排空并校准 Artalk 镜像 outbox',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'comment.providers.drain')
+      const body = req.body && typeof req.body === 'object' ? req.body : {}
+      res.jsonSuc(await service.drainArtalkMirrorForAdmin(actor, {
+        limit: body.limit,
+        reconcileLimit: body.reconcileLimit,
+        force: body.force === true,
+      }, requestContext(req)))
     },
   },
   {

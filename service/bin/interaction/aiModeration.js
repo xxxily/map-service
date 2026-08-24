@@ -33,6 +33,9 @@ export class AiModerationEngine {
     this.retries = Math.max(0, Math.min(3, Number.isFinite(Number(configuredRetries)) ? Number(configuredRetries) : 1))
     this.promptVersion = String(options.promptVersion || AI_PROMPT_VERSION)
     this.policyVersion = String(options.policyVersion || this.promptVersion)
+    this.runtimeOverrides = options.runtimeOverrides && typeof options.runtimeOverrides === 'object'
+      ? { ...options.runtimeOverrides }
+      : null
   }
 
   async decide (input = {}) {
@@ -46,12 +49,16 @@ export class AiModerationEngine {
     })
     if (!this.registry || !this.providerId) return fallback('AI_NOT_CONFIGURED')
     const configuredProvider = this.registry.get?.(this.providerId)
-    const promptVersion = String(configuredProvider?.promptVersion || this.promptVersion)
+    const promptVersion = this.promptVersion
     const payload = buildAiPayload({ ...input, promptVersion })
-    const retries = configuredProvider?.maxAttemptsConfigured
+    const retries = this.runtimeOverrides?.maxAttempts !== undefined
+      ? Math.max(0, Math.min(3, Number(this.runtimeOverrides.maxAttempts) - 1))
+      : configuredProvider?.maxAttemptsConfigured
       ? Math.max(0, Math.min(3, Number(configuredProvider.maxAttempts) - 1))
       : this.retries
-    const timeoutMs = configuredProvider?.timeoutConfigured
+    const timeoutMs = this.runtimeOverrides?.timeoutMs !== undefined
+      ? Math.max(100, Number(this.runtimeOverrides.timeoutMs) || this.timeoutMs)
+      : configuredProvider?.timeoutConfigured
       ? Math.max(100, Number(configuredProvider.timeoutMs) || this.timeoutMs)
       : this.timeoutMs
     let lastError

@@ -81,6 +81,19 @@ const config = {
         allowHosts: String(process.env.MAP_SERVICE_AI_ALLOWED_HOSTS || '').split(',').map(item => item.trim()).filter(Boolean),
         providers: [],
       },
+      artalkMirror: {
+        enabled: String(process.env.MAP_SERVICE_ARTALK_MIRROR_ENABLED || '').toLowerCase() === 'true',
+        endpoint: String(process.env.MAP_SERVICE_ARTALK_MIRROR_ENDPOINT || '').replace(/\/$/u, ''),
+        siteName: process.env.MAP_SERVICE_ARTALK_MIRROR_SITE_NAME || 'map-service-internal',
+        email: process.env.MAP_SERVICE_ARTALK_MIRROR_EMAIL || '',
+        password: process.env.MAP_SERVICE_ARTALK_MIRROR_PASSWORD || '',
+        token: process.env.MAP_SERVICE_ARTALK_MIRROR_TOKEN || '',
+        batchSize: Number(process.env.MAP_SERVICE_ARTALK_MIRROR_BATCH_SIZE || 20),
+        pollIntervalMs: Number(process.env.MAP_SERVICE_ARTALK_MIRROR_POLL_INTERVAL_MS || 5000),
+        timeoutMs: Number(process.env.MAP_SERVICE_ARTALK_MIRROR_TIMEOUT_MS || 3000),
+        secret: process.env.MAP_SERVICE_ARTALK_MIRROR_SECRET ||
+          process.env.MAP_SERVICE_INTERACTION_SECRET_KEY || '',
+      },
       commentRateLimit: {
         maxRequests: Number(process.env.MAP_SERVICE_COMMENT_RATE_MAX || 10),
         windowMs: Number(process.env.MAP_SERVICE_COMMENT_RATE_WINDOW_MS || 60 * 1000),

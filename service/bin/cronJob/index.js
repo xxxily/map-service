@@ -39,9 +39,8 @@ const jobs = {
     jobList.forEach((jobName) => {
       if (jobsMap[jobName] instanceof Function) {
         /* 执行定时任务函数 */
-        jobsMap[jobName]()
-
-        console.log('[cronJob] 已注册定时任务：' + jobName)
+        const job = jobsMap[jobName]()
+        if (job) console.log('[cronJob] 已注册定时任务：' + jobName)
       }
     })
   },

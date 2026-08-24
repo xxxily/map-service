@@ -87,9 +87,15 @@ function makeProviderState (provider, defaults) {
     : hasProviderBudget && Number.isFinite(configuredBudget) && configuredBudget > 0
       ? Math.floor(configuredBudget)
       : defaults.budget
+  const hasProviderConcurrency = provider.maxConcurrency !== undefined && provider.maxConcurrency !== null && provider.maxConcurrency !== ''
+  const configuredConcurrency = hasProviderConcurrency
+    ? positiveInteger(provider.maxConcurrency, defaults.maxConcurrency, 128)
+    : Infinity
   return {
     maxConcurrency: positiveInteger(provider.maxConcurrency, defaults.maxConcurrency, 128),
     budget,
+    configuredBudget: Number.isFinite(configuredBudget) && configuredBudget > 0 ? Math.floor(configuredBudget) : Infinity,
+    configuredMaxConcurrency: configuredConcurrency,
     budgetDay: String(provider.dailyBudgetDay || new Date().toISOString().slice(0, 10)),
     used: Math.max(0, Number(provider.dailyBudgetUsed) || 0),
     active: 0,
@@ -104,18 +110,21 @@ export class AiProviderRegistry {
   constructor (options = {}) {
     this.providers = new Map()
     this.defaultProviderId = String(options.defaultProviderId || '')
+    this.now = typeof options.now === 'function' ? options.now : () => Date.now()
     this.maxConcurrency = positiveInteger(options.maxConcurrency, 2, 128)
     const configuredBudget = Number(options.budget)
     this.budget = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? Math.floor(configuredBudget)
       : Infinity
+    this.budgetDay = new Date(this.now()).toISOString().slice(0, 10)
+    this.budgetUsed = 0
     this.failureThreshold = positiveInteger(options.failureThreshold, 3, 20)
     this.cooldownMs = positiveInteger(options.cooldownMs, 30_000, 86_400_000)
     this.allowHosts = normalizeHosts(options.allowHosts)
     this.adapters = options.adapters && typeof options.adapters === 'object' ? options.adapters : {}
     this.usageStore = typeof options.usageStore === 'function' ? options.usageStore : null
+    this.budgetStore = typeof options.budgetStore === 'function' ? options.budgetStore : null
     this.onVerificationExpired = typeof options.onVerificationExpired === 'function' ? options.onVerificationExpired : null
-    this.now = typeof options.now === 'function' ? options.now : () => Date.now()
     this.verificationTtlMs = positiveInteger(options.verificationTtlMs, DEFAULT_VERIFICATION_TTL_MS, 30 * 24 * 60 * 60 * 1_000)
   }
 
@@ -160,6 +169,8 @@ export class AiProviderRegistry {
       trustedFunction,
       timeoutConfigured: provider.timeoutMs !== undefined,
       maxAttemptsConfigured: provider.maxAttempts !== undefined,
+      dailyBudgetConfigured: provider.dailyBudget !== undefined,
+      maxConcurrencyConfigured: provider.maxConcurrency !== undefined,
       request: adapter.request,
       healthCheck: adapter.healthCheck,
       healthStatus: verified ? 'verified' : 'unknown',
@@ -174,6 +185,24 @@ export class AiProviderRegistry {
   }
 
   configure (provider = {}) { return this.register(provider) }
+
+  /**
+   * Apply the active interaction policy's global runtime limits. Provider
+   * records may still carry their own persisted limits, but a published site
+   * policy is the authoritative safety envelope for outbound AI work.
+   */
+  configureRuntimeLimits ({ budget, maxConcurrency } = {}) {
+    const parsedBudget = Number(budget)
+    this.budget = Number.isFinite(parsedBudget) && parsedBudget > 0 ? Math.floor(parsedBudget) : Infinity
+    const parsedConcurrency = Number(maxConcurrency)
+    this.maxConcurrency = positiveInteger(parsedConcurrency, this.maxConcurrency, 128)
+    for (const provider of this.providers.values()) {
+      provider.state.budget = Number.isFinite(this.budget)
+        ? Math.min(this.budget, provider.state.configuredBudget)
+        : provider.state.configuredBudget
+      provider.state.maxConcurrency = Math.min(this.maxConcurrency, provider.state.configuredMaxConcurrency)
+    }
+  }
   remove (id) {
     const key = String(id || '')
     const removed = this.providers.delete(key)
@@ -223,14 +252,22 @@ export class AiProviderRegistry {
       isDefault: provider.id === this.defaultProviderId,
       health: provider.state.failures.openUntil > Date.now() ? 'circuit_open' : provider.healthStatus,
       lastVerifiedAt: provider.lastVerifiedAt || null,
+      timeoutMs: provider.timeoutMs,
+      maxAttempts: provider.maxAttempts || 2,
       dailyBudget: Number.isFinite(provider.state.budget) ? provider.state.budget : 0,
+      maxConcurrency: provider.state.maxConcurrency,
+      promptVersion: String(provider.promptVersion || ''),
       budgetUnlimited: !Number.isFinite(provider.state.budget),
       }
     })
   }
 
   _resetBudgetIfNeeded (provider) {
-    const day = new Date().toISOString().slice(0, 10)
+    const day = new Date(this.now()).toISOString().slice(0, 10)
+    if (this.budgetDay !== day) {
+      this.budgetDay = day
+      this.budgetUsed = 0
+    }
     if (provider.state.budgetDay !== day) {
       provider.state.budgetDay = day
       provider.state.used = 0
@@ -254,10 +291,18 @@ export class AiProviderRegistry {
     this._expireVerification(provider)
     if (provider.enabled === false) throw new Error('AI provider 尚未通过最近健康验证')
     if (typeof provider.request !== 'function' || provider.healthStatus !== 'verified') throw new Error('AI provider 未配置已验证的请求适配器')
-    const now = Date.now()
+    const now = this.now()
     if (provider.state.failures.openUntil > now) throw new Error('AI provider circuit open')
     this._resetBudgetIfNeeded(provider)
     if (provider.state.used >= provider.state.budget) throw new Error('AI budget exhausted')
+    const day = new Date(this.now()).toISOString().slice(0, 10)
+    if (Number.isFinite(this.budget)) {
+      const allowed = this.budgetStore
+        ? this.budgetStore(day, this.budget)
+        : this.budgetUsed < this.budget
+      if (allowed === false) throw new Error('AI budget exhausted')
+      this.budgetUsed += 1
+    }
     provider.state.used += 1
     this.usageStore?.(provider, provider.state)
     await this._acquireSlot(provider)
@@ -267,12 +312,12 @@ export class AiProviderRegistry {
       return result
     } catch (error) {
       const next = provider.state.failures.count + 1
-      provider.state.failures = { count: next, openUntil: next >= provider.state.failureThreshold ? Date.now() + provider.state.cooldownMs : 0 }
+      provider.state.failures = { count: next, openUntil: next >= provider.state.failureThreshold ? this.now() + provider.state.cooldownMs : 0 }
       throw error
     } finally { this._releaseSlot(provider) }
   }
 
-  get used () { return [...this.providers.values()].reduce((sum, provider) => sum + provider.state.used, 0) }
+  get used () { return this.budgetUsed }
   get active () { return [...this.providers.values()].reduce((sum, provider) => sum + provider.state.active, 0) }
 }
 

@@ -109,6 +109,22 @@ Phase 1A 的内部数据契约和独立数据库已经冻结，Phase 1B/C 已接
 | `PUT` | `/api/v1/admin/moderation/providers` | `admin.moderation.ai.manage` + CSRF | 更新 provider；可省略 `secretRef`，服务端保留已有引用 |
 | `POST` | `/api/v1/admin/moderation/providers/:id/verify` | `admin.moderation.ai.manage` + CSRF | 使用服务端 adapter 做无留言健康检查；通过后才可启用或设为默认 |
 | `POST` | `/api/v1/admin/moderation/providers/:id/default` | `admin.moderation.ai.manage` + CSRF | 将最近验证且已启用的 provider 设为默认 |
+| `GET` | `/api/v1/admin/moderation/ai/settings` | `admin.moderation.ai.manage` | 获取 AI 开关、provider 选择、提示词/策略版本、预算并发和等级动作矩阵 |
+| `PUT` | `/api/v1/admin/moderation/ai/settings` | `admin.moderation.ai.manage` + CSRF | 只发布 AI 运行策略，不改变留言/举报开关；发布后立即同步运行时引擎 |
+| `POST` | `/api/v1/admin/moderation/ai/impact-preview` | `admin.moderation.ai.manage` + CSRF | 预览 AI 策略草案对当前配置的差异和影响，不写入策略 |
+| `GET` | `/api/v1/admin/moderation/ai/prompts` | `admin.moderation.ai.manage` | 获取提示词版本和当前版本，不返回提示词正文 |
+| `POST` | `/api/v1/admin/moderation/ai/prompts` | `admin.moderation.ai.manage` + CSRF | 登记并发布版本标识和 SHA-256 摘要 |
+| `POST` | `/api/v1/admin/moderation/keywords/preview` | `admin.moderation.keyword.manage` + CSRF | 对测试文本执行当前或草案规则，不创建留言或审核决策 |
+| `POST` | `/api/v1/admin/moderation/events/replay` | `admin.moderation.ai.manage` + CSRF | 将失败的审核 outbox 事件按上限重新入队 |
+| `POST` | `/api/v1/admin/comments/:id/ai-replay` | `admin.moderation.ai.manage` + CSRF | 对单条留言重放 AI 审核并追加决策链，不覆盖人工结论 |
+
+Artalk 只作为 161 内测的受控单向镜像，不提供公开 API。浏览器仍必须调用本项目的公开留言接口；以下管理接口只返回脱敏状态：
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/admin/comment-providers/artalk/status` | `admin.comment.policy.manage` | 返回启用、配置、outbox 和投影聚合计数，不返回 endpoint、密码或 Token |
+| `POST` | `/api/v1/admin/comment-providers/artalk/verify` | `admin.comment.policy.manage` + CSRF | 发送版本探针验证 161 Artalk 连接 |
+| `POST` | `/api/v1/admin/comment-providers/artalk/drain` | `admin.comment.policy.manage` + CSRF | 排空评论 outbox 并按内部状态校准镜像；可显式传入 `force=true` |
 
 配置只接受服务端注册的 `adapterId`（当前为 `openai-compatible`）；浏览器不能提交函数、请求头或密钥明文。新 provider 默认保持未验证/不可用，必须先调用 `verify`；未通过验证的 provider 不能成为默认项。`endpoint` 只允许 HTTPS，拒绝凭据、localhost、内网/环回、link-local、metadata、文档保留地址和未在 allowlist 中的主机；实际请求会重新解析 DNS、固定公开地址并拒绝重定向。provider 请求有独立并发槽位、每日预算、每次重试独立计费和熔断；引擎强制超时，即使适配器忽略 `AbortSignal` 也会释放槽位。留言正文在外发前脱敏邮箱、手机号、IP、会话令牌和内部 ID。
 

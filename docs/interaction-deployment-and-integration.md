@@ -8,7 +8,7 @@
 
 本文是留言、审核、举报和可选 AI 审核的主运行手册。系统维护者可以按本文完成安装、初始化、上线、升级、备份、恢复和故障排查；前端或受控自动化 agent 可以按本文完成 API 接入。
 
-本文描述的是当前同仓库、同进程、单机单写进程的内部服务。Artalk 2.10.0 只完成了受控 POC，生产部署明确延期，不是本系统上线前置条件；当前 interaction.sqlite 和内部 Comment/Moderation/Report Service 才是留言、审核和举报的最终事实源。
+本文描述的是当前同仓库、同进程、单机单写进程的内部服务。Artalk 2.10.0 已在 161 以隔离 sidecar 完成受控实测，但不替代内部事实源，也不作为公开页面接入前置条件；当前 interaction.sqlite 和内部 Comment/Moderation/Report Service 才是留言、审核和举报的最终事实源。
 
 ## 1. 运行边界
 
@@ -447,6 +447,8 @@ curl --fail --silent --show-error \
 | POST/PUT | /api/v1/admin/moderation/providers | admin.moderation.ai.manage + CSRF |
 | POST | /api/v1/admin/moderation/providers/:id/verify | admin.moderation.ai.manage + CSRF |
 | POST | /api/v1/admin/moderation/providers/:id/default | admin.moderation.ai.manage + CSRF |
+| GET | /api/v1/admin/moderation/ai/settings | admin.moderation.ai.manage |
+| PUT | /api/v1/admin/moderation/ai/settings | admin.moderation.ai.manage + CSRF |
 | GET | /api/v1/admin/reports | admin.report.read |
 | GET | /api/v1/admin/reports/:id | admin.report.read |
 | POST | /api/v1/admin/reports/:id/actions | admin.report.manage + CSRF |
@@ -506,6 +508,63 @@ export MAP_SERVICE_AI_PROVIDER_ID='provider-main'
 2. POST /api/v1/admin/moderation/providers/provider-main/verify。
 3. 验证成功后，POST /api/v1/admin/moderation/providers/provider-main/default。
 4. 确认 GET /api/v1/admin/moderation/providers 显示 healthStatus=verified、已启用和 default 指针正确。
+
+AI 运行策略在后台菜单“AI 审核与规则”中维护，或通过独立接口发布：
+
+~~~json
+{
+  "ai": {
+    "enabled": false,
+    "providerId": "provider-main",
+    "promptVersion": "interaction-moderation-v1",
+    "policyVersion": "interaction-moderation-v1",
+    "timeoutMs": 3000,
+    "maxAttempts": 2,
+    "dailyBudget": 0,
+    "maxConcurrency": 2
+  },
+  "actions": {
+    "normal": "approve",
+    "risk": "review",
+    "violation": "reject",
+    "illegal_or_ip": "quarantine",
+    "spam": "spam",
+    "unknown": "review"
+  },
+  "autoApproveLevels": ["normal"]
+}
+~~~
+
+`PUT /api/v1/admin/moderation/ai/settings` 只更新上述 AI 字段。发布后服务端读取活动策略并立即更新异步 AI 引擎；`unknown` 始终人工复核，`illegal_or_ip` 只能复核或隔离。没有活动策略时仍可读取部署环境的 bootstrap 配置，但第一次发布策略后以策略值为运行时准则。
+
+## 9.3.1 161 Artalk 隔离 sidecar 与 map-service 单向镜像
+
+Artalk 当前部署在 161 的 `artalk-161` 独立 1Panel 应用中：
+
+- 镜像固定为 `artalk/artalk-go:2.10.0@sha256:ed51450f3ed744780efd0d796f1ea033063bb11543973439b9c57ed32ac9b78f`，容器名 `artalk-161`，仅绑定内网 `192.168.0.161:33089 -> 23366`。
+- 数据位于 `/opt/1panel/apps/local/artalk-161/artalk-161/2.10.0/data/`，使用 SQLite；map-service 的 `interaction.sqlite` 不与其共享。
+- 站点名为 `map-service-internal`，默认 pending，关闭图片上传、社交登录、邮件通知和外部内容安全服务；可信来源只包含 `http://192.168.0.161:33088`（后续接入 HTTPS origin 时需重新配置）。
+- map-service 通过 `service/bin/interaction/artalkMirror.js` 将内部 `comment.*` outbox 事件单向投影到 Artalk；内部 Comment/Moderation Service 是唯一事实源。只有 `content_status=active && moderation_status=approved` 的留言可见，删除、隐藏、拒绝、父留言失去资格或 Artalk 404 会被安全移除/重建。Artalk 不可用时，内部留言、举报、审核和公开列表不被阻塞。
+- 浏览器不直连 Artalk，也不使用 Artalk 作为公开留言 API；公开页面仍调用 `/api/v1/public/kml-shares/:publicId/comments`。
+
+161 map-service `.env` 的受控配置项（值不得写入文档或 Git）：
+
+~~~dotenv
+MAP_SERVICE_ARTALK_MIRROR_ENABLED=true
+MAP_SERVICE_ARTALK_MIRROR_ENDPOINT=http://artalk-161:23366/api/v2
+MAP_SERVICE_ARTALK_MIRROR_SITE_NAME=map-service-internal
+MAP_SERVICE_ARTALK_MIRROR_EMAIL=<Artalk 管理员邮箱>
+MAP_SERVICE_ARTALK_MIRROR_PASSWORD=<Artalk 管理员密码>
+MAP_SERVICE_ARTALK_MIRROR_SECRET=<独立 HMAC 密钥>
+~~~
+
+默认 `MAP_SERVICE_ARTALK_MIRROR_ENABLED=false`；66 保持关闭。连接验证和手工校准入口为后台 `/admin/interaction-ai` 的“Artalk 镜像”卡，或管理 API `GET/POST /api/v1/admin/comment-providers/artalk/{status,verify,drain}`。定时任务 `service/bin/cronJob/artalkMirror.js` 每 5 秒批量排空并执行非强制 reconcile；人工排空使用 `force=true` 可校准全部当前留言。状态只展示数量和健康结果，不回显 endpoint、账号、密码、Token 或留言正文。
+
+维护者入口：`http://192.168.0.161:33089`（仅 161 内网）。管理凭据保存在 `/opt/1panel/apps/local/artalk-161/artalk-161/2.10.0/.credentials`，权限为 `0600`；凭据和 app key 在实测后已轮换，不写入 Git、Outline 或本文档。
+
+已执行的 sidecar 验收包括：`/api/v2/version`、OpenAPI、免登录提交（Artalk 原生仍要求填写昵称和邮箱）、pending 不公开、管理员登录与审核/删除、Artrans 导出、隔离 SQLite 导入 2 条记录、容器重启后数据保持，以及可信 Origin 返回 ACAO/恶意 Origin 不返回 ACAO。Artalk 分页查询必须显式传入 `offset=0&limit=20`，否则可能只返回总数而不返回当页数组。
+
+1Panel 模板位于 `/opt/1panel/resource/apps/local/artalk-161/`，包含顶层 `data.yml`、官方 PNG 图标及 `2.10.0/data.yml`/`docker-compose.yml`/`artalk.yml`；Compose 使用 `CONTAINER_NAME`、`PANEL_APP_BIND_IP`、`PANEL_APP_PORT_HTTP`、`PANEL_APP_SITE_URL`、`PANEL_APP_TRUSTED_DOMAINS` 和 `PANEL_APP_APP_KEY` 参数，并通过 `docker compose config -q` 验证。详细命令、备份路径和时间戳见 161 操作日志及 Outline 同步文档。
 
 verify 只发送 health-check 探针，不发送真实留言。新增或修改 endpoint、secretRef、adapter、model、prompt、timeout、重试、预算、并发或 redaction 后，provider 会自动失效并必须重新验证。验证默认 24 小时有效，过期后自动禁用并清除 default。
 
@@ -644,7 +703,7 @@ NODE
 发布前脚本会在本地依次执行 `npm run check`、`npm test`、`npm run build` 和 `git diff --check`，并要求工作树干净；随后打包当前 Git HEAD、校验 SHA-256，通过 SSH 传输。远端会：
 
 1. 在 `/opt/1panel/backup/map-service/YYYY/MM/DD/` 创建发布前备份。
-2. 备份应用代码、容器/镜像信息和 1Panel 模板；原地保留 `.env`、`admin-password.txt` 以及整个 `data/` 持久化目录。
+2. 备份应用代码、`.env`、用户/交互 SQLite 一致性快照、容器/镜像信息和 1Panel 模板；原地保留 `admin-password.txt` 以及整个 `data/` 持久化目录。161 会校验 Artalk `.credentials` 的 `0600` 权限，在不打印值的前提下读取管理员邮箱/密码并更新 map-service `.env` 的镜像账号配置；凭据缺失或权限不安全时拒绝发布。
 3. 构建并启动 `map-service:<package.json.version>`，执行 `/health` 与 `/api/v1/health` 双探活。
 4. 校验运行镜像、容器内包版本和单实例数量；失败时自动恢复发布前代码并重新启动旧 Compose。
 
@@ -661,9 +720,9 @@ cd /path/to/map-service
 ./deploy-161.sh --rollback /opt/1panel/backup/map-service/YYYY/MM/DD/<backup-name>
 ~~~
 
-脚本支持少量非敏感覆盖项：`REMOTE_HOST`、`REMOTE_APP_DIR`、`REMOTE_TEMPLATE_DIR`、`REMOTE_BACKUP_ROOT`、`CONTAINER_NAME`、`PORT`、`RELEASE_VERSION` 和 `RUN_CHECKS=0`。默认发布不要关闭检查，也不要通过环境变量注入交互密钥；密钥只从 161 现有 `.env` 读取并保持原位。发布完成后把版本、备份路径、健康检查和回滚目录写入 161 操作日志，并同步到 Outline 的“操作记录”集合。
+脚本支持少量非敏感覆盖项：`REMOTE_HOST`、`REMOTE_APP_DIR`、`REMOTE_TEMPLATE_DIR`、`REMOTE_BACKUP_ROOT`、`CONTAINER_NAME`、`PORT`、`RELEASE_VERSION` 和 `RUN_CHECKS=0`。默认发布不要关闭检查，也不要通过命令行打印或传递交互密钥；Artalk 管理账号从 161 权限为 `0600` 的 `.credentials` 读取，镜像 HMAC 默认复用既有 interaction secret。发布完成后把版本、备份路径、健康检查和回滚目录写入 161 操作日志，并同步到 Outline 的“操作记录”集合。
 
-66 服务器使用本机同样不入库的 `deploy-66.sh`，通过 SSH 推送已提交 commit 后执行依赖预检、数据库和代码备份、PM2 环境保留、健康检查及失败回滚。两个脚本均不应通过 GitHub 分发，也不应把服务器密钥写入脚本或环境覆盖项。
+66 服务器使用本机同样不入库的 `deploy-66.sh`，通过 SSH 推送已提交 commit 后执行依赖预检、数据库和代码备份、PM2 环境保留、健康检查及失败回滚；生成的新 PM2 配置会强制 `MAP_SERVICE_ARTALK_MIRROR_ENABLED=false`，并在运行态验收中拒绝镜像意外开启。两个脚本均不应通过 GitHub 分发，也不应把服务器密钥写入脚本或环境覆盖项。
 
 ### 12.1 升级流程
 

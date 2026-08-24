@@ -324,6 +324,112 @@ test('AI provider management routes enforce permission/CSRF and redact secrets',
   }
 })
 
+test('AI runtime policy has an independent admin endpoint and permission boundary', async () => {
+  const session = {
+    id: 'ses_ai_policy_admin',
+    csrfHash: 'csrf-hash',
+    user: { id: 'usr_ai_policy_admin', permissions: ['admin.moderation.ai.manage'] },
+  }
+  const calls = []
+  const restore = mockService({
+    verifyUserSession: token => token === 'ai-policy-admin' ? session : null,
+    assertUserPermission: (current, permission) => {
+      if (current !== session || permission !== 'admin.moderation.ai.manage') {
+        const error = new Error('denied')
+        error.statusCode = 403
+        error.code = 'PERMISSION_DENIED'
+        throw error
+      }
+    },
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'ai-policy-csrf') {
+        const error = new Error('csrf')
+        error.statusCode = 403
+        error.code = 'CSRF_INVALID'
+        throw error
+      }
+    },
+    getInteractionAiPolicyForAdmin: () => ({ version: 2, published: true, ai: { enabled: false }, actions: { unknown: 'review' }, autoApproveLevels: ['normal'] }),
+    publishInteractionAiPolicy: (actor, body, context) => { calls.push([actor, body, context]); return { version: 3, published: true, ai: body.ai, actions: body.actions, autoApproveLevels: body.autoApproveLevels } },
+  })
+  const { server, baseUrl } = await listen(createApp())
+  try {
+    const denied = await json(baseUrl, '/api/v1/admin/moderation/ai/settings')
+    assert.equal(denied.response.status, 401)
+    const listed = await json(baseUrl, '/api/v1/admin/moderation/ai/settings', { headers: { Cookie: 'map_user_session=ai-policy-admin' } })
+    assert.equal(listed.response.status, 200)
+    assert.equal(listed.payload.result.version, 2)
+    const updated = await json(baseUrl, '/api/v1/admin/moderation/ai/settings', {
+      method: 'PUT',
+      headers: { Cookie: 'map_user_session=ai-policy-admin', 'X-CSRF-Token': 'ai-policy-csrf' },
+      body: JSON.stringify({ ai: { enabled: true }, actions: { unknown: 'review' }, autoApproveLevels: ['normal'] }),
+    })
+    assert.equal(updated.response.status, 200)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0][1].ai.enabled, true)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('Phase 3 operations expose dry-run, impact, prompt and replay endpoints with CSRF', async () => {
+  const session = {
+    id: 'ses_phase3_admin',
+    csrfHash: 'csrf-hash',
+    user: { id: 'usr_phase3_admin', permissions: ['admin.moderation.ai.manage', 'admin.moderation.keyword.manage'] },
+  }
+  const calls = []
+  const restore = mockService({
+    verifyUserSession: token => token === 'phase3-admin' ? session : null,
+    hasUserPermission: (current, permission) => current === session && session.user.permissions.includes(permission),
+    assertUserPermission: (current, permission) => {
+      if (current !== session || !session.user.permissions.includes(permission)) {
+        const error = new Error('denied')
+        error.statusCode = 403
+        error.code = 'PERMISSION_DENIED'
+        throw error
+      }
+    },
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'phase3-csrf') {
+        const error = new Error('csrf')
+        error.statusCode = 403
+        error.code = 'CSRF_INVALID'
+        throw error
+      }
+    },
+    previewInteractionKeywordRules: body => { calls.push(['keyword-preview', body]); return { dryRun: true, level: 'risk', action: 'review', matches: [] } },
+    previewInteractionModerationImpact: body => { calls.push(['impact', body]); return { preview: true, scannedComments: 3, pendingReview: 2 } },
+    listInteractionAiPromptVersionsForAdmin: () => ({ activeVersion: 'v1', versions: [] }),
+    publishInteractionAiPromptVersion: (actor, body) => { calls.push(['prompt', actor, body]); return { activeVersion: body.version, versions: [] } },
+    replayInteractionModerationEvents: (actor, body) => { calls.push(['events', actor, body]); return { replayed: 1, eventIds: ['evt_1'] } },
+    replayInteractionAiReview: (actor, id) => { calls.push(['ai-replay', actor, id]); return { commentId: id, replayed: true } },
+  })
+  const { server, baseUrl } = await listen(createApp())
+  const headers = { Cookie: 'map_user_session=phase3-admin', 'X-CSRF-Token': 'phase3-csrf' }
+  try {
+    const preview = await json(baseUrl, '/api/v1/admin/moderation/keywords/preview', { method: 'POST', headers, body: JSON.stringify({ text: '测试' }) })
+    assert.equal(preview.response.status, 200)
+    assert.equal(preview.payload.result.dryRun, true)
+    const impact = await json(baseUrl, '/api/v1/admin/moderation/ai/impact-preview', { method: 'POST', headers, body: JSON.stringify({ ai: { enabled: true } }) })
+    assert.equal(impact.response.status, 200)
+    assert.equal(impact.payload.result.preview, true)
+    const prompts = await json(baseUrl, '/api/v1/admin/moderation/ai/prompts', { headers: { Cookie: 'map_user_session=phase3-admin' } })
+    assert.equal(prompts.payload.result.activeVersion, 'v1')
+    const prompt = await json(baseUrl, '/api/v1/admin/moderation/ai/prompts', { method: 'POST', headers, body: JSON.stringify({ version: 'v2', promptHash: `sha256:${'b'.repeat(64)}` }) })
+    assert.equal(prompt.response.status, 201)
+    const events = await json(baseUrl, '/api/v1/admin/moderation/events/replay', { method: 'POST', headers, body: JSON.stringify({ limit: 20 }) })
+    assert.equal(events.payload.result.replayed, 1)
+    const aiReplay = await json(baseUrl, '/api/v1/admin/comments/cmt_one/ai-replay', { method: 'POST', headers })
+    assert.equal(aiReplay.payload.result.commentId, 'cmt_one')
+    assert.deepEqual(calls.map(call => call[0]), ['keyword-preview', 'impact', 'prompt', 'events', 'ai-replay'])
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('report routes enforce public write guards and admin report RBAC without exposing duplicate state', async () => {
   const admin = { id: 'ses_report_admin', csrfHash: 'hash', user: { id: 'usr_report_admin', permissions: ['admin.report.read', 'admin.report.manage'] } }
   let submitted = 0

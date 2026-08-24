@@ -145,7 +145,16 @@ export const DEFAULT_INTERACTION_POLICY = deepFreeze({
     levels: MODERATION_LEVELS,
     actions: DEFAULT_MODERATION_ACTIONS,
     autoApproveLevels: ['normal'],
-    ai: { enabled: false },
+    ai: {
+      enabled: false,
+      providerId: '',
+      promptVersion: 'interaction-moderation-v1',
+      policyVersion: 'interaction-moderation-v1',
+      timeoutMs: 3000,
+      maxAttempts: 2,
+      dailyBudget: 0,
+      maxConcurrency: 2,
+    },
     keywords: { enabled: true },
   },
   reports: {

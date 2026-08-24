@@ -1,8 +1,8 @@
 # KML 点位留言、内容举报与审核治理需求
 
-> 状态：Phase 0、Phase 1A-F、Phase 2 受控 POC 与 Phase 3 AI 审核已完成；Artalk 生产部署延期，内部 Interaction Service 继续作为事实源。
+> 状态：Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测与 Phase 3 AI 审核已完成；Artalk 已通过 Interaction Adapter 以单向镜像接入 161 内测，公开生产嵌入仍延期，内部 Interaction Service 继续作为事实源。
 > 版本：v1.0
-> 更新日期：2026-08-23
+> 更新日期：2026-08-25
 > 适用范围：2D/3D 地图、公开 KML 分享、KML 点位富媒体浏览、用户体系、管理后台
 > 关联文档：[KML 点位富媒体内容展示](./kml-feature-rich-content.md)、[KML 媒体预览与 3D 地图界面精简](./kml-media-preview-and-3d-ui-polish.md)、[KML 分享发布控制与地图交互性能](./kml-share-publishing-and-map-interaction.md)、[KML 分享密码链接、访问记录、统计脚本与瓦片限流](./kml-share-password-links-access-analytics-and-rate-limits.md)、[用户体系、角色权限、个人空间与多 KML 分享](./user-system-rbac-and-multi-kml-sharing.md)
 
@@ -795,16 +795,27 @@ Phase 0 交付物已落库：资源引用和状态策略纯函数、权限码种
 - [x] 确定性校验、关键词规则和人工审核；AI 仅作为辅助审计，不改变人工最终状态。
 - [x] 管理后台完成留言队列、举报队列、审计和基础限流。
 
-### Phase 2：Artalk 受控 POC（已完成，生产部署延期）
+### Phase 2：Artalk 受控 POC（已完成 161 隔离实测，公开生产接入延期）
 
-- 已锁定版本、验证 API/export-import smoke，并完成 Interaction Adapter 边界设计。
-- Artalk 不作为内部事实源；生产部署需要单独的受控 HTTPS origin 和维护窗口。
+- 锁定 `2.10.0` 与镜像 digest，完成 HTTP API/OpenAPI、pending 隔离、管理审核/删除、Artrans 导出、临时 SQLite 导入、重启持久化和 CORS 验收。
+- 161 入口为 `http://192.168.0.161:33089`，仅对内网维护人员开放；数据、管理凭据和 1Panel 模板均保留在 161 受控目录。
+- Artalk 不作为内部事实源；公开页面仍调用 map-service 同源 Interaction Adapter。后续公开生产接入需要独立 HTTPS origin、审核双向同步方案和维护窗口。
 
 ### Phase 3：AI 审核和运营配置（已完成）
 
 - 服务端受控 provider adapter、提示词版本、结构化输出、预算/熔断和健康验证。
 - 等级到动作配置、人工覆盖、重新审核、规则试运行和影响预览。
 - PII 脱敏、外发审计、指标和失败重放；provider 故障 fail-closed。
+- 后台入口：`/admin/interaction-ai`（菜单“AI 审核与规则”）；AI 运行策略使用独立管理 API `/api/v1/admin/moderation/ai/settings`，provider 使用 `/api/v1/admin/moderation/providers`，关键词使用 `/api/v1/admin/moderation/keywords`。
+- 运营工具 API：`POST /api/v1/admin/moderation/keywords/preview`、`POST /api/v1/admin/moderation/ai/impact-preview`、`GET/POST /api/v1/admin/moderation/ai/prompts`、`POST /api/v1/admin/moderation/events/replay`、`POST /api/v1/admin/comments/:id/ai-replay`。
+- 活动策略发布后立即同步运行时引擎；策略只影响 AI 开关、provider 选择、版本、预算、并发和等级动作，不越权修改留言/举报开关。
+
+Phase 3 的实际代码和入口：
+
+- 运行时：`service/bin/interaction/aiModeration.js`、`providerRegistry.js`、`interactionService.js`、`moderationService.js`；AI 扩展表和提示词版本表由 `service/bin/interaction/database.js` 的幂等迁移创建。
+- 管理后台：`/admin/interaction-ai`，菜单名为“AI 审核与规则”。页面包含 AI 运行配置、provider、关键词规则、提示词版本、影响预览、失败事件重放和 Artalk 镜像状态卡；进入页面仍由服务端权限 `admin.moderation.ai.manage`、`admin.moderation.keyword.manage`、`admin.comment.policy.manage` 控制。
+- 管理 API：`/api/v1/admin/moderation/ai/settings`、`/moderation/providers`、`/moderation/keywords`、`/moderation/ai/prompts`、`/moderation/ai/impact-preview`、`/moderation/events/replay` 和 `/admin/comments/:id/ai-replay`。所有写操作使用会话、细粒度 RBAC、CSRF 和审计。
+- Artalk 161 镜像：`service/bin/interaction/artalkMirror.js` 与 `service/bin/cronJob/artalkMirror.js`。内部留言状态是唯一事实源，只有 `active + approved` 才会投影到 Artalk；Artalk 不可用时留言、举报和公开审核链路继续运行。默认关闭，161 通过受控 `.env` 开启，66 保持关闭。
 
 ### Phase 4：通知和更细粒度治理（待开始）
 
