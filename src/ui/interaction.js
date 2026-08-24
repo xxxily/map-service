@@ -3,6 +3,7 @@ import { getAuthSnapshot, refreshAuthSession } from '../auth/session.js'
 import { showAlert, showCheckboxConfirm, showChoiceDialog, showEditDialog } from './dialog.js'
 
 const asText = value => String(value ?? '')
+const escapeInteractionHtml = value => asText(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character])
 
 export function interactionResourceRef (item) {
   const nested = item?.resourceRef || item?.interactionResource || {}
@@ -163,7 +164,7 @@ function renderComments (root, resource, state) {
         <label><span>显示名</span><input name="displayName" minlength="2" maxlength="64" required placeholder="公开显示的名称"></label>
         <label><span>邮箱${requiresEmail || requiresEitherContact ? '' : '（可选）'}</span><input type="email" name="email" ${requiresEmail ? 'required' : ''} autocomplete="email"></label>
         <label><span>手机号${requiresPhone ? '' : '（可选）'}</span><input type="tel" name="phone" ${requiresPhone ? 'required' : ''} autocomplete="tel"></label>
-        ${anonymous.requireConsent !== false ? '<label class="map-interaction-consent"><input type="checkbox" name="consent" required><span>我同意按留言说明和隐私政策处理本次留言</span></label>' : ''}
+      ${anonymous.requireConsent !== false ? '<label class="map-interaction-consent"><input type="checkbox" name="consent" required checked><span>我同意按留言说明和隐私政策处理本次留言</span></label>' : ''}
       </div>`
     : ''
   const form = document.createElement('form')
@@ -265,22 +266,30 @@ export async function openInteractionInfo (item) {
   const resource = interactionResourceRef(item)
   if (!resource.sharePublicId) {
     const localMedia = item?.displayUrl || item?.canonicalUrl || item?.url
-    const localMessage = [
-      item?.featureName || item?.title || '本地媒体',
-      item?.kmlName ? `图层：${item.kmlName}` : '',
-      localMedia ? `媒体：${localMedia}` : '',
-    ].filter(Boolean).join('\n')
-    return showAlert(localMessage || '当前媒体没有可显示的详情。', { title: '媒体详情' })
+    const title = item?.featureName || item?.title || '本地媒体'
+    const description = item?.description || item?.mediaDescription || '此媒体来自本地地图内容。'
+    const localDetails = `<section class="media-detail-section media-detail-summary"><span class="media-detail-kicker">本地媒体</span><h3>${escapeInteractionHtml(title)}</h3><p>${escapeInteractionHtml(description)}</p></section><dl class="media-detail-facts">${item?.kmlName ? `<div><dt>图层</dt><dd>${escapeInteractionHtml(item.kmlName)}</dd></div>` : ''}${localMedia ? `<div><dt>地址</dt><dd class="media-detail-url">${escapeInteractionHtml(localMedia)}</dd></div>` : ''}</dl>`
+    return showChoiceDialog({ title: '媒体详情', trustedMessageHtml: localDetails, dialogClassName: 'app-dialog-media-details', cancelText: '关闭', choices: [] })
   }
   try {
     const info = await apiRequest(`/public/kml-shares/${encodeURIComponent(resource.sharePublicId)}/info`, { csrf: false })
-    const mediaLine = item?.displayUrl || item?.canonicalUrl || item?.url
-      ? `\n\n媒体：${item.displayUrl || item.canonicalUrl || item.url}`
-      : ''
+    const mediaUrl = item?.displayUrl || item?.canonicalUrl || item?.url || ''
+    const sourceTitle = info?.source?.title || info?.title || item?.kmlName || '公开分享'
+    const sourceDescription = info?.source?.description || info?.description || ''
+    const generalDescription = info?.generalDescription || info?.source?.generalDescription || ''
+    const itemDescription = item?.description || item?.mediaDescription || ''
+    const mediaType = ({ image: '图片', video: '视频', audio: '音频', iframe: '页面' })[item?.type] || '媒体'
+    const details = [
+      `<section class="media-detail-section media-detail-summary"><span class="media-detail-kicker">公开分享</span><h3>${escapeInteractionHtml(sourceTitle)}</h3><p>${escapeInteractionHtml(generalDescription || '此内容来自已发布的公开分享。')}</p></section>`,
+      sourceDescription ? `<section class="media-detail-section"><h4>来源说明</h4><p>${escapeInteractionHtml(sourceDescription)}</p></section>` : '',
+      itemDescription ? `<section class="media-detail-section"><h4>媒体说明</h4><p>${escapeInteractionHtml(itemDescription)}</p></section>` : '',
+      `<dl class="media-detail-facts"><div><dt>类型</dt><dd>${mediaType}</dd></div>${mediaUrl ? `<div><dt>地址</dt><dd class="media-detail-url">${escapeInteractionHtml(mediaUrl)}</dd></div>` : ''}${item?.kmlName ? `<div><dt>图层</dt><dd>${escapeInteractionHtml(item.kmlName)}</dd></div>` : ''}</dl>`,
+    ].filter(Boolean).join('')
     const reportAvailable = info?.reports?.enabled === true
     const choice = await showChoiceDialog({
       title: '媒体详情',
-      message: `${info?.source?.title || info?.title || item?.kmlName || '公开分享'}\n${info?.source?.description || info?.description || '此内容来自已发布的公开 KML 快照。'}${mediaLine}`,
+      trustedMessageHtml: details,
+      dialogClassName: 'app-dialog-media-details',
       choices: reportAvailable ? [{ text: '举报此内容', value: 'report', class: 'app-dialog-secondary' }] : [],
       cancelText: '关闭',
     })

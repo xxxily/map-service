@@ -76,7 +76,7 @@ Phase 1A 的内部数据契约和独立数据库已经冻结，Phase 1B/C 已接
 | `GET` | `/api/v1/public/kml-shares/:publicId/comments/policy` | 只返回 `enabled`、策略版本、匿名开关、联系方式要求、长度和审核摘要 |
 | `POST` | `/api/v1/public/kml-shares/:publicId/comments` | 登录会话必须通过 CSRF；匿名提交必须策略允许且通过同源校验；成功返回 `202`，留言默认进入 `pending` |
 | `POST` | `/api/v1/public/kml-shares/:publicId/reports` | 登录会话必须通过 CSRF；匿名举报按策略和同源校验；正文不进入留言/审核流，成功返回通用 `202` |
-| `GET` | `/api/v1/public/kml-shares/:publicId/info` | 分享访问授权；返回来源说明、协议链接和已脱敏举报能力 descriptor |
+| `GET` | `/api/v1/public/kml-shares/:publicId/info` | 分享访问授权；返回来源说明、管理员配置的媒体详情通用说明、协议链接和已脱敏举报能力 descriptor |
 
 所有公开交互请求先复用分享访问、站点访问和已发布快照资源授权；无法区分“不存在”和“无权访问”的资源统一按 `RESOURCE_NOT_FOUND` 处理。公开响应不包含正文密文、联系方式、用户内部 ID、审核内部字段或管理备注。
 
@@ -118,7 +118,9 @@ Phase 1A 的内部数据契约和独立数据库已经冻结，Phase 1B/C 已接
 
 AI 响应必须严格匹配 `shared/interaction-ai.js` 的 schema：受控 `level`、六类 0-1 分数（`spam`、`toxicity`、`violence`、`sexual`、`illegalOrIp`、`privacy`）、`confidence`、受控 `reasonCodes`、`suggestedAction` 和 `policyVersion`。`unknown` 与 `illegal_or_ip` 不得自动通过；低置信度的 `approve` 会降级为 `review`。原始 JSON 仅在不超过 64KB 时以交互密文保存，默认保留 30 天，过期后由运维清理 helper 删除；管理投影只返回 `rawResultAvailable` 和 `rawResultExpiresAt`。
 
-举报管理接口为 `GET /api/v1/admin/reports`、`GET /api/v1/admin/reports/:id` 和 `POST /api/v1/admin/reports/:id/actions`，分别要求 `admin.report.read`、`admin.report.read` 和 `admin.report.manage`。列表只返回脱敏投影；详情在授权后台返回举报说明、证据文本和掩码联系方式。`hide_media`/`hide_comment` 在受控治理能力接入前会明确拒绝，不伪造成功；`block_share`/`pause_share` 会调用分享治理并写审计。`info` facade 只返回来源标题/说明、固定协议路径、举报开关和支持类型，不返回 canonical share、所有者、邮箱、内部快照或管理字段。
+举报管理接口为 `GET /api/v1/admin/reports`、`GET /api/v1/admin/reports/:id` 和 `POST /api/v1/admin/reports/:id/actions`，分别要求 `admin.report.read`、`admin.report.read` 和 `admin.report.manage`。列表只返回脱敏投影；详情在授权后台返回举报说明、证据文本和掩码联系方式。`hide_media`/`hide_comment` 在受控治理能力接入前会明确拒绝，不伪造成功；`block_share`/`pause_share` 会调用分享治理并写审计。`info` facade 只返回来源标题/说明、`generalDescription`、固定协议路径、举报开关和支持类型，不返回 canonical share、所有者、邮箱、内部快照或管理字段。
+
+`GET /api/v1/public/kml-shares/:publicId/info` 的 `generalDescription` 来自已发布交互策略的 `mediaDetails.generalDescription`。管理员在后台“留言与举报设置”页面维护该文本；它只用于媒体详情面板的统一说明，服务端会对公开响应做字段裁剪。后续媒体详情全局文案应继续放在 `mediaDetails` 命名空间（例如来源标签、举报提示、隐私提示），不要散落到前端常量或资源记录中。
 
 交互保留与清理使用 `config.staticService.interaction`，默认数据库为 `.db/interaction.sqlite`。可通过以下环境变量调整窗口：`MAP_SERVICE_INTERACTION_PUBLIC_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_PRIVATE_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_CONTACT_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_AI_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_REPORT_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_REPORT_EVENTS_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_OUTBOX_RETENTION_DAYS`。服务启动时注册 `service/bin/cronJob/interactionRetention.js`，按 Asia/Shanghai 每日 03:20 执行事务清理；`legal_hold=1` 的留言和举报不删除。
 

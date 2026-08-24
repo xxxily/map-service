@@ -118,6 +118,8 @@ export const ANONYMOUS_CONTACT_REQUIREMENTS = Object.freeze([
   'email_and_phone',
 ])
 
+export const MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH = 1000
+
 export const DEFAULT_INTERACTION_RETENTION = deepFreeze({
   approvedCommentDays: 730,
   nonPublicCommentDays: 90,
@@ -150,6 +152,9 @@ export const DEFAULT_INTERACTION_POLICY = deepFreeze({
     enabled: true,
     types: REPORT_TYPES,
     targetScopes: REPORT_TARGET_SCOPES,
+  },
+  mediaDetails: {
+    generalDescription: '媒体资源可能来自网络公开分享或用户自行上传；如发现资源存在违规或侵权，可通过举报投诉渠道反馈。',
   },
 })
 

@@ -20,6 +20,7 @@ import {
 } from '../../../shared/interaction-contracts.js'
 import {
   DEFAULT_INTERACTION_POLICY,
+  MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH,
   MODERATION_ACTIONS,
   resolveModerationAction,
 } from '../../../shared/interaction-policy.js'
@@ -98,6 +99,33 @@ export function createMutableInteractionPolicy (overrides = {}) {
   return mergePolicy(policy, overrides)
 }
 
+export function normalizeInteractionPolicyForPublish (input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw interactionHttpError('交互策略必须是对象', 'VALIDATION_FAILED')
+  }
+  if (Object.hasOwn(input, 'mediaDetails')) {
+    const mediaDetails = input.mediaDetails
+    if (!mediaDetails || typeof mediaDetails !== 'object' || Array.isArray(mediaDetails)) {
+      throw interactionHttpError('媒体详情配置必须是对象', 'VALIDATION_FAILED')
+    }
+    if (Object.hasOwn(mediaDetails, 'generalDescription') && typeof mediaDetails.generalDescription !== 'string') {
+      throw interactionHttpError('媒体详情通用说明必须是字符串', 'VALIDATION_FAILED')
+    }
+  }
+
+  const policy = createMutableInteractionPolicy(input)
+  const description = policy.mediaDetails?.generalDescription
+  if (typeof description !== 'string') {
+    throw interactionHttpError('媒体详情通用说明必须是字符串', 'VALIDATION_FAILED')
+  }
+  const normalizedDescription = description.trim()
+  if (normalizedDescription.length > MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH) {
+    throw interactionHttpError(`媒体详情通用说明不能超过 ${MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH} 个字符`, 'VALIDATION_FAILED')
+  }
+  policy.mediaDetails.generalDescription = normalizedDescription
+  return policy
+}
+
 function mergePolicy (base, overrides) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return base
   for (const [key, value] of Object.entries(overrides)) {
@@ -152,6 +180,7 @@ export class InteractionPolicyStore {
   publish (policy, options = {}) {
     const createdAt = options.now || this.now()
     const createdBy = options.createdBy || ''
+    const normalizedPolicy = normalizeInteractionPolicyForPublish(policy)
     return this.database.transaction(() => {
       const current = this.getActiveVersion()
       if (current) {
@@ -167,7 +196,7 @@ export class InteractionPolicyStore {
       this.database.prepare(`
         INSERT INTO interaction_policy_versions(version, policy_json, active, created_by, created_at)
         VALUES (?, ?, 1, ?, ?)
-      `).run(next, JSON.stringify(createMutableInteractionPolicy(policy)), createdBy, createdAt)
+      `).run(next, JSON.stringify(normalizedPolicy), createdBy, createdAt)
       return next
     })
   }

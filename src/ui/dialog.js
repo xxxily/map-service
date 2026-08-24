@@ -101,6 +101,13 @@ function closeDialog (root, cleanup, resolve, value) {
   resolve(value)
 }
 
+function getDialogClassName (value) {
+  return String(value || '')
+    .split(/\s+/)
+    .filter(name => /^[A-Za-z0-9_-]+$/.test(name))
+    .join(' ')
+}
+
 export function showDialog (options = {}) {
   const root = ensureDialogRoot()
   const title = options.title || '提示'
@@ -109,11 +116,12 @@ export function showDialog (options = {}) {
   const cancelText = options.cancelText || '取消'
   const showCancel = Boolean(options.showCancel)
   const checkbox = options.checkbox || null
+  const dialogClassName = getDialogClassName(options.dialogClassName)
 
   root.hidden = false
   root.innerHTML = `
     <div class="app-dialog-backdrop" data-dialog-action="cancel">
-      <section class="app-dialog" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
+      <section class="app-dialog${dialogClassName ? ` ${dialogClassName}` : ''}" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
         <h2 id="app-dialog-title">${escapeHtml(title)}</h2>
         <p>${escapeHtml(message)}</p>
         ${checkbox ? `
@@ -468,16 +476,20 @@ export function showChoiceDialog (options = {}) {
   const root = ensureDialogRoot()
   const title = options.title || '提示'
   const message = options.message || ''
+  // This surface is intentionally explicit: callers must escape every dynamic
+  // value before supplying markup here.
+  const trustedMessageHtml = options.trustedMessageHtml || ''
   const choices = options.choices || [] // [{ text: '编辑', value: 'edit', class: 'primary' }]
   const cancelText = options.cancelText || '取消'
   const dismissible = options.dismissible !== false
+  const dialogClassName = getDialogClassName(options.dialogClassName)
 
   root.hidden = false
   root.innerHTML = `
     <div class="app-dialog-backdrop" data-dialog-action="cancel">
-      <section class="app-dialog" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
+      <section class="app-dialog${dialogClassName ? ` ${dialogClassName}` : ''}" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
         <h2 id="app-dialog-title">${escapeHtml(title)}</h2>
-        <p>${escapeHtml(message)}</p>
+        ${trustedMessageHtml ? `<div class="app-dialog-message app-dialog-message-rich">${trustedMessageHtml}</div>` : `<p>${escapeHtml(message)}</p>`}
         <div class="app-dialog-actions" style="flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px;">
           ${choices.map(choice => `
             <button type="button" class="${choice.class || 'app-dialog-secondary'}" data-choice-action="${escapeHtml(choice.value)}">${escapeHtml(choice.text)}</button>

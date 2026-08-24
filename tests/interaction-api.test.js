@@ -362,13 +362,14 @@ test('public info route reuses share authorization and exposes only redacted sou
     isAccessEnabled: () => false,
     createAnonymousShareVisitorId: () => publicContext.visitorId,
     verifyUserSession: () => null,
-    getPublicInteractionInfo: (id, context) => { calls.push([id, context.visitorId]); return { source: { title: '公开路线', description: '说明' }, agreements: { privacyUrl: '/privacy', termsUrl: '/terms' }, reports: { enabled: true, anonymousEnabled: true, types: ['other'] }, resource: { sharePublicId: id } } },
+    getPublicInteractionInfo: (id, context) => { calls.push([id, context.visitorId]); return { source: { title: '公开路线', description: '说明' }, generalDescription: '统一详情说明', agreements: { privacyUrl: '/privacy', termsUrl: '/terms' }, reports: { enabled: true, anonymousEnabled: true, types: ['other'] }, resource: { sharePublicId: id } } },
   })
   const { server, baseUrl } = await listen(createApp())
   try {
     const response = await json(baseUrl, '/api/v1/public/kml-shares/shr_public/info')
     assert.equal(response.response.status, 200)
     assert.equal(response.payload.result.source.title, '公开路线')
+    assert.equal(response.payload.result.generalDescription, '统一详情说明')
     assert.equal(response.payload.result.resource.sharePublicId, 'shr_public')
     assert.equal(Object.hasOwn(response.payload.result.resource, 'canonicalShareId'), false)
     assert.deepEqual(calls, [['shr_public', publicContext.visitorId]])

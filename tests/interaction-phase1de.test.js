@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import { interactionResourceRef } from '../src/ui/interaction.js'
@@ -8,7 +8,8 @@ import { renderInteractionCommentsPage, renderInteractionReportsPage } from '../
 const interactionSource = readFileSync(new URL('../src/ui/interaction.js', import.meta.url), 'utf8')
 const previewSource = readFileSync(new URL('../src/ui/media-preview.js', import.meta.url), 'utf8')
 const stylesSource = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
-const deploy161Source = readFileSync(new URL('../deploy-161.sh', import.meta.url), 'utf8')
+const deploy161Path = new URL('../deploy-161.sh', import.meta.url)
+const deploy161Source = existsSync(deploy161Path) ? readFileSync(deploy161Path, 'utf8') : ''
 
 test('2D and 3D media items normalize to one stable feature resource reference', () => {
   const twoD = interactionResourceRef({ sharePublicId: 'shr_public_a', shareItemId: 'shi_a', featureId: 'feature_a', mediaId: 'media_a' })
@@ -29,6 +30,7 @@ test('media preview keeps interaction controls wired for comments and source det
   assert.match(interactionSource, /举报此内容/)
   assert.match(interactionSource, /请先登录后再留言/)
   assert.match(interactionSource, /clientRequestId/)
+  assert.match(interactionSource, /name="consent" required checked/)
 })
 
 test('interaction controls fail closed when count API fails without throwing into media preview', () => {
@@ -64,6 +66,23 @@ test('interaction panel and media preview expose narrow-screen full-height layou
   assert.match(stylesSource, /\.map-interaction-panel \{[\s\S]*?width: min\(430px, 100%\)/)
 })
 
+test('media details use a dedicated responsive dialog and keep reports inside details', () => {
+  assert.match(interactionSource, /dialogClassName: 'app-dialog-media-details'/)
+  assert.match(interactionSource, /media-detail-summary/)
+  assert.match(interactionSource, /generalDescription/)
+  assert.match(interactionSource, /trustedMessageHtml/)
+  assert.match(stylesSource, /\.app-dialog-media-details \{ width: min\(520px, 100%\)/)
+  assert.match(stylesSource, /@media \(max-width: 520px\)[\s\S]*?\.app-dialog-media-details/)
+  assert.match(stylesSource, /\.media-detail-kicker/)
+  assert.doesNotMatch(previewSource, /data-media-preview-action="report"/)
+})
+
+test('local deployment scripts are ignored while remaining available on disk', () => {
+  const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8')
+  assert.match(gitignore, /^deploy-161\.sh$/m)
+  assert.match(gitignore, /^deploy-66\.sh$/m)
+})
+
 test('admin interaction pages expose query filters required for moderation and report triage', () => {
   const commentsHtml = renderInteractionCommentsPage({ interactionComments: { total: 0, page: 1, limit: 20, items: [] } })
   const reportsHtml = renderInteractionReportsPage({ interactionReports: { total: 0, page: 1, limit: 20, items: [] } })
@@ -79,6 +98,7 @@ test('admin interaction pages expose query filters required for moderation and r
 })
 
 test('161 deployment entrypoint preserves persistent data and has a bounded rollback path', () => {
+  if (!deploy161Source) return
   assert.match(deploy161Source, /REMOTE_HOST:-root@192\.168\.0\.161/)
   assert.match(deploy161Source, /REMOTE_APP_DIR:-\/opt\/1panel\/apps\/local\/map-service\/map-service/)
   assert.match(deploy161Source, /--exclude='data'/)

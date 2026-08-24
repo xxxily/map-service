@@ -222,6 +222,9 @@ GET /health 和 GET /api/v1/health 只证明进程存活，不代表交互密钥
     "enabled": true,
     "types": ["unsafe_content", "illegal_content", "copyright_takedown", "privacy", "misleading", "other"],
     "targetScopes": ["share", "feature", "media"]
+  },
+  "mediaDetails": {
+    "generalDescription": "媒体资源可能来自网络公开分享或用户自行上传；如发现资源存在违规或侵权，可通过举报投诉渠道反馈。"
   }
 }
 ~~~
@@ -263,8 +266,9 @@ X-CSRF-Token: <map_csrf_token>
 - **匿名留言必须同意相关条款**：控制匿名表单的同意勾选。
 - **留言提交后需要审核**：控制初始审核策略；公开列表始终只返回 `active + approved`。
 - **启用举报 / 允许匿名举报**：分别控制举报总开关和匿名举报权限。举报入口不在媒体预览顶部直接展示，而是在“媒体详情”对话框内展示。
+- **媒体详情通用说明**：维护 `mediaDetails.generalDescription`，展示在公开分享媒体详情的摘要区。建议使用简短、稳定的合规说明；未来类似全局文案继续扩展到 `mediaDetails` 命名空间。
 
-保存时页面会保留 AI、关键词、自动动作、保留期、举报类型和目标范围等未展示字段。策略保存后建议用公开接口重新读取 `/api/v1/public/kml-shares/:publicId/comments/policy` 与 `/api/v1/public/kml-shares/:publicId/info`，确认前台得到的摘要与后台一致。
+保存时页面会保留 AI、关键词、自动动作、保留期、举报类型和目标范围等未展示字段。策略保存后建议用公开接口重新读取 `/api/v1/public/kml-shares/:publicId/comments/policy` 与 `/api/v1/public/kml-shares/:publicId/info`，确认前台得到的摘要与后台一致。匿名留言同意项在策略要求时默认勾选，用户仍可主动取消后无法提交。
 
 媒体预览的留言按钮要求当前项来自公开分享并携带 `sharePublicId + shareItemId + featureId`；媒体详情按钮对本地 KML 和公开分享媒体都可用。资源集合中的媒体项还会携带稳定 `mediaId`，从详情面板进入举报时自动使用 `scope=media`。
 
@@ -303,7 +307,7 @@ X-CSRF-Token: <map_csrf_token>
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | /api/v1/public/kml-shares/:publicId/comments/policy | 策略摘要、匿名开关、长度和审核摘要 |
-| GET | /api/v1/public/kml-shares/:publicId/info | 来源说明、协议链接、举报能力 |
+| GET | /api/v1/public/kml-shares/:publicId/info | 来源说明、媒体详情通用说明、协议链接、举报能力 |
 | GET | /api/v1/public/kml-shares/:publicId/comments/count | 当前资源已公开留言准确计数 |
 | GET | /api/v1/public/kml-shares/:publicId/comments | 读取 active + approved 留言；支持 shareItemId、featureId、cursor、limit |
 
@@ -635,7 +639,7 @@ NODE
 
 ### 12.0 161 内网一键发布
 
-仓库根目录的 [`deploy-161.sh`](../deploy-161.sh) 是 161 内测环境的唯一推荐发布入口。它默认连接 `root@192.168.0.161`，部署到 `/opt/1panel/apps/local/map-service/map-service`，映射端口 `33088`，容器名 `map-service-161`。
+本机工作区根目录的 `deploy-161.sh` 是 161 内测环境的唯一推荐发布入口。该脚本属于本机运维资产，已加入 `.gitignore`，不会进入 GitHub；部署机或新工作区需要通过受控运维方式单独配置。它默认连接 `root@192.168.0.161`，部署到 `/opt/1panel/apps/local/map-service/map-service`，映射端口 `33088`，容器名 `map-service-161`。
 
 发布前脚本会在本地依次执行 `npm run check`、`npm test`、`npm run build` 和 `git diff --check`，并要求工作树干净；随后打包当前 Git HEAD、校验 SHA-256，通过 SSH 传输。远端会：
 
@@ -658,6 +662,8 @@ cd /path/to/map-service
 ~~~
 
 脚本支持少量非敏感覆盖项：`REMOTE_HOST`、`REMOTE_APP_DIR`、`REMOTE_TEMPLATE_DIR`、`REMOTE_BACKUP_ROOT`、`CONTAINER_NAME`、`PORT`、`RELEASE_VERSION` 和 `RUN_CHECKS=0`。默认发布不要关闭检查，也不要通过环境变量注入交互密钥；密钥只从 161 现有 `.env` 读取并保持原位。发布完成后把版本、备份路径、健康检查和回滚目录写入 161 操作日志，并同步到 Outline 的“操作记录”集合。
+
+66 服务器使用本机同样不入库的 `deploy-66.sh`，通过 SSH 推送已提交 commit 后执行依赖预检、数据库和代码备份、PM2 环境保留、健康检查及失败回滚。两个脚本均不应通过 GitHub 分发，也不应把服务器密钥写入脚本或环境覆盖项。
 
 ### 12.1 升级流程
 

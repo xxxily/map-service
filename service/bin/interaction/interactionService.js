@@ -278,6 +278,7 @@ export class InteractionService {
     try { policy = active ? createMutableInteractionPolicy(JSON.parse(active.policy_json || '{}')) : createMutableInteractionPolicy({}) } catch { throw interactionHttpError('交互策略解析失败', 'INTERACTION_SERVICE_UNAVAILABLE') }
     return {
       source: { title: metadata.title || '', description: metadata.description || '' },
+      generalDescription: String(policy.mediaDetails?.generalDescription || '').trim(),
       agreements: { privacyUrl: '/privacy', termsUrl: '/terms' },
       reports: { enabled: policy.reports?.enabled === true, anonymousEnabled: policy.reports?.anonymous?.enabled !== false, types: Array.isArray(policy.reports?.types) ? [...policy.reports.types] : [] },
       resource: { sharePublicId: thread.sharePublicId },

@@ -94,7 +94,7 @@
 - [x] 公开：`GET /public/kml-shares/:publicId/info`。
 - [x] 管理：留言列表/详情/审核/软删除、策略和关键词读取/发布。
 - [x] 统一 `jsonSuc/jsonErr`、`no-store`、错误码、分页、CSRF、权限和防枚举行为（已覆盖已接入路由）。
-- [x] 同步 `docs/api.md`、`docs/api-user-system.md` 和专题 API 文档；举报/info 契约仍保留为未实现基线。
+- [x] 同步 `docs/api.md`、`docs/api-user-system.md` 和专题 API 文档；举报与 info 契约均已按实现更新。
 
 ### 4.5 Phase 1D：前端交互
 

@@ -1,5 +1,6 @@
 import { showAlert, showConfirm, showEditDialog } from '../../ui/dialog.js'
 import { escapeHtml, formatTime, renderPagination } from '../utils.js'
+import { MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH } from '../../../shared/interaction-policy.js'
 
 function collection (value) { return value || { items: [], total: 0, page: 1, limit: 20 } }
 function can (state, permission) {
@@ -22,6 +23,7 @@ export function renderInteractionPolicyPage (state) {
   const comments = policy.comments || {}
   const anonymous = comments.anonymous || {}
   const reports = policy.reports || {}
+  const mediaDetails = policy.mediaDetails || {}
   const reportAnonymous = reports.anonymous || {}
   const canManage = can(state, 'admin.comment.policy.manage')
   return `<section class="admin-panel"><div class="admin-panel-head"><div><h2>留言与举报设置</h2><p class="admin-panel-description">控制公开留言、匿名提交和举报入口。保存时会保留未在此页面展示的审核策略字段。</p></div><span class="admin-badge">${response.published ? '已发布' : '未发布'}</span></div>${canManage ? `<form class="admin-form" data-interaction-policy-form>
@@ -33,6 +35,7 @@ export function renderInteractionPolicyPage (state) {
     <label class="admin-check"><input type="checkbox" name="commentsModerationRequired" ${checked(comments.moderationRequired !== false)}><span>留言提交后需要审核</span></label>
     <label class="admin-check"><input type="checkbox" name="reportsEnabled" ${checked(reports.enabled !== false)}><span>启用举报</span></label>
     <label class="admin-check"><input type="checkbox" name="anonymousReportsEnabled" ${checked(reportAnonymous.enabled !== false)}><span>允许匿名举报</span></label>
+    <label><span>媒体详情通用说明</span><textarea name="mediaDetailsGeneralDescription" rows="4" maxlength="${MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH}" placeholder="向访客说明媒体资源来源及举报渠道">${escapeHtml(mediaDetails.generalDescription || '')}</textarea></label>
     <button type="submit">保存留言与举报设置</button>
   </form>` : '<p class="admin-empty">当前账号没有修改策略的权限。</p>'}</section>`
 }
@@ -47,9 +50,16 @@ export async function handleInteractionPolicySubmit ({ api, event, renderDashboa
   const currentAnonymous = currentComments.anonymous || {}
   const currentReports = current.reports || {}
   const currentReportAnonymous = currentReports.anonymous || {}
+  const currentMediaDetails = current.mediaDetails || {}
   const maxLength = Number(form.elements.commentsMaxLength.value)
+  const mediaDetailsGeneralDescription = String(form.elements.mediaDetailsGeneralDescription.value || '').trim()
   if (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > 10000) {
     setNotice('', '留言最大长度必须是 1 到 10000 的整数')
+    renderDashboard()
+    return true
+  }
+  if (mediaDetailsGeneralDescription.length > MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH) {
+    setNotice('', `媒体详情通用说明不能超过 ${MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH} 个字符`)
     renderDashboard()
     return true
   }
@@ -74,6 +84,10 @@ export async function handleInteractionPolicySubmit ({ api, event, renderDashboa
         ...currentReportAnonymous,
         enabled: form.elements.anonymousReportsEnabled.checked,
       },
+    },
+    mediaDetails: {
+      ...currentMediaDetails,
+      generalDescription: mediaDetailsGeneralDescription,
     },
   }
   try {

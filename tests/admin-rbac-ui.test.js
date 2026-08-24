@@ -140,12 +140,16 @@ test('留言策略页提供匿名留言开关，并保留未展示策略字段',
         },
         moderation: { ai: { enabled: true }, keywords: { enabled: true } },
         reports: { enabled: true, types: ['privacy'], targetScopes: ['media'] },
+        mediaDetails: { generalDescription: '当前统一详情说明' },
       },
     },
   }
   const html = renderInteractionPolicyPage(state)
   assert.match(html, /允许匿名留言/)
   assert.match(html, /name="anonymousCommentsEnabled"/)
+  assert.match(html, /name="mediaDetailsGeneralDescription"/)
+  assert.match(html, /maxlength="1000"/)
+  assert.match(html, /当前统一详情说明/)
   assert.match(html, /data-interaction-policy-form/)
 
   const values = {
@@ -157,6 +161,7 @@ test('留言策略页提供匿名留言开关，并保留未展示策略字段',
     commentsModerationRequired: { checked: false },
     reportsEnabled: { checked: true },
     anonymousReportsEnabled: { checked: true },
+    mediaDetailsGeneralDescription: { value: '新的统一详情说明' },
   }
   const form = { elements: values, closest: selector => selector === '[data-interaction-policy-form]' ? form : null }
   const event = { preventDefault: () => {}, target: { closest: selector => selector === '[data-interaction-policy-form]' ? form : null } }
@@ -174,6 +179,7 @@ test('留言策略页提供匿名留言开关，并保留未展示策略字段',
   assert.deepEqual(payload.comments.retention, { approvedCommentDays: 30 })
   assert.deepEqual(payload.moderation, { ai: { enabled: true }, keywords: { enabled: true } })
   assert.deepEqual(payload.reports.types, ['privacy'])
+  assert.equal(payload.mediaDetails.generalDescription, '新的统一详情说明')
 })
 
 test('后台修改请求使用同源 Cookie 和 CSRF，不发送 Bearer Token', async () => {

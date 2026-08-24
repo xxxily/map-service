@@ -1000,7 +1000,7 @@ Content-Type: application/json
 
 已实现的留言公开接口为 `GET/POST /api/v1/public/kml-shares/:publicId/comments`、`GET /comments/count` 和 `GET /comments/policy`；公开写入遵循登录 CSRF 或匿名同源校验，提交成功返回 `202`，未审核留言不会出现在列表或计数中。已实现的管理接口为留言列表/详情/审核/按当前策略重新审核/软删除，以及留言策略和关键词规则的读取与发布，分别要求 `admin.comment.read`、`admin.comment.moderate`、`admin.comment.policy.manage` 和 `admin.moderation.keyword.manage`。重新审核保留历史决策，并按留言内容修订和当前策略/关键词版本幂等。
 
-这些接口复用分享访问、站点访问和已发布快照资源授权，统一使用 `jsonSuc/jsonErr` 与 `no-store`，响应脱敏不返回联系方式、密文、内部用户 ID、Token、IP/UA 或审核原始细节。举报公开提交与管理工单已实现：公开接口使用登录 CSRF 或匿名同源校验，管理列表/详情/动作分别要求 `admin.report.read`、`admin.report.read`、`admin.report.manage`；举报正文不进入留言、关键词或 AI 流程。分享 `info` facade 只返回渲染所需来源、协议和举报能力描述。
+这些接口复用分享访问、站点访问和已发布快照资源授权，统一使用 `jsonSuc/jsonErr` 与 `no-store`，响应脱敏不返回联系方式、密文、内部用户 ID、Token、IP/UA 或审核原始细节。举报公开提交与管理工单已实现：公开接口使用登录 CSRF 或匿名同源校验，管理列表/详情/动作分别要求 `admin.report.read`、`admin.report.read`、`admin.report.manage`；举报正文不进入留言、关键词或 AI 流程。分享 `info` facade 只返回渲染所需来源、协议、管理员统一维护的 `generalDescription` 和举报能力描述；该说明位于交互策略的 `mediaDetails.generalDescription`，必须是字符串，去除首尾空白后最多 1000 个字符。
 
 - 登录、注册和分享密码限流为单进程内存状态；多实例部署需接入共享限流存储。
 - SQLite 适用于当前单机部署；多写实例需要独立评估数据库和会话架构。

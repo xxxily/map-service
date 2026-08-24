@@ -12,6 +12,7 @@ import {
   deriveCommentAuthorKey,
   interactionErrorStatus,
   mapInteractionDatabaseError,
+  normalizeInteractionPolicyForPublish,
   normalizeCommentSubmission,
   resolveCommentAuthorContext,
   resolveInitialModerationState,
@@ -77,6 +78,12 @@ test('interaction policy store publishes versions and fails closed without one',
     assert.equal(active.policy.comments.enabled, true)
     assert.equal(active.policy.comments.anonymous.enabled, false)
 
+    assert.throws(
+      () => store.publish({ mediaDetails: { generalDescription: 123 } }, { createdBy: 'usr_admin' }),
+      error => error.code === 'VALIDATION_FAILED' && error.statusCode === 400
+    )
+    assert.equal(store.getActiveVersion().version, 1)
+
     // Publishing again must supersede the previous row; the schema keeps a
     // unique partial index on active = 1.
     const second = store.publish(policy({ comments: { anonymous: { enabled: true } } }), { createdBy: 'usr_admin' })
@@ -101,6 +108,21 @@ test('mutable policy clone does not share state with the frozen default', () => 
   assert.equal(DEFAULT_INTERACTION_POLICY.comments.anonymous.enabled, false)
   assert.equal(DEFAULT_INTERACTION_POLICY.comments.maxLength, 2000)
   assert.equal(policy().comments.anonymous.enabled, false)
+})
+
+test('published media details description is trimmed and validated at the service boundary', () => {
+  assert.equal(
+    normalizeInteractionPolicyForPublish({ mediaDetails: { generalDescription: '  统一说明  ' } }).mediaDetails.generalDescription,
+    '统一说明'
+  )
+  assert.throws(
+    () => normalizeInteractionPolicyForPublish({ mediaDetails: { generalDescription: ['not-text'] } }),
+    error => error.code === 'VALIDATION_FAILED' && error.statusCode === 400
+  )
+  assert.throws(
+    () => normalizeInteractionPolicyForPublish({ mediaDetails: { generalDescription: '说'.repeat(1001) } }),
+    error => error.code === 'VALIDATION_FAILED' && error.statusCode === 400
+  )
 })
 
 test('author context is derived from the session and never from the request body', () => {
