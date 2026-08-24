@@ -1,6 +1,14 @@
 # 变更日志
 
-## 未发布 - Phase 3 AI 审核与最终质量门
+## 1.5.38 - 2026-08-24
+
+### 留言、审核与举报闭环
+
+- 发布 Phase 1A-F 交互能力：独立 SQLite 数据库、留言提交与可见性、关键词/AI/人工审核、举报工单、分享治理动作、RBAC/CSRF 防护、保留清理、备份恢复和运维指标。
+- 新增中文部署与接入手册，覆盖初始化、公开/管理 API、配置、升级回滚、备份和 agent 执行协议；Artalk 生产接入继续延期，AI provider 默认关闭。
+- 合并 v1.5.37 分享生命周期修复：发布快照、暂停/封禁/删除及访问数据清理契约保持兼容。
+
+### Phase 3 AI 审核与最终质量门
 
 - 新增[交互功能部署与接入手册](./interaction-deployment-and-integration.md)，覆盖首次部署、策略初始化、公开/管理 API 接入、Cookie/CSRF、AI provider 验证、保留任务、备份恢复、升级回滚、agent 执行协议和故障排查；明确单机单写进程边界以及 Artalk 生产部署延期。
 - 新增服务端受控 AI provider adapter factory（当前 `openai-compatible`）与健康验证 API；管理 API 只保存声明式 adapterId/endpoint/secretRef，不能提交任意函数。provider 未通过健康验证时保持不可用且不能设为默认。
@@ -13,7 +21,7 @@
 - `npm run check` 的静态检查现在覆盖 `shared/interaction-ai.js`、`providerRegistry.js` 和 `aiModeration.js`。
 - 统一交互保留配置入口为 `config.staticService.interaction`，补充 report/report-event/outbox 窗口环境变量；retention cron 每日 Asia/Shanghai 03:20 执行，并增加真实配置路径回归测试。
 
-## 未发布 - Phase 1B/C 留言、审核与举报服务/API
+### Phase 1B/C 留言、审核与举报服务/API
 
 - 接入 Interaction Adapter、Comment Service、Moderation Service 和交互服务 facade；公开 `publicId` 经现有分享授权解析为 canonical share，并按已发布快照校验 `shareItemId + featureId`，资源不存在或无权访问时防枚举失败关闭。
 - 新增公开留言策略、列表、准确计数和提交接口；公开列表/角标只包含 `active + approved`，登录写入校验 CSRF，匿名写入同时受策略开关和同源校验约束，提交统一返回 `202` 审核回执且不回显待审正文。
@@ -23,7 +31,7 @@
 - 举报正文不进入公开留言、关键词或 AI 审核流；分享封禁/暂停动作复用现有治理并写审计，尚未接入的媒体/留言隐藏动作明确拒绝而不伪造成功。公开来源信息 `info` facade 已接入，仅返回渲染所需来源、协议和举报能力描述。
 - 新增公开 `GET /api/v1/public/kml-shares/:publicId/info`，复用分享访问授权并仅返回渲染所需来源、协议和举报能力描述。
 
-## 未发布 - Phase 1A 交互领域契约与独立数据库
+### Phase 1A 交互领域契约与独立数据库
 
 - 新增独立 `interaction.sqlite` v1 迁移模块，不修改 UserDatabase 版本；迁移使用事务、支持重复执行，并在失败时回滚版本记录和已建表。
 - 新增 `comments`、审核决策、outbox、策略/关键词版本、`reports` 和举报事件表，补齐状态约束、资源索引、幂等索引、软删除、`orphaned`、法律保留和保留期字段；留言和举报必须引用真实存在的同意策略版本。
@@ -32,14 +40,14 @@
 - 解密缺少密钥、格式错误和认证失败使用不同的内部错误码并 fail-closed；Phase 1A 当时未注册公开或管理路由，现已由后续 Phase 1B/C 留言垂直切片接入。
 - 补充 Phase 1A 定向测试，覆盖输入边界、密文伪造、认证加密失败关闭、回复不变量、策略版本外键、公开脱敏、迁移幂等与回滚；验证结果为定向测试 28/28、全量测试 778/778，`npm run check` 和 `npm run build` 通过。
 
-## 未发布 - KML 分享生命周期与删除契约细化
+### KML 分享生命周期与删除契约细化
 
 - 明确个人 KML 编辑只更新源内容，外部分享继续读取最近一次成功发布的快照；只有用户显式“同步内容”才更新链接内容和空间范围。
 - 明确几何重算失败、源内容修改、公开读取异常和暂时没有可计算几何不得自动暂停分享；恢复必须复用原分享设置、分享项和已发布快照。
 - 规划用户与管理员删除分享接口。删除只清理分享及其访问会话、访问事件和运行指标，不删除原始 KML；撤销仍保留为可审计的不可恢复停用。
 - 同步更新需求、API 和用户指南，补充 `SHARE_EMPTY`、删除权限、级联清理和旧 `publicId` 失效契约。
 
-## 未发布 - KML 点位留言与举报需求规划
+### KML 点位留言与举报需求规划
 
 - 新增 [KML 点位留言、内容举报与审核治理需求](./requirements/kml-comments-and-reports.md)，明确留言、关键词过滤、AI 分级审核、人工复核、匿名 PII、举报工单、权限、API 契约和分阶段服务拆分方案。
 - 需求将留言服务、审核服务、举报服务与地图集成适配层分开，第三方评论系统仅作为通过适配器 POC 后的候选实现。
