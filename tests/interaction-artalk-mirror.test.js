@@ -198,6 +198,80 @@ test('HTTP adapter refreshes an expired token once and reuses the refreshed bear
   assert.equal(versionCalls, 2)
 })
 
+test('HTTP adapter logs in and retries once when Artalk AdminGuard returns 403', async () => {
+  const calls = []
+  let commentUpdateCalls = 0
+  const mirror = new ArtalkMirror({
+    enabled: true,
+    endpoint: 'http://artalk.test/api/v2',
+    token: 'visitor-token',
+    email: 'admin@example.com',
+    password: 'server-only-password',
+    fetch: async (url, options = {}) => {
+      const headers = new Headers(options.headers)
+      calls.push({
+        url,
+        method: options.method || 'GET',
+        authorization: headers.get('authorization') || '',
+      })
+      if (url.endsWith('/auth/email/login')) return jsonResponse({ data: { token: 'admin-token' } })
+      if (url.endsWith('/comments/42') && options.method === 'PUT') {
+        commentUpdateCalls += 1
+        if (commentUpdateCalls === 1) return jsonResponse({ message: 'AdminGuard' }, 403)
+        return jsonResponse({ data: { id: 42, is_pending: false } })
+      }
+      throw new Error(`unexpected request: ${options.method || 'GET'} ${url}`)
+    },
+  })
+
+  await mirror.adapter.update({
+    providerCommentId: 42,
+    pageKey: 'thread-one',
+    siteName: 'map-service-internal',
+    nick: '镜像管理员',
+    content: '公开留言',
+    email: 'mirror@example.invalid',
+    rid: 0,
+  })
+
+  assert.deepEqual(calls.map(call => call.authorization), [
+    'Bearer visitor-token',
+    '',
+    'Bearer admin-token',
+  ])
+  assert.equal(commentUpdateCalls, 2)
+})
+
+test('HTTP adapter does not retry a second 403 after administrator login', async () => {
+  const calls = []
+  const mirror = new ArtalkMirror({
+    enabled: true,
+    endpoint: 'http://artalk.test/api/v2',
+    email: 'admin@example.com',
+    password: 'server-only-password',
+    fetch: async (url, options = {}) => {
+      const headers = new Headers(options.headers)
+      calls.push({ url, authorization: headers.get('authorization') || '' })
+      if (url.endsWith('/auth/email/login')) return jsonResponse({ data: { token: 'admin-token' } })
+      return jsonResponse({ message: 'AdminGuard' }, 403)
+    },
+  })
+
+  await assert.rejects(
+    mirror.adapter.update({
+      providerCommentId: 42,
+      pageKey: 'thread-one',
+      siteName: 'map-service-internal',
+      nick: '镜像管理员',
+      content: '公开留言',
+      email: 'mirror@example.invalid',
+      rid: 0,
+    }),
+    /Artalk 请求失败: 403/,
+  )
+  assert.deepEqual(calls.map(call => call.authorization), ['', '', 'Bearer admin-token'])
+})
+
 test('HTTP adapter publishes replies with rid and explicitly clears Artalk pending state', async () => {
   const requests = []
   const mirror = new ArtalkMirror({

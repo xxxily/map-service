@@ -357,7 +357,10 @@ function createHttpAdapter (mirror) {
         redirect: 'error', ...fetchOptions, signal: controller.signal,
         headers: { accept: 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(fetchOptions.headers || {}) },
       })
-      if (response.status === 401 && retryAuth && mirror.email && mirror.password) {
+      // Artalk's AdminGuard returns 403 when an otherwise valid request does
+      // not carry an administrator token. Refresh once with the configured
+      // server-owned account, just as we do for an expired token (401).
+      if ((response.status === 401 || response.status === 403) && retryAuth && mirror.email && mirror.password) {
         await login()
         return request(path, options, false)
       }
