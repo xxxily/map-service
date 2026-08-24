@@ -545,6 +545,7 @@ Artalk 当前部署在 161 的 `artalk-161` 独立 1Panel 应用中：
 - 数据位于 `/opt/1panel/apps/local/artalk-161/artalk-161/2.10.0/data/`，使用 SQLite；map-service 的 `interaction.sqlite` 不与其共享。
 - 站点名为 `map-service-internal`，默认 pending，关闭图片上传、社交登录、邮件通知和外部内容安全服务；可信来源只包含 `http://192.168.0.161:33088`（后续接入 HTTPS origin 时需重新配置）。
 - map-service 通过 `service/bin/interaction/artalkMirror.js` 将内部 `comment.*` outbox 事件单向投影到 Artalk；内部 Comment/Moderation Service 是唯一事实源。只有 `content_status=active && moderation_status=approved` 的留言可见，删除、隐藏、拒绝、父留言失去资格或 Artalk 404 会被安全移除/重建。Artalk 不可用时，内部留言、举报、审核和公开列表不被阻塞。
+- Artalk `AdminGuard` 对评论写操作可能返回 `403`（而非 `401`）；镜像适配器会使用受限服务账号登录并最多重试一次，第二次 `401/403` 直接记录失败，禁止无限重试。创建后仍显式发送 `is_pending=false`，保证内部批准状态才会在 Artalk 可见。
 - 浏览器不直连 Artalk，也不使用 Artalk 作为公开留言 API；公开页面仍调用 `/api/v1/public/kml-shares/:publicId/comments`。
 
 161 map-service `.env` 的受控配置项（值不得写入文档或 Git）：
