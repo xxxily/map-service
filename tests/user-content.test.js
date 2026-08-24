@@ -1797,6 +1797,10 @@ test('spatial recalculation records failed computations without exposing inputs'
       () => harness.service.revalidateSpatialShare(share.id),
       error => error.code === 'SPATIAL_TEST_FAILURE'
     )
+    assert.equal(
+      harness.database.prepare('SELECT status FROM kml_shares WHERE id = ?').get(share.id).status,
+      'active'
+    )
     const metrics = harness.service.getShareRuntimeMetrics(harness.admin)
     const failure = metrics.items.find(item => (
       item.shareId === share.id && item.event === 'spatial_recalculate' && item.decision === 'SPATIAL_TEST_FAILURE'
@@ -1852,9 +1856,10 @@ test('spatial recalculation fails closed after repeated KML revision conflicts',
     assert.equal(result.status, 'recalculating')
     assert.equal(conflictCount, 2)
     const finalRow = harness.database.prepare(
-      'SELECT revision, spatial_scope_json FROM kml_shares WHERE id = ?'
+      'SELECT revision, status, spatial_scope_json FROM kml_shares WHERE id = ?'
     ).get(share.id)
     assert.equal(finalRow.revision, initialRow.revision)
+    assert.equal(finalRow.status, 'active')
     assert.equal(finalRow.spatial_scope_json, initialRow.spatial_scope_json)
     const metrics = harness.service.getShareRuntimeMetrics(harness.admin)
     const conflictMetric = metrics.items.find(item => (

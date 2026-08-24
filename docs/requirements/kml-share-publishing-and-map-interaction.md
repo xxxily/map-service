@@ -1,6 +1,6 @@
 # KML 分享发布控制与地图交互性能需求
 
-> 状态：开发中（已细化分享生命周期、快照同步和删除契约）
+> 状态：开发中（分享生命周期、快照同步和删除增强已于 v1.5.37 实施）
 > 适用范围：2D/3D 地图、个人 KML、用户分享、媒体预览  
 > 关联文档：[用户体系、角色权限、个人空间与多 KML 分享需求](./user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./kml-share-spatial-access-and-semi-public-map.md)
 
