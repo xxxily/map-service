@@ -1,7 +1,7 @@
 # 用户体系、角色权限、个人空间与多 KML 分享需求
 
-> 状态：核心功能已实施（验收中）  
-> 版本：v1.0  
+> 状态：核心功能已实施（分享生命周期与删除增强开发中）
+> 版本：v1.1
 > 日期：2026-08-05  
 > 适用范围：map-service 前台地图、用户中心、管理后台及 `/api/v1` 服务端接口  
 > 专题扩展：[KML 分享空间访问控制与半公开地图需求](./kml-share-spatial-access-and-semi-public-map.md)
@@ -506,15 +506,18 @@
 - 用户可从 `paused` 恢复到 `active`。
 - `revoked` 默认不可恢复；如需继续分享，应创建新分享或轮换链接。
 - 管理员封禁不得删除原 KML，除非另有具备权限且被审计的数据处置操作。
+- `active` 分享不会因为源 KML 编辑、空间几何重算失败、公开读取异常或暂时没有可计算几何而自动变为 `paused`。只有所有者显式暂停、管理员封禁或所有者撤销可以停止分享；到期单独显示为 `expired`。
+- `resume` 必须复用暂停前保存的分享项、已发布快照、密码、视图和空间配置；失败只返回错误，不清空配置或改写状态。
 
 ### 13.5 分享内容变更规则
 
 - 所有者可以向现有分享包增加或移除 KML、调整顺序、修改标题和默认视图，规范分享 URL 保持不变。
-- KML 被移入回收站后，公开分享清单中立即不再返回该文件。
-- 分享包仍有其他有效 KML 时继续可用；最后一个有效 KML 被移除时自动转为 `paused`。
-- 恢复 KML 不自动恢复其原分享引用，避免意外再次公开；由用户确认后重新加入。
+- KML 编辑只更新个人源内容和 revision；公开分享继续读取最近一次成功发布的快照，直到所有者显式同步。
+- 源 KML 移入回收站或发生读取/几何错误时，不得自动暂停分享或删除其余分享配置；服务端应保留已发布快照，并在管理详情中报告不可同步原因。源文件恢复后可继续作为待同步项处理。
+- 更新分享时不得保存空项目集合，空集合返回 `409 SHARE_EMPTY`；用户不再需要公开链接时使用删除接口。
 - 永久删除 KML 前必须提示其被多少个分享包引用。
 - KML 所有权转移时，默认从原所有者的分享包移除；超级管理员可在明确确认后同时转移分享归属。
+- 删除分享只删除分享本身、分享项、访问会话、访问事件和运行指标，不删除原始 KML；删除后旧 `publicId` 返回 `404 RESOURCE_NOT_FOUND`。撤销仍表示可审计的不可恢复停用，不能用删除替代撤销语义。
 
 ### 13.6 匿名分享查看页
 
@@ -835,6 +838,10 @@
 | `POST` | `/api/v1/kml/shares` | `share.own.manage` | 创建多 KML 分享包 |
 | `GET` | `/api/v1/kml/shares/:id` | 所有者 | 获取分享管理详情 |
 | `PUT` | `/api/v1/kml/shares/:id` | 所有者 | 更新标题、文件、顺序、视图和状态 |
+| `DELETE` | `/api/v1/kml/shares/:id` | 所有者 | 永久删除自己的分享及其访问数据，不影响原始 KML |
+| `POST` | `/api/v1/kml/shares/:id/sync` | 所有者 | 显式发布当前源 KML 快照 |
+| `POST` | `/api/v1/kml/shares/:id/pause` | 所有者 | 显式暂停分享 |
+| `POST` | `/api/v1/kml/shares/:id/resume` | 所有者 | 使用原配置和快照恢复分享 |
 | `POST` | `/api/v1/kml/shares/:id/rotate-link` | 所有者 + 最近再验证 | 轮换公开 ID |
 | `POST` | `/api/v1/kml/shares/:id/revoke` | 所有者 | 永久撤销分享 |
 | `GET` | `/api/v1/public/kml-shares/:publicId` | 按分享策略 | 获取脱敏分享清单 |
@@ -938,6 +945,7 @@
 | `GET` | `/api/v1/admin/user-system/settings` | `admin.registration.manage` 或 `admin.security.manage` | 查看用户系统设置 |
 | `PUT` | `/api/v1/admin/user-system/settings` | 对应设置权限 | 更新注册、会话、配额和分享策略 |
 | `GET` | `/api/v1/admin/kml/shares` | `admin.share.moderate` | 查看分享元数据和异常状态 |
+| `DELETE` | `/api/v1/admin/kml/shares/:id` | `admin.share.moderate` | 删除任意分享及其访问数据，不影响原始 KML |
 | `POST` | `/api/v1/admin/kml/shares/:id/block` | `admin.share.moderate` | 封禁分享并填写原因 |
 | `POST` | `/api/v1/admin/kml/shares/:id/unblock` | `admin.share.moderate` | 解除封禁 |
 | `GET` | `/api/v1/admin/audit-logs` | `admin.audit.read` | 查询审计日志 |
@@ -965,6 +973,7 @@
 | 409 | `ROLE_IN_USE` | 角色仍被用户引用 |
 | 410 | `SHARE_EXPIRED` | 分享已过期 |
 | 410 | `SHARE_PAUSED` | 分享已暂停 |
+| 409 | `SHARE_EMPTY` | 分享没有可恢复或可发布的有效项目；不会自动改变分享状态 |
 | 413 | `FILE_TOO_LARGE` | 上传 KML 超过限制 |
 | 422 | `QUOTA_EXCEEDED` | 用户配额不足 |
 | 429 | `RATE_LIMITED` | 登录、注册、密码或公开分享请求过于频繁 |

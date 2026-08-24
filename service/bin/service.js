@@ -22,6 +22,7 @@ import { UserContentService } from './user/userContent.js'
 import { TwoBuluImportService } from './user/twoBuluImport.js'
 import TwoBuluImportCoordinator from './user/twoBuluImportCoordinator.js'
 import KmlShareLinkResolverService from './user/shareLinkResolver.js'
+import InteractionService from './interaction/interactionService.js'
 import { createHttpError, randomToken } from './user/security.js'
 import { buildShareMapCatalog, isShareMapSourceAllowed } from './user/shareMapCatalog.js'
 import { classifyTileAgainstScope } from './user/shareSpatialAccess.js'
@@ -102,6 +103,11 @@ const twoBuluImportCoordinator = new TwoBuluImportCoordinator({
   provider: twoBuluImport,
 })
 const kmlShareLinkResolver = new KmlShareLinkResolverService(userSystemConfig.shareLinkResolver || {})
+// 交互数据库和服务按首次调用惰性初始化，不影响只浏览地图的进程启动。
+const interaction = new InteractionService({
+  userContent,
+  config: serviceConfig.interaction || {},
+})
 
 const packageJsonPath = path.resolve(import.meta.dirname, '../../package.json')
 
@@ -440,6 +446,10 @@ const service = {
     return userContent.updateShare(actor, id, input, context)
   },
 
+  deleteUserKmlShare (actor, id, context) {
+    return userContent.deleteShare(actor, id, context)
+  },
+
   listUserKmlShareAccessEvents (actor, id, input) {
     return userContent.listShareAccessEvents(actor, id, input)
   },
@@ -536,6 +546,101 @@ const service = {
     return userContent.exportPublicShareFile(publicId, shareItemId, options)
   },
 
+  // ------------------------------ 交互域（留言/人工审核）
+  getPublicInteractionCommentPolicy (publicId, context) {
+    return interaction.getPublicCommentPolicy(publicId, context)
+  },
+
+  getPublicInteractionInfo (publicId, context) {
+    return interaction.getPublicInfo(publicId, context)
+  },
+
+  listPublicInteractionComments (publicId, query, context) {
+    return interaction.listPublicComments(publicId, query, context)
+  },
+
+  getPublicInteractionCommentCount (publicId, query, context) {
+    return interaction.getPublicCommentCount(publicId, query, context)
+  },
+
+  submitPublicInteractionComment (publicId, input, context) {
+    return interaction.submitComment(publicId, input, context)
+  },
+
+  submitPublicInteractionReport (publicId, input, context) {
+    return interaction.submitReport(publicId, input, context)
+  },
+
+  listInteractionReportsForAdmin (filters, options) {
+    return interaction.listReportsForAdmin(filters, options)
+  },
+
+  getInteractionReportForAdmin (id) {
+    return interaction.getReportForAdmin(id)
+  },
+
+  actionInteractionReport (actor, id, input, context) {
+    const action = String(input?.action || '')
+    const beforeApply = action === 'block_share' || action === 'pause_share'
+      ? ({ report }) => action === 'block_share'
+          ? userContent.blockShare(actor, report.canonical_share_id, { reason: input.reason })
+          : userContent.pauseShareForAdmin(actor, report.canonical_share_id, { reason: input.reason })
+      : undefined
+    return interaction.actionReport(actor, id, { ...input, ...(beforeApply ? { beforeApply } : {}) }, context)
+  },
+
+  listInteractionCommentsForAdmin (filters, options) {
+    return interaction.listCommentsForAdmin(filters, options)
+  },
+
+  getInteractionCommentForAdmin (id) {
+    return interaction.getCommentForAdmin(id)
+  },
+
+  moderateInteractionComment (actor, id, input, context) {
+    return interaction.moderateComment(actor, id, input, context)
+  },
+
+  reprocessInteractionComment (actor, id, context) {
+    return interaction.reprocessComment(actor, id, context)
+  },
+
+  deleteInteractionCommentForAdmin (actor, id, context) {
+    return interaction.deleteCommentForAdmin(actor, id, context)
+  },
+
+  getInteractionPolicyForAdmin () {
+    return interaction.getInteractionPolicyForAdmin()
+  },
+
+  publishInteractionPolicy (actor, input, context) {
+    return interaction.publishInteractionPolicy(actor, input, context)
+  },
+
+  getInteractionKeywordRulesForAdmin () {
+    return interaction.getKeywordRulesForAdmin()
+  },
+
+  publishInteractionKeywordRules (actor, rules, options, context) {
+    return interaction.publishKeywordRules(actor, rules, options, context)
+  },
+
+  listInteractionAiProvidersForAdmin () {
+    return interaction.listAiProvidersForAdmin()
+  },
+
+  configureInteractionAiProvider (actor, input, context) {
+    return interaction.configureAiProviderForAdmin(actor, input, context)
+  },
+
+  setDefaultInteractionAiProvider (actor, id, context) {
+    return interaction.setDefaultAiProviderForAdmin(actor, id, context)
+  },
+
+  verifyInteractionAiProvider (actor, id, context) {
+    return interaction.verifyAiProviderForAdmin(actor, id, context)
+  },
+
   listAllUserKmlShares (actor, input) {
     return userContent.listAllShares(actor, input)
   },
@@ -546,6 +651,10 @@ const service = {
 
   blockUserKmlShare (actor, id, input, context) {
     return userContent.blockShare(actor, id, input, context)
+  },
+
+  deleteUserKmlShareAsAdmin (actor, id, context) {
+    return userContent.deleteShareForAdmin(actor, id, context)
   },
 
   unblockUserKmlShare (actor, id, context) {

@@ -3270,6 +3270,15 @@ body.admin-view #footer-bar {
   padding-top: 6px;
   margin-top: 6px;
 }
+.kml-popup-interaction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 6px;
+  margin-top: 6px;
+}
+.kml-popup-interaction-actions .kml-popup-btn { min-height: 28px; }
 .kml-popup-btn {
   background: none;
   border: 1px solid #cbd5e1;
@@ -4124,6 +4133,44 @@ body.media-preview-open {
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
+}
+
+.media-preview-comments { position: relative; }
+.media-preview-comments svg,
+.media-preview-header-actions [data-media-preview-action="info"] svg,
+.media-preview-header-actions [data-media-preview-action="report"] svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.media-preview-header-actions [data-media-preview-action="comments"]:disabled,
+.media-preview-header-actions [data-media-preview-action="info"]:disabled,
+.media-preview-header-actions [data-media-preview-action="report"]:disabled { opacity: .42; cursor: not-allowed; }
+[data-media-preview-comment-count] { position: absolute; top: -5px; right: -5px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 9px; background: #f59e0b; color: #15211f; font-size: 9px; font-weight: 800; line-height: 15px; text-align: center; }
+
+.map-interaction-panel-root { position: fixed; inset: 0; z-index: 20000; display: grid; place-items: end; background: rgba(0, 0, 0, .28); }
+.map-interaction-panel-root[hidden] { display: none; }
+.map-interaction-panel { display: flex; flex-direction: column; width: min(430px, 100%); height: min(760px, 100%); overflow: hidden; border-left: 1px solid rgba(15, 118, 110, .2); background: #f8fbfa; color: #173335; box-shadow: -18px 0 48px rgba(3, 30, 31, .24); }
+.map-interaction-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid rgba(15, 118, 110, .12); background: #eef7f5; }
+.map-interaction-panel > header span { color: #0f766e; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+.map-interaction-panel > header h2 { margin: 3px 0 0; font-size: 18px; line-height: 1.25; }
+.map-interaction-panel > header button { width: 32px; height: 32px; border: 0; border-radius: 6px; background: transparent; color: #426263; font-size: 24px; cursor: pointer; }
+.map-interaction-body { min-height: 0; overflow: auto; padding: 16px; overscroll-behavior: contain; }
+.map-interaction-message { margin: 16px 0; color: #607778; font-size: 13px; line-height: 1.55; text-align: center; white-space: pre-line; }
+.map-interaction-message.is-error, [data-interaction-form-error] { color: #b42318; }
+.map-interaction-retry { display: block; margin: 0 auto; min-height: 32px; padding: 0 12px; border: 1px solid #b8d1ce; border-radius: 6px; background: #fff; color: #245052; cursor: pointer; }
+.map-interaction-comments { display: grid; gap: 10px; }
+.map-interaction-comment { padding: 11px 12px; border: 1px solid #d3e2df; border-radius: 8px; background: #fff; }
+.map-interaction-comment > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: #234849; }
+.map-interaction-comment time { color: #718686; font-size: 10px; }
+.map-interaction-comment p { margin: 7px 0 0; color: #334155; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.map-interaction-comment-form { display: grid; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #d3e2df; }
+.map-interaction-comment-form label { display: grid; gap: 5px; color: #426263; font-size: 12px; font-weight: 700; }
+.map-interaction-comment-form textarea { min-height: 90px; resize: vertical; padding: 8px; border: 1px solid #b8d1ce; border-radius: 6px; background: #fff; color: #173335; font: inherit; font-size: 13px; }
+.map-interaction-comment-form button { min-height: 36px; border: 1px solid #0f766e; border-radius: 6px; background: #0f766e; color: #fff; cursor: pointer; }
+.map-interaction-comment-form button:disabled { opacity: .55; cursor: wait; }
+.map-interaction-comment-form textarea:focus-visible, .map-interaction-panel button:focus-visible, .map-interaction-retry:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+@media (max-width: 640px) {
+  .map-interaction-panel-root { place-items: stretch; }
+  .map-interaction-panel { width: 100%; height: 100%; border-left: 0; }
+  .map-interaction-panel > header { padding-top: max(16px, var(--safe-area-top)); }
+  .map-interaction-body { padding: 14px max(14px, var(--safe-area-right)) max(20px, var(--safe-area-bottom)) max(14px, var(--safe-area-left)); }
 }
 
 .media-preview-source,

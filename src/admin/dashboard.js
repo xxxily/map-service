@@ -218,6 +218,10 @@ function addAuthorizedLoaders (loaders) {
       limit: adminState.auditLogs.limit,
     })])
   }
+  if (can('admin.comment.read')) loaders.push(['interactionComments', () => adminApi.listInteractionComments({ page: 1, limit: 20 })])
+  if (can('admin.report.read')) loaders.push(['interactionReports', () => adminApi.listInteractionReports({ page: 1, limit: 20 })])
+  if (can('admin.comment.read')) loaders.push(['interactionPolicy', () => adminApi.interactionPolicy()])
+  if (can('admin.moderation.keyword.manage')) loaders.push(['interactionKeywords', () => adminApi.interactionKeywords()])
 }
 
 async function loadDashboard () {

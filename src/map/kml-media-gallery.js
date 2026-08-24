@@ -114,6 +114,8 @@ export function buildKmlMediaGallery (kmlFile, options = {}) {
       ...item,
       kmlId,
       kmlName,
+      sharePublicId: String(kmlFile?.sharePublicId || ''),
+      shareItemId: String(kmlFile?.shareItemId || ''),
       featureIndex,
     }))
   }).map((item, galleryIndex) => ({ ...item, galleryIndex }))

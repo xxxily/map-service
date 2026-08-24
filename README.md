@@ -53,5 +53,6 @@ npm run build
 - [开发指南](docs/development.md)
 - [架构说明](docs/architecture.md)
 - [API 参考](docs/api.md)
+- [交互功能部署与接入](docs/interaction-deployment-and-integration.md)
 - [需求文档](docs/requirements/README.md)
 - [变更日志](docs/changelog.md)

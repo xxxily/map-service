@@ -14,6 +14,11 @@ import service from './service.js'
 import { sanitizeLogUrl } from './logSanitizer.js'
 import { TRANSPARENT_TILE_PNG } from './user/shareSpatialAccess.js'
 import whitelist from './whitelist.js'
+import {
+  assertCommentAuthentication,
+  assertInteractionAdminAccess,
+  assertPublicCommentWrite,
+} from './interaction/accessGuards.js'
 
 const serviceConfig = baseConfig.staticService
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } })
@@ -384,6 +389,54 @@ async function publicShareContext (req, res) {
     accessToken: getCookie(req, shareCookieName(req.params.publicId)),
   }
 }
+
+function interactionQuery (query = {}) {
+  const result = {
+    siteId: query.siteId,
+    sharePublicId: query.sharePublicId,
+    shareItemId: query.shareItemId,
+    featureId: query.featureId,
+    cursor: query.cursor,
+  }
+  for (const key of ['limit', 'page']) {
+    if (query[key] == null || query[key] === '') continue
+    const value = Number(query[key])
+    if (!Number.isSafeInteger(value) || value < 1) {
+      const error = new Error(`${key === 'limit' ? '分页大小' : '页码'}不合法`)
+      error.statusCode = 400
+      error.code = 'VALIDATION_FAILED'
+      throw error
+    }
+    result[key] = value
+  }
+  return result
+}
+
+function requireInteractionAdmin (req, action) {
+  const session = sessionFromRequest(req)
+  assertInteractionAdminAccess({
+    req,
+    session,
+    action,
+    assertPermission: (current, permission) => service.assertUserPermission(current, permission),
+    verifyCsrf: (current, token) => service.verifyUserCsrf(current, token),
+  })
+  return session
+}
+
+function assertSameOriginInteractionRequest (req) {
+  const fetchSite = String(req.get('sec-fetch-site') || '').trim().toLowerCase()
+  const origin = String(req.get('origin') || '').trim()
+  const referer = String(req.get('referer') || '').trim()
+  if (fetchSite !== 'same-origin' && !origin && !referer) {
+    const error = new Error('留言提交来源校验失败')
+    error.statusCode = 403
+    error.code = 'CSRF_INVALID'
+    throw error
+  }
+  assertSameOriginCredentialRequest(req)
+}
+
 
 function sendKmlDownload (res, exported) {
   res.status(200)
@@ -1092,6 +1145,20 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/kml/shares/:id',
+    method: 'delete',
+    describe: '删除个人分享包及访问数据',
+    tags: ['shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.deleteUserKmlShare(
+        requireUser(req, 'share.own.manage'),
+        req.params.id,
+        requestContext(req)
+      ))
+    },
+  },
+  {
     path: '/kml/shares/:id/pause',
     method: 'post',
     describe: '暂停个人分享包',
@@ -1269,6 +1336,110 @@ const userApiRoutes = [
         req.params.shareItemId,
         await publicShareContext(req, res)
       ))
+    },
+  },
+  {
+    path: '/public/kml-shares/:publicId/comments/policy',
+    method: 'get',
+    describe: '获取公开分享留言策略摘要',
+    tags: ['interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const context = await publicShareContext(req, res)
+      res.jsonSuc(service.getPublicInteractionCommentPolicy(req.params.publicId, context))
+    },
+  },
+  {
+    path: '/public/kml-shares/:publicId/info',
+    method: 'get',
+    describe: '获取公开分享来源说明和举报能力',
+    tags: ['interaction', 'shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      const context = await publicShareContext(req, res)
+      res.jsonSuc(service.getPublicInteractionInfo(req.params.publicId, context))
+    },
+  },
+  {
+    path: '/public/kml-shares/:publicId/comments/count',
+    method: 'get',
+    describe: '获取公开分享已审核留言准确计数',
+    tags: ['interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const context = await publicShareContext(req, res)
+      res.jsonSuc(service.getPublicInteractionCommentCount(
+        req.params.publicId,
+        interactionQuery(req.query || {}),
+        context
+      ))
+    },
+  },
+  {
+    path: '/public/kml-shares/:publicId/comments',
+    method: 'get',
+    describe: '获取公开分享已审核留言',
+    tags: ['interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const context = await publicShareContext(req, res)
+      res.jsonSuc(service.listPublicInteractionComments(
+        req.params.publicId,
+        interactionQuery(req.query || {}),
+        context
+      ))
+    },
+  },
+  {
+    path: '/public/kml-shares/:publicId/reports',
+    method: 'post',
+    describe: '提交公开分享举报',
+    tags: ['interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const session = sessionFromRequest(req)
+      const context = await publicShareContext(req, res)
+      context.session = session
+      assertPublicCommentWrite({
+        req,
+        session,
+        verifyCsrf: (current, token) => service.verifyUserCsrf(current, token),
+        assertSameOrigin: assertSameOriginInteractionRequest,
+      })
+      const result = service.submitPublicInteractionReport(req.params.publicId, req.body || {}, context)
+      res.status(202).jsonSuc({ accepted: true, reportId: result.id, status: result.status, message: '举报已提交，平台会按规则处理' })
+    },
+  },
+  {
+    path: '/public/kml-shares/:publicId/comments',
+    method: 'post',
+    describe: '提交公开分享留言',
+    tags: ['interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const session = sessionFromRequest(req)
+      const context = await publicShareContext(req, res)
+      context.session = session
+      const policy = service.getPublicInteractionCommentPolicy(req.params.publicId, context)
+      assertCommentAuthentication({
+        session,
+        policy: { comments: { enabled: policy.enabled, anonymous: policy.anonymous } },
+      })
+      assertPublicCommentWrite({
+        req,
+        session,
+        verifyCsrf: (current, token) => service.verifyUserCsrf(current, token),
+        assertSameOrigin: assertSameOriginInteractionRequest,
+      })
+      const result = service.submitPublicInteractionComment(req.params.publicId, req.body || {}, context)
+      res.status(202).jsonSuc({
+        accepted: true,
+        commentId: result.id,
+        status: result.moderationStatus,
+        publiclyVisible: result.pending === false,
+        duplicate: result.duplicate === true,
+        message: result.pending ? '留言已提交，审核通过后显示' : '留言已发布',
+      })
     },
   },
   {
@@ -1496,6 +1667,20 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/admin/kml/shares/:id',
+    method: 'delete',
+    describe: '删除用户 KML 分享及访问数据',
+    tags: ['admin-shares'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.deleteUserKmlShareAsAdmin(
+        requireAdmin(req, 'admin.share.moderate'),
+        req.params.id,
+        requestContext(req)
+      ))
+    },
+  },
+  {
     path: '/admin/kml/shares/:id/unblock',
     method: 'post',
     describe: '解除用户 KML 分享封禁',
@@ -1522,6 +1707,222 @@ const userApiRoutes = [
         req.body || {},
         requestContext(req)
       ))
+    },
+  },
+  {
+    path: '/admin/comments',
+    method: 'get',
+    describe: '查询留言审核队列',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'comments.list')
+      const query = interactionQuery(req.query || {})
+      res.jsonSuc(service.listInteractionCommentsForAdmin({
+        moderationStatus: req.query?.moderationStatus,
+        contentStatus: req.query?.contentStatus,
+        canonicalShareId: req.query?.canonicalShareId,
+        shareItemId: req.query?.shareItemId,
+        featureId: req.query?.featureId,
+      }, { page: query.page, limit: query.limit }))
+    },
+  },
+  {
+    path: '/admin/comments/:id',
+    method: 'get',
+    describe: '获取留言详情和审核链',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'comments.detail')
+      res.jsonSuc(service.getInteractionCommentForAdmin(req.params.id))
+    },
+  },
+  {
+    path: '/admin/comments/:id/review',
+    method: 'post',
+    describe: '人工审核留言',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'comments.review')
+      res.jsonSuc(service.moderateInteractionComment(
+        actor,
+        req.params.id,
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/admin/comments/:id/reprocess',
+    method: 'post',
+    describe: '使用当前策略重新审核留言',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'comments.reprocess')
+      res.jsonSuc(service.reprocessInteractionComment(
+        actor,
+        req.params.id,
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/admin/comments/:id',
+    method: 'delete',
+    describe: '软删除留言',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'comments.review')
+      res.jsonSuc(service.deleteInteractionCommentForAdmin(actor, req.params.id, requestContext(req)))
+    },
+  },
+  {
+    path: '/admin/moderation/settings',
+    method: 'get',
+    describe: '获取留言审核策略',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'moderation.settings.read')
+      res.jsonSuc(service.getInteractionPolicyForAdmin())
+    },
+  },
+  {
+    path: '/admin/reports',
+    method: 'get',
+    describe: '查询举报工单',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'reports.list')
+      const query = interactionQuery(req.query || {})
+      res.jsonSuc(service.listInteractionReportsForAdmin({ status: req.query?.status, priority: req.query?.priority, canonicalShareId: req.query?.canonicalShareId, scope: req.query?.scope, reportType: req.query?.reportType || req.query?.type }, { page: query.page, limit: query.limit }))
+    },
+  },
+  {
+    path: '/admin/reports/:id',
+    method: 'get',
+    describe: '获取举报详情',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => { noStore(res); requireInteractionAdmin(req, 'reports.detail'); res.jsonSuc(service.getInteractionReportForAdmin(req.params.id)) },
+  },
+  {
+    path: '/admin/reports/:id/actions',
+    method: 'post',
+    describe: '处理举报工单',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => { noStore(res); const actor = requireInteractionAdmin(req, 'reports.actions'); res.jsonSuc(service.actionInteractionReport(actor, req.params.id, req.body || {}, requestContext(req))) },
+  },
+  {
+    path: '/admin/moderation/settings',
+    method: 'put',
+    describe: '发布留言审核策略',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.settings.write')
+      res.jsonSuc(service.publishInteractionPolicy(actor, req.body || {}, requestContext(req)))
+    },
+  },
+  {
+    path: '/admin/moderation/keywords',
+    method: 'get',
+    describe: '获取当前关键词审核规则',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'moderation.keywords')
+      res.jsonSuc(service.getInteractionKeywordRulesForAdmin())
+    },
+  },
+  {
+    path: '/admin/moderation/keywords',
+    method: 'put',
+    describe: '发布关键词审核规则',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.keywords')
+      const body = req.body && typeof req.body === 'object' ? req.body : {}
+      res.jsonSuc(service.publishInteractionKeywordRules(
+        actor,
+        Array.isArray(body.rules) ? body.rules : [],
+        { changeReason: body.changeReason || '' },
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/admin/moderation/providers',
+    method: 'get',
+    describe: '获取 AI 审核 provider 配置（已脱敏）',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      requireInteractionAdmin(req, 'moderation.providers')
+      res.jsonSuc(service.listInteractionAiProvidersForAdmin())
+    },
+  },
+  {
+    path: '/admin/moderation/providers',
+    method: 'post',
+    describe: '新增或配置 AI 审核 provider',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.providers')
+      const body = req.body && typeof req.body === 'object' ? req.body : {}
+      if (!String(body.id || '').trim() || !String(body.endpoint || '').trim() || !String(body.secretRef || '').trim()) {
+        const error = new Error('provider id、endpoint、secretRef 均不能为空')
+        error.statusCode = 400
+        error.code = 'VALIDATION_FAILED'
+        throw error
+      }
+      res.status(201).jsonSuc(service.configureInteractionAiProvider(actor, body, requestContext(req)))
+    },
+  },
+  {
+    path: '/admin/moderation/providers',
+    method: 'put',
+    describe: '更新 AI 审核 provider 配置',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.providers')
+      const body = req.body && typeof req.body === 'object' ? req.body : {}
+      if (!String(body.id || '').trim() || !String(body.endpoint || '').trim()) {
+        const error = new Error('provider id、endpoint 均不能为空')
+        error.statusCode = 400
+        error.code = 'VALIDATION_FAILED'
+        throw error
+      }
+      res.jsonSuc(service.configureInteractionAiProvider(actor, body, requestContext(req)))
+    },
+  },
+  {
+    path: '/admin/moderation/providers/:id/verify',
+    method: 'post',
+    describe: '验证 AI provider 连接并更新健康状态',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.providers')
+      res.jsonSuc(await service.verifyInteractionAiProvider(actor, req.params.id, requestContext(req)))
+    },
+  },
+  {
+    path: '/admin/moderation/providers/:id/default',
+    method: 'post',
+    describe: '将已验证的 AI provider 设为默认',
+    tags: ['admin-interaction'],
+    handler: async (req, res) => {
+      noStore(res)
+      const actor = requireInteractionAdmin(req, 'moderation.providers')
+      res.jsonSuc(service.setDefaultInteractionAiProvider(actor, req.params.id, requestContext(req)))
     },
   },
   {

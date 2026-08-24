@@ -61,6 +61,42 @@ const config = {
         String(process.env.MAP_SERVICE_REQUIRE_SECURE_BOOTSTRAP || '').toLowerCase() === 'true',
     },
 
+    // 留言与审核使用独立数据库，避免交互域迁移影响用户系统 schema。
+    interaction: {
+      databasePath: process.env.MAP_SERVICE_INTERACTION_DATABASE ||
+        path.resolve(rootPath, './.db/interaction.sqlite'),
+      secretEncryptionKey: process.env.MAP_SERVICE_INTERACTION_SECRET_KEY ||
+        process.env.MAP_SERVICE_SHARE_SECRET_KEY ||
+        process.env.MAP_SERVICE_ADMIN_TOKEN_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'map-service-dev-interaction-secret'),
+      ai: {
+        enabled: String(process.env.MAP_SERVICE_AI_ENABLED || '').toLowerCase() === 'true',
+        providerId: process.env.MAP_SERVICE_AI_PROVIDER_ID || '',
+        promptVersion: process.env.MAP_SERVICE_AI_PROMPT_VERSION || 'interaction-moderation-v1',
+        policyVersion: process.env.MAP_SERVICE_AI_POLICY_VERSION || process.env.MAP_SERVICE_AI_PROMPT_VERSION || 'interaction-moderation-v1',
+        timeoutMs: Number(process.env.MAP_SERVICE_AI_TIMEOUT_MS || 3000),
+        maxAttempts: Number(process.env.MAP_SERVICE_AI_MAX_ATTEMPTS || 2),
+        dailyBudget: Number(process.env.MAP_SERVICE_AI_DAILY_BUDGET || 0),
+        maxConcurrency: Number(process.env.MAP_SERVICE_AI_MAX_CONCURRENCY || 2),
+        providerVerificationTtlMs: Number(process.env.MAP_SERVICE_AI_PROVIDER_VERIFICATION_TTL_MS || 24 * 60 * 60 * 1000),
+        allowHosts: String(process.env.MAP_SERVICE_AI_ALLOWED_HOSTS || '').split(',').map(item => item.trim()).filter(Boolean),
+        providers: [],
+      },
+      commentRateLimit: {
+        maxRequests: Number(process.env.MAP_SERVICE_COMMENT_RATE_MAX || 10),
+        windowMs: Number(process.env.MAP_SERVICE_COMMENT_RATE_WINDOW_MS || 60 * 1000),
+        maxEntries: 10000,
+      },
+      retention: {
+        publicCommentsDays: Number(process.env.MAP_SERVICE_INTERACTION_PUBLIC_RETENTION_DAYS || 730),
+        privateCommentsDays: Number(process.env.MAP_SERVICE_INTERACTION_PRIVATE_RETENTION_DAYS || 90),
+        anonymousContactDays: Number(process.env.MAP_SERVICE_INTERACTION_CONTACT_RETENTION_DAYS || 90),
+        aiRawResultsDays: Number(process.env.MAP_SERVICE_INTERACTION_AI_RETENTION_DAYS || 30),
+        reportsDays: Number(process.env.MAP_SERVICE_INTERACTION_REPORT_RETENTION_DAYS || 730),
+        reportEventsDays: Number(process.env.MAP_SERVICE_INTERACTION_REPORT_EVENTS_RETENTION_DAYS || 30),
+        outboxDays: Number(process.env.MAP_SERVICE_INTERACTION_OUTBOX_RETENTION_DAYS || 90),
+      },
+    },
+
     admin: {
       dataDir: path.resolve(rootPath, './.db/admin'),
       auth: {

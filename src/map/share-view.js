@@ -286,6 +286,7 @@ export async function loadActiveShareFiles (options = {}) {
           ...summary,
           ...detail,
           id: summary.shareItemId,
+          sharePublicId: publicId,
           shareItemId: summary.shareItemId,
           isPublic: true,
           isShare: true,

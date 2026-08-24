@@ -1,6 +1,6 @@
 # KML 点位留言、内容举报与审核治理需求
 
-> 状态：Phase 0 已完成；Phase 1 待实施
+> 状态：Phase 0、Phase 1A-F、Phase 2 受控 POC 与 Phase 3 AI 审核已完成；Artalk 生产部署延期，内部 Interaction Service 继续作为事实源。
 > 版本：v1.0
 > 更新日期：2026-08-23
 > 适用范围：2D/3D 地图、公开 KML 分享、KML 点位富媒体浏览、用户体系、管理后台
@@ -249,6 +249,7 @@ AI 凭据只保存在该服务或外部密钥管理系统中；map-service 和�
 - 公开列表只显示审核通过内容、公开显示名和相对时间；不显示邮箱、手机号、审核分数、规则命中和管理员备注。
 - 登录用户提交后可看到自己的“待审核”占位状态，但该状态只对本人可见，不能被其他访客通过计数或列表推断。
 - 回复在第一阶段限制为一级回复；是否允许普通用户互相回复由站点设置决定，管理员回复始终可配置。
+- 回复只能引用同一资源、`active + approved` 的一级父留言。父留言已有回复后不得改变稳定资源身份或层级；父留言失去公开资格时回复同步转为非公开，父留言进入 `orphaned` 时回复同步进入 `orphaned`，恢复父留言不自动恢复旧回复。
 - 留言编辑会生成新 revision 并重新进入审核；第一阶段不提供公开编辑入口，用户可删除自己的留言，删除为软删除。
 
 ### 7.2 登录留言
@@ -280,6 +281,8 @@ AI 凭据只保存在该服务或外部密钥管理系统中；map-service 和�
 | `parentId` | 可选，只允许引用同一资源且状态为 `approved` 的一级留言 |
 | `consent` | 必须明确同意留言规则和隐私说明，记录规则版本 |
 | `clientRequestId` | 可选幂等键，防止移动端重复提交 |
+
+客户端只提交明确的同意结果；具体 `consentPolicyVersion` 由服务端从当前策略选择并写入，留言和举报记录必须引用真实存在的策略版本，不允许静默使用固定默认版本或信任客户端自报版本。
 
 服务端应拒绝控制字符、过长链接串、明显的脚本标签、重复提交和超出资源/账号配额的请求。
 
@@ -373,7 +376,8 @@ AI 凭据只保存在该服务或外部密钥管理系统中；map-service 和�
 - `reasonCodes` 使用受控枚举，管理后台可以展示解释，但不得把模型原始长文本直接暴露给公众。
 - AI 只提供审核建议，不能自动判定法律责任、权利归属或事实真假；`illegal_or_ip` 默认转人工/举报队列。
 - provider 健康检查、单次/每日预算、并发数、超时、重试和熔断均可配置；健康检查不得把真实留言发送给外部服务。
-- 管理员修改默认 provider、模型、提示词或自动放行等级时，需要最近再验证并写审计日志。
+- `dailyBudget` 为正整数时是每日硬上限，`0` 表示无限制但仍受并发、超时和熔断约束；默认 `timeoutMs=3000`、`maxAttempts=2`、`maxConcurrency=2`。
+- 健康验证默认 TTL 为 24 小时（可配置）；过期 provider 自动降为 `unknown`、禁用并清除默认指针。修改 endpoint、密钥引用、adapter、模型、提示词版本、超时、重试、预算、并发或脱敏配置后必须重新验证，并写审计日志。
 
 ### 8.4 人工审核
 
@@ -414,6 +418,8 @@ AI 凭据只保存在该服务或外部密钥管理系统中；map-service 和�
 | `other` | 其他问题 | 需要具体描述 |
 
 举报字段：`type`、`resourceRef`、`description`、`reporterMode`、`displayName`、`email`、`phone`、`rightsAttestation`、`evidenceText`、`consent`、`clientRequestId`。
+
+字段上限：`description` 必填且最多 4000 个 Unicode 字符；`evidenceText` 可选且最多 8000 个字符；`displayName` 最多 64 个字符；`clientRequestId` 最多 128 个 ASCII 字符。`rightsAttestation` 是布尔确认，`copyright_takedown` 必须为 `true`，并同时提供权利人/代理人名称和至少一个联系方式。
 
 本期不允许上传附件，也不由服务端请求 `evidenceText` 中的 URL；后续如增加附件，必须单独设计病毒扫描、对象存储和保留策略。
 
@@ -499,7 +505,7 @@ admin.report.manage
 
 ## 11. API 契约草案
 
-实现阶段必须把以下契约同步补入 `docs/api.md`、`docs/api-user-system.md` 和服务专用 API 文档；本节是需求基线，不代表当前代码已经提供这些接口。
+以下契约已同步至 `docs/api.md`、`docs/api-user-system.md` 和服务专用 API 文档；实现状态以对应 API 文档和集成测试为准。Artalk 生产部署仍是明确延期项，不影响内部留言、举报、来源信息和 AI/provider 闭环。
 
 ### 11.1 公开 facade
 
@@ -507,9 +513,10 @@ admin.report.manage
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/public/kml-shares/:publicId/comments` | 分享访问授权 | 获取当前分享/点位已审核留言和总数 |
-| `POST` | `/public/kml-shares/:publicId/comments` | 分享访问授权；登录写请求还需 CSRF | 提交留言，返回 `202` |
-| `GET` | `/public/kml-shares/:publicId/comments/policy` | 分享访问授权 | 获取匿名开关、字段策略和规则版本摘要 |
+| `GET` | `/public/kml-shares/:publicId/comments` | 分享访问授权 | 已实现：获取当前分享/点位已审核留言 |
+| `GET` | `/public/kml-shares/:publicId/comments/count` | 分享访问授权 | 已实现：获取准确公开留言计数 |
+| `POST` | `/public/kml-shares/:publicId/comments` | 分享访问授权；登录写请求还需 CSRF，匿名需同源校验 | 已实现：提交留言，返回 `202` |
+| `GET` | `/public/kml-shares/:publicId/comments/policy` | 分享访问授权 | 已实现：获取匿名开关、字段策略和规则版本摘要 |
 | `POST` | `/public/kml-shares/:publicId/reports` | 分享访问授权；按策略允许匿名 | 提交举报，返回 `202` |
 | `GET` | `/public/kml-shares/:publicId/info` | 分享访问授权 | 获取来源说明、协议链接和举报能力 descriptor |
 
@@ -693,6 +700,7 @@ Content-Type: application/json
 - 拒绝、垃圾和待审留言默认保留 90 天，用于申诉、规则调优和审计；到期删除原文，只保留计数和不可逆摘要。
 - 举报原文和联系方式默认保留 730 天；法律/权利工单可由管理员标记为 legal hold，暂停自动删除。
 - 匿名联系方式默认保留 90 天，AI 原始响应默认保留 30 天；不得因为审计需要永久保存完整 PII。
+- 举报、举报事件和已完成 outbox 事件的默认窗口分别为 730、30、90 天；服务配置统一位于 `config.staticService.interaction.retention`，对应 `MAP_SERVICE_INTERACTION_*_RETENTION_DAYS` 环境变量。`service/bin/cronJob/interactionRetention.js` 按 Asia/Shanghai 每日 03:20 执行清理，法律保留记录不删除。
 - 用户删除账号时，账号关联留言按站点策略匿名化或软删除；不得删除正在 legal hold 的举报证据。
 - 所有删除任务必须幂等、可观测、可暂停，并在审计中记录数量而非原文。
 
@@ -777,22 +785,28 @@ Phase 0 已冻结的实现基线：
 - 公开 manifest/file 读取前执行 fail-closed 校验；旧快照缺少 `resourceRefs` 时只做一次兼容性派生，已有但不一致的元数据直接返回 `PUBLISHED_RESOURCE_REFERENCE_INVALID`。
 - 第三方适配器仅生成 provider locator，内部稳定 shareId 和最终审核状态仍由 Interaction Adapter/Comment Service 掌握。
 
-Phase 0 交付物已落库：资源引用和状态策略纯函数、权限码种子、公开分享引用检查、第三方 provider locator POC、对应 `node:test` 测试和本评审文档。Phase 0 不包含生产 provider、留言/举报 API 或管理页面。
+Phase 0 交付物已落库：资源引用和状态策略纯函数、权限码种子、公开分享引用检查、第三方 provider locator POC、对应 `node:test` 测试和本评审文档。
 
-### Phase 1：留言 + 举报基础闭环（待实施）
+### Phase 1：留言 + 举报基础闭环（已完成）
 
-- 独立 Comment/Report schema 和服务接口。
-- 同源 facade、媒体预览留言/信息图标、留言列表/提交、举报表单。
-- 仅启用确定性校验、关键词规则和人工审核，不启用 AI 自动放行。
-- 管理后台完成留言队列、举报队列、审计和基础限流。
+- [x] 独立 Comment schema、Comment/Moderation/Adapter 服务接口和 outbox。
+- [x] 同源留言 facade、留言列表/计数/策略/提交及管理审核/重新审核/策略/关键词接口。
+- [x] 独立 Report Service、公开举报/来源信息 facade、举报表单和管理员工单。
+- [x] 确定性校验、关键词规则和人工审核；AI 仅作为辅助审计，不改变人工最终状态。
+- [x] 管理后台完成留言队列、举报队列、审计和基础限流。
 
-### Phase 2：AI 审核和运营配置
+### Phase 2：Artalk 受控 POC（已完成，生产部署延期）
 
-- Moderation Service provider 适配器、提示词版本、结构化输出、预算/熔断。
+- 已锁定版本、验证 API/export-import smoke，并完成 Interaction Adapter 边界设计。
+- Artalk 不作为内部事实源；生产部署需要单独的受控 HTTPS origin 和维护窗口。
+
+### Phase 3：AI 审核和运营配置（已完成）
+
+- 服务端受控 provider adapter、提示词版本、结构化输出、预算/熔断和健康验证。
 - 等级到动作配置、人工覆盖、重新审核、规则试运行和影响预览。
-- PII 脱敏、外发审计、指标和失败重放。
+- PII 脱敏、外发审计、指标和失败重放；provider 故障 fail-closed。
 
-### Phase 3：通知和更细粒度治理
+### Phase 4：通知和更细粒度治理（待开始）
 
 - 可选邮件/站内通知，通知内容不泄露审核内部信息。
 - 媒体级隐藏、分享所有者脱敏通知、侵权工单补充材料和 legal hold。

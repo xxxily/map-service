@@ -36,7 +36,7 @@ MAP_SERVICE_USER_DATABASE=/absolute/path/map-service.sqlite
 
 反向代理部署使用 `MAP_SERVICE_TRUST_PROXY` 显式声明可信跳数或网段；默认关闭。认证限流和 Secure Cookie 只使用 Express 经过该配置解析的 `req.ip` / `req.secure`，业务代码不得直接读取转发头决定信任边界。
 
-初始化、备份和恢复流程见 [用户体系部署与运维](./user-system-deployment.md)。
+用户体系的初始化、备份和恢复流程见 [用户体系部署与运维](./user-system-deployment.md)；留言、审核、举报和 AI 审核的生产部署与客户端接入见 [交互功能部署与接入手册](./interaction-deployment-and-integration.md)。
 
 常用脚本：
 

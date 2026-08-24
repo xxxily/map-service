@@ -617,7 +617,7 @@ test('favorites validate coordinates, filter private data and mark deleted KML s
   }
 })
 
-test('multi-KML shares expose only public item IDs and detach trashed files', () => {
+test('multi-KML shares keep published snapshots when source KML is trashed', () => {
   const harness = createHarness()
   try {
     const first = harness.service.syncKmlFiles(harness.one, {
@@ -672,14 +672,15 @@ test('multi-KML shares expose only public item IDs and detach trashed files', ()
 
     harness.service.trashKml(harness.one, second.id)
     const afterOneRemoval = harness.service.getPublicShareManifest(share.publicId)
-    assert.equal(afterOneRemoval.itemCount, 1)
+    assert.equal(afterOneRemoval.itemCount, 2)
     harness.service.restoreKml(harness.one, second.id)
-    assert.equal(harness.service.getPublicShareManifest(share.publicId).itemCount, 1)
+    assert.equal(harness.service.getPublicShareManifest(share.publicId).itemCount, 2)
     harness.service.trashKml(harness.one, first.id)
-    assert.throws(
-      () => harness.service.getPublicShareManifest(share.publicId),
-      error => error.statusCode === 410 && error.code === 'SHARE_PAUSED'
-    )
+    assert.equal(harness.service.getPublicShareManifest(share.publicId).itemCount, 2)
+    const paused = harness.service.pauseShare(harness.one, share.id)
+    assert.equal(paused.status, 'paused')
+    const resumed = harness.service.resumeShare(harness.one, share.id)
+    assert.equal(resumed.status, 'active')
   } finally {
     harness.close()
   }
@@ -1037,6 +1038,56 @@ test('share expiry, download control, site policy and administrator moderation a
     const inspectable = harness.service.listAllShares(contentAuditor)
     assert.equal(inspectable.items[0].publicId, share.publicId)
     assert.equal(inspectable.items[0].shareUrl, `/share/${share.publicId}`)
+  } finally {
+    harness.close()
+  }
+})
+
+test('share deletion is owner/admin authorized, cascades access data, and preserves source KML', async () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '可删除分享源',
+      features: [point('deletion-point')],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '待删除分享',
+      items: [{ kmlId: document.id }],
+      password: 'delete-password',
+    })
+    const access = await harness.service.authorizePublicShare(share.publicId, { password: 'delete-password' })
+    harness.service.getPublicShareManifest(share.publicId, { accessToken: access.accessToken })
+    assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM share_access_sessions WHERE share_id = ?').get(share.id).count, 1)
+    assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM share_access_events WHERE share_id = ?').get(share.id).count, 1)
+
+    assert.throws(
+      () => harness.service.deleteShare(harness.two, share.id),
+      error => error.statusCode === 404 && error.code === 'RESOURCE_NOT_FOUND'
+    )
+    const deleted = harness.service.deleteShare(harness.one, share.id)
+    assert.deepEqual(deleted, {
+      id: share.id,
+      status: 'deleted',
+      deletedItems: 1,
+      deletedAccessSessions: 1,
+      deletedAccessEvents: 1,
+      sourceKmlPreserved: true,
+    })
+    assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM kml_documents WHERE id = ?').get(document.id).count, 1)
+    assert.equal(harness.service.getKml(harness.one, document.id).id, document.id)
+    assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM kml_share_items WHERE share_id = ?').get(share.id).count, 0)
+    assert.throws(
+      () => harness.service.getPublicShareManifest(share.publicId),
+      error => error.statusCode === 404 && error.code === 'RESOURCE_NOT_FOUND'
+    )
+
+    const adminShare = harness.service.createShare(harness.one, {
+      title: '管理员删除分享',
+      items: [{ kmlId: document.id }],
+    })
+    const adminDeleted = harness.service.deleteShareForAdmin(harness.admin, adminShare.id)
+    assert.equal(adminDeleted.status, 'deleted')
+    assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM kml_documents WHERE id = ?').get(document.id).count, 1)
   } finally {
     harness.close()
   }

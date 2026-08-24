@@ -51,6 +51,79 @@ X-CSRF-Token: <csrf-token>
 
 用户、个人 KML、收藏、多 KML 分享和 RBAC 的完整契约见 [用户体系与多 KML 分享 API](./api-user-system.md)，部署、初始化、备份与恢复见 [用户体系部署与运维](./user-system-deployment.md)。
 
+## 交互领域契约（Phase 1B/C/3）
+
+部署、初始化、Cookie/CSRF 接入、AI provider、备份恢复和 agent 执行步骤见[交互功能部署与接入手册](./interaction-deployment-and-integration.md)。本文继续作为字段、路由、错误码和响应脱敏边界的 API 事实源。
+
+Phase 1A 的内部数据契约和独立数据库已经冻结，Phase 1B/C 已接入留言、审核、策略、关键词、举报和来源信息服务与路由，Phase 3 增加 AI provider 管理、异步审核和加密审计。实现位置为 `shared/interaction-contracts.js`、`shared/interaction-ai.js`、`service/bin/interaction/`、`service/bin/service.js` 和 `service/bin/simpleApi.js`；数据库文件默认为 `.db/interaction.sqlite`，版本为 `1`，不复用或升级用户数据库版本。
+
+### 资源与输入边界
+
+- 留言只允许 `scope=feature`；举报允许 `share`、`feature`、`media`。资源引用必须通过已发布快照校验，外部只使用 `sharePublicId/shareItemId/featureId/mediaId`，不接受内部分享 ID。
+- 留言正文上限 2000 个 Unicode 字符；举报说明和证据分别受 4000/8000 字符上限约束，侵权下架另需明确的布尔权利声明。服务端执行 NFKC、换行规范化、控制字符、脚本/危险链接协议和 HTML 标签/事件属性检查。
+- 客户端只提交明确的 `consent=true`；`consentPolicyVersion` 必须由服务端从当前策略显式传入，并且必须引用 `interaction_policy_versions` 中真实存在的版本，不允许缺省为固定版本或信任客户端自报版本。
+- 回复只允许引用同一资源、`active + approved` 的一级父留言。父留言已有回复后不得修改其稳定资源身份或层级；父留言隐藏、拒绝或其他原因失去公开资格时，现有回复同步转为非公开，父留言进入 `orphaned` 时回复同步进入 `orphaned`，恢复父留言不会自动恢复旧回复。
+- 联系方式按标准化后的邮箱/手机号保存为密文与 HMAC 哈希；AES-256-GCM v1 密文在数据库层校验 Base64URL 分段、12 字节 IV、16 字节认证标签和非空载荷。公开响应不返回联系方式、原文密文、用户内部 ID、AI 分数、关键词命中或管理备注；管理详情只返回受控 AI 分数、置信度、策略版本、结果哈希和原始结果是否仍在保留期内。
+- 解密缺少密钥、密文格式非法和认证失败分别使用内部类型化错误 `INTERACTION_SECRET_REQUIRED`、`INTERACTION_CIPHERTEXT_INVALID`、`INTERACTION_DECRYPT_FAILED`；公开 API 不直接泄露密钥或密文细节。
+- `clientRequestId` 是有界幂等键；游标和幂等键只允许不透明 ASCII 标识。重复写入由数据库唯一索引和服务层共同处理。
+
+### 已开放的公开 facade
+
+| 方法 | 路径 | 写入约束 |
+| --- | --- | --- |
+| `GET` | `/api/v1/public/kml-shares/:publicId/comments` | 只返回同一已授权资源上 `active + approved` 留言；支持 `shareItemId`、`featureId`、`cursor`、`limit` |
+| `GET` | `/api/v1/public/kml-shares/:publicId/comments/count` | 返回同一资源的准确公开计数，不计入待审或隐藏留言 |
+| `GET` | `/api/v1/public/kml-shares/:publicId/comments/policy` | 只返回 `enabled`、策略版本、匿名开关、联系方式要求、长度和审核摘要 |
+| `POST` | `/api/v1/public/kml-shares/:publicId/comments` | 登录会话必须通过 CSRF；匿名提交必须策略允许且通过同源校验；成功返回 `202`，留言默认进入 `pending` |
+| `POST` | `/api/v1/public/kml-shares/:publicId/reports` | 登录会话必须通过 CSRF；匿名举报按策略和同源校验；正文不进入留言/审核流，成功返回通用 `202` |
+| `GET` | `/api/v1/public/kml-shares/:publicId/info` | 分享访问授权；返回来源说明、协议链接和已脱敏举报能力 descriptor |
+
+所有公开交互请求先复用分享访问、站点访问和已发布快照资源授权；无法区分“不存在”和“无权访问”的资源统一按 `RESOURCE_NOT_FOUND` 处理。公开响应不包含正文密文、联系方式、用户内部 ID、审核内部字段或管理备注。
+
+### 已开放的管理 facade
+
+管理路由使用统一会话、权限码和写操作 CSRF 校验，并设置 `Cache-Control: no-store`：
+
+| 方法 | 路径 | 权限 |
+| --- | --- | --- |
+| `GET` | `/api/v1/admin/comments` | `admin.comment.read` |
+| `GET` | `/api/v1/admin/comments/:id` | `admin.comment.read` |
+| `POST` | `/api/v1/admin/comments/:id/review` | `admin.comment.moderate` + CSRF |
+| `POST` | `/api/v1/admin/comments/:id/reprocess` | `admin.comment.moderate` + CSRF；使用当前策略和关键词版本重新审核 |
+| `DELETE` | `/api/v1/admin/comments/:id` | `admin.comment.moderate` + CSRF，软删除 |
+| `GET` | `/api/v1/admin/moderation/settings` | `admin.comment.read` |
+| `PUT` | `/api/v1/admin/moderation/settings` | `admin.comment.policy.manage` + CSRF |
+| `GET` | `/api/v1/admin/moderation/keywords` | `admin.moderation.keyword.manage` |
+| `PUT` | `/api/v1/admin/moderation/keywords` | `admin.moderation.keyword.manage` + CSRF |
+
+重新审核会保留历史决策，并按 `commentId + contentRevision + 当前策略版本 + 当前关键词版本` 幂等；重复请求返回首次决策，不重复改变最终状态。AI 审核在留言创建后异步执行，结果只追加 `stage=ai` 审计决策，不直接改变 `comments.moderation_status`；人工审核始终拥有最终权威。AI provider 故障、超时、预算耗尽、熔断或结构化响应非法时统一记录 `unknown + review` 的 fail-closed 决策，地图/媒体主链路继续可用。
+
+### AI provider 管理与异步审核
+
+管理接口要求登录会话、`admin.moderation.ai.manage` 权限和写操作 CSRF；响应永不返回 `secretRef`、密钥明文、请求头或 provider 原始响应。
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/admin/moderation/providers` | `admin.moderation.ai.manage` | 返回 provider 脱敏目录、启用状态、默认项、配置/熔断状态 |
+| `POST` | `/api/v1/admin/moderation/providers` | `admin.moderation.ai.manage` + CSRF | 新增或配置 provider；`id`、`endpoint` 必填，`secretRef` 首次配置必填 |
+| `PUT` | `/api/v1/admin/moderation/providers` | `admin.moderation.ai.manage` + CSRF | 更新 provider；可省略 `secretRef`，服务端保留已有引用 |
+| `POST` | `/api/v1/admin/moderation/providers/:id/verify` | `admin.moderation.ai.manage` + CSRF | 使用服务端 adapter 做无留言健康检查；通过后才可启用或设为默认 |
+| `POST` | `/api/v1/admin/moderation/providers/:id/default` | `admin.moderation.ai.manage` + CSRF | 将最近验证且已启用的 provider 设为默认 |
+
+配置只接受服务端注册的 `adapterId`（当前为 `openai-compatible`）；浏览器不能提交函数、请求头或密钥明文。新 provider 默认保持未验证/不可用，必须先调用 `verify`；未通过验证的 provider 不能成为默认项。`endpoint` 只允许 HTTPS，拒绝凭据、localhost、内网/环回、link-local、metadata、文档保留地址和未在 allowlist 中的主机；实际请求会重新解析 DNS、固定公开地址并拒绝重定向。provider 请求有独立并发槽位、每日预算、每次重试独立计费和熔断；引擎强制超时，即使适配器忽略 `AbortSignal` 也会释放槽位。留言正文在外发前脱敏邮箱、手机号、IP、会话令牌和内部 ID。
+
+执行默认值为 `timeoutMs=3000`、`maxAttempts=2`、`maxConcurrency=2`。`dailyBudget` 为正整数时表示每日硬上限；`dailyBudget=0` 表示不设每日上限（不是立即耗尽），仍受并发、超时和熔断约束。最近一次健康验证默认有效 24 小时，可由 `MAP_SERVICE_AI_PROVIDER_VERIFICATION_TTL_MS` 调整，超过 TTL 的 provider 会自动降为 `unknown`、禁用并清除默认指针。
+
+更新 endpoint、`secretRef`、`adapterId`、model、promptVersion、timeout、maxAttempts、dailyBudget、maxConcurrency 或 redaction 后，服务端会清除验证状态、禁用 provider 并要求重新调用 `verify`；只有重新验证成功后才允许启用或设为默认。`verify` 只发送健康探针，不发送真实留言。
+
+AI 响应必须严格匹配 `shared/interaction-ai.js` 的 schema：受控 `level`、六类 0-1 分数（`spam`、`toxicity`、`violence`、`sexual`、`illegalOrIp`、`privacy`）、`confidence`、受控 `reasonCodes`、`suggestedAction` 和 `policyVersion`。`unknown` 与 `illegal_or_ip` 不得自动通过；低置信度的 `approve` 会降级为 `review`。原始 JSON 仅在不超过 64KB 时以交互密文保存，默认保留 30 天，过期后由运维清理 helper 删除；管理投影只返回 `rawResultAvailable` 和 `rawResultExpiresAt`。
+
+举报管理接口为 `GET /api/v1/admin/reports`、`GET /api/v1/admin/reports/:id` 和 `POST /api/v1/admin/reports/:id/actions`，分别要求 `admin.report.read`、`admin.report.read` 和 `admin.report.manage`。列表只返回脱敏投影；详情在授权后台返回举报说明、证据文本和掩码联系方式。`hide_media`/`hide_comment` 在受控治理能力接入前会明确拒绝，不伪造成功；`block_share`/`pause_share` 会调用分享治理并写审计。`info` facade 只返回来源标题/说明、固定协议路径、举报开关和支持类型，不返回 canonical share、所有者、邮箱、内部快照或管理字段。
+
+交互保留与清理使用 `config.staticService.interaction`，默认数据库为 `.db/interaction.sqlite`。可通过以下环境变量调整窗口：`MAP_SERVICE_INTERACTION_PUBLIC_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_PRIVATE_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_CONTACT_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_AI_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_REPORT_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_REPORT_EVENTS_RETENTION_DAYS`、`MAP_SERVICE_INTERACTION_OUTBOX_RETENTION_DAYS`。服务启动时注册 `service/bin/cronJob/interactionRetention.js`，按 Asia/Shanghai 每日 03:20 执行事务清理；`legal_hold=1` 的留言和举报不删除。
+
+稳定错误码包括 `CONTENT_TOO_LARGE`、`UNSAFE_TEXT`、`CURSOR_INVALID`、`IDEMPOTENCY_KEY_INVALID`、`RESOURCE_NOT_FOUND`、`DUPLICATE_REQUEST` 和 `INTERACTION_SERVICE_UNAVAILABLE`；错误响应继续使用本文统一 `jsonSuc/jsonErr` 结构。
+
 ## 系统接口
 
 ### `GET /api/v1/health`

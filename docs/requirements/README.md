@@ -24,7 +24,7 @@
 - [图源管理与图层配置重构需求](./tile-source-and-layer-management.md)
 - [矢量图源渲染、预置图源库与密钥池需求](./vector-source-rendering-and-key-pool.md)
 - [功能完备地图应用建设需求](./full-featured-map-application.md)
-- [用户体系、角色权限、个人空间与多 KML 分享需求](./user-system-rbac-and-multi-kml-sharing.md)（核心功能已实施，验收中）
+- [用户体系、角色权限、个人空间与多 KML 分享需求](./user-system-rbac-and-multi-kml-sharing.md)（核心功能已实施；分享生命周期与删除增强开发中）
 - [KML 分享空间访问控制与半公开地图需求](./kml-share-spatial-access-and-semi-public-map.md)（v1.5.13 已实施，持续验收）
 - [持续定位长期运行可靠性需求](./continuous-location-reliability.md)
 - [管理后台 MVP](./admin-console-mvp.md)
@@ -38,7 +38,7 @@
 - [KML 要素组织与受控 URL 参数保留](./kml-feature-organization-and-url-preservation.md)（第一版已实现）
 - [KML 批量管理与媒体窗口自由布局](./kml-batch-management-and-media-window-layout.md)（第二版已实现，待手工验收）
 - [KML 性能优化与资源集合点位](./kml-performance-and-resource-collections.md)（已实现）
-- [KML 分享发布控制与地图交互性能](./kml-share-publishing-and-map-interaction.md)（开发中）
+- [KML 分享发布控制与地图交互性能](./kml-share-publishing-and-map-interaction.md)（开发中；已补充分享生命周期与删除契约）
 - [2D macOS 触摸板缩放方向稳定性](./2d-trackpad-zoom-direction-stability.md)（v1.5.23 已实现）
 - [66 服务器资源安全与应用运行防护](./server-resource-safety.md)（v1.5.24 第一阶段已实现）
 - [SidePanel 嵌入式 KML 双屏编辑](./sidepanel-embedded-kml-editing.md)（已实现并通过实际扩展验收）
@@ -47,4 +47,6 @@
 - [访问控制加固](./access-control-hardening.md)
 - [KML 分享密码链接、访问记录、统计脚本与瓦片限流](./kml-share-password-links-access-analytics-and-rate-limits.md)（v1.5.28 修订实现）
 - [轨迹渲染视口过滤与 LOD 分级优化](./track-rendering-viewport-lod.md)
-- [KML 点位留言、内容举报与审核治理](./kml-comments-and-reports.md)（Phase 0 已完成；Phase 1 待实施）
+- [KML 点位留言、内容举报与审核治理](./kml-comments-and-reports.md)（Phase 0、Phase 1A-F、Phase 2 受控 POC 与 Phase 3 已完成；Artalk 生产部署延期）
+
+交互能力的部署、初始化、前端/API 接入、AI provider、备份恢复和 agent 执行入口见[交互功能部署与接入手册](../interaction-deployment-and-integration.md)。当前实现状态以[交互开发计划](../interaction-development-plan.md)为准；Artalk 生产部署仍明确延期。

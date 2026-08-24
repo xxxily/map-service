@@ -1,5 +1,52 @@
 # 变更日志
 
+## 未发布 - Phase 3 AI 审核与最终质量门
+
+- 新增[交互功能部署与接入手册](./interaction-deployment-and-integration.md)，覆盖首次部署、策略初始化、公开/管理 API 接入、Cookie/CSRF、AI provider 验证、保留任务、备份恢复、升级回滚、agent 执行协议和故障排查；明确单机单写进程边界以及 Artalk 生产部署延期。
+- 新增服务端受控 AI provider adapter factory（当前 `openai-compatible`）与健康验证 API；管理 API 只保存声明式 adapterId/endpoint/secretRef，不能提交任意函数。provider 未通过健康验证时保持不可用且不能设为默认。
+- provider endpoint 强制非空 allowlist，实际请求复用 DNS 解析、公开地址固定和重定向拒绝；provider 级并发、每日预算、重试、超时和熔断配置进入执行面，并持久化每日用量。
+- 明确 provider 运维契约：`dailyBudget=0` 表示无限制；健康验证默认 TTL 为 24 小时，修改 endpoint、密钥引用、adapter、模型、提示词、超时、重试、预算、并发或脱敏配置后自动失效并必须重新验证。
+- 新增异步 AI 审核引擎：严格结构化 JSON、提示词/策略版本、超时、坏 JSON、低置信度、`unknown`/`illegal_or_ip` fail-closed；AI 只追加审计建议，不改变留言最终审核状态，人工审核保持最终权威。
+- AI 外发正文执行邮箱、手机号、IP、会话令牌和内部 ID 的内容级脱敏；留言和匿名联系方式写入独立保留到期字段，运维清理先擦除联系方式再删除过期留言。
+- AI 原始 provider JSON 仅在 64KB 内保存为交互密文，默认 30 天到期；管理详情只返回脱敏分数、置信度、结果哈希和保留期状态。关闭服务会等待在途 AI 审核完成，避免半写入审计。
+- 为已有 interaction v1 数据库增加幂等 additive AI schema 迁移，并清理旧 `raw_result_encrypted` 字段中的交互密文前缀数据；新增旧库重开、provider 持久化、人工覆盖和生命周期回归测试。
+- `npm run check` 的静态检查现在覆盖 `shared/interaction-ai.js`、`providerRegistry.js` 和 `aiModeration.js`。
+- 统一交互保留配置入口为 `config.staticService.interaction`，补充 report/report-event/outbox 窗口环境变量；retention cron 每日 Asia/Shanghai 03:20 执行，并增加真实配置路径回归测试。
+
+## 未发布 - Phase 1B/C 留言、审核与举报服务/API
+
+- 接入 Interaction Adapter、Comment Service、Moderation Service 和交互服务 facade；公开 `publicId` 经现有分享授权解析为 canonical share，并按已发布快照校验 `shareItemId + featureId`，资源不存在或无权访问时防枚举失败关闭。
+- 新增公开留言策略、列表、准确计数和提交接口；公开列表/角标只包含 `active + approved`，登录写入校验 CSRF，匿名写入同时受策略开关和同源校验约束，提交统一返回 `202` 审核回执且不回显待审正文。
+- 新增管理端留言列表、详情、人工审核、按当前策略重新审核、软删除、策略发布和关键词规则发布接口；重新审核保留历史决策，并按留言内容修订与策略/关键词版本幂等；所有管理写入使用细分 RBAC、CSRF、`no-store` 和审计记录，响应不返回联系方式、密文、内部用户 ID、Token 或 IP/UA。
+- 建立确定性关键词版本、人工决策和 outbox 重试/幂等处理链路；interaction 定向测试 91/91、API 集成测试 4/4，`npm run check` 通过。
+- 接入独立 Report Service、公开举报提交和举报管理列表/详情/动作 API；支持分享/点位/媒体目标、匿名/登录提交、侵权权利声明、幂等与时间窗口重复合并、加密正文/联系方式和脱敏管理视图。
+- 举报正文不进入公开留言、关键词或 AI 审核流；分享封禁/暂停动作复用现有治理并写审计，尚未接入的媒体/留言隐藏动作明确拒绝而不伪造成功。公开来源信息 `info` facade 已接入，仅返回渲染所需来源、协议和举报能力描述。
+- 新增公开 `GET /api/v1/public/kml-shares/:publicId/info`，复用分享访问授权并仅返回渲染所需来源、协议和举报能力描述。
+
+## 未发布 - Phase 1A 交互领域契约与独立数据库
+
+- 新增独立 `interaction.sqlite` v1 迁移模块，不修改 UserDatabase 版本；迁移使用事务、支持重复执行，并在失败时回滚版本记录和已建表。
+- 新增 `comments`、审核决策、outbox、策略/关键词版本、`reports` 和举报事件表，补齐状态约束、资源索引、幂等索引、软删除、`orphaned`、法律保留和保留期字段；留言和举报必须引用真实存在的同意策略版本。
+- 回复只允许关联同资源、已批准的一级父留言；已有回复的父留言禁止变更资源身份或层级，父留言失去公开资格时回复同步隐藏，父留言孤立时回复同步孤立且不会自动恢复。
+- 新增安全文本、联系方式、游标、幂等键和资源范围规范化；联系方式、留言/举报受限原文使用独立 AES-256-GCM 密文，数据库严格校验密文分段和长度，联系哈希使用 HMAC，公开留言序列化默认移除 PII 与审核内部字段。
+- 解密缺少密钥、格式错误和认证失败使用不同的内部错误码并 fail-closed；Phase 1A 当时未注册公开或管理路由，现已由后续 Phase 1B/C 留言垂直切片接入。
+- 补充 Phase 1A 定向测试，覆盖输入边界、密文伪造、认证加密失败关闭、回复不变量、策略版本外键、公开脱敏、迁移幂等与回滚；验证结果为定向测试 28/28、全量测试 778/778，`npm run check` 和 `npm run build` 通过。
+
+## 未发布 - KML 分享生命周期与删除契约细化
+
+- 明确个人 KML 编辑只更新源内容，外部分享继续读取最近一次成功发布的快照；只有用户显式“同步内容”才更新链接内容和空间范围。
+- 明确几何重算失败、源内容修改、公开读取异常和暂时没有可计算几何不得自动暂停分享；恢复必须复用原分享设置、分享项和已发布快照。
+- 规划用户与管理员删除分享接口。删除只清理分享及其访问会话、访问事件和运行指标，不删除原始 KML；撤销仍保留为可审计的不可恢复停用。
+- 同步更新需求、API 和用户指南，补充 `SHARE_EMPTY`、删除权限、级联清理和旧 `publicId` 失效契约。
+
+## 未发布 - KML 点位留言与举报需求规划
+
+- 新增 [KML 点位留言、内容举报与审核治理需求](./requirements/kml-comments-and-reports.md)，明确留言、关键词过滤、AI 分级审核、人工复核、匿名 PII、举报工单、权限、API 契约和分阶段服务拆分方案。
+- 需求将留言服务、审核服务、举报服务与地图集成适配层分开，第三方评论系统仅作为通过适配器 POC 后的候选实现。
+- 完成 Phase 0 契约冻结：新增留言/审核/举报状态机、动作矩阵、权限目录、匿名联系方式与保留策略；公开分享快照接入稳定 Feature/Media `resourceRefs` 校验，兼容历史随机 `publicId` 和用户 Feature ID。
+- 补充重复媒体来源的 occurrence 级稳定 `mediaId`，并对部分/未知资源元数据、损坏快照和缺失 `features` 执行 fail-closed 校验；完全缺少资源索引的历史快照仍只读兼容派生且不回写。
+- 新增 Remark42/Artalk/Isso/Cusdis 官方资料评审与适配器 POC，Artalk 为首选、Remark42 为第二候选，Cusdis 因归档/弃用/GPL-3.0 排除；POC 不接入生产依赖。
+
 ## 1.5.36 - 2026-08-22
 
 ### 分享地图旋转拖拽稳定性
@@ -1018,3 +1065,4 @@
 - `npm outdated --json` 无过期依赖。
 - `npm audit --omit=dev --registry=https://registry.npmjs.org --json` 无生产依赖漏洞。
 - 浏览器验证 `/` 能正常加载 Leaflet 1.9.4、高德 JSAPI 2.0、瓦片和标记点。
+| 2026-08-24 | 新增交互运维闭环 helper：保留清理、聚合指标、日志脱敏及 SQLite manifest 备份恢复，并补充中文部署说明与测试。 | interaction |

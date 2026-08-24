@@ -118,6 +118,21 @@ test('KML popup renders a first-click media preview and keeps details as a separ
   assert.equal(preview.items[0].type, 'image')
 })
 
+test('public share popup exposes interaction actions even when a point has no media', () => {
+  const feature = createFeature('feature-empty', '无媒体点位', '')
+  const html = renderKmlFeaturePopupContent({
+    id: 'share-item-1',
+    shareItemId: 'share-item-1',
+    sharePublicId: 'share-public-1',
+    isShare: true,
+    name: '公开分享',
+  }, feature, false)
+
+  assert.match(html, /data-kml-interaction="comments"/)
+  assert.match(html, /data-kml-interaction="info"/)
+  assert.match(html, /data-kml-interaction="report"/)
+})
+
 test('popup media reserves the last cell for an accurate remaining count', () => {
   const feature = createFeature('feature-many', '多媒体点位', [1, 2, 3, 4, 5]
     .map(index => `<img src="https://cdn.example.com/${index}.jpg">`)

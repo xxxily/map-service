@@ -631,6 +631,172 @@ test('manual share content sync requires authenticated CSRF-protected owner acce
   }
 })
 
+test('user share deletion requires owner authorization and forwards the stable share id', async () => {
+  const session = testSession()
+  const readonlySession = {
+    ...session,
+    user: { ...session.user, permissions: ['account.self.read'] },
+  }
+  let currentSession = session
+  const calls = []
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? currentSession : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== currentSession || token !== 'csrf-token') {
+        const error = new Error('请求安全校验失败')
+        error.statusCode = 403
+        error.code = 'CSRF_INVALID'
+        throw error
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, currentSession)
+      assert.equal(permission, 'share.own.manage')
+      if (!current.user.permissions.includes(permission)) {
+        const error = new Error('没有执行此操作的权限')
+        error.statusCode = 403
+        error.code = 'PERMISSION_DENIED'
+        throw error
+      }
+    },
+    deleteUserKmlShare: (current, id, context) => {
+      calls.push({ current, id, context })
+      return { id, status: 'deleted', sourceKmlPreserved: true }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    let result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_owner', { method: 'DELETE' })
+    assert.equal(result.response.status, 401)
+    assert.equal(result.payload.error.code, 'AUTH_REQUIRED')
+
+    result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_owner', {
+      method: 'DELETE',
+      headers: { Cookie: 'map_user_session=session-token' },
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'CSRF_INVALID')
+
+    currentSession = readonlySession
+    result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_owner', {
+      method: 'DELETE',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+      },
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'PERMISSION_DENIED')
+
+    currentSession = session
+    result = await requestJson(baseUrl, '/api/v1/kml/shares/shr_owner', {
+      method: 'DELETE',
+      headers: {
+        Cookie: 'map_user_session=session-token',
+        'X-CSRF-Token': 'csrf-token',
+        'User-Agent': 'share-api-test',
+      },
+    })
+    assert.equal(result.response.status, 200)
+    assert.deepEqual(result.payload.result, {
+      id: 'shr_owner',
+      status: 'deleted',
+      sourceKmlPreserved: true,
+    })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].current, session)
+    assert.equal(calls[0].id, 'shr_owner')
+    assert.equal(calls[0].context.userAgent, 'share-api-test')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('admin share deletion requires moderation permission and forwards the share id', async () => {
+  const base = testSession()
+  const readonlySession = {
+    ...base,
+    user: { ...base.user, permissions: ['admin.user.read'] },
+  }
+  const moderatorSession = {
+    ...base,
+    user: { ...base.user, permissions: ['admin.share.moderate'] },
+  }
+  let currentSession = base
+  const calls = []
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'admin-session' ? currentSession : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== currentSession || token !== 'admin-csrf') {
+        const error = new Error('请求安全校验失败')
+        error.statusCode = 403
+        error.code = 'CSRF_INVALID'
+        throw error
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, currentSession)
+      assert.equal(permission, 'admin.share.moderate')
+      if (!current.user.permissions.includes(permission)) {
+        const error = new Error('没有执行此操作的权限')
+        error.statusCode = 403
+        error.code = 'PERMISSION_DENIED'
+        throw error
+      }
+    },
+    deleteUserKmlShareAsAdmin: (current, id, context) => {
+      calls.push({ current, id, context })
+      return { id, status: 'deleted', sourceKmlPreserved: true }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    let result = await requestJson(baseUrl, '/api/v1/admin/kml/shares/shr_admin', {
+      method: 'DELETE',
+      headers: { Cookie: 'map_user_session=admin-session' },
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'CSRF_INVALID')
+
+    currentSession = readonlySession
+    result = await requestJson(baseUrl, '/api/v1/admin/kml/shares/shr_admin', {
+      method: 'DELETE',
+      headers: {
+        Cookie: 'map_user_session=admin-session',
+        'X-CSRF-Token': 'admin-csrf',
+      },
+    })
+    assert.equal(result.response.status, 403)
+    assert.equal(result.payload.error.code, 'PERMISSION_DENIED')
+
+    currentSession = moderatorSession
+    result = await requestJson(baseUrl, '/api/v1/admin/kml/shares/shr_admin', {
+      method: 'DELETE',
+      headers: {
+        Cookie: 'map_user_session=admin-session',
+        'X-CSRF-Token': 'admin-csrf',
+        'User-Agent': 'admin-share-api-test',
+      },
+    })
+    assert.equal(result.response.status, 200)
+    assert.deepEqual(result.payload.result, {
+      id: 'shr_admin',
+      status: 'deleted',
+      sourceKmlPreserved: true,
+    })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].current, moderatorSession)
+    assert.equal(calls[0].id, 'shr_admin')
+    assert.equal(calls[0].context.userAgent, 'admin-share-api-test')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('two-bulu KML import requires login, CSRF and personal KML write permission', async () => {
   const session = testSession()
   const readonlySession = {

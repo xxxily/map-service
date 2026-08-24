@@ -149,6 +149,7 @@ export function renderShareModerationPage (state) {
                       ${share.analytics?.disabledByAdmin
                         ? `<button type="button" data-admin-action="enable-share-analytics" data-share-id="${escapeHtml(share.id)}">恢复统计</button>`
                         : `<button type="button" data-admin-action="disable-share-analytics" data-share-id="${escapeHtml(share.id)}">禁用统计</button>`}
+                      <button type="button" class="admin-button-danger" data-admin-action="delete-share" data-share-id="${escapeHtml(share.id)}" data-share-title="${escapeHtml(share.title)}">删除</button>
                     </div>
                   </td>
                 </tr>
@@ -266,6 +267,23 @@ export async function handleShareModerationClick ({ api, event, renderDashboard,
       await api.setUserShareAnalyticsDisabled(target.dataset.shareId, { disabled: false })
       await reloadShares(state, api)
       setNotice('分享统计已恢复')
+    } catch (err) {
+      setNotice('', err.message)
+    }
+    renderDashboard()
+    return true
+  }
+
+  if (action === 'delete-share') {
+    if (!await showConfirm('删除后分享链接、分享项、访问会话和访问记录会永久清理，原始 KML 不受影响。', {
+      title: `删除分享：${target.dataset.shareTitle || ''}`,
+      confirmText: '永久删除',
+    })) return true
+    try {
+      setNotice('正在删除分享...')
+      await api.deleteUserShare(target.dataset.shareId)
+      await reloadShares(state, api)
+      setNotice('分享及访问数据已删除，原始 KML 保留')
     } catch (err) {
       setNotice('', err.message)
     }

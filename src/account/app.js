@@ -48,7 +48,7 @@ const KML_WRITE_ACTIONS = new Set([
 ])
 const SHARE_ACTIONS = new Set([
   'create-share', 'go-kml-share', 'copy-share', 'edit-share', 'toggle-share',
-  'share-access-events', 'sync-share', 'rotate-share', 'revoke-share',
+  'share-access-events', 'sync-share', 'rotate-share', 'revoke-share', 'delete-share',
 ])
 const FAVORITE_ACTIONS = new Set(['edit-favorite', 'cancel-favorite-edit', 'delete-favorite'])
 const SESSION_ACTIONS = new Set(['revoke-session', 'logout-other-sessions'])
@@ -928,10 +928,14 @@ async function handleClick (event) {
   } else if (action === 'sync-share') {
     await syncShareContent(id, Number(target.dataset.revision || 0))
   } else if (action === 'toggle-share') {
-    const result = await runAction(() => accountApi.updateShare(id, {
-      revision: Number(target.dataset.revision),
-      status: target.dataset.status,
-    }), { progress: '正在更新分享状态…', success: '分享状态已更新' })
+    const nextStatus = target.dataset.status
+    const result = await runAction(
+      () => nextStatus === 'active' ? accountApi.resumeShare(id) : accountApi.pauseShare(id),
+      {
+        progress: nextStatus === 'active' ? '正在恢复分享…' : '正在暂停分享…',
+        success: nextStatus === 'active' ? '分享已按原设置恢复' : '分享已暂停',
+      }
+    )
     if (result) await loadShares()
   } else if (action === 'rotate-share') {
     await rotateShare(id)
@@ -939,6 +943,17 @@ async function handleClick (event) {
     const confirmed = await showConfirm('撤销后旧链接立即失效，且该分享包不能恢复。', { title: '撤销分享', confirmText: '永久撤销' })
     if (!confirmed) return
     const result = await runAction(() => accountApi.revokeShare(id), { progress: '正在撤销分享…', success: '分享已撤销' })
+    if (result) await loadShares()
+  } else if (action === 'delete-share') {
+    const confirmed = await showConfirm('删除后分享链接、访问会话和访问记录会永久清理，但个人空间中的原始 KML 不受影响。', {
+      title: '删除分享',
+      confirmText: '永久删除',
+    })
+    if (!confirmed) return
+    const result = await runAction(() => accountApi.deleteShare(id), {
+      progress: '正在删除分享…',
+      success: '分享及访问数据已删除，原始 KML 保留',
+    })
     if (result) await loadShares()
   } else if (action === 'revoke-session') {
     const confirmed = await showConfirm('该设备将立即退出登录。', { title: '注销会话' })

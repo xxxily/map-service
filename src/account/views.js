@@ -249,7 +249,7 @@ function renderShares (state) {
   const analyticsPolicy = state.auth.config?.analytics?.sharePolicy || {}
   return `
     <section class="account-panel-section">
-      <div class="account-section-heading"><div><p class="account-eyebrow">链接分享</p><h2>我的分享</h2><p>分享包可以包含 1～20 个 KML，可随时暂停、轮换链接或撤销。</p></div>${capabilities.canReadKml ? '<button type="button" class="account-secondary-button" data-account-action="go-kml-share">从 KML 创建分享</button>' : ''}</div>
+      <div class="account-section-heading"><div><p class="account-eyebrow">链接分享</p><h2>我的分享</h2><p>分享包可以包含 1～20 个 KML，可随时暂停、同步、撤销或删除；删除分享不会删除原始 KML。</p></div>${capabilities.canReadKml ? '<button type="button" class="account-secondary-button" data-account-action="go-kml-share">从 KML 创建分享</button>' : ''}</div>
       <form data-account-form="share-filter" class="account-search-form"><input name="search" value="${escapeHtml(state.shares.search)}" placeholder="搜索分享标题"><select name="status"><option value="">全部状态</option>${['active', 'paused', 'expired', 'revoked', 'blocked'].map(status => `<option value="${status}" ${state.shares.status === status ? 'selected' : ''}>${shareStatusLabel(status)}</option>`).join('')}</select><button type="submit">查询</button></form>
       ${state.shares.items.length ? `<div class="account-share-grid">${state.shares.items.map(item => {
         const pendingSyncItemCount = Math.max(0, Number(item.pendingSyncItemCount || 0))
@@ -272,6 +272,7 @@ function renderShares (state) {
             ${item.status === 'active' ? `<button type="button" data-account-action="toggle-share" data-id="${escapeHtml(item.id)}" data-status="paused" data-revision="${Number(item.revision || 0)}">暂停</button>` : ''}
             ${item.status === 'paused' ? `<button type="button" data-account-action="toggle-share" data-id="${escapeHtml(item.id)}" data-status="active" data-revision="${Number(item.revision || 0)}">恢复</button>` : ''}
             ${!['revoked', 'blocked'].includes(item.status) ? `<button type="button" data-account-action="rotate-share" data-id="${escapeHtml(item.id)}">轮换链接</button><button type="button" class="is-danger" data-account-action="revoke-share" data-id="${escapeHtml(item.id)}">撤销</button>` : ''}
+            <button type="button" class="is-danger" data-account-action="delete-share" data-id="${escapeHtml(item.id)}">删除</button>
           </div>
         </article>
       `}).join('')}</div>` : '<div class="account-empty"><strong>暂无分享</strong><p>进入“我的 KML”多选文件，即可生成稳定的只读分享链接。</p></div>'}

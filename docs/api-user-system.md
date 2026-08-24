@@ -4,7 +4,9 @@
 > 基础路径：`/api/v1`  
 > 对应需求：[用户体系、角色权限、个人空间与多 KML 分享需求](./requirements/user-system-rbac-and-multi-kml-sharing.md)、[KML 分享空间访问控制与半公开地图需求](./requirements/kml-share-spatial-access-and-semi-public-map.md)、[KML 分享发布控制与地图交互性能需求](./requirements/kml-share-publishing-and-map-interaction.md)、[KML 性能优化与资源集合点位](./requirements/kml-performance-and-resource-collections.md)、[SidePanel 嵌入式 KML 双屏编辑需求](./requirements/sidepanel-embedded-kml-editing.md)、[KML 点位第三方分享链接识别与嵌入预览](./requirements/kml-point-share-link-embed.md)、[KML 点位 720 云内容与可配置图标](./requirements/kml-720yun-and-marker-icons.md)、[KML 要素组织与受控 URL 参数保留](./requirements/kml-feature-organization-and-url-preservation.md)、[两步路授权浏览器助手与浏览器内导入](./requirements/2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./requirements/2bulu-public-track-import.md)；用户操作见 [SidePanel 双屏 KML 编辑使用说明](./user-guides/sidepanel-kml-editing.md)、[KML 点位分享链接媒体使用说明](./user-guides/kml-share-link-media.md)、[KML 要素整理使用说明](./user-guides/kml-feature-organization.md)、[资源集合使用说明](./user-guides/kml-resource-collections.md)、[两步路导入助手用户操作手册](./user-guides/two-bulu-import.md) 和 [KML 空间受限分享使用说明](./user-guides/kml-spatial-sharing.md)
 
-本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。
+本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。交互能力的部署、初始化、接入和恢复步骤见 [交互功能部署与接入手册](./interaction-deployment-and-integration.md)。
+
+留言、审核和举报使用独立 `interaction.sqlite` 与 Interaction Adapter。留言/审核/策略/关键词、举报和来源信息服务及对应公开和管理路由已接入，AI provider 管理与异步审核也已纳入 Phase 3；详见 [API 参考中的交互契约](./api.md#交互领域契约-phase-1bc)。
 
 ## 1. 通用约定
 
@@ -648,6 +650,7 @@ Content-Type: application/json
 | `GET` | `/kml/shares/:id/access-events` | `share.own.manage` | 获取自己的最近聚合访问记录 |
 | `POST` | `/kml/shares/:id/password-url` | `share.own.manage` | 获取当前分享密码并生成带密码参数的链接（仅所有者） |
 | `PUT` | `/kml/shares/:id` | `share.own.manage` | 编辑文件、顺序、显隐和视图 |
+| `DELETE` | `/kml/shares/:id` | `share.own.manage` | 永久删除自己的分享及其访问数据，不影响原始 KML |
 | `POST` | `/kml/shares/:id/sync` | `share.own.manage` | 发布当前 KML 内容快照并重新计算分享范围 |
 | `POST` | `/kml/shares/:id/pause` | `share.own.manage` | 暂停分享 |
 | `POST` | `/kml/shares/:id/resume` | `share.own.manage` | 恢复分享 |
@@ -703,7 +706,9 @@ Content-Type: application/json
 - 浏览器密码生成器默认生成 12 位，可选 8、12、16、20、24、32 位，并可关闭特殊字符。启用特殊字符时只使用 `!$*+@`，排除 `?`、`&`、`#`、`%`、`=` 等查询分隔符；服务端生成带密码链接时仍必须使用 `encodeURIComponent`。
 - `analytics.mode` 支持 `none`、`provider` 和经超级管理员授权的 `custom`。默认 provider 模式只提交网站 ID，脚本来源由管理员固定；公开清单只返回服务端校验后的 descriptor。
 - `password-url` 不要求所有者再次输入密码。服务端使用稳定密钥加密保存分享密码，普通读取接口不返回该字段；仅所有者主动调用时在 `no-store` 响应中返回 `shareUrl` 和 `password`。当前没有正式用户，不为缺少密码密文的旧测试分享保留兼容流程；直接删除并重新创建分享。
-- active 分享删除到没有有效文件时会自动暂停。
+- 源 KML 修改、几何重算失败、公开读取异常或暂时没有可计算几何时，active 分享不会自动暂停，也不会丢失分享设置或已发布快照。只有用户显式暂停、管理员封禁或用户撤销会停止分享；到期单独按 `expired` 处理。
+- 更新分享不允许保存空 `items`；没有可用已发布项目时，恢复和同步返回 `409 SHARE_EMPTY`，但不隐式改写分享状态。用户不再需要链接时使用 DELETE。
+- DELETE 成功后会删除分享行以及级联的 `kml_share_items`、`share_access_sessions`、`share_access_events`，并清理内存运行指标；不会删除 `kml_documents`。旧 `publicId` 立即返回 `404 RESOURCE_NOT_FOUND`。
 - `revoked` 不可恢复；`blocked` 只能由管理员解封。
 
 内容同步请求：
@@ -938,6 +943,7 @@ Content-Type: application/json
 | --- | --- | --- | --- |
 | `GET` | `/admin/kml/shares` | `admin.share.moderate` | 按用户、状态、搜索条件分页查看分享 |
 | `GET` | `/admin/kml/shares/runtime-metrics` | `admin.share.moderate` | 查看内存有界的分享瓦片判定、范围拒绝和限流聚合指标 |
+| `DELETE` | `/admin/kml/shares/:id` | `admin.share.moderate` | 删除任意分享及其访问数据，不影响原始 KML |
 | `POST` | `/admin/kml/shares/:id/block` | `admin.share.moderate` | 封禁并记录原因 |
 | `POST` | `/admin/kml/shares/:id/unblock` | `admin.share.moderate` | 解封后进入 paused，由所有者决定恢复 |
 | `PUT` | `/admin/kml/shares/:id/analytics` | `admin.share.moderate` | 逐分享禁用或恢复统计脚本 |
@@ -973,6 +979,7 @@ Content-Type: application/json
 | `409` | `LAST_SUPER_ADMIN` | 操作会移除最后一个有效超级管理员 |
 | `409` | `SHARE_SPATIAL_RECALCULATING` | 空间范围正在重算，暂不能安全访问 |
 | `410` | `SHARE_PAUSED` / `SHARE_EXPIRED` | 分享暂停或过期 |
+| `409` | `SHARE_EMPTY` | 分享没有可恢复或可发布的有效项目 |
 | `410` | `SHARE_SPATIAL_UNAVAILABLE` | 分享地图范围不可安全使用 |
 | `400` | `SHARE_SPATIAL_MODE_INVALID` | 空间访问模式不受支持 |
 | `400` | `SHARE_PASSWORD_ACCESS_MODE_INVALID` | 密码授权模式不受支持 |
@@ -988,6 +995,12 @@ Content-Type: application/json
 | `500` | `INTERNAL_ERROR` | 未预期服务端错误，响应已脱敏 |
 
 ## 8. 当前实施边界
+
+### 8.1 交互 API 实施状态（Phase 1B/C）
+
+已实现的留言公开接口为 `GET/POST /api/v1/public/kml-shares/:publicId/comments`、`GET /comments/count` 和 `GET /comments/policy`；公开写入遵循登录 CSRF 或匿名同源校验，提交成功返回 `202`，未审核留言不会出现在列表或计数中。已实现的管理接口为留言列表/详情/审核/按当前策略重新审核/软删除，以及留言策略和关键词规则的读取与发布，分别要求 `admin.comment.read`、`admin.comment.moderate`、`admin.comment.policy.manage` 和 `admin.moderation.keyword.manage`。重新审核保留历史决策，并按留言内容修订和当前策略/关键词版本幂等。
+
+这些接口复用分享访问、站点访问和已发布快照资源授权，统一使用 `jsonSuc/jsonErr` 与 `no-store`，响应脱敏不返回联系方式、密文、内部用户 ID、Token、IP/UA 或审核原始细节。举报公开提交与管理工单已实现：公开接口使用登录 CSRF 或匿名同源校验，管理列表/详情/动作分别要求 `admin.report.read`、`admin.report.read`、`admin.report.manage`；举报正文不进入留言、关键词或 AI 流程。分享 `info` facade 只返回渲染所需来源、协议和举报能力描述。
 
 - 登录、注册和分享密码限流为单进程内存状态；多实例部署需接入共享限流存储。
 - SQLite 适用于当前单机部署；多写实例需要独立评估数据库和会话架构。

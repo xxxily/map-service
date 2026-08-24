@@ -126,10 +126,23 @@ export const adminApi = {
   updateUserSystemSettings: (body) => requestAdminApi('/admin/user-system/settings', { method: 'PUT', body }),
   listUserShares: (params = {}) => requestAdminApi(`/admin/kml/shares${queryString(params)}`),
   getShareRuntimeMetrics: () => requestAdminApi('/admin/kml/shares/runtime-metrics'),
+  deleteUserShare: (id) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   blockUserShare: (id, reason) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/block`, { method: 'POST', body: { reason } }),
   unblockUserShare: (id) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/unblock`, { method: 'POST' }),
   setUserShareAnalyticsDisabled: (id, body = {}) => requestAdminApi(`/admin/kml/shares/${encodeURIComponent(id)}/analytics`, { method: 'PUT', body }),
   listAuditLogs: (params = {}) => requestAdminApi(`/admin/audit-logs${queryString(params)}`),
+  listInteractionComments: (params = {}) => requestAdminApi(`/admin/comments${queryString(params)}`),
+  getInteractionComment: (id) => requestAdminApi(`/admin/comments/${encodeURIComponent(id)}`),
+  reviewInteractionComment: (id, body) => requestAdminApi(`/admin/comments/${encodeURIComponent(id)}/review`, { method: 'POST', body }),
+  reprocessInteractionComment: (id) => requestAdminApi(`/admin/comments/${encodeURIComponent(id)}/reprocess`, { method: 'POST', body: {} }),
+  deleteInteractionComment: (id) => requestAdminApi(`/admin/comments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listInteractionReports: (params = {}) => requestAdminApi(`/admin/reports${queryString(params)}`),
+  getInteractionReport: (id) => requestAdminApi(`/admin/reports/${encodeURIComponent(id)}`),
+  actionInteractionReport: (id, body) => requestAdminApi(`/admin/reports/${encodeURIComponent(id)}/actions`, { method: 'POST', body }),
+  interactionPolicy: () => requestAdminApi('/admin/moderation/settings'),
+  updateInteractionPolicy: (body) => requestAdminApi('/admin/moderation/settings', { method: 'PUT', body }),
+  interactionKeywords: () => requestAdminApi('/admin/moderation/keywords'),
+  updateInteractionKeywords: (body) => requestAdminApi('/admin/moderation/keywords', { method: 'PUT', body }),
 }
 
 export async function getSharedKmlList () {

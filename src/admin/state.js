@@ -51,6 +51,14 @@ export const adminState = {
     action: '',
     targetType: '',
   },
+  interactionComments: { items: [], page: 1, limit: 20, total: 0 },
+  interactionReports: { items: [], page: 1, limit: 20, total: 0 },
+  interactionCommentFilters: { moderationStatus: '', contentStatus: '', canonicalShareId: '', shareItemId: '', featureId: '' },
+  interactionReportFilters: { status: '', reportType: '', priority: '', scope: '', canonicalShareId: '' },
+  interactionPolicy: null,
+  interactionKeywords: null,
+  interactionCommentDetail: null,
+  interactionReportDetail: null,
   precacheForm: {
     providerId: '',
     bounds: {

@@ -114,6 +114,8 @@ test('分享治理页展示空间范围、授权模式和安全摘要', () => {
     },
   })
   assert.match(html, /空间与授权/)
+  assert.match(html, /data-admin-action="delete-share"/)
+  assert.equal(typeof adminApi.deleteUserShare, 'function')
   assert.match(html, /限制在 KML 区域/)
   assert.match(html, /12\.3 km²/)
   assert.match(html, /8\.4 km/)
