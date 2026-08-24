@@ -1,5 +1,12 @@
 # 变更日志
 
+## 1.5.39 - 2026-08-24
+
+### 举报治理动作修复
+
+- 修复新举报直接执行暂停分享、封禁分享等治理动作时，被举报状态机错误拒绝并返回 `MODERATION_TRANSITION_INVALID` 的问题。
+- 补充 `new -> actioned` 与 `new -> investigating` 状态转换测试，并覆盖 `pause_share`、`request_more_info` 的服务层回归场景。
+
 ## 1.5.38 - 2026-08-24
 
 ### 留言、审核与举报闭环
