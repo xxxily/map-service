@@ -85,5 +85,7 @@ test('161 deployment entrypoint preserves persistent data and has a bounded roll
   assert.match(deploy161Source, /--rollback/)
   assert.match(deploy161Source, /docker compose build --pull/)
   assert.match(deploy161Source, /health/)
+  assert.match(deploy161Source, /DEPLOY_ARCHIVE=/)
+  assert.match(deploy161Source, /cleanup_deploy_archive/)
   assert.doesNotMatch(deploy161Source, /MAP_SERVICE_.*SECRET.*=/)
 })

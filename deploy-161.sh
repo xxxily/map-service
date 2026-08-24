@@ -11,9 +11,16 @@ PORT="${PORT:-33088}"
 RUN_CHECKS="${RUN_CHECKS:-1}"
 RELEASE_VERSION="${RELEASE_VERSION:-$(node -p "require('$ROOT_DIR/package.json').version")}"
 IMAGE_NAME="map-service:${RELEASE_VERSION}"
+DEPLOY_ARCHIVE=""
 
 log() { printf '[deploy-161] %s\n' "$*"; }
 fail() { printf '[deploy-161] ERROR: %s\n' "$*" >&2; exit 1; }
+
+cleanup_deploy_archive() {
+  if [[ -n "${DEPLOY_ARCHIVE:-}" ]]; then
+    rm -f -- "$DEPLOY_ARCHIVE"
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -82,9 +89,10 @@ REMOTE
 deploy_release() {
   local archive checksum archive_name remote_archive_name
   archive_name="map-service-${RELEASE_VERSION}-$(git -C "$ROOT_DIR" rev-parse --short HEAD).tgz"
-  archive="$(mktemp "/tmp/${archive_name}.XXXXXX")"
+  DEPLOY_ARCHIVE="$(mktemp "/tmp/${archive_name}.XXXXXX")"
+  archive="$DEPLOY_ARCHIVE"
   remote_archive_name="$(basename "$archive")"
-  trap 'rm -f "$archive"' EXIT
+  trap cleanup_deploy_archive EXIT
 
   log "打包版本 ${RELEASE_VERSION}"
   git -C "$ROOT_DIR" archive --format=tar HEAD | gzip -9 >"$archive"
