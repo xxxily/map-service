@@ -15,6 +15,7 @@ import {
 import { renderUsersPage } from '../src/admin/pages/users.js'
 import { renderUserSystemSettingsPage } from '../src/admin/pages/userSystemSettings.js'
 import { renderShareModerationPage } from '../src/admin/pages/shareModeration.js'
+import { handleInteractionPolicySubmit, renderInteractionPolicyPage } from '../src/admin/pages/interaction.js'
 import { ADMIN_PERMISSION_CATALOG } from '../src/admin/pages/roles.js'
 import { PERMISSIONS } from '../service/bin/user/permissions.js'
 
@@ -120,6 +121,59 @@ test('分享治理页展示空间范围、授权模式和安全摘要', () => {
   assert.match(html, /12\.3 km²/)
   assert.match(html, /8\.4 km/)
   assert.match(html, /不限授权/)
+})
+
+test('留言策略页提供匿名留言开关，并保留未展示策略字段', async () => {
+  const state = {
+    session: sessionWith('admin.comment.policy.manage'),
+    interactionPolicy: {
+      version: 3,
+      published: true,
+      policy: {
+        comments: {
+          enabled: true,
+          anonymous: { enabled: false, contactRequirement: 'email_or_phone', requireConsent: true },
+          maxLength: 2000,
+          moderationRequired: true,
+          publicReplyEnabled: false,
+          retention: { approvedCommentDays: 30 },
+        },
+        moderation: { ai: { enabled: true }, keywords: { enabled: true } },
+        reports: { enabled: true, types: ['privacy'], targetScopes: ['media'] },
+      },
+    },
+  }
+  const html = renderInteractionPolicyPage(state)
+  assert.match(html, /允许匿名留言/)
+  assert.match(html, /name="anonymousCommentsEnabled"/)
+  assert.match(html, /data-interaction-policy-form/)
+
+  const values = {
+    commentsEnabled: { checked: true },
+    anonymousCommentsEnabled: { checked: true },
+    anonymousContactRequirement: { value: 'email' },
+    anonymousRequireConsent: { checked: true },
+    commentsMaxLength: { value: '1800' },
+    commentsModerationRequired: { checked: false },
+    reportsEnabled: { checked: true },
+    anonymousReportsEnabled: { checked: true },
+  }
+  const form = { elements: values, closest: selector => selector === '[data-interaction-policy-form]' ? form : null }
+  const event = { preventDefault: () => {}, target: { closest: selector => selector === '[data-interaction-policy-form]' ? form : null } }
+  let payload
+  await handleInteractionPolicySubmit({
+    api: { updateInteractionPolicy: async value => { payload = value; return { version: 4 } } },
+    event,
+    renderDashboard: () => {},
+    setNotice: () => {},
+    state,
+  })
+  assert.equal(payload.comments.anonymous.enabled, true)
+  assert.equal(payload.comments.maxLength, 1800)
+  assert.equal(payload.comments.publicReplyEnabled, false)
+  assert.deepEqual(payload.comments.retention, { approvedCommentDays: 30 })
+  assert.deepEqual(payload.moderation, { ai: { enabled: true }, keywords: { enabled: true } })
+  assert.deepEqual(payload.reports.types, ['privacy'])
 })
 
 test('后台修改请求使用同源 Cookie 和 CSRF，不发送 Bearer Token', async () => {

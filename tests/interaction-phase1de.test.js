@@ -8,6 +8,7 @@ import { renderInteractionCommentsPage, renderInteractionReportsPage } from '../
 const interactionSource = readFileSync(new URL('../src/ui/interaction.js', import.meta.url), 'utf8')
 const previewSource = readFileSync(new URL('../src/ui/media-preview.js', import.meta.url), 'utf8')
 const stylesSource = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+const deploy161Source = readFileSync(new URL('../deploy-161.sh', import.meta.url), 'utf8')
 
 test('2D and 3D media items normalize to one stable feature resource reference', () => {
   const twoD = interactionResourceRef({ sharePublicId: 'shr_public_a', shareItemId: 'shi_a', featureId: 'feature_a', mediaId: 'media_a' })
@@ -16,17 +17,37 @@ test('2D and 3D media items normalize to one stable feature resource reference',
   assert.equal(twoD.scope, 'feature')
 })
 
-test('media preview keeps interaction controls wired for comments, source info and reports', () => {
-  for (const action of ['comments', 'info', 'report']) {
+test('media preview keeps interaction controls wired for comments and source details', () => {
+  for (const action of ['comments', 'info']) {
     assert.match(previewSource, new RegExp(`data-media-preview-action="${action}"`))
     assert.equal(previewSource.includes(`if (action === '${action}')`), true)
   }
+  assert.doesNotMatch(previewSource, /data-media-preview-action="report"/)
+  assert.doesNotMatch(previewSource, /if \(action === 'report'\)/)
   assert.match(previewSource, /syncInteractionControls\(root, item\)/)
+  assert.match(interactionSource, /showChoiceDialog/)
+  assert.match(interactionSource, /举报此内容/)
+  assert.match(interactionSource, /请先登录后再留言/)
+  assert.match(interactionSource, /clientRequestId/)
 })
 
 test('interaction controls fail closed when count API fails without throwing into media preview', () => {
   assert.match(interactionSource, /catch \(error\) \{[\s\S]*?error\?\.name !== 'AbortError'[\s\S]*?badge\.hidden = true/s)
-  assert.match(interactionSource, /if \(!enabled\) return/)
+  assert.match(interactionSource, /if \(!commentsEnabled\) return/)
+  assert.match(interactionSource, /const infoEnabled = Boolean\(item\?\.url/)
+})
+
+test('nested resource references keep media preview interaction actions addressable', () => {
+  const nested = interactionResourceRef({
+    resourceRef: { sharePublicId: 'shr_public_nested', shareItemId: 'shi_nested', featureId: 'feature_nested', mediaId: 'media_nested' },
+  })
+  assert.deepEqual(nested, {
+    sharePublicId: 'shr_public_nested',
+    shareItemId: 'shi_nested',
+    featureId: 'feature_nested',
+    mediaId: 'media_nested',
+    scope: 'feature',
+  })
 })
 
 test('interaction panel restores focus and traps Escape and Tab navigation', () => {
@@ -55,4 +76,14 @@ test('admin interaction pages expose query filters required for moderation and r
   assert.match(reportsHtml, /name="canonicalShareId"/)
   assert.match(reportsHtml, /name="scope"/)
   assert.match(reportsHtml, /name="reportType"/)
+})
+
+test('161 deployment entrypoint preserves persistent data and has a bounded rollback path', () => {
+  assert.match(deploy161Source, /REMOTE_HOST:-root@192\.168\.0\.161/)
+  assert.match(deploy161Source, /REMOTE_APP_DIR:-\/opt\/1panel\/apps\/local\/map-service\/map-service/)
+  assert.match(deploy161Source, /--exclude='data'/)
+  assert.match(deploy161Source, /--rollback/)
+  assert.match(deploy161Source, /docker compose build --pull/)
+  assert.match(deploy161Source, /health/)
+  assert.doesNotMatch(deploy161Source, /MAP_SERVICE_.*SECRET.*=/)
 })

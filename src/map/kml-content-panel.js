@@ -24,7 +24,6 @@ import {
 import {
   openInteractionInfo,
   openInteractionPanel,
-  openInteractionReport,
 } from '../ui/interaction.js'
 
 const BUILD_IFRAME_ALLOWLIST = String(typeof import.meta.env === 'object' ? (import.meta.env.VITE_MAP_SERVICE_KML_IFRAME_ALLOWLIST || '') : '')
@@ -56,7 +55,7 @@ function getInteractionItem (kmlFile, feature) {
 
 function renderInteractionActions (kmlFile, feature) {
   if (!kmlFile?.isShare || !kmlFile?.sharePublicId || !kmlFile?.shareItemId || !feature?.id) return ''
-  return `<div class="kml-popup-interaction-actions" aria-label="点位互动"><button type="button" class="kml-popup-btn" data-kml-interaction="comments">留言</button><button type="button" class="kml-popup-btn" data-kml-interaction="info">来源</button><button type="button" class="kml-popup-btn" data-kml-interaction="report">举报</button></div>`
+  return `<div class="kml-popup-interaction-actions" aria-label="点位互动"><button type="button" class="kml-popup-btn" data-kml-interaction="comments">留言</button><button type="button" class="kml-popup-btn" data-kml-interaction="info">详情</button></div>`
 }
 
 function getIframeAllowlist () {
@@ -291,7 +290,6 @@ export function bindKmlFeaturePopupMediaActions (container, kmlFile, feature) {
       const item = getInteractionItem(currentBinding.kmlFile, currentBinding.feature)
       if (interactionTrigger.dataset.kmlInteraction === 'comments') openInteractionPanel(item, interactionTrigger)
       if (interactionTrigger.dataset.kmlInteraction === 'info') openInteractionInfo(item)
-      if (interactionTrigger.dataset.kmlInteraction === 'report') openInteractionReport(item)
       return
     }
     const collectionTrigger = event.target.closest?.('[data-kml-resource-collection]')

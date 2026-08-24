@@ -251,6 +251,23 @@ X-CSRF-Token: <map_csrf_token>
 
 两个接口都返回新版本号。发布后用 `GET /api/v1/admin/moderation/settings` 和 `GET /api/v1/admin/moderation/keywords` 核对 `published=true`；没有活动策略时不要继续排查前端，因为服务端会主动拒绝写入。
 
+### 5.6 前台入口与匿名留言配置
+
+管理员登录后台后，进入 `/admin/interaction-policy`（菜单名称：**留言与举报设置**）。该页面需要 `admin.comment.policy.manage`；只有 `admin.comment.read` 的账号可以读取策略，但不能保存。
+
+页面中的关键开关与服务端策略字段一一对应：
+
+- **启用留言**：控制公开留言总开关。
+- **允许匿名留言**：控制未登录访客是否可以提交；关闭时前端提示先登录，服务端仍会返回 `AUTH_REQUIRED`，不能依赖前端隐藏作为安全边界。
+- **匿名联系方式要求**：邮箱、手机号、二选一或同时填写。
+- **匿名留言必须同意相关条款**：控制匿名表单的同意勾选。
+- **留言提交后需要审核**：控制初始审核策略；公开列表始终只返回 `active + approved`。
+- **启用举报 / 允许匿名举报**：分别控制举报总开关和匿名举报权限。举报入口不在媒体预览顶部直接展示，而是在“媒体详情”对话框内展示。
+
+保存时页面会保留 AI、关键词、自动动作、保留期、举报类型和目标范围等未展示字段。策略保存后建议用公开接口重新读取 `/api/v1/public/kml-shares/:publicId/comments/policy` 与 `/api/v1/public/kml-shares/:publicId/info`，确认前台得到的摘要与后台一致。
+
+媒体预览的留言按钮要求当前项来自公开分享并携带 `sharePublicId + shareItemId + featureId`；媒体详情按钮对本地 KML 和公开分享媒体都可用。资源集合中的媒体项还会携带稳定 `mediaId`，从详情面板进入举报时自动使用 `scope=media`。
+
 ## 6. 反向代理、Cookie 和 CSRF
 
 ### 6.1 站点拓扑
@@ -615,6 +632,32 @@ NODE
 用户数据库和 .db/admin/ 按[用户体系部署与运维](./user-system-deployment.md)的同一备份批次恢复。恢复后不要用文本编辑器改 SQLite schema、密文、Token hash、权限关系或 migration 版本。
 
 ## 12. 升级、回滚和发布验收
+
+### 12.0 161 内网一键发布
+
+仓库根目录的 [`deploy-161.sh`](../deploy-161.sh) 是 161 内测环境的唯一推荐发布入口。它默认连接 `root@192.168.0.161`，部署到 `/opt/1panel/apps/local/map-service/map-service`，映射端口 `33088`，容器名 `map-service-161`。
+
+发布前脚本会在本地依次执行 `npm run check`、`npm test`、`npm run build` 和 `git diff --check`，并要求工作树干净；随后打包当前 Git HEAD、校验 SHA-256，通过 SSH 传输。远端会：
+
+1. 在 `/opt/1panel/backup/map-service/YYYY/MM/DD/` 创建发布前备份。
+2. 备份应用代码、容器/镜像信息和 1Panel 模板；原地保留 `.env`、`admin-password.txt` 以及整个 `data/` 持久化目录。
+3. 构建并启动 `map-service:<package.json.version>`，执行 `/health` 与 `/api/v1/health` 双探活。
+4. 校验运行镜像、容器内包版本和单实例数量；失败时自动恢复发布前代码并重新启动旧 Compose。
+
+常用命令：
+
+~~~bash
+cd /path/to/map-service
+./deploy-161.sh
+~~~
+
+回滚到某次发布前备份（目录必须位于远端允许的备份根目录内）：
+
+~~~bash
+./deploy-161.sh --rollback /opt/1panel/backup/map-service/YYYY/MM/DD/<backup-name>
+~~~
+
+脚本支持少量非敏感覆盖项：`REMOTE_HOST`、`REMOTE_APP_DIR`、`REMOTE_TEMPLATE_DIR`、`REMOTE_BACKUP_ROOT`、`CONTAINER_NAME`、`PORT`、`RELEASE_VERSION` 和 `RUN_CHECKS=0`。默认发布不要关闭检查，也不要通过环境变量注入交互密钥；密钥只从 161 现有 `.env` 读取并保持原位。发布完成后把版本、备份路径、健康检查和回滚目录写入 161 操作日志，并同步到 Outline 的“操作记录”集合。
 
 ### 12.1 升级流程
 

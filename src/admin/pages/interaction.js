@@ -14,6 +14,79 @@ function filterForm (kind, filters) {
   return `<form class="admin-filter-form admin-filter-form-compact" data-interaction-filter="${kind}">${fields}<button type="submit">筛选</button><button type="button" class="admin-button-secondary" data-admin-action="reset-interaction-filter" data-filter-kind="${kind}">重置</button></form>`
 }
 
+function checked (value) { return value ? 'checked' : '' }
+
+export function renderInteractionPolicyPage (state) {
+  const response = state.interactionPolicy || {}
+  const policy = response.policy || response
+  const comments = policy.comments || {}
+  const anonymous = comments.anonymous || {}
+  const reports = policy.reports || {}
+  const reportAnonymous = reports.anonymous || {}
+  const canManage = can(state, 'admin.comment.policy.manage')
+  return `<section class="admin-panel"><div class="admin-panel-head"><div><h2>留言与举报设置</h2><p class="admin-panel-description">控制公开留言、匿名提交和举报入口。保存时会保留未在此页面展示的审核策略字段。</p></div><span class="admin-badge">${response.published ? '已发布' : '未发布'}</span></div>${canManage ? `<form class="admin-form" data-interaction-policy-form>
+    <label class="admin-check"><input type="checkbox" name="commentsEnabled" ${checked(comments.enabled !== false)}><span>启用留言</span></label>
+    <label class="admin-check"><input type="checkbox" name="anonymousCommentsEnabled" ${checked(anonymous.enabled)}><span>允许匿名留言</span></label>
+    <label><span>匿名联系方式要求</span><select name="anonymousContactRequirement">${['email_or_phone', 'email', 'phone', 'email_and_phone'].map(value => `<option value="${value}" ${anonymous.contactRequirement === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+    <label class="admin-check"><input type="checkbox" name="anonymousRequireConsent" ${checked(anonymous.requireConsent !== false)}><span>匿名留言必须同意相关条款</span></label>
+    <label><span>留言最大长度</span><input type="number" name="commentsMaxLength" min="1" max="10000" value="${Number(comments.maxLength || 2000)}" required></label>
+    <label class="admin-check"><input type="checkbox" name="commentsModerationRequired" ${checked(comments.moderationRequired !== false)}><span>留言提交后需要审核</span></label>
+    <label class="admin-check"><input type="checkbox" name="reportsEnabled" ${checked(reports.enabled !== false)}><span>启用举报</span></label>
+    <label class="admin-check"><input type="checkbox" name="anonymousReportsEnabled" ${checked(reportAnonymous.enabled !== false)}><span>允许匿名举报</span></label>
+    <button type="submit">保存留言与举报设置</button>
+  </form>` : '<p class="admin-empty">当前账号没有修改策略的权限。</p>'}</section>`
+}
+
+export async function handleInteractionPolicySubmit ({ api, event, renderDashboard, setNotice, state }) {
+  const form = event.target.closest('[data-interaction-policy-form]')
+  if (!form) return false
+  event.preventDefault()
+  const response = state.interactionPolicy || {}
+  const current = response.policy || response
+  const currentComments = current.comments || {}
+  const currentAnonymous = currentComments.anonymous || {}
+  const currentReports = current.reports || {}
+  const currentReportAnonymous = currentReports.anonymous || {}
+  const maxLength = Number(form.elements.commentsMaxLength.value)
+  if (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > 10000) {
+    setNotice('', '留言最大长度必须是 1 到 10000 的整数')
+    renderDashboard()
+    return true
+  }
+  const payload = {
+    ...current,
+    comments: {
+      ...currentComments,
+      enabled: form.elements.commentsEnabled.checked,
+      anonymous: {
+        ...currentAnonymous,
+        enabled: form.elements.anonymousCommentsEnabled.checked,
+        contactRequirement: form.elements.anonymousContactRequirement.value,
+        requireConsent: form.elements.anonymousRequireConsent.checked,
+      },
+      maxLength,
+      moderationRequired: form.elements.commentsModerationRequired.checked,
+    },
+    reports: {
+      ...currentReports,
+      enabled: form.elements.reportsEnabled.checked,
+      anonymous: {
+        ...currentReportAnonymous,
+        enabled: form.elements.anonymousReportsEnabled.checked,
+      },
+    },
+  }
+  try {
+    const result = await api.updateInteractionPolicy(payload)
+    state.interactionPolicy = { ...response, policy: payload, version: result?.version || response.version, published: true }
+    setNotice('留言与举报设置已保存')
+  } catch (error) {
+    setNotice('', error.message)
+  }
+  renderDashboard()
+  return true
+}
+
 export function renderInteractionCommentsPage (state) {
   const data = collection(state.interactionComments); const filters = state.interactionCommentFilters || {}
   return `<section class="admin-panel"><div class="admin-panel-head"><div><h2>留言审核</h2><p class="admin-panel-description">只展示管理权限范围内的留言；公开列表只包含 active + approved。</p></div><span class="admin-badge">${Number(data.total || 0)} 条</span></div>${filterForm('comments', filters)}<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>留言</th><th>资源</th><th>状态</th><th>时间</th><th>操作</th></tr></thead><tbody>${(data.items || []).map(item => `<tr><td><strong>${escapeHtml(item.displayName || '访客')}</strong><small class="admin-cell-secondary">${escapeHtml(item.body || '')}</small></td><td><small>${escapeHtml(item.shareItemId || '-')}</small><small class="admin-cell-secondary">${escapeHtml(item.featureId || '-')}</small></td><td><span class="admin-state-pill">${escapeHtml(item.moderationStatus || '-')}</span><small class="admin-cell-secondary">${escapeHtml(item.contentStatus || '-')}</small></td><td>${escapeHtml(formatTime(item.createdAt))}</td><td><div class="admin-row-actions"><button type="button" data-admin-action="view-interaction-comment" data-comment-id="${escapeHtml(item.id)}">详情</button>${can(state, 'admin.comment.moderate') && item.moderationStatus !== 'approved' ? `<button type="button" data-admin-action="review-interaction-comment" data-comment-id="${escapeHtml(item.id)}">通过</button><button type="button" data-admin-action="reprocess-interaction-comment" data-comment-id="${escapeHtml(item.id)}">重审</button>` : ''}${can(state, 'admin.comment.moderate') ? `<button type="button" class="admin-button-danger" data-admin-action="delete-interaction-comment" data-comment-id="${escapeHtml(item.id)}">删除</button>` : ''}</div></td></tr>`).join('') || '<tr><td colspan="5" class="admin-empty">暂无留言</td></tr>'}</tbody></table></div>${renderPagination(data, 'interaction-comments')}</section>`

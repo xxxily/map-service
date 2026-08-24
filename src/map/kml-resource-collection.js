@@ -1,4 +1,4 @@
-import { classifyContentUrl } from '../../shared/kml-content.js'
+import { classifyContentUrl, createInteractionMediaId } from '../../shared/kml-content.js'
 import {
   KML_RESOURCE_COLLECTION_ITEM_TYPES,
   KML_RESOURCE_COLLECTION_MAX_ITEMS,
@@ -519,6 +519,9 @@ export function openKmlResourceCollectionPanel (kmlFile, feature, options = {}) 
         featureName: String(feature.name || ''),
         kmlId: String(kmlFile?.id || ''),
         kmlName: String(kmlFile?.name || ''),
+        sharePublicId: String(kmlFile?.sharePublicId || ''),
+        shareItemId: String(kmlFile?.shareItemId || ''),
+        mediaId: createInteractionMediaId(String(feature.id || ''), item),
       }))
     previewState = {
       items,

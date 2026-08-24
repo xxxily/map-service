@@ -1,14 +1,16 @@
 import { apiRequest } from '../auth/api.js'
-import { showAlert, showCheckboxConfirm, showEditDialog } from './dialog.js'
+import { getAuthSnapshot, refreshAuthSession } from '../auth/session.js'
+import { showAlert, showCheckboxConfirm, showChoiceDialog, showEditDialog } from './dialog.js'
 
 const asText = value => String(value ?? '')
 
 export function interactionResourceRef (item) {
+  const nested = item?.resourceRef || item?.interactionResource || {}
   return {
-    sharePublicId: asText(item?.sharePublicId || item?.publicId),
-    shareItemId: asText(item?.shareItemId || item?.kmlId),
-    featureId: asText(item?.resourceFeatureId || item?.featureId),
-    mediaId: asText(item?.mediaId),
+    sharePublicId: asText(item?.sharePublicId || item?.publicId || nested.sharePublicId),
+    shareItemId: asText(item?.shareItemId || item?.kmlId || nested.shareItemId),
+    featureId: asText(item?.resourceFeatureId || item?.featureId || nested.featureId),
+    mediaId: asText(item?.mediaId || nested.mediaId),
     scope: 'feature',
   }
 }
@@ -19,14 +21,22 @@ export async function syncInteractionControls (root, item) {
   countController?.abort()
   countController = new AbortController()
   const resource = interactionResourceRef(item)
-  const enabled = Boolean(resource.sharePublicId && resource.shareItemId && resource.featureId)
-  root.querySelectorAll('[data-media-preview-action="comments"], [data-media-preview-action="info"], [data-media-preview-action="report"]').forEach(button => {
-    button.disabled = !enabled
-    button.setAttribute('aria-disabled', enabled ? 'false' : 'true')
+  const commentsEnabled = Boolean(resource.sharePublicId && resource.shareItemId && resource.featureId)
+  // Media details are a local capability and must remain usable for personal
+  // KML as well as published shares. Source/report actions inside the detail
+  // dialog still remain share-gated below.
+  const infoEnabled = Boolean(item?.url || item?.displayUrl || item?.canonicalUrl || item?.title || item?.featureName || item?.kmlName || resource.sharePublicId)
+  root.querySelectorAll('[data-media-preview-action="comments"]').forEach(button => {
+    button.disabled = !commentsEnabled
+    button.setAttribute('aria-disabled', commentsEnabled ? 'false' : 'true')
+  })
+  root.querySelectorAll('[data-media-preview-action="info"]').forEach(button => {
+    button.disabled = !infoEnabled
+    button.setAttribute('aria-disabled', infoEnabled ? 'false' : 'true')
   })
   const badge = root.querySelector('[data-media-preview-comment-count]')
   if (badge) badge.hidden = true
-  if (!enabled) return
+  if (!commentsEnabled) return
   try {
     const result = await apiRequest(`/public/kml-shares/${encodeURIComponent(resource.sharePublicId)}/comments/count`, {
       query: { shareItemId: resource.shareItemId, featureId: resource.featureId },
@@ -51,6 +61,16 @@ function messageNode (message, className = '') {
   node.className = `map-interaction-message ${className}`.trim()
   node.textContent = message
   return node
+}
+
+async function resolveInteractionAuth () {
+  const current = getAuthSnapshot()
+  if (current.loaded || current.loading) return current
+  try {
+    return await refreshAuthSession()
+  } catch {
+    return getAuthSnapshot()
+  }
 }
 
 function ensurePanel () {
@@ -127,9 +147,29 @@ function renderComments (root, resource, state) {
     body.appendChild(more)
   }
 
+  const auth = state.auth || getAuthSnapshot()
+  const anonymous = state.policy.anonymous || {}
+  const contactRequirement = String(anonymous.contactRequirement || 'email_or_phone')
+  const requiresEmail = contactRequirement === 'email' || contactRequirement === 'email_and_phone'
+  const requiresPhone = contactRequirement === 'phone' || contactRequirement === 'email_and_phone'
+  const requiresEitherContact = contactRequirement === 'email_or_phone'
+  if (!auth.authenticated && !anonymous.enabled) {
+    body.appendChild(messageNode('请先登录后再留言。'))
+    return
+  }
+
+  const anonymousFields = !auth.authenticated && anonymous.enabled
+    ? `<div class="map-interaction-anonymous-fields">
+        <label><span>显示名</span><input name="displayName" minlength="2" maxlength="64" required placeholder="公开显示的名称"></label>
+        <label><span>邮箱${requiresEmail || requiresEitherContact ? '' : '（可选）'}</span><input type="email" name="email" ${requiresEmail ? 'required' : ''} autocomplete="email"></label>
+        <label><span>手机号${requiresPhone ? '' : '（可选）'}</span><input type="tel" name="phone" ${requiresPhone ? 'required' : ''} autocomplete="tel"></label>
+        ${anonymous.requireConsent !== false ? '<label class="map-interaction-consent"><input type="checkbox" name="consent" required><span>我同意按留言说明和隐私政策处理本次留言</span></label>' : ''}
+      </div>`
+    : ''
   const form = document.createElement('form')
   form.className = 'map-interaction-comment-form'
-  form.innerHTML = `<label><span>留言</span><textarea name="body" maxlength="${Math.max(1, Number(state.policy.maxLength) || 2000)}" required placeholder="分享你的观察…"></textarea></label><p data-interaction-form-error role="alert" hidden></p><button type="submit">提交留言</button>`
+  form.innerHTML = `${anonymousFields}<label><span>留言</span><textarea name="body" maxlength="${Math.max(1, Number(state.policy.maxLength) || 2000)}" required placeholder="分享你的观察…"></textarea></label><p data-interaction-form-error role="alert" hidden></p><button type="submit">提交留言</button>`
+  let clientRequestId = ''
   form.addEventListener('submit', async event => {
     event.preventDefault()
     const button = form.querySelector('button')
@@ -137,10 +177,23 @@ function renderComments (root, resource, state) {
     button.disabled = true
     errorNode.hidden = true
     try {
+      if (!auth.authenticated && anonymous.enabled && requiresEitherContact && !form.elements.email?.value.trim() && !form.elements.phone?.value.trim()) {
+        throw new Error('匿名留言至少需要填写邮箱或手机号')
+      }
       await apiRequest(`/public/kml-shares/${encodeURIComponent(resource.sharePublicId)}/comments`, {
-        method: 'POST', body: { body: form.elements.body.value, resourceRef: resource },
+        method: 'POST',
+        body: {
+          body: form.elements.body.value,
+          displayName: form.elements.displayName?.value || '',
+          email: form.elements.email?.value || '',
+          phone: form.elements.phone?.value || '',
+          consent: form.elements.consent ? Boolean(form.elements.consent.checked) : true,
+          clientRequestId: clientRequestId || (clientRequestId = globalThis.crypto?.randomUUID?.() || `cmt_${Date.now()}_${Math.random().toString(16).slice(2)}`),
+          resourceRef: resource,
+        },
       })
       form.reset()
+      clientRequestId = ''
       await loadComments(root, resource)
       showAlert('留言已提交，审核通过后会显示在列表中。', { title: '提交成功' })
     } catch (error) {
@@ -158,12 +211,13 @@ async function loadComments (root, resource, options = {}) {
   try {
     const query = { shareItemId: resource.shareItemId, featureId: resource.featureId, limit: 20, ...(options.cursor ? { cursor: options.cursor } : {}) }
     const requests = [
+      current.auth ? Promise.resolve(current.auth) : resolveInteractionAuth(),
       apiRequest(`/public/kml-shares/${encodeURIComponent(resource.sharePublicId)}/comments/policy`, { csrf: false }),
       apiRequest(`/public/kml-shares/${encodeURIComponent(resource.sharePublicId)}/comments`, { query, csrf: false }),
     ]
-    const [policy, comments] = await Promise.all(requests)
+    const [auth, policy, comments] = await Promise.all(requests)
     const items = options.append ? [...(current.items || []), ...(comments?.items || [])] : (comments?.items || [])
-    root._interactionState = { policy, items, nextCursor: comments?.nextCursor || '' }
+    root._interactionState = { auth, policy, items, nextCursor: comments?.nextCursor || '' }
     renderComments(root, resource, root._interactionState)
   } catch (error) {
     renderComments(root, resource, { ...current, error: error.message || '留言服务暂不可用' })
@@ -209,10 +263,29 @@ export function openInteractionPanel (item, trigger) {
 
 export async function openInteractionInfo (item) {
   const resource = interactionResourceRef(item)
-  if (!resource.sharePublicId) return showAlert('来源信息仅在公开分享页面提供。', { title: '来源信息' })
+  if (!resource.sharePublicId) {
+    const localMedia = item?.displayUrl || item?.canonicalUrl || item?.url
+    const localMessage = [
+      item?.featureName || item?.title || '本地媒体',
+      item?.kmlName ? `图层：${item.kmlName}` : '',
+      localMedia ? `媒体：${localMedia}` : '',
+    ].filter(Boolean).join('\n')
+    return showAlert(localMessage || '当前媒体没有可显示的详情。', { title: '媒体详情' })
+  }
   try {
     const info = await apiRequest(`/public/kml-shares/${encodeURIComponent(resource.sharePublicId)}/info`, { csrf: false })
-    return showAlert(`${info?.title || item?.kmlName || '公开分享'}\n${info?.description || '此内容来自已发布的公开 KML 快照。'}`, { title: '来源信息' })
+    const mediaLine = item?.displayUrl || item?.canonicalUrl || item?.url
+      ? `\n\n媒体：${item.displayUrl || item.canonicalUrl || item.url}`
+      : ''
+    const reportAvailable = info?.reports?.enabled === true
+    const choice = await showChoiceDialog({
+      title: '媒体详情',
+      message: `${info?.source?.title || info?.title || item?.kmlName || '公开分享'}\n${info?.source?.description || info?.description || '此内容来自已发布的公开 KML 快照。'}${mediaLine}`,
+      choices: reportAvailable ? [{ text: '举报此内容', value: 'report', class: 'app-dialog-secondary' }] : [],
+      cancelText: '关闭',
+    })
+    if (choice === 'report') return openInteractionReport(item)
+    return choice
   } catch (error) {
     return showAlert(error.message || '来源信息暂不可用', { title: '来源信息' })
   }
@@ -221,6 +294,7 @@ export async function openInteractionInfo (item) {
 export async function openInteractionReport (item) {
   const resource = interactionResourceRef(item)
   if (!resource.sharePublicId) return showAlert('举报入口仅在公开分享页面提供。', { title: '举报内容' })
+  const clientRequestId = globalThis.crypto?.randomUUID?.() || `rpt_${Date.now()}_${Math.random().toString(16).slice(2)}`
   const result = await showEditDialog({
     title: '举报内容',
     fields: [
@@ -243,7 +317,7 @@ export async function openInteractionReport (item) {
     if (!rightsResult?.confirmed || (result.reportType === 'copyright_takedown' && !rightsResult.checked)) return
     await apiRequest(`/public/kml-shares/${encodeURIComponent(resource.sharePublicId)}/reports`, {
       method: 'POST',
-      body: { type: result.reportType, description: result.description, evidenceText: result.evidenceText, displayName: result.displayName, email: result.email, rightsAttestation: Boolean(rightsResult.checked), consent: true, resourceRef: { ...resource, scope: resource.mediaId ? 'media' : 'feature' } },
+      body: { type: result.reportType, description: result.description, evidenceText: result.evidenceText, displayName: result.displayName, email: result.email, rightsAttestation: Boolean(rightsResult.checked), consent: true, clientRequestId, resourceRef: { ...resource, scope: resource.mediaId ? 'media' : 'feature' } },
     })
     await showAlert('举报已提交，平台会在后台处理。', { title: '提交成功' })
   } catch (error) {

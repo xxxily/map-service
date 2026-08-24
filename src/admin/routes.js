@@ -47,7 +47,7 @@ import {
   handleAuditLogsSubmit,
   renderAuditLogsPage,
 } from './pages/auditLogs.js'
-import { handleInteractionClick, handleInteractionSubmit, renderInteractionCommentsPage, renderInteractionReportsPage } from './pages/interaction.js'
+import { handleInteractionClick, handleInteractionPolicySubmit, handleInteractionSubmit, renderInteractionCommentsPage, renderInteractionPolicyPage, renderInteractionReportsPage } from './pages/interaction.js'
 import {
   canAccessAdminPage,
   filterAdminPages,
@@ -159,6 +159,7 @@ export const ADMIN_PAGES = [
   },
   { id: 'interaction-comments', label: '留言审核', permission: 'admin.comment.read', render: renderInteractionCommentsPage, handleClick: handleInteractionClick, handleSubmit: handleInteractionSubmit },
   { id: 'interaction-reports', label: '举报工单', permission: 'admin.report.read', render: renderInteractionReportsPage, handleClick: handleInteractionClick, handleSubmit: handleInteractionSubmit },
+  { id: 'interaction-policy', label: '留言与举报设置', permission: 'admin.comment.policy.manage', render: renderInteractionPolicyPage, handleSubmit: handleInteractionPolicySubmit },
 ]
 
 export function getVisibleAdminPages (session) {

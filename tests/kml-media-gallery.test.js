@@ -130,7 +130,7 @@ test('public share popup exposes interaction actions even when a point has no me
 
   assert.match(html, /data-kml-interaction="comments"/)
   assert.match(html, /data-kml-interaction="info"/)
-  assert.match(html, /data-kml-interaction="report"/)
+  assert.doesNotMatch(html, /data-kml-interaction="report"/)
 })
 
 test('popup media reserves the last cell for an accurate remaining count', () => {

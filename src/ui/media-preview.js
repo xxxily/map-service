@@ -18,7 +18,6 @@ import {
   closeInteractionPanel,
   openInteractionInfo,
   openInteractionPanel,
-  openInteractionReport,
   syncInteractionControls,
 } from './interaction.js'
 import {
@@ -135,8 +134,7 @@ function createPreviewRoot () {
           <button type="button" class="media-preview-icon-button media-preview-comments" data-media-preview-action="comments" aria-label="查看点位留言" title="查看点位留言">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg><span data-media-preview-comment-count hidden></span>
           </button>
-          <button type="button" class="media-preview-icon-button" data-media-preview-action="info" aria-label="查看来源信息" title="查看来源信息"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg></button>
-          <button type="button" class="media-preview-icon-button" data-media-preview-action="report" aria-label="举报当前内容" title="举报当前内容"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V4m0 1h11l-2 4 2 4H5"/></svg></button>
+          <button type="button" class="media-preview-icon-button" data-media-preview-action="info" aria-label="查看媒体详情" title="查看媒体详情"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg></button>
           <button type="button" class="media-preview-icon-button media-preview-track-toggle" data-media-preview-action="toggle-track" aria-expanded="true" aria-label="收起缩略图" title="收起缩略图">▦</button>
           <button type="button" class="media-preview-icon-button media-preview-wide-toggle" data-media-preview-action="toggle-wide" aria-pressed="false" aria-label="切换宽屏模式" title="切换宽屏模式">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6M4 4v6M20 4h-6M20 4v6M4 20h6M4 20v-6M20 20h-6M20 20v-6"/></svg>
@@ -692,7 +690,6 @@ function onRootClick (event) {
   if (action === 'toggle-wide') setPreviewWide(!getEffectiveWideMode())
   if (action === 'comments') openInteractionPanel(activeItems[activeIndex], event.target.closest('[data-media-preview-action]'))
   if (action === 'info') openInteractionInfo(activeItems[activeIndex])
-  if (action === 'report') openInteractionReport(activeItems[activeIndex])
   if (action === 'minimize') setPreviewMinimized(true)
   if (action === 'restore') setPreviewMinimized(false)
   if (action === 'zoom-in') setImageScale((panzoom?.getScale() || 1) + 0.5)
