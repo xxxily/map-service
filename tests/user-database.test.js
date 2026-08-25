@@ -419,3 +419,54 @@ test('UserDatabase v8 adds analytics, access-event and encrypted password fields
     database.close()
   }
 })
+
+test('UserDatabase v9 adds KML directories and organization snapshot fields to a v8 database idempotently', () => {
+  const rawDatabase = new DatabaseSync(':memory:')
+  rawDatabase.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations(version, applied_at) VALUES (8, '2026-08-24T00:00:00.000Z');
+    CREATE TABLE users (id TEXT PRIMARY KEY);
+    INSERT INTO users(id) VALUES ('usr_one');
+    CREATE TABLE kml_documents (
+      id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    INSERT INTO kml_documents(id, owner_id, created_at, updated_at) VALUES
+      ('kml_b', 'usr_one', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z'),
+      ('kml_a', 'usr_one', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z');
+    CREATE TABLE kml_share_items (
+      id TEXT PRIMARY KEY, share_id TEXT NOT NULL, kml_id TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0, visible_by_default INTEGER NOT NULL DEFAULT 1,
+      display_name TEXT NOT NULL DEFAULT ''
+    );
+  `)
+
+  const database = new UserDatabase({ filePath: ':memory:', database: rawDatabase })
+  try {
+    const documentColumns = database.prepare('PRAGMA table_info(kml_documents)').all().map(column => column.name)
+    assert.equal(documentColumns.includes('directory_id'), true)
+    assert.equal(documentColumns.includes('position'), true)
+    const shareItemColumns = database.prepare('PRAGMA table_info(kml_share_items)').all().map(column => column.name)
+    assert.equal(shareItemColumns.includes('directory_id'), true)
+    assert.equal(shareItemColumns.includes('source_directory_id'), true)
+    assert.equal(shareItemColumns.includes('directory_name'), true)
+    assert.equal(shareItemColumns.includes('source_position'), true)
+    assert.ok(database.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name = 'kml_directories'
+    `).get())
+    assert.deepEqual(database.prepare(`
+      SELECT id, directory_id, position FROM kml_documents ORDER BY position, id
+    `).all().map(row => ({ ...row })), [
+      { id: 'kml_a', directory_id: null, position: 0 },
+      { id: 'kml_b', directory_id: null, position: 1 },
+    ])
+    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, USER_DATABASE_VERSION)
+    assert.doesNotThrow(() => database.migrate())
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'kml_directories'").get().count, 1)
+  } finally {
+    database.close()
+  }
+})

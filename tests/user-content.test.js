@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import UserDatabase from '../service/bin/user/database.js'
 import UserContentService, {
   generateKmlText,
+  normalizeKmlPointClustering,
   parseKmlText,
 } from '../service/bin/user/userContent.js'
 import { hashToken } from '../service/bin/user/security.js'
@@ -13,6 +14,15 @@ const USER_PERMISSIONS = [
   'favorite.own.manage',
   'share.own.manage',
 ]
+
+test('KML point clustering configuration normalizes and rejects unsafe ranges', () => {
+  assert.deepEqual(normalizeKmlPointClustering({ enabled: false, gridSize: 1 }), { enabled: false })
+  assert.deepEqual(normalizeKmlPointClustering({ enabled: true, minZoom: 2, maxClusterZoom: 8, gridSize: 48, maxMembersPerCluster: 300 }), {
+    enabled: true, minZoom: 2, maxClusterZoom: 8, gridSize: 48, maxMembersPerCluster: 300,
+  })
+  assert.throws(() => normalizeKmlPointClustering({ enabled: true, minZoom: 9, maxClusterZoom: 8 }), error => error.code === 'SHARE_CLUSTER_CONFIG_INVALID')
+  assert.throws(() => normalizeKmlPointClustering({ enabled: true, gridSize: 8 }), error => error.code === 'SHARE_CLUSTER_CONFIG_INVALID')
+})
 
 function insertUser (database, id, username) {
   const now = '2026-08-05T00:00:00.000Z'
@@ -204,6 +214,141 @@ test('KML sync switches the default file when the new default update runs first'
         .map(item => item.id),
       [nextDefault.id],
     )
+  } finally {
+    harness.close()
+  }
+})
+
+test('deleting a KML directory clears active and trashed file directory ids', () => {
+  const harness = createHarness()
+  try {
+    const directory = harness.service.createKmlDirectory(harness.one, { name: '待删除目录' })
+    const active = harness.service.createKml(harness.one, { name: '活动文件', directoryId: directory.id })
+    const trashed = harness.service.createKml(harness.one, { name: '回收文件', directoryId: directory.id })
+    harness.service.trashKml(harness.one, trashed.id)
+    harness.service.deleteKmlDirectory(harness.one, directory.id)
+    const rows = harness.database.prepare('SELECT id, status, directory_id FROM kml_documents WHERE id IN (?, ?) ORDER BY id').all(active.id, trashed.id)
+    assert.deepEqual(rows.map(row => row.directory_id), [null, null])
+  } finally {
+    harness.close()
+  }
+})
+
+test('directory share expansion deduplicates files and preserves directory metadata on sync', () => {
+  const harness = createHarness()
+  try {
+    const directory = harness.service.createKmlDirectory(harness.one, { name: '分享目录' })
+    const first = harness.service.createKml(harness.one, { name: '目录文件', directoryId: directory.id })
+    const share = harness.service.createShare(harness.one, {
+      title: '目录分享',
+      items: [{ directoryId: directory.id }, { kmlId: first.id }],
+      viewConfig: { kmlPointClustering: { enabled: true, minZoom: 1, maxClusterZoom: 10, gridSize: 64, maxMembersPerCluster: 500 } },
+    })
+    assert.equal(share.itemCount, 1)
+    assert.equal(share.items[0].directoryName, '分享目录')
+    const synced = harness.service.syncShareContent(harness.one, share.id, { revision: share.revision })
+    assert.equal(synced.items[0].directoryName, '分享目录')
+    assert.deepEqual(synced.viewConfig.kmlPointClustering, { enabled: true, minZoom: 1, maxClusterZoom: 10, gridSize: 64, maxMembersPerCluster: 500 })
+  } finally {
+    harness.close()
+  }
+})
+
+test('share directory ids stay stable for the same source directory and change after an explicit move', () => {
+  const harness = createHarness()
+  try {
+    const firstDirectory = harness.service.createKmlDirectory(harness.one, { name: '原目录' })
+    const secondDirectory = harness.service.createKmlDirectory(harness.one, { name: '目标目录' })
+    const first = harness.service.createKml(harness.one, { name: '文件一', directoryId: firstDirectory.id })
+    const second = harness.service.createKml(harness.one, { name: '文件二', directoryId: firstDirectory.id })
+    let share = harness.service.createShare(harness.one, {
+      title: '目录快照',
+      items: [{ directoryId: firstDirectory.id }],
+    })
+    const initialManifest = harness.service.getPublicShareManifest(share.publicId)
+    const initialDirectoryId = initialManifest.items[0].directoryId
+    assert.ok(initialDirectoryId)
+    assert.equal(initialManifest.items[1].directoryId, initialDirectoryId)
+
+    harness.service.updateKmlDirectory(harness.one, firstDirectory.id, { name: '已重命名目录' })
+    share = harness.service.updateShare(harness.one, share.id, {
+      revision: share.revision,
+      items: [
+        { kmlId: first.id, position: 0 },
+        { kmlId: second.id, position: 1 },
+      ],
+    })
+    const renamedManifest = harness.service.getPublicShareManifest(share.publicId)
+    assert.equal(renamedManifest.items[0].directoryId, initialDirectoryId)
+    assert.equal(renamedManifest.items[0].directoryName, '已重命名目录')
+
+    harness.service.moveKmlFile(harness.one, second.id, { directoryId: secondDirectory.id })
+    share = harness.service.updateShare(harness.one, share.id, {
+      revision: share.revision,
+      items: [
+        { kmlId: first.id, position: 0 },
+        { kmlId: second.id, position: 1 },
+      ],
+    })
+    const movedManifest = harness.service.getPublicShareManifest(share.publicId)
+    assert.equal(movedManifest.items[0].directoryId, initialDirectoryId)
+    assert.notEqual(movedManifest.items[1].directoryId, initialDirectoryId)
+    assert.equal(movedManifest.items[1].directoryName, '目标目录')
+  } finally {
+    harness.close()
+  }
+})
+
+test('manual share sync refreshes directory snapshots while preserving unchanged public ids', () => {
+  const harness = createHarness()
+  try {
+    const directory = harness.service.createKmlDirectory(harness.one, { name: '同步前目录' })
+    const document = harness.service.createKml(harness.one, { name: '同步文件', directoryId: directory.id })
+    let share = harness.service.createShare(harness.one, {
+      title: '同步目录快照',
+      items: [{ kmlId: document.id }],
+    })
+    const initialDirectoryId = harness.service.getPublicShareManifest(share.publicId).items[0].directoryId
+    harness.service.updateKmlDirectory(harness.one, directory.id, { name: '同步后目录' })
+    share = harness.service.syncShareContent(harness.one, share.id, { revision: share.revision })
+    const manifest = harness.service.getPublicShareManifest(share.publicId)
+    assert.equal(manifest.items[0].directoryId, initialDirectoryId)
+    assert.equal(manifest.items[0].directoryName, '同步后目录')
+  } finally {
+    harness.close()
+  }
+})
+
+test('file reordering updates only changed revisions and returns refreshed organization metadata', () => {
+  const harness = createHarness()
+  try {
+    const directory = harness.service.createKmlDirectory(harness.one, { name: '排序目录' })
+    const first = harness.service.createKml(harness.one, { name: '第一项', directoryId: directory.id })
+    const second = harness.service.createKml(harness.one, { name: '第二项', directoryId: directory.id })
+    const reordered = harness.service.reorderKmlFiles(harness.one, {
+      directoryId: directory.id,
+      ids: [second.id, first.id],
+    })
+    assert.deepEqual(reordered.documents.map(item => [item.id, item.position, item.revision]), [
+      [second.id, 0, 2],
+      [first.id, 1, 2],
+    ])
+    const unchanged = harness.service.reorderKmlFiles(harness.one, {
+      directoryId: directory.id,
+      ids: [second.id, first.id],
+    })
+    assert.deepEqual(unchanged.documents, [])
+  } finally {
+    harness.close()
+  }
+})
+
+test('invalid KML position does not partially update document content', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '原始名称' })
+    assert.throws(() => harness.service.updateKml(harness.one, document.id, { revision: 1, name: '不应保存', position: 999 }), error => error.code === 'KML_MOVE_INVALID')
+    assert.equal(harness.service.getKml(harness.one, document.id).name, '原始名称')
   } finally {
     harness.close()
   }

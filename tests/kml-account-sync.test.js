@@ -8,9 +8,11 @@ import {
   getKmlSyncStatusView,
   getPendingShareReferenceCount,
   kmlFingerprint,
+  mergeKmlAccountOrganizationDocument,
   mergeKmlRecoveryDraft,
   registerKmlAccountDocumentSnapshot,
   reduceKmlSyncResult,
+  rebaseKmlFileToServerDocument,
   resolveKmlAccountMode,
 } from '../src/map/kml-account-sync.js'
 import { applyKmlMergeChoices } from '../src/map/kml-conflict-merge.js'
@@ -335,6 +337,8 @@ test('KML account sync cancels a delete-before-create tombstone before recreatin
       lockDrag: false,
       enabled: true,
       isLiveTrack: false,
+      directoryId: null,
+      position: 0,
       features: [],
     },
   }])
@@ -376,6 +380,161 @@ test('KML account sync exposes visible save, failure and conflict states', () =>
   assert.match(getKmlSyncStatusView('share-pending', { pendingShareReferenceCount: 2 }).title, /2 个分享引用/)
   assert.equal(getKmlSyncStatusView('auth-required').label, '请先登录')
   assert.equal(getKmlSyncStatusView('guest').visible, false)
+})
+
+test('KML sync absorbs server canonical fields when no newer local edit exists', () => {
+  const submitted = {
+    id: 'local-a',
+    name: '路线',
+    description: '  服务器会清理空白  ',
+    features: [],
+  }
+  const current = structuredClone(submitted)
+  const canonical = {
+    ...submitted,
+    id: 'server-a',
+    description: '服务器会清理空白',
+    revision: 2,
+  }
+
+  rebaseKmlFileToServerDocument(current, submitted, canonical)
+  const snapshots = registerKmlAccountDocumentSnapshot(new Map(), canonical, current.id)
+
+  assert.equal(current.description, canonical.description)
+  assert.equal(current.serverId, canonical.id)
+  assert.equal(current.revision, 2)
+  assert.deepEqual(buildKmlSyncOperations([current], snapshots), [])
+})
+
+test('KML sync rebase preserves edits made while the request was in flight', () => {
+  const submitted = {
+    id: 'local-a',
+    name: '路线',
+    description: '  初次提交  ',
+    features: [],
+  }
+  const current = { ...structuredClone(submitted), description: '请求期间的新编辑' }
+  const canonical = {
+    ...submitted,
+    id: 'server-a',
+    description: '初次提交',
+    revision: 2,
+  }
+
+  rebaseKmlFileToServerDocument(current, submitted, canonical)
+  const snapshots = registerKmlAccountDocumentSnapshot(new Map(), canonical, current.id)
+  const operations = buildKmlSyncOperations([current], snapshots)
+
+  assert.equal(current.description, '请求期间的新编辑')
+  assert.equal(current.revision, 2)
+  assert.equal(operations.length, 1)
+  assert.equal(operations[0].data.revision, 2)
+  assert.equal(operations[0].data.description, '请求期间的新编辑')
+})
+
+test('KML organization responses preserve unsaved content edits while applying server metadata', () => {
+  const base = {
+    name: '原始名称',
+    description: '',
+    isDefault: false,
+    coordCorrection: 'wgs84-to-gcj02',
+    theme: 'default',
+    color: '#0f766e',
+    lockDrag: false,
+    enabled: true,
+    isLiveTrack: false,
+    directoryId: 'dir-old',
+    position: 0,
+    features: [{ id: 'point-a', type: 'Point', name: '原点', coordinates: [113, 23] }],
+  }
+  const local = {
+    ...structuredClone(base),
+    name: '请求期间的新名称',
+    features: [{ ...base.features[0], name: '请求期间的新点名' }],
+  }
+  const server = {
+    ...structuredClone(base),
+    id: 'server-a',
+    revision: 4,
+    directoryId: 'dir-new',
+    position: 2,
+    directoryName: '新目录',
+    enabled: false,
+  }
+  const merged = mergeKmlAccountOrganizationDocument(local, {
+    localId: 'local-a',
+    serverId: 'server-a',
+    revision: 3,
+    base,
+  }, server)
+
+  assert.equal(merged.name, '请求期间的新名称')
+  assert.equal(merged.features[0].name, '请求期间的新点名')
+  assert.equal(merged.directoryId, 'dir-new')
+  assert.equal(merged.position, 2)
+  assert.equal(merged.enabled, false)
+  assert.equal(merged.directoryName, '新目录')
+  assert.equal(merged.revision, 4)
+})
+
+test('KML organization responses without features retain the current feature graph', () => {
+  const base = {
+    name: '原始名称',
+    description: '',
+    isDefault: false,
+    coordCorrection: 'wgs84-to-gcj02',
+    theme: 'default',
+    color: '#0f766e',
+    lockDrag: false,
+    enabled: true,
+    isLiveTrack: false,
+    directoryId: 'dir-old',
+    position: 0,
+    features: [{ id: 'point-a', type: 'Point', name: '原点', coordinates: [113, 23] }],
+  }
+  const local = { ...structuredClone(base), name: '本地新名称' }
+  const response = {
+    id: 'server-a',
+    revision: 5,
+    directoryId: 'dir-new',
+    position: 1,
+    directoryName: '新目录',
+  }
+  const merged = mergeKmlAccountOrganizationDocument(local, {
+    localId: 'local-a',
+    serverId: 'server-a',
+    revision: 4,
+    base,
+  }, response)
+
+  assert.equal(merged.name, '本地新名称')
+  assert.deepEqual(merged.features, local.features)
+  assert.equal(merged.directoryId, 'dir-new')
+  assert.equal(merged.position, 1)
+  assert.equal(merged.directoryName, '新目录')
+  assert.equal(merged.revision, 5)
+})
+
+test('KML sync ignores a late response with an older document revision', () => {
+  const document = { id: 'server-a', revision: 3, name: '最新', features: [] }
+  let snapshots = registerKmlAccountDocumentSnapshot(new Map(), document, 'local-a')
+  const before = snapshots.get('local-a')
+
+  const reduced = reduceKmlSyncResult(snapshots, {
+    results: [{
+      action: 'update',
+      document: { id: 'server-a', revision: 2, name: '旧响应', features: [] },
+    }],
+  })
+
+  snapshots = reduced.snapshots
+  assert.equal(snapshots.get('local-a').revision, 3)
+  assert.equal(snapshots.get('local-a').hash, before.hash)
+  const registered = registerKmlAccountDocumentSnapshot(snapshots, {
+    id: 'server-a', revision: 1, name: '更旧的专用接口响应', features: [],
+  }, 'local-a')
+  assert.equal(registered.get('local-a').revision, 3)
+  assert.equal(registered.get('local-a').hash, before.hash)
 })
 
 test('iframe 未登录时要求账号认证而不是回退访客 KML', () => {

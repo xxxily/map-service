@@ -17,6 +17,8 @@ const FILE_FIELDS = [
   'lockDrag',
   'enabled',
   'isLiveTrack',
+  'directoryId',
+  'position',
 ]
 
 const FEATURE_FIELDS = [

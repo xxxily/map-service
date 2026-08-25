@@ -1252,6 +1252,27 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 
 ## KML 接口
 
+### 个人 KML 目录与排序（2026-08）
+
+个人 KML 目录接口统一使用稳定目录 ID。目录为单层结构；`directoryId=null` 表示系统虚拟目录“未分类”。历史 KML 在迁移后自动归入未分类。目录和文件接口均按当前用户权限过滤，未授权资源不泄露存在性。
+
+| 方法 | 路径 | 权限 | 请求/说明 |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/kml/directories` | `kml.own.read` | 返回 `{items:[{id,name,position,enabled,fileCount,visibleFileCount}],uncategorized:{...}}` |
+| `POST` | `/api/v1/kml/directories` | `kml.own.write` | `{name}` |
+| `PUT` | `/api/v1/kml/directories/:id` | `kml.own.write` | `{name?,enabled?}` |
+| `DELETE` | `/api/v1/kml/directories/:id` | `kml.own.write` | 删除目录，文件转入未分类 |
+| `POST` | `/api/v1/kml/directories/reorder` | `kml.own.write` | `{ids:[directoryId...]}`，必须提交完整目录顺序 |
+| `POST` | `/api/v1/kml/directories/:id/visibility` | `kml.own.write` | `{enabled:boolean}`，批量设置目录下 active 文件显隐 |
+| `POST` | `/api/v1/kml/files/reorder` | `kml.own.write` | `{directoryId:string|null,ids:[kmlId...]}` |
+| `POST` | `/api/v1/kml/files/:id/move` | `kml.own.write` | `{directoryId:string|null,beforeId?:string|null}` |
+
+`GET /api/v1/kml/files` 的每个文件增加 `directoryId`、`directoryName`、`position`，并支持 `directoryId` 和 `sort=position`。目录/排序错误使用 `KML_DIRECTORY_NOT_FOUND`、`KML_DIRECTORY_NAME_CONFLICT`、`KML_REORDER_INVALID`、`KML_MOVE_INVALID`。
+
+目录显隐、目录排序、文件排序和文件移动都会递增实际受影响 KML 的 `revision`，成功响应会返回刷新后的 `documents`；客户端必须按文档维度单调吸收 revision，不能让较晚到达的旧同步响应覆盖较新的组织操作结果。
+
+分享 `POST/PUT /api/v1/kml/shares` 的 `items` 兼容 `{kmlId}`，也接受 `{directoryId}`；目录项在保存时展开为当前 active 文件并按目录顺序去重。`viewConfig.kmlPointClustering` 的默认值为 `{enabled:false}`，完整字段与边界见[需求文档](./requirements/kml-directory-ordering-and-share-point-clustering.md)。公开分享 manifest 只返回渲染所需的目录 ID/名称和归一化聚合配置。
+
 ### `GET /api/v1/kml/media?url=<encoded-url>`
 
 获取固定旧图片下载地址的兼容响应。该接口不是任意 URL 代理，仅接受完整 URL 编码后的

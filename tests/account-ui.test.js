@@ -44,6 +44,7 @@ import {
 } from '../src/account/model.js'
 import {
   generateStrongSharePassword,
+  getShareDirectorySelectionState,
   SHARE_PASSWORD_LENGTH_OPTIONS,
 } from '../src/account/dialogs.js'
 
@@ -256,6 +257,21 @@ test('KML 排序和批量回收选择只接受服务端支持的安全范围', (
   assert.deepEqual(selection.skippedMissing, ['kml_missing'])
 })
 
+test('账号 KML 目录和文件拖拽使用独立协议并接入持久化 API', () => {
+  const appSource = fs.readFileSync(path.join(projectRoot, 'src/account/app.js'), 'utf8')
+  const viewSource = fs.readFileSync(path.join(projectRoot, 'src/account/views.js'), 'utf8')
+
+  assert.match(viewSource, /data-account-kml-directory-draggable="true"/)
+  assert.match(viewSource, /data-account-kml-file-draggable="true"/)
+  assert.match(appSource, /application\/x-map-service-kml-directory/)
+  assert.match(appSource, /application\/x-map-service-kml-file/)
+  assert.match(appSource, /addEventListener\('dragstart'/)
+  assert.match(appSource, /addEventListener\('dragover'/)
+  assert.match(appSource, /addEventListener\('drop'/)
+  assert.match(appSource, /accountApi\.reorderKmlDirectories\(ids\)/)
+  assert.match(appSource, /accountApi\.moveKml\(source\.id, \{ directoryId, beforeId \}\)/)
+})
+
 test('分享编辑会重排去重文件并校验完整地图视图', () => {
   assert.deepEqual(buildShareUpdateItems([
     { kmlId: 'kml_b', visibleByDefault: false, displayName: '备用' },
@@ -283,6 +299,26 @@ test('分享编辑会重排去重文件并校验完整地图视图', () => {
   })
   assert.throws(() => buildShareViewConfig({ mapMode: '2d', center: [91, 0] }), /有效的纬度和经度/)
   assert.throws(() => buildShareViewConfig({ mapMode: '2d', pitch: 90 }), /0～85/)
+})
+
+test('分享目录勾选状态会随单文件选择保持全选和半选一致', () => {
+  const fileIds = ['kml_a', 'kml_b', 'kml_c']
+  assert.deepEqual(getShareDirectorySelectionState(fileIds, []), {
+    checked: false,
+    indeterminate: false,
+  })
+  assert.deepEqual(getShareDirectorySelectionState(fileIds, [{ kmlId: 'kml_a' }]), {
+    checked: false,
+    indeterminate: true,
+  })
+  assert.deepEqual(getShareDirectorySelectionState(fileIds, [
+    { kmlId: 'kml_a' },
+    { kmlId: 'kml_b' },
+    { kmlId: 'kml_c' },
+  ]), {
+    checked: true,
+    indeterminate: false,
+  })
 })
 
 test('分享访问策略与并发冲突提示明确说明重新加载且不覆盖', () => {

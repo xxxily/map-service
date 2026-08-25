@@ -3,6 +3,7 @@ import {
   buildShareViewConfig,
   escapeHtml,
   formatDateTime,
+  groupKmlDocumentsByDirectory,
   normalizeSpatialAccess,
 } from './model.js'
 
@@ -14,6 +15,16 @@ const SHARE_PASSWORD_DIGITS = '23456789'
 // encoded with encodeURIComponent on the server.
 const SHARE_PASSWORD_SPECIAL_CHARACTERS = '!$*+@'
 const SHARE_PASSWORD_ALPHABET = `${SHARE_PASSWORD_UPPERCASE}${SHARE_PASSWORD_LOWERCASE}${SHARE_PASSWORD_DIGITS}${SHARE_PASSWORD_SPECIAL_CHARACTERS}`
+
+export function getShareDirectorySelectionState (fileIds, selectedItems) {
+  const ids = Array.from(fileIds || [], id => String(id || '')).filter(Boolean)
+  const selected = new Set(Array.from(selectedItems || [], item => String(item?.kmlId || item || '')).filter(Boolean))
+  const selectedCount = ids.reduce((count, id) => count + (selected.has(id) ? 1 : 0), 0)
+  return {
+    checked: ids.length > 0 && selectedCount === ids.length,
+    indeterminate: selectedCount > 0 && selectedCount < ids.length,
+  }
+}
 
 function secureRandomInt (maximum) {
   const limit = Math.floor(0x100000000 / maximum) * maximum
@@ -177,6 +188,17 @@ function analyticsModeValue (share) {
   return ['provider', 'custom'].includes(mode) ? mode : 'none'
 }
 
+function normalizedClusteringConfig (value = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  return {
+    enabled: source.enabled === true,
+    minZoom: Number.isSafeInteger(Number(source.minZoom)) ? Number(source.minZoom) : 0,
+    maxClusterZoom: Number.isSafeInteger(Number(source.maxClusterZoom)) ? Number(source.maxClusterZoom) : 13,
+    gridSize: Number.isSafeInteger(Number(source.gridSize)) ? Number(source.gridSize) : 64,
+    maxMembersPerCluster: Number.isSafeInteger(Number(source.maxMembersPerCluster)) ? Number(source.maxMembersPerCluster) : 5000,
+  }
+}
+
 export function showAccountShareAccessEventsDialog (options = {}) {
   const root = ensureAccountDialogRoot()
   const share = options.share || {}
@@ -275,6 +297,23 @@ export function showAccountShareDialog (options = {}) {
     documentMap.set(id, { id, name: item.name || item.displayName || '未命名 KML', status: 'active' })
   })
   const catalog = Array.from(documentMap.values())
+  const fallbackDirectories = new Map()
+  catalog.forEach(document => {
+    const id = document?.directoryId == null ? '' : String(document.directoryId)
+    if (!id || fallbackDirectories.has(id)) return
+    fallbackDirectories.set(id, {
+      id,
+      name: document.directoryName || '未命名目录',
+      position: fallbackDirectories.size,
+    })
+  })
+  const directoryCatalog = options.directoryCatalog && typeof options.directoryCatalog === 'object'
+    ? options.directoryCatalog
+    : { items: Array.from(fallbackDirectories.values()), uncategorized: { id: null, name: '未分类' } }
+  const catalogGroups = groupKmlDocumentsByDirectory(catalog, {
+    ...directoryCatalog,
+    uncategorized: directoryCatalog.uncategorized || { id: null, name: '未分类' },
+  })
   let selectedItems = (share.items || [])
     .filter(item => documentMap.has(String(item?.kmlId || '')))
     .sort((left, right) => Number(left.position || 0) - Number(right.position || 0))
@@ -284,6 +323,7 @@ export function showAccountShareDialog (options = {}) {
       displayName: String(item.displayName || ''),
     }))
   const viewConfig = share.viewConfig || {}
+  const clustering = normalizedClusteringConfig(viewConfig.kmlPointClustering)
   const spatialAccess = normalizeSpatialAccess(share)
   const analyticsPolicy = options.analyticsPolicy || {}
   const analytics = share.analytics || {}
@@ -336,6 +376,16 @@ export function showAccountShareDialog (options = {}) {
             </div>
           </section>
           <section class="account-share-dialog-section">
+            <h3>分享地图点位聚合</h3>
+            <label class="account-dialog-field"><span>低缩放级别聚合</span><select name="kmlClusteringEnabled"><option value="false" ${clustering.enabled ? '' : 'selected'}>关闭（保持全部点位）</option><option value="true" ${clustering.enabled ? 'selected' : ''}>开启</option></select></label>
+            <div class="account-share-dialog-columns" data-account-clustering-fields>
+              <label class="account-dialog-field"><span>起始缩放级别</span><input name="kmlClusteringMinZoom" type="number" min="0" max="24" step="1" value="${escapeHtml(clustering.minZoom)}"></label>
+              <label class="account-dialog-field"><span>结束缩放级别</span><input name="kmlClusteringMaxZoom" type="number" min="0" max="24" step="1" value="${escapeHtml(clustering.maxClusterZoom)}"></label>
+              <label class="account-dialog-field"><span>网格大小（像素）</span><input name="kmlClusteringGridSize" type="number" min="24" max="128" step="1" value="${escapeHtml(clustering.gridSize)}"></label>
+              <label class="account-dialog-field"><span>单簇明细上限</span><input name="kmlClusteringMaxMembers" type="number" min="100" max="20000" step="1" value="${escapeHtml(clustering.maxMembersPerCluster)}"></label>
+            </div>
+          </section>
+          <section class="account-share-dialog-section">
             <h3>访问统计</h3>
             <div class="account-share-dialog-columns">
               <label class="account-dialog-field"><span>分享统计</span><select name="analyticsMode">${analyticsModeOptions}</select></label>
@@ -347,10 +397,17 @@ export function showAccountShareDialog (options = {}) {
             <div class="account-share-dialog-section-heading"><div><h3>包含的 KML</h3><p>勾选文件，并在右侧调整顺序和默认显隐。</p></div></div>
             <div class="account-share-kml-editor">
               <div class="account-share-kml-catalog" aria-label="可选 KML">
-                ${catalog.length ? catalog.map(document => {
-                  const id = String(document.id)
-                  const checked = selectedItems.some(item => item.kmlId === id)
-                  return `<label><input type="checkbox" data-account-share-kml-toggle="${escapeHtml(id)}" ${checked ? 'checked' : ''}><span>${escapeHtml(document.name || '未命名 KML')}</span></label>`
+                ${catalog.length ? catalogGroups.map(group => {
+                  const ids = group.items.map(document => String(document.id))
+                  const selectionState = getShareDirectorySelectionState(ids, selectedItems)
+                  return `<div class="account-share-catalog-group" data-account-share-directory="${escapeHtml(group.id || '')}">
+                    <label class="account-share-directory-toggle"><input type="checkbox" data-account-share-directory-toggle="${escapeHtml(group.id || '')}" ${selectionState.checked ? 'checked' : ''}><strong>${escapeHtml(group.name)}</strong><small>${group.items.length}</small></label>
+                    <div class="account-share-directory-files">${group.items.map(document => {
+                      const id = String(document.id)
+                      const fileChecked = selectedItems.some(item => item.kmlId === id)
+                      return `<label><input type="checkbox" data-account-share-kml-toggle="${escapeHtml(id)}" ${fileChecked ? 'checked' : ''}><span>${escapeHtml(document.name || '未命名 KML')}</span></label>`
+                    }).join('')}</div>
+                  </div>`
                 }).join('') : '<p>暂无可加入分享的活跃 KML。</p>'}
               </div>
               <div class="account-share-kml-order" data-account-share-order aria-live="polite"></div>
@@ -401,6 +458,7 @@ export function showAccountShareDialog (options = {}) {
   const analyticsModeField = form.elements.analyticsMode
   const analyticsProviderField = root.querySelector('[data-account-analytics-provider-field]')
   const analyticsCustomField = root.querySelector('[data-account-analytics-custom-field]')
+  const clusteringFields = root.querySelector('[data-account-clustering-fields]')
   let previewKey = spatialAccess.mode === 'kml_bounds'
     ? `${selectedItems.map(item => item.kmlId).join(',')}|${spatialAccess.unrestrictedTileMaxZoom ?? ''}`
     : ''
@@ -431,6 +489,9 @@ export function showAccountShareDialog (options = {}) {
     const mode = analyticsModeField?.value || 'none'
     if (analyticsProviderField) analyticsProviderField.hidden = mode !== 'provider'
     if (analyticsCustomField) analyticsCustomField.hidden = mode !== 'custom'
+  }
+  const updateClusteringVisibility = () => {
+    if (clusteringFields) clusteringFields.hidden = form.elements.kmlClusteringEnabled?.value !== 'true'
   }
   const requestSpatialPreview = async () => {
     if (form.elements.spatialAccessMode.value !== 'kml_bounds') {
@@ -480,6 +541,7 @@ export function showAccountShareDialog (options = {}) {
   updatePasswordAccessVisibility()
   updateSpatialTileZoomVisibility()
   updateAnalyticsVisibility()
+  updateClusteringVisibility()
   spatialPreviewButton.hidden = spatialAccess.mode !== 'kml_bounds'
 
   const showError = message => {
@@ -504,6 +566,16 @@ export function showAccountShareDialog (options = {}) {
     }).join('') : '<p>请从左侧至少选择一个活跃 KML。</p>'
     root.querySelectorAll('[data-account-share-kml-toggle]').forEach(input => {
       input.checked = selectedItems.some(item => item.kmlId === input.dataset.accountShareKmlToggle)
+    })
+    root.querySelectorAll('[data-account-share-directory-toggle]').forEach(input => {
+      const directoryId = input.dataset.accountShareDirectoryToggle || ''
+      const group = catalogGroups.find(item => String(item.id || '') === directoryId)
+      const selectionState = getShareDirectorySelectionState(
+        (group?.items || []).map(item => item.id),
+        selectedItems,
+      )
+      input.checked = selectionState.checked
+      input.indeterminate = selectionState.indeterminate
     })
   }
   renderSelectedItems()
@@ -568,6 +640,29 @@ export function showAccountShareDialog (options = {}) {
         scheduleSpatialPreview()
         return
       }
+      const directoryToggle = event.target.closest('[data-account-share-directory-toggle]')
+      if (directoryToggle) {
+        const directoryId = directoryToggle.dataset.accountShareDirectoryToggle || ''
+        const group = catalogGroups.find(item => String(item.id || '') === directoryId)
+        const ids = (group?.items || []).map(item => String(item.id))
+        const nextChecked = directoryToggle.checked
+        if (nextChecked && selectedItems.length + ids.filter(id => !selectedItems.some(item => item.kmlId === id)).length > 20) {
+          directoryToggle.checked = false
+          showError('一个分享最多包含 20 个 KML')
+          return
+        }
+        if (nextChecked) {
+          ids.forEach(kmlId => {
+            if (!selectedItems.some(item => item.kmlId === kmlId)) selectedItems.push({ kmlId, visibleByDefault: true, displayName: '' })
+          })
+        } else {
+          selectedItems = selectedItems.filter(item => !ids.includes(item.kmlId))
+        }
+        showError('')
+        renderSelectedItems()
+        scheduleSpatialPreview()
+        return
+      }
       const visibleToggle = event.target.closest('[data-account-share-visible]')
       if (visibleToggle) {
         const item = selectedItems.find(entry => entry.kmlId === visibleToggle.dataset.accountShareVisible)
@@ -589,6 +684,7 @@ export function showAccountShareDialog (options = {}) {
         updatePasswordAccessVisibility()
       }
       if (event.target.name === 'analyticsMode') updateAnalyticsVisibility()
+      if (event.target.name === 'kmlClusteringEnabled') updateClusteringVisibility()
       if (event.target.name === 'passwordAccessTtlMode' && event.target.value === 'unlimited' && form.elements.spatialAccessMode.value !== 'kml_bounds') {
         form.elements.spatialAccessMode.value = 'kml_bounds'
         form.elements.mapMode.value = '2d'
@@ -665,6 +761,15 @@ export function showAccountShareDialog (options = {}) {
         const value = form.elements[name].value.trim()
         if (value !== '') viewInput[name] = Number(value)
       })
+      viewInput.kmlPointClustering = form.elements.kmlClusteringEnabled.value === 'true'
+        ? {
+            enabled: true,
+            minZoom: Number(form.elements.kmlClusteringMinZoom.value),
+            maxClusterZoom: Number(form.elements.kmlClusteringMaxZoom.value),
+            gridSize: Number(form.elements.kmlClusteringGridSize.value),
+            maxMembersPerCluster: Number(form.elements.kmlClusteringMaxMembers.value),
+          }
+        : { enabled: false }
       try {
         finish({
           title: form.elements.title.value.trim(),

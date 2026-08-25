@@ -87,6 +87,15 @@ const SHARE_MANIFEST_RATE_LIMIT = Object.freeze({
 
 const SHARE_ACCESS_EVENT_DEDUP_MS = 15 * 60 * 1000
 const SHARE_ACCESS_EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+const KML_DIRECTORY_LIMIT = 200
+const KML_DIRECTORY_NAME_MAX_LENGTH = 80
+const DEFAULT_KML_POINT_CLUSTERING = Object.freeze({
+  enabled: false,
+  minZoom: 0,
+  maxClusterZoom: 13,
+  gridSize: 64,
+  maxMembersPerCluster: 5000,
+})
 
 function parseJson (value, fallback) {
   try {
@@ -175,6 +184,81 @@ function normalizeBoolean (value, fallback = false) {
     throw createHttpError('布尔字段格式不正确', 400, 'VALIDATION_FAILED')
   }
   return value
+}
+
+function normalizeKmlDirectoryId (value) {
+  if (value === undefined || value === null || value === '') return null
+  return normalizeText(value, {
+    minLength: 1,
+    maxLength: 160,
+    message: 'KML 目录 ID 格式不正确',
+  })
+}
+
+function normalizeKmlDirectoryName (value, fallback = '') {
+  return normalizeText(value, {
+    fallback,
+    minLength: 1,
+    maxLength: KML_DIRECTORY_NAME_MAX_LENGTH,
+    message: `KML 目录名称长度需为 1～${KML_DIRECTORY_NAME_MAX_LENGTH} 个字符`,
+  })
+}
+
+function normalizedDirectoryNameKey (value) {
+  return String(value || '').normalize('NFKC').toLocaleLowerCase('zh-CN')
+}
+
+function normalizeIntegerField (value, options = {}) {
+  const number = Number(value)
+  const minimum = Number(options.minimum ?? 0)
+  const maximum = Number(options.maximum ?? Number.MAX_SAFE_INTEGER)
+  if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
+    throw createHttpError(options.message || '整数参数格式不正确', 400, options.code || 'VALIDATION_FAILED')
+  }
+  return number
+}
+
+export function normalizeKmlPointClustering (value, fallback = DEFAULT_KML_POINT_CLUSTERING) {
+  const source = value === undefined
+    ? (fallback && typeof fallback === 'object' && !Array.isArray(fallback) ? fallback : DEFAULT_KML_POINT_CLUSTERING)
+    : requireObject(value, '点位聚合配置格式不正确')
+  const enabled = normalizeBoolean(source.enabled, false)
+  if (!enabled) return { enabled: false }
+  const minZoom = normalizeIntegerField(source.minZoom ?? DEFAULT_KML_POINT_CLUSTERING.minZoom, {
+    minimum: 0,
+    maximum: 24,
+    code: 'SHARE_CLUSTER_CONFIG_INVALID',
+    message: '点位聚合起始缩放级别需为 0～24 的整数',
+  })
+  const maxClusterZoom = normalizeIntegerField(source.maxClusterZoom ?? DEFAULT_KML_POINT_CLUSTERING.maxClusterZoom, {
+    minimum: 0,
+    maximum: 24,
+    code: 'SHARE_CLUSTER_CONFIG_INVALID',
+    message: '点位聚合结束缩放级别需为 0～24 的整数',
+  })
+  if (minZoom > maxClusterZoom) {
+    throw createHttpError('点位聚合起始缩放级别不能高于结束级别', 400, 'SHARE_CLUSTER_CONFIG_INVALID')
+  }
+  return {
+    enabled: true,
+    minZoom,
+    maxClusterZoom,
+    gridSize: normalizeIntegerField(source.gridSize ?? DEFAULT_KML_POINT_CLUSTERING.gridSize, {
+      minimum: 24,
+      maximum: 128,
+      code: 'SHARE_CLUSTER_CONFIG_INVALID',
+      message: '点位聚合网格大小需为 24～128 像素的整数',
+    }),
+    maxMembersPerCluster: normalizeIntegerField(
+      source.maxMembersPerCluster ?? DEFAULT_KML_POINT_CLUSTERING.maxMembersPerCluster,
+      {
+        minimum: 100,
+        maximum: 20000,
+        code: 'SHARE_CLUSTER_CONFIG_INVALID',
+        message: '单个点位聚合成员上限需为 100～20000 的整数',
+      }
+    ),
+  }
 }
 
 function normalizeColor (value, fallback) {
@@ -636,6 +720,12 @@ function normalizeViewConfig (input, fallback = {}) {
   }
   if (input.showOwnerDisplayName !== undefined) {
     result.showOwnerDisplayName = normalizeBoolean(input.showOwnerDisplayName)
+  }
+  if (input.kmlPointClustering !== undefined || fallback?.kmlPointClustering !== undefined) {
+    result.kmlPointClustering = normalizeKmlPointClustering(
+      input.kmlPointClustering,
+      fallback?.kmlPointClustering
+    )
   }
   return result
 }
@@ -1528,6 +1618,315 @@ export class UserContentService {
     `).get(kmlId)?.count || 0)
   }
 
+  requireOwnedKmlDirectory (actor, directoryId) {
+    this.assertPermission(actor, 'kml.own.read')
+    const ownerId = this.actorUser(actor).id
+    const id = normalizeKmlDirectoryId(directoryId)
+    if (!id) throw createHttpError('KML 目录不存在', 404, 'KML_DIRECTORY_NOT_FOUND')
+    const row = this.database.prepare(`
+      SELECT * FROM kml_directories WHERE id = ? AND owner_id = ?
+    `).get(id, ownerId)
+    if (!row) throw createHttpError('KML 目录不存在', 404, 'KML_DIRECTORY_NOT_FOUND')
+    return row
+  }
+
+  assertOwnedDirectoryId (actor, directoryId) {
+    const id = normalizeKmlDirectoryId(directoryId)
+    if (!id) return null
+    return this.requireOwnedKmlDirectory(actor, id).id
+  }
+
+  kmlDirectoryViewFromRow (row) {
+    if (!row) return null
+    const counts = this.database.prepare(`
+      SELECT COUNT(*) AS file_count,
+             COALESCE(SUM(CASE WHEN enabled = 1 AND status = 'active' THEN 1 ELSE 0 END), 0) AS visible_file_count,
+             COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) AS active_file_count
+      FROM kml_documents WHERE owner_id = ? AND directory_id = ?
+    `).get(row.owner_id, row.id)
+    const activeFileCount = Number(counts?.active_file_count || 0)
+    const visibleFileCount = Number(counts?.visible_file_count || 0)
+    return {
+      id: row.id,
+      ownerId: row.owner_id,
+      name: row.name,
+      position: Number(row.position || 0),
+      enabled: Boolean(row.enabled),
+      fileCount: Number(counts?.file_count || 0),
+      activeFileCount,
+      visibleFileCount,
+      visibilityState: activeFileCount === 0 || visibleFileCount === activeFileCount
+        ? 'visible'
+        : visibleFileCount === 0 ? 'hidden' : 'mixed',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  listKmlDirectories (actor) {
+    this.assertPermission(actor, 'kml.own.read')
+    const ownerId = this.actorUser(actor).id
+    const items = this.database.prepare(`
+      SELECT * FROM kml_directories WHERE owner_id = ? ORDER BY position, id
+    `).all(ownerId).map(row => this.kmlDirectoryViewFromRow(row))
+    const uncategorizedCounts = this.database.prepare(`
+      SELECT COUNT(*) AS file_count,
+             COALESCE(SUM(CASE WHEN enabled = 1 AND status = 'active' THEN 1 ELSE 0 END), 0) AS visible_file_count,
+             COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) AS active_file_count
+      FROM kml_documents WHERE owner_id = ? AND directory_id IS NULL
+    `).get(ownerId)
+    const activeFileCount = Number(uncategorizedCounts?.active_file_count || 0)
+    const visibleFileCount = Number(uncategorizedCounts?.visible_file_count || 0)
+    return {
+      items,
+      uncategorized: {
+        id: null,
+        name: '未分类',
+        position: items.length,
+        enabled: activeFileCount === 0 || visibleFileCount > 0,
+        fileCount: Number(uncategorizedCounts?.file_count || 0),
+        activeFileCount,
+        visibleFileCount,
+        visibilityState: activeFileCount === 0 || visibleFileCount === activeFileCount
+          ? 'visible'
+          : visibleFileCount === 0 ? 'hidden' : 'mixed',
+      },
+    }
+  }
+
+  createKmlDirectory (actor, input = {}) {
+    this.assertPermission(actor, 'kml.own.write')
+    requireObject(input)
+    const ownerId = this.actorUser(actor).id
+    const count = Number(this.database.prepare(`
+      SELECT COUNT(*) AS count FROM kml_directories WHERE owner_id = ?
+    `).get(ownerId)?.count || 0)
+    if (count >= KML_DIRECTORY_LIMIT) {
+      throw createHttpError(`KML 目录数量不能超过 ${KML_DIRECTORY_LIMIT} 个`, 422, 'KML_DIRECTORY_LIMIT_EXCEEDED')
+    }
+    const name = normalizeKmlDirectoryName(input.name)
+    const nameKey = normalizedDirectoryNameKey(name)
+    if (this.database.prepare(`
+      SELECT 1 FROM kml_directories WHERE owner_id = ? AND name_normalized = ?
+    `).get(ownerId, nameKey)) {
+      throw createHttpError('同名 KML 目录已存在', 409, 'KML_DIRECTORY_NAME_CONFLICT')
+    }
+    const position = Number(this.database.prepare(`
+      SELECT COALESCE(MAX(position), -1) + 1 AS position FROM kml_directories WHERE owner_id = ?
+    `).get(ownerId)?.position || 0)
+    const id = randomId('kmd')
+    const now = this.nowIso()
+    this.database.prepare(`
+      INSERT INTO kml_directories(id, owner_id, name, name_normalized, position, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+    `).run(id, ownerId, name, nameKey, position, now, now)
+    this.insertAudit({ actorUserId: ownerId, action: 'kml.directory.create', targetType: 'kml-directory', targetId: id })
+    return this.kmlDirectoryViewFromRow(this.database.prepare('SELECT * FROM kml_directories WHERE id = ?').get(id))
+  }
+
+  updateKmlDirectory (actor, directoryId, input = {}) {
+    this.assertPermission(actor, 'kml.own.write')
+    requireObject(input)
+    const row = this.requireOwnedKmlDirectory(actor, directoryId)
+    const name = input.name === undefined ? row.name : normalizeKmlDirectoryName(input.name, row.name)
+    const nameKey = normalizedDirectoryNameKey(name)
+    const duplicate = this.database.prepare(`
+      SELECT 1 FROM kml_directories WHERE owner_id = ? AND name_normalized = ? AND id <> ?
+    `).get(row.owner_id, nameKey, row.id)
+    if (duplicate) throw createHttpError('同名 KML 目录已存在', 409, 'KML_DIRECTORY_NAME_CONFLICT')
+    const enabled = normalizeBoolean(input.enabled, Boolean(row.enabled))
+    const now = this.nowIso()
+    this.database.prepare(`
+      UPDATE kml_directories SET name = ?, name_normalized = ?, enabled = ?, updated_at = ? WHERE id = ?
+    `).run(name, nameKey, enabled ? 1 : 0, now, row.id)
+    if (input.enabled !== undefined) this.setKmlDirectoryVisibility(actor, row.id, enabled)
+    return this.kmlDirectoryViewFromRow(this.database.prepare('SELECT * FROM kml_directories WHERE id = ?').get(row.id))
+  }
+
+  deleteKmlDirectory (actor, directoryId) {
+    this.assertPermission(actor, 'kml.own.write')
+    const row = this.requireOwnedKmlDirectory(actor, directoryId)
+    const targetStart = Number(this.database.prepare(`
+      SELECT COALESCE(MAX(position), -1) + 1 AS position
+      FROM kml_documents WHERE owner_id = ? AND directory_id IS NULL AND status = 'active'
+    `).get(row.owner_id)?.position || 0)
+    const files = this.database.prepare(`
+      SELECT id FROM kml_documents WHERE owner_id = ? AND directory_id = ?
+      ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, position, id
+    `).all(row.owner_id, row.id)
+    const now = this.nowIso()
+    this.database.transaction(() => {
+      const move = this.database.prepare(`
+        UPDATE kml_documents
+        SET directory_id = NULL, position = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `)
+      files.forEach((file, index) => move.run(targetStart + index, now, file.id))
+      this.database.prepare('DELETE FROM kml_directories WHERE id = ?').run(row.id)
+      this.reindexKmlDirectories(row.owner_id)
+      this.insertAudit({
+        actorUserId: row.owner_id,
+        action: 'kml.directory.delete',
+        targetType: 'kml-directory',
+        targetId: row.id,
+        metadata: { movedFileCount: files.length },
+      })
+    })
+    return {
+      id: row.id,
+      status: 'deleted',
+      movedFileCount: files.length,
+      documents: files.map(file => this.kmlViewFromRow(
+        this.database.prepare('SELECT * FROM kml_documents WHERE id = ?').get(file.id)
+      )),
+    }
+  }
+
+  reindexKmlDirectories (ownerId) {
+    const rows = this.database.prepare(`
+      SELECT id FROM kml_directories WHERE owner_id = ? ORDER BY position, id
+    `).all(ownerId)
+    const update = this.database.prepare('UPDATE kml_directories SET position = ? WHERE id = ?')
+    rows.forEach((row, index) => update.run(index, row.id))
+  }
+
+  reorderKmlDirectories (actor, input = {}) {
+    this.assertPermission(actor, 'kml.own.write')
+    requireObject(input)
+    const ownerId = this.actorUser(actor).id
+    const ids = Array.isArray(input.ids) ? input.ids.map(normalizeKmlDirectoryId) : null
+    if (!ids || ids.some(id => !id) || new Set(ids).size !== ids.length) {
+      throw createHttpError('KML 目录顺序格式不正确', 400, 'KML_REORDER_INVALID')
+    }
+    const current = this.database.prepare(`
+      SELECT id FROM kml_directories WHERE owner_id = ? ORDER BY position, id
+    `).all(ownerId).map(row => row.id)
+    if (ids.length !== current.length || ids.some(id => !current.includes(id))) {
+      throw createHttpError('必须提交当前用户的完整目录顺序', 409, 'KML_REORDER_INVALID')
+    }
+    const now = this.nowIso()
+    const update = this.database.prepare('UPDATE kml_directories SET position = ?, updated_at = ? WHERE id = ? AND owner_id = ?')
+    this.database.transaction(() => ids.forEach((id, index) => update.run(index, now, id, ownerId)))
+    return this.listKmlDirectories(actor)
+  }
+
+  setKmlDirectoryVisibility (actor, directoryId, enabled) {
+    this.assertPermission(actor, 'kml.own.write')
+    const ownerId = this.actorUser(actor).id
+    const normalizedEnabled = normalizeBoolean(enabled)
+    const id = normalizeKmlDirectoryId(directoryId)
+    if (id) this.requireOwnedKmlDirectory(actor, id)
+    const rows = this.database.prepare(`
+      SELECT id FROM kml_documents
+      WHERE owner_id = ? AND directory_id IS ? AND status = 'active' AND enabled <> ?
+    `).all(ownerId, id, normalizedEnabled ? 1 : 0)
+    const now = this.nowIso()
+    this.database.transaction(() => {
+      this.database.prepare(`
+        UPDATE kml_documents
+        SET enabled = ?, revision = revision + 1, updated_at = ?
+        WHERE owner_id = ? AND directory_id IS ? AND status = 'active' AND enabled <> ?
+      `).run(normalizedEnabled ? 1 : 0, now, ownerId, id, normalizedEnabled ? 1 : 0)
+      if (id) {
+        this.database.prepare('UPDATE kml_directories SET enabled = ?, updated_at = ? WHERE id = ?')
+          .run(normalizedEnabled ? 1 : 0, now, id)
+      }
+      rows.forEach(row => this.revalidateSharesForKml(row.id))
+    })
+    return {
+      directoryId: id,
+      enabled: normalizedEnabled,
+      affectedFileCount: rows.length,
+      documents: rows.map(row => this.kmlViewFromRow(
+        this.database.prepare('SELECT * FROM kml_documents WHERE id = ?').get(row.id)
+      )),
+    }
+  }
+
+  kmlIdsInDirectory (ownerId, directoryId) {
+    return this.database.prepare(`
+      SELECT id FROM kml_documents
+      WHERE owner_id = ? AND directory_id IS ? AND status = 'active'
+      ORDER BY position, id
+    `).all(ownerId, directoryId).map(row => row.id)
+  }
+
+  writeKmlDirectoryOrder (ownerId, directoryId, ids, options = {}) {
+    const excludedId = options.excludeId ? String(options.excludeId) : ''
+    const update = this.database.prepare(`
+      UPDATE kml_documents
+      SET directory_id = ?, position = ?,
+          revision = revision + CASE WHEN id = ? THEN 0 ELSE 1 END,
+          updated_at = ?
+      WHERE id = ? AND owner_id = ?
+        AND NOT (directory_id IS ? AND position = ?)
+    `)
+    const now = this.nowIso()
+    const changedIds = []
+    ids.forEach((id, index) => {
+      const result = update.run(directoryId, index, excludedId, now, id, ownerId, directoryId, index)
+      if (Number(result.changes) === 1) changedIds.push(id)
+    })
+    return changedIds
+  }
+
+  reorderKmlFiles (actor, input = {}) {
+    this.assertPermission(actor, 'kml.own.write')
+    requireObject(input)
+    const ownerId = this.actorUser(actor).id
+    const directoryId = this.assertOwnedDirectoryId(actor, input.directoryId)
+    const ids = Array.isArray(input.ids) ? input.ids.map(id => String(id || '')) : null
+    if (!ids || ids.some(id => !id) || new Set(ids).size !== ids.length) {
+      throw createHttpError('KML 文件顺序格式不正确', 400, 'KML_REORDER_INVALID')
+    }
+    const current = this.kmlIdsInDirectory(ownerId, directoryId)
+    if (ids.length !== current.length || ids.some(id => !current.includes(id))) {
+      throw createHttpError('必须提交目标目录的完整 KML 文件顺序', 409, 'KML_REORDER_INVALID')
+    }
+    const changedIds = this.database.transaction(() => this.writeKmlDirectoryOrder(ownerId, directoryId, ids))
+    return {
+      directoryId,
+      ids,
+      documents: changedIds.map(id => this.kmlViewFromRow(
+        this.database.prepare('SELECT * FROM kml_documents WHERE id = ?').get(id)
+      )),
+    }
+  }
+
+  moveKmlFile (actor, kmlId, input = {}) {
+    this.assertPermission(actor, 'kml.own.write')
+    requireObject(input)
+    const row = this.requireKmlAccess(actor, kmlId, 'write')
+    if (row.status !== 'active') throw createHttpError('回收站中的 KML 不能移动目录', 409, 'KML_MOVE_INVALID')
+    const targetDirectoryId = this.assertOwnedDirectoryId(actor, input.directoryId)
+    const sourceDirectoryId = row.directory_id || null
+    const sourceIds = this.kmlIdsInDirectory(row.owner_id, sourceDirectoryId).filter(id => id !== row.id)
+    const targetIds = sourceDirectoryId === targetDirectoryId
+      ? sourceIds
+      : this.kmlIdsInDirectory(row.owner_id, targetDirectoryId).filter(id => id !== row.id)
+    const beforeId = input.beforeId === undefined || input.beforeId === null || input.beforeId === ''
+      ? null
+      : String(input.beforeId)
+    let insertionIndex = targetIds.length
+    if (beforeId) {
+      insertionIndex = targetIds.indexOf(beforeId)
+      if (insertionIndex < 0) throw createHttpError('目标插入位置不属于指定目录', 409, 'KML_MOVE_INVALID')
+    }
+    targetIds.splice(insertionIndex, 0, row.id)
+    const changedIds = this.database.transaction(() => {
+      const changed = []
+      if (sourceDirectoryId !== targetDirectoryId) changed.push(...this.writeKmlDirectoryOrder(row.owner_id, sourceDirectoryId, sourceIds))
+      changed.push(...this.writeKmlDirectoryOrder(row.owner_id, targetDirectoryId, targetIds))
+      return [...new Set(changed)]
+    })
+    return {
+      ...this.getKml(actor, row.id),
+      affectedDocuments: changedIds.map(id => this.kmlViewFromRow(
+        this.database.prepare('SELECT * FROM kml_documents WHERE id = ?').get(id)
+      )),
+    }
+  }
+
   kmlViewFromRow (row, options = {}) {
     if (!row) return null
     const result = {
@@ -1552,6 +1951,11 @@ export class UserContentService {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       deletedAt: row.deleted_at || null,
+      directoryId: row.directory_id || null,
+      directoryName: row.directory_id
+        ? String(this.database.prepare('SELECT name FROM kml_directories WHERE id = ?').get(row.directory_id)?.name || '')
+        : '',
+      position: Number(row.position || 0),
     }
     if (row.sync_client_id) result.syncClientId = row.sync_client_id
     if (options.includeFeatures) result.features = parseJson(row.features_json, [])
@@ -1645,6 +2049,16 @@ export class UserContentService {
       }
     }
     const normalized = normalizeKmlInput(input)
+    const directoryId = normalizeKmlDirectoryId(input.directoryId)
+    if (directoryId && !this.database.prepare(`
+      SELECT 1 FROM kml_directories WHERE id = ? AND owner_id = ?
+    `).get(directoryId, ownerId)) {
+      throw createHttpError('KML 目录不存在', 404, 'KML_DIRECTORY_NOT_FOUND')
+    }
+    const position = Number(this.database.prepare(`
+      SELECT COALESCE(MAX(position), -1) + 1 AS position
+      FROM kml_documents WHERE owner_id = ? AND directory_id IS ?
+    `).get(ownerId, directoryId)?.position || 0)
     this.assertKmlQuota(ownerId, normalized, null, options.sourceByteSize)
     const sourceType = normalizeEnum(input.sourceType, KML_SOURCE_TYPES, options.sourceType || 'created', 'KML 来源类型不正确')
     const isDefault = Boolean(input.isDefault)
@@ -1659,8 +2073,8 @@ export class UserContentService {
           id, owner_id, name, description, is_default, status,
           coord_correction, theme, color, lock_drag, enabled, is_live_track,
           features_json, feature_count, byte_size, revision, source_type,
-          sync_client_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+          sync_client_id, directory_id, position, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         ownerId,
@@ -1678,6 +2092,8 @@ export class UserContentService {
         normalized.byteSize,
         sourceType,
         syncClientId,
+        directoryId,
+        position,
         now,
         now
       )
@@ -1734,6 +2150,7 @@ export class UserContentService {
       createdAt: 'created_at',
       name: 'name',
       featureCount: 'feature_count',
+      position: 'position',
     }
     if (input.sort !== undefined && !Object.hasOwn(sortMap, input.sort)) {
       throw createHttpError('KML 排序字段不正确', 400, 'VALIDATION_FAILED')
@@ -1750,6 +2167,12 @@ export class UserContentService {
       where.push('(name LIKE ? OR description LIKE ?)')
       const search = `%${String(input.search).slice(0, 200)}%`
       params.push(search, search)
+    }
+    if (input.directoryId !== undefined) {
+      const directoryId = normalizeKmlDirectoryId(input.directoryId)
+      if (directoryId) this.requireOwnedKmlDirectory(actor, directoryId)
+      where.push('directory_id IS ?')
+      params.push(directoryId)
     }
     if (input.updatedAfter) {
       const parsed = normalizeExpiresAt(input.updatedAfter)
@@ -1793,7 +2216,31 @@ export class UserContentService {
       throw createHttpError('KML 已被其他客户端更新，请重新加载', 409, 'KML_REVISION_CONFLICT')
     }
     const current = this.kmlViewFromRow(row, { includeFeatures: true })
+    const requestedDirectoryId = input.directoryId === undefined
+      ? row.directory_id || null
+      : normalizeKmlDirectoryId(input.directoryId)
+    if (requestedDirectoryId && !this.database.prepare(`
+      SELECT 1 FROM kml_directories WHERE id = ? AND owner_id = ?
+    `).get(requestedDirectoryId, row.owner_id)) {
+      throw createHttpError('KML 目录不存在', 404, 'KML_DIRECTORY_NOT_FOUND')
+    }
     const normalized = normalizeKmlInput(input, current)
+    let directoryMove = null
+    if (input.directoryId !== undefined || input.position !== undefined) {
+      const sourceDirectoryId = row.directory_id || null
+      const sourceIds = this.kmlIdsInDirectory(row.owner_id, sourceDirectoryId).filter(id => id !== row.id)
+      const ids = this.kmlIdsInDirectory(row.owner_id, requestedDirectoryId).filter(id => id !== row.id)
+      const position = input.position === undefined
+        ? ids.length
+        : normalizeIntegerField(input.position, {
+            minimum: 0,
+            maximum: ids.length,
+            code: 'KML_MOVE_INVALID',
+            message: 'KML 文件位置不正确',
+          })
+      ids.splice(position, 0, row.id)
+      directoryMove = { sourceDirectoryId, sourceIds, ids, requestedDirectoryId }
+    }
     const makeDefault = input.isDefault === true
     if (makeDefault && row.status !== 'active') {
       throw createHttpError('回收站中的 KML 不能设为默认，请先恢复', 409, 'KML_NOT_ACTIVE')
@@ -1832,6 +2279,12 @@ export class UserContentService {
       )
       if (Number(result.changes) !== 1) {
         throw createHttpError('KML 已被其他客户端更新，请重新加载', 409, 'KML_REVISION_CONFLICT')
+      }
+      if (directoryMove) {
+        if (directoryMove.sourceDirectoryId !== directoryMove.requestedDirectoryId) {
+          this.writeKmlDirectoryOrder(row.owner_id, directoryMove.sourceDirectoryId, directoryMove.sourceIds)
+        }
+        this.writeKmlDirectoryOrder(row.owner_id, directoryMove.requestedDirectoryId, directoryMove.ids, { excludeId: row.id })
       }
     })
     return this.getKml(actor, row.id)
@@ -2334,6 +2787,9 @@ export class UserContentService {
         position: Number(row.position),
         visibleByDefault: Boolean(row.visible_by_default),
         displayName: row.display_name || '',
+        directoryId: row.source_directory_id || row.directory_id || null,
+        directoryName: row.directory_name || '',
+        sourcePosition: Number(row.source_position || 0),
         name: row.kml_name,
         status: row.kml_status,
         featureCount: Number(row.feature_count),
@@ -2415,38 +2871,60 @@ export class UserContentService {
       ? Math.min(20, configuredMaximum)
       : 20
     const minimum = options.allowEmpty ? 0 : 1
-    if (value.length < minimum || value.length > maximum) {
-      throw createHttpError(`分享包需包含 ${minimum}～${maximum} 个 KML`, 400, 'VALIDATION_FAILED')
-    }
+    if (value.length < minimum) throw createHttpError(`分享包至少需包含 ${minimum} 个 KML`, 400, 'VALIDATION_FAILED')
     const seen = new Set()
-    return value.map((rawItem, index) => {
-      const item = requireObject(rawItem, `第 ${index + 1} 个分享项格式不正确`)
+    const expanded = value.flatMap((rawItem, sourceIndex) => {
+      const item = requireObject(rawItem, `第 ${sourceIndex + 1} 个分享项格式不正确`)
       const kmlId = String(item.kmlId || '')
-      if (!kmlId || seen.has(kmlId)) {
-        throw createHttpError('分享文件不能缺失或重复', 400, 'VALIDATION_FAILED')
+      const requestedDirectoryId = normalizeKmlDirectoryId(item.directoryId)
+      if (Boolean(kmlId) === Boolean(requestedDirectoryId)) {
+        throw createHttpError('分享项必须且只能指定一个 KML 文件或目录', 400, 'VALIDATION_FAILED')
       }
-      seen.add(kmlId)
-      const document = this.database.prepare(`
+      const documents = requestedDirectoryId
+        ? this.database.prepare(`
+            SELECT k.*, d.name AS directory_name
+            FROM kml_documents k
+            JOIN kml_directories d ON d.id = k.directory_id AND d.owner_id = k.owner_id
+            WHERE k.owner_id = ? AND k.directory_id = ? AND k.status = 'active'
+            ORDER BY k.position, k.id
+          `).all(ownerId, requestedDirectoryId)
+        : [this.database.prepare(`
         SELECT id, name, description, coord_correction, theme, color,
                lock_drag, enabled, is_live_track, features_json,
-               feature_count, byte_size, revision, updated_at
+               feature_count, byte_size, revision, updated_at,
+               directory_id, position,
+               (SELECT name FROM kml_directories WHERE id = kml_documents.directory_id) AS directory_name
         FROM kml_documents
         WHERE id = ? AND owner_id = ? AND status = 'active'
-      `).get(kmlId, ownerId)
-      if (!document) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
-      const position = Number(item.position)
-      return {
-        kmlId,
-        sourceIndex: index,
-        requestedPosition: Number.isFinite(position) ? position : index,
-        visibleByDefault: normalizeBoolean(item.visibleByDefault, true),
-        displayName: normalizeText(item.displayName, { maxLength: 200 }),
-        name: document.name,
-        revision: Number(document.revision),
-        features: parseJson(document.features_json, []),
-        publishedSnapshot: this.publishedSnapshotFromDocument(document),
+      `).get(kmlId, ownerId)].filter(Boolean)
+      if (!documents.length) {
+        throw createHttpError(requestedDirectoryId ? '分享目录不存在或没有可分享的 KML' : '分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
       }
-    }).sort((left, right) => left.requestedPosition - right.requestedPosition || left.sourceIndex - right.sourceIndex)
+      const requestedPosition = Number(item.position)
+      return documents.flatMap((document, directoryIndex) => {
+        if (seen.has(document.id)) return []
+        seen.add(document.id)
+        return [{
+          kmlId: document.id,
+          sourceIndex,
+          directoryIndex,
+          requestedPosition: Number.isFinite(requestedPosition) ? requestedPosition : sourceIndex,
+          visibleByDefault: normalizeBoolean(item.visibleByDefault, true),
+          displayName: kmlId ? normalizeText(item.displayName, { maxLength: 200 }) : '',
+          sourceDirectoryId: document.directory_id || null,
+          directoryName: document.directory_name || '',
+          sourcePosition: Number(document.position || 0),
+          name: document.name,
+          revision: Number(document.revision),
+          features: parseJson(document.features_json, []),
+          publishedSnapshot: this.publishedSnapshotFromDocument(document),
+        }]
+      })
+    })
+    if (expanded.length < minimum || expanded.length > maximum) {
+      throw createHttpError(`分享包需包含 ${minimum}～${maximum} 个 KML`, 400, 'VALIDATION_FAILED')
+    }
+    return expanded.sort((left, right) => left.requestedPosition - right.requestedPosition || left.directoryIndex - right.directoryIndex || left.sourcePosition - right.sourcePosition || left.sourceIndex - right.sourceIndex || left.kmlId.localeCompare(right.kmlId))
       .map((item, position) => ({ ...item, position }))
   }
 
@@ -2470,6 +2948,7 @@ export class UserContentService {
 
   replaceShareItems (shareId, items, publishedAt = this.nowIso()) {
     const share = this.database.prepare('SELECT public_id FROM kml_shares WHERE id = ?').get(shareId)
+    const publicDirectoryIds = new Map()
     const preparedItems = items.map(item => {
       const snapshot = item.publishedSnapshot?.resourceRefsVersion === undefined
         ? decoratePublishedSnapshot(item.publishedSnapshot)
@@ -2477,6 +2956,13 @@ export class UserContentService {
       return {
         ...item,
         id: item.id || randomId('shi'),
+        directoryId: item.sourceDirectoryId
+          ? (publicDirectoryIds.get(item.sourceDirectoryId) || (() => {
+              const id = item.directoryId || randomId('shd')
+              publicDirectoryIds.set(item.sourceDirectoryId, id)
+              return id
+            })())
+          : null,
         publishedSnapshot: snapshot,
       }
     })
@@ -2498,8 +2984,9 @@ export class UserContentService {
     const insert = this.database.prepare(`
       INSERT INTO kml_share_items(
         id, share_id, kml_id, position, visible_by_default, display_name,
-        published_revision, published_snapshot_json, published_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        published_revision, published_snapshot_json, published_at,
+        directory_id, source_directory_id, directory_name, source_position
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     preparedItems.forEach(item => {
       insert.run(
@@ -2507,7 +2994,11 @@ export class UserContentService {
         item.visibleByDefault ? 1 : 0, item.displayName,
         item.publishedRevision ?? item.revision,
         JSON.stringify(item.publishedSnapshot),
-        item.publishedAt || publishedAt
+        item.publishedAt || publishedAt,
+        item.directoryId || null,
+        item.sourceDirectoryId || null,
+        item.directoryName || '',
+        Number(item.sourcePosition || 0)
       )
     })
   }
@@ -2656,6 +3147,7 @@ export class UserContentService {
     let items = input.items === undefined
       ? current.items.map(item => ({
           kmlId: item.kmlId,
+          ...(item.directoryId && !item.kmlId ? { directoryId: item.directoryId } : {}),
           position: item.position,
           visibleByDefault: item.visibleByDefault,
           displayName: item.displayName,
@@ -2663,7 +3155,8 @@ export class UserContentService {
       : this.normalizeShareItems(row.owner_id, input.items, { allowEmpty: true })
     if (input.items !== undefined && items.length > 0) {
       const publishedRows = this.database.prepare(`
-        SELECT id, kml_id, published_revision, published_snapshot_json, published_at
+        SELECT id, kml_id, published_revision, published_snapshot_json, published_at,
+               directory_id, source_directory_id, directory_name, source_position
         FROM kml_share_items WHERE share_id = ?
       `).all(row.id)
       const publishedByKmlId = new Map(publishedRows.map(item => [item.kml_id, item]))
@@ -2676,6 +3169,16 @@ export class UserContentService {
           publishedRevision: Number(existing.published_revision || 0),
           publishedSnapshot: parseJson(existing.published_snapshot_json, item.publishedSnapshot),
           publishedAt: existing.published_at || null,
+          // The public directory identifier is stable for the same source
+          // directory, while an explicit save refreshes its current label and
+          // order metadata for the new snapshot.
+          directoryId: item.sourceDirectoryId &&
+            item.sourceDirectoryId === (existing.source_directory_id || null)
+            ? (existing.directory_id || item.directoryId || null)
+            : (item.directoryId || null),
+          sourceDirectoryId: item.sourceDirectoryId || existing.source_directory_id || null,
+          directoryName: item.directoryName || existing.directory_name || '',
+          sourcePosition: Number(item.sourcePosition ?? existing.source_position ?? 0),
         }
       })
     }
@@ -2833,17 +3336,38 @@ export class UserContentService {
 
     const sourceItems = this.database.prepare(`
       SELECT i.id, i.kml_id, i.position, i.visible_by_default, i.display_name,
+             i.directory_id, i.source_directory_id, i.directory_name, i.source_position,
              k.name, k.description, k.coord_correction, k.theme, k.color,
              k.lock_drag, k.enabled, k.is_live_track, k.features_json,
-             k.feature_count, k.byte_size, k.revision, k.updated_at
+             k.feature_count, k.byte_size, k.revision, k.updated_at,
+             k.directory_id AS current_directory_id,
+             k.position AS current_position,
+             d.name AS current_directory_name
       FROM kml_share_items i
       JOIN kml_documents k ON k.id = i.kml_id
+      LEFT JOIN kml_directories d ON d.id = k.directory_id AND d.owner_id = k.owner_id
       WHERE i.share_id = ? AND k.status = 'active'
       ORDER BY i.position, i.id
     `).all(row.id)
     if (sourceItems.length === 0) throw createHttpError('分享包没有可用 KML', 409, 'SHARE_EMPTY')
 
-    const items = sourceItems.map(item => ({
+    const publicDirectoryIds = new Map(sourceItems.flatMap(item => (
+      item.current_directory_id &&
+      item.current_directory_id === item.source_directory_id &&
+      item.directory_id
+        ? [[item.current_directory_id, item.directory_id]]
+        : []
+    )))
+    const items = sourceItems.map(item => {
+      const sourceDirectoryId = item.current_directory_id || null
+      const publicDirectoryId = sourceDirectoryId
+        ? (publicDirectoryIds.get(sourceDirectoryId) || (() => {
+            const id = randomId('shd')
+            publicDirectoryIds.set(sourceDirectoryId, id)
+            return id
+          })())
+        : null
+      return {
       id: item.id,
       kmlId: item.kml_id,
       revision: Number(item.revision),
@@ -2851,8 +3375,13 @@ export class UserContentService {
       position: Number(item.position),
       visibleByDefault: Boolean(item.visible_by_default),
       displayName: item.display_name || '',
+      directoryId: publicDirectoryId,
+      sourceDirectoryId,
+      directoryName: item.current_directory_name || '',
+      sourcePosition: Number(item.current_position || 0),
       publishedSnapshot: this.publishedSnapshotFromDocument(item),
-    }))
+      }
+    })
     const settings = this.getSettings()
     const spatialMode = row.spatial_access_mode || 'unrestricted'
     const previousScope = parseJson(row.spatial_scope_json, null)
@@ -2889,7 +3418,8 @@ export class UserContentService {
       }
       const updateSnapshot = this.database.prepare(`
         UPDATE kml_share_items SET
-          published_revision = ?, published_snapshot_json = ?, published_at = ?
+          published_revision = ?, published_snapshot_json = ?, published_at = ?,
+          directory_id = ?, source_directory_id = ?, directory_name = ?, source_position = ?
         WHERE id = ? AND share_id = ?
       `)
       items.forEach(item => {
@@ -2897,6 +3427,10 @@ export class UserContentService {
           item.revision,
           JSON.stringify(item.publishedSnapshot),
           now,
+          item.directoryId || null,
+          item.sourceDirectoryId || null,
+          item.directoryName || '',
+          Number(item.sourcePosition || 0),
           item.id,
           row.id
         )
@@ -3316,6 +3850,7 @@ export class UserContentService {
   publicShareItems (shareId, options = {}) {
     return this.database.prepare(`
       SELECT i.id AS share_item_id, i.position, i.visible_by_default, i.display_name,
+             i.directory_id, i.directory_name,
              i.published_revision, i.published_snapshot_json, i.published_at
       FROM kml_share_items i
       WHERE i.share_id = ?
@@ -3493,6 +4028,8 @@ export class UserContentService {
     const snapshot = row.snapshot || {}
     return {
       shareItemId: row.share_item_id,
+      directoryId: row.directory_id || null,
+      directoryName: row.directory_name || '',
       position: Number(row.position),
       visibleByDefault: Boolean(row.visible_by_default),
       name: row.display_name || snapshot.name || '',

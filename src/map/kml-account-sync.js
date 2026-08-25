@@ -3,6 +3,7 @@ import { isEmbeddedDocument } from '../auth/embed-context.js'
 import { hasPermission, refreshAuthSession } from '../auth/session.js'
 import {
   applyKmlMergeChoices,
+  mergeKmlDocument,
   mergeKmlFileSets,
 } from './kml-conflict-merge.js'
 import { getKmlAccountDraftStore } from './kml-account-draft-store.js'
@@ -20,6 +21,7 @@ let syncInFlight = false
 let syncPending = false
 let syncBlockedByConflict = false
 let latestFiles = []
+let latestDirectories = { items: [], uncategorized: { id: null, name: '未分类', position: 0 } }
 let syncEpoch = 0
 let draftGeneration = 0
 let activeDraft = null
@@ -199,6 +201,10 @@ function serializableKml (file) {
     lockDrag: Boolean(file.lockDrag),
     enabled: file.enabled !== false,
     isLiveTrack: Boolean(file.isLiveTrack),
+    directoryId: file.directoryId == null || file.directoryId === '' ? null : String(file.directoryId),
+    position: Number.isSafeInteger(Number(file.position)) && Number(file.position) >= 0
+      ? Number(file.position)
+      : 0,
     // A snapshot is a historical value. Clone the feature graph so map edits
     // cannot mutate the base through a shared reference.
     features: cloneValue(Array.isArray(file.features) ? file.features : []),
@@ -234,7 +240,12 @@ export function registerKmlAccountDocumentSnapshot (currentSnapshots, document, 
   const normalizedLocalId = String(localId || '')
   const serverId = String(document?.id || document?.serverId || '')
   if (!normalizedLocalId || !serverId || !document || typeof document !== 'object') return next
-  next.set(normalizedLocalId, snapshotForDocument({ ...document, id: serverId }, normalizedLocalId))
+  const incoming = snapshotForDocument({ ...document, id: serverId }, normalizedLocalId)
+  const current = next.get(normalizedLocalId)
+  // Dedicated organization APIs and the general sync endpoint can resolve in
+  // either order. A late response must never move the local base backwards.
+  if (current && Number(incoming.revision || 0) < Number(current.revision || 0)) return next
+  next.set(normalizedLocalId, incoming)
   return next
 }
 
@@ -340,8 +351,12 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
     if (entry.action === 'create' && entry.document) {
       const localId = String(entry.clientId || '')
       if (localId) {
-        nextSnapshots.set(localId, snapshotForDocument(entry.document, localId))
-        resolvedLocalIds.add(localId)
+        const before = nextSnapshots.get(localId)
+        const incoming = snapshotForDocument(entry.document, localId)
+        if (!before || Number(incoming.revision || 0) >= Number(before.revision || 0)) {
+          nextSnapshots.set(localId, incoming)
+          resolvedLocalIds.add(localId)
+        }
       }
       continue
     }
@@ -349,7 +364,14 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
     if (entry.action === 'update' && entry.document) {
       const previous = findByServerId(entry.document.id)
       const localId = String(previous?.localId || entry.document.syncClientId || entry.document.id || '')
-      if (localId) nextSnapshots.set(localId, snapshotForDocument(entry.document, localId))
+      if (localId) {
+        const incoming = snapshotForDocument(entry.document, localId)
+        const current = nextSnapshots.get(localId)
+        if (!current || Number(incoming.revision || 0) >= Number(current.revision || 0)) {
+          nextSnapshots.set(localId, incoming)
+          resolvedLocalIds.add(localId)
+        }
+      }
       continue
     }
 
@@ -358,8 +380,14 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
       const previous = findByServerId(serverId)
       const localId = String(entry.clientId || previous?.localId || '')
       if (entry.document && localId) {
-        nextSnapshots.set(localId, snapshotForDocument(entry.document, localId))
+        const incoming = snapshotForDocument(entry.document, localId)
+        const current = nextSnapshots.get(localId)
+        if (!current || Number(incoming.revision || 0) >= Number(current.revision || 0)) {
+          nextSnapshots.set(localId, incoming)
+        }
       } else if (localId) {
+        const current = nextSnapshots.get(localId)
+        if (current && Number(current.revision || 0) > 0) continue
         nextSnapshots.set(localId, {
           localId,
           serverId: '',
@@ -368,7 +396,9 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
           status: 'trashed',
         })
       }
-      if (localId) resolvedLocalIds.add(localId)
+      if (localId && (!entry.document || !nextSnapshots.get(localId) || nextSnapshots.get(localId).revision === Number(entry.document.revision))) {
+        resolvedLocalIds.add(localId)
+      }
       continue
     }
 
@@ -377,8 +407,14 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
       const previous = entry.document ? findByServerId(entry.document.id) : null
       const localId = String(clientId || previous?.localId || entry.document?.syncClientId || entry.document?.id || '')
       if (entry.document && localId) {
-        nextSnapshots.set(localId, snapshotForDocument(entry.document, localId))
+        const incoming = snapshotForDocument(entry.document, localId)
+        const current = nextSnapshots.get(localId)
+        if (!current || Number(incoming.revision || 0) >= Number(current.revision || 0)) {
+          nextSnapshots.set(localId, incoming)
+        }
       } else if (clientId) {
+        const current = nextSnapshots.get(localId)
+        if (current && Number(current.revision || 0) > 0) continue
         nextSnapshots.delete(localId)
         releasedClientIds.add(localId)
       }
@@ -390,6 +426,103 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
     resolvedLocalIds: [...resolvedLocalIds],
     releasedClientIds: [...releasedClientIds],
   }
+}
+
+function documentRevision (document) {
+  return Number(document?.revision || 0)
+}
+
+function localIdForOperation (operation, files, currentSnapshots) {
+  if (operation?.clientId) return String(operation.clientId)
+  const serverId = String(operation?.kmlId || '')
+  if (!serverId) return ''
+  return String([...snapshotMap(currentSnapshots).values()]
+    .find(snapshot => String(snapshot.serverId || '') === serverId)?.localId ||
+    files.find(file => String(file?.serverId || file?.id || '') === serverId)?.id || '')
+}
+
+function transportFieldsFromDocument (file, document) {
+  if (!file || !document) return
+  if (document.id) file.serverId = document.id
+  if (document.revision !== undefined) file.revision = document.revision
+  if (document.updatedAt !== undefined) file.updatedAt = document.updatedAt
+  if (document.shareReferenceCount !== undefined) file.shareReferenceCount = Number(document.shareReferenceCount || 0)
+  if (document.outdatedShareReferenceCount !== undefined) file.outdatedShareReferenceCount = Number(document.outdatedShareReferenceCount || 0)
+}
+
+const KML_MERGE_FIELDS = [
+  'name',
+  'description',
+  'isDefault',
+  'coordCorrection',
+  'theme',
+  'color',
+  'lockDrag',
+  'enabled',
+  'isLiveTrack',
+  'directoryId',
+  'position',
+]
+
+function completeKmlOrganizationDocument (document, fallback = {}) {
+  const source = document && typeof document === 'object' ? document : {}
+  const fallbackData = serializableKml(fallback)
+  const completed = {}
+  KML_MERGE_FIELDS.forEach(field => {
+    completed[field] = Object.hasOwn(source, field)
+      ? cloneValue(source[field])
+      : cloneValue(fallbackData[field])
+  })
+  completed.features = Array.isArray(source.features)
+    ? cloneValue(source.features)
+    : cloneValue(fallbackData.features)
+  return completed
+}
+
+/**
+ * Rebase only fields that were not edited while the request was in flight.
+ * The API intentionally normalizes text, colors and feature graphs, so
+ * absorbing its canonical values prevents the next save from re-submitting
+ * the same logical change forever without erasing a newer local edit.
+ */
+export function rebaseKmlFileToServerDocument (file, submitted, document) {
+  if (!file || !submitted || !document) return file
+  const submittedData = serializableKml(submitted)
+  const currentData = serializableKml(file)
+  const canonicalData = serializableKml(document)
+  const merged = mergeKmlDocument(submittedData, currentData, canonicalData, { path: 'file' }).file
+  Object.assign(file, merged)
+  transportFieldsFromDocument(file, document)
+  return file
+}
+
+/**
+ * Merge a response from a metadata/organization endpoint into the current
+ * working file. Those endpoints return a fresh document revision while an
+ * editor may still have unsaved content changes. The last acknowledged
+ * snapshot is the merge base; local edits win on an unresolved conflict so a
+ * directory move or visibility toggle cannot erase work in progress.
+ */
+export function mergeKmlAccountOrganizationDocument (localFile, snapshot, document) {
+  if (!document || typeof document !== 'object') return localFile
+  if (!localFile || typeof localFile !== 'object') return cloneValue(document)
+  const local = cloneValue(localFile)
+  const base = snapshot?.base && typeof snapshot.base === 'object'
+    ? snapshot.base
+    : serializableKml(local)
+  const server = completeKmlOrganizationDocument(document, {
+    ...base,
+    ...local,
+  })
+  const merged = mergeKmlDocument(
+    base,
+    serializableKml(local),
+    server,
+    { path: 'file' },
+  ).file
+  // Server response metadata (id, revision, status, directoryName, counters)
+  // is authoritative; merged serializable fields retain unsaved local edits.
+  return { ...local, ...cloneValue(document), ...merged }
 }
 
 export function buildKmlRecoveryDraft (userId, files, currentSnapshots, options = {}) {
@@ -697,6 +830,14 @@ async function loadAllAccountDocuments (options = {}) {
   return { files: await loadDocuments(items), usage }
 }
 
+async function loadKmlDirectories () {
+  const result = await apiRequest('/kml/directories')
+  return {
+    items: Array.isArray(result?.items) ? result.items : [],
+    uncategorized: result?.uncategorized || { id: null, name: '未分类', position: 0 },
+  }
+}
+
 function rebaseSnapshotsToServer (serverFiles, currentSnapshots = snapshots) {
   const rebased = snapshotsForServerFiles(serverFiles, currentSnapshots)
   snapshotMap(currentSnapshots).forEach(item => {
@@ -846,6 +987,7 @@ export async function initializeKmlAccountMode () {
   pendingCreateDeletes = new Set()
   pendingSyncOperations = []
   latestFiles = []
+  latestDirectories = { items: [], uncategorized: { id: null, name: '未分类', position: 0 } }
   syncInFlight = false
   syncPending = false
   syncBlockedByConflict = false
@@ -874,9 +1016,13 @@ export async function initializeKmlAccountMode () {
   }
 
   try {
-    const loaded = await loadAllAccountDocuments()
+    const [loaded, directories] = await Promise.all([
+      loadAllAccountDocuments(),
+      loadKmlDirectories(),
+    ])
     if (!accountMode || initializationEpoch !== syncEpoch) return { mode: 'guest', files: [] }
     latestFiles = loaded.files
+    latestDirectories = directories
     snapshots = snapshotsForServerFiles(loaded.files)
     let recovery = null
     let recoveryError = null
@@ -933,6 +1079,7 @@ export async function initializeKmlAccountMode () {
     return {
       mode: 'account',
       files: loaded.files,
+      directories: cloneValue(latestDirectories),
       usage: loaded.usage || null,
       canWrite: accountCanWrite,
       userId: accountUserId,
@@ -942,7 +1089,7 @@ export async function initializeKmlAccountMode () {
   } catch (error) {
     if (!accountMode || initializationEpoch !== syncEpoch) return { mode: 'guest', files: [] }
     dispatchSyncState('error', { phase: 'load', code: error.code, message: error.message })
-    return { mode: 'account', files: [], canWrite: accountCanWrite, userId: accountUserId, error }
+    return { mode: 'account', files: [], directories: cloneValue(latestDirectories), canWrite: accountCanWrite, userId: accountUserId, error }
   }
 }
 
@@ -958,13 +1105,31 @@ export function isAccountKmlWritable () {
   return accountMode && accountCanWrite
 }
 
+export function getKmlAccountDirectories () {
+  return cloneValue(latestDirectories)
+}
+
+export async function refreshKmlAccountDirectories () {
+  if (!accountMode) return getKmlAccountDirectories()
+  latestDirectories = await loadKmlDirectories()
+  return getKmlAccountDirectories()
+}
+
 export function registerKmlAccountDocument (document, options = {}) {
   if (!accountMode || !accountCanWrite || !document || typeof document !== 'object') return false
   const localId = String(options.localId || document.id || '')
   const serverId = String(document.id || document.serverId || '')
   if (!localId || !serverId) return false
+  const currentSnapshot = snapshots.get(localId)
+  if (currentSnapshot && documentRevision(document) < documentRevision(currentSnapshot)) return false
 
-  snapshots = registerKmlAccountDocumentSnapshot(snapshots, { ...document, id: serverId }, localId)
+  const currentFile = options.localFile || latestFiles.find(file => String(file?.id || '') === localId)
+  const serverDocument = completeKmlOrganizationDocument(document, currentSnapshot?.base || currentFile || {})
+  const mergedDocument = currentFile
+    ? mergeKmlAccountOrganizationDocument(currentFile, currentSnapshot, { ...document, ...serverDocument, id: serverId })
+    : { ...cloneValue(document), ...serverDocument }
+
+  snapshots = registerKmlAccountDocumentSnapshot(snapshots, { ...document, ...serverDocument, id: serverId }, localId)
   unconfirmedCreateIds.delete(localId)
   pendingCreateDeletes.delete(localId)
   pendingSyncOperations = pendingSyncOperations.filter(operation => (
@@ -972,14 +1137,18 @@ export function registerKmlAccountDocument (document, options = {}) {
   ))
 
   const workingIndex = latestFiles.findIndex(file => String(file?.id || '') === localId)
-  if (workingIndex >= 0) latestFiles.splice(workingIndex, 1, document)
-  else latestFiles = [...latestFiles, document]
+  if (workingIndex >= 0) latestFiles.splice(workingIndex, 1, mergedDocument)
+  else latestFiles = [...latestFiles, mergedDocument]
+  if (options.localFile && options.localFile !== mergedDocument) {
+    Object.assign(options.localFile, cloneValue(mergedDocument))
+  }
   return true
 }
 
-function applySyncResult (result, files) {
+function applySyncResult (result, files, operations = []) {
   const operationResults = result?.results || []
   const reduced = reduceKmlSyncResult(snapshots, result)
+  const beforeSnapshots = snapshots
   snapshots = reduced.snapshots
   reduced.resolvedLocalIds.forEach((localId) => {
     unconfirmedCreateIds.delete(localId)
@@ -996,29 +1165,18 @@ function applySyncResult (result, files) {
     }
   })
 
-  operationResults.forEach(entry => {
-    if (entry.action === 'create' && entry.document) {
-      const localId = String(entry.clientId || '')
-      const file = files.find(candidate => candidate.id === localId)
-      if (file) {
-        file.serverId = entry.document.id
-        file.revision = entry.document.revision
-        file.updatedAt = entry.document.updatedAt
-        file.shareReferenceCount = Number(entry.document.shareReferenceCount || 0)
-        file.outdatedShareReferenceCount = Number(entry.document.outdatedShareReferenceCount || 0)
-      }
-      return
-    }
-    if ((entry.action === 'update' || entry.action === 'restore') && entry.document) {
-      const snapshotEntry = [...snapshots.values()].find(candidate => candidate.serverId === entry.document.id)
-      const localId = snapshotEntry?.localId || entry.document.id
-      const file = files.find(candidate => candidate.id === localId)
-      if (file) {
-        file.revision = entry.document.revision
-        file.updatedAt = entry.document.updatedAt
-        file.shareReferenceCount = Number(entry.document.shareReferenceCount || 0)
-        file.outdatedShareReferenceCount = Number(entry.document.outdatedShareReferenceCount || 0)
-      }
+  operationResults.forEach((entry, index) => {
+    if (!entry.document) return
+    const operation = operations[index]
+    const localId = localIdForOperation(operation, files, beforeSnapshots)
+    const file = files.find(candidate => String(candidate?.id || '') === localId)
+    if (!file) return
+    const currentSnapshot = snapshots.get(localId)
+    if (currentSnapshot && documentRevision(entry.document) < documentRevision(currentSnapshot)) return
+    if (entry.action === 'create' || entry.action === 'update') {
+      rebaseKmlFileToServerDocument(file, operation?.data || file, entry.document)
+    } else {
+      transportFieldsFromDocument(file, entry.document)
     }
   })
 }
@@ -1062,7 +1220,7 @@ async function flushSync (options = {}) {
     })
     if (!accountMode || epoch !== syncEpoch) return
     pendingSyncOperations = []
-    applySyncResult(result, latestFiles)
+    applySyncResult(result, latestFiles, operations)
     const remainingOperations = buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes)
     if (remainingOperations.length === 0) {
       clearRecoveryDraft()
@@ -1392,6 +1550,7 @@ export function suspendKmlAccountSync (options = {}) {
   pendingCreateDeletes = new Set()
   pendingSyncOperations = []
   latestFiles = []
+  latestDirectories = { items: [], uncategorized: { id: null, name: '未分类', position: 0 } }
   syncInFlight = false
   syncPending = false
   syncBlockedByConflict = false

@@ -2,6 +2,7 @@ import {
   escapeHtml,
   formatBytes,
   formatDateTime,
+  groupKmlDocumentsByDirectory,
   getAccountCapabilities,
   getAvailableAccountTabs,
   hasAdminAccess,
@@ -131,40 +132,73 @@ function renderProfile (state) {
   `
 }
 
+function renderKmlRow (state, item, options = {}) {
+  const capabilities = getAccountCapabilities(state.auth.user)
+  const selectable = capabilities.canWriteKml || capabilities.canManageShares
+  const selected = state.kml.selected.has(item.id)
+  const disabled = item.status !== 'active'
+  const draggable = options.draggable && !item.isDefault && !disabled
+  return `
+    <article class="account-data-row ${selected ? 'is-selected' : ''} ${draggable ? 'is-draggable' : ''}"
+      data-account-kml-file-drop="${escapeHtml(item.id)}"
+      data-directory-id="${escapeHtml(item.directoryId || '')}"
+      ${draggable ? `draggable="true" data-account-kml-file-draggable="true" data-id="${escapeHtml(item.id)}"` : ''}>
+      <span class="account-row-drag" aria-hidden="true" title="${draggable ? '拖动排序或移动目录' : ''}">${draggable ? '⋮⋮' : ''}</span>
+      ${selectable ? `<label class="account-row-check" title="选择 ${escapeHtml(item.name)}">
+        <input type="checkbox" data-kml-select="${escapeHtml(item.id)}" ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+      </label>` : '<span></span>'}
+      <span class="account-file-mark" style="--file-color:${escapeHtml(item.color || '#0f766e')}">KML</span>
+      <div class="account-row-main">
+        <div class="account-row-title"><strong>${escapeHtml(item.name)}</strong>${item.isDefault ? '<span class="account-badge">默认</span>' : ''}<span class="account-badge is-muted">${kmlStatusLabel(item.status)}</span>${item.enabled === false ? '<span class="account-badge is-muted">已隐藏</span>' : ''}</div>
+        <p>${escapeHtml(getFeatureDescriptionText(item.description) || '暂无描述')}</p>
+        <div class="account-row-meta"><span>${Number(item.featureCount || 0).toLocaleString()} 个要素</span><span>${formatBytes(item.byteSize)}</span><span>${Number(item.shareReferenceCount || 0)} 个分享引用${Number(item.outdatedShareReferenceCount || 0) > 0 ? `（${Number(item.outdatedShareReferenceCount)} 待同步）` : ''}</span><span>${formatDateTime(item.updatedAt)}</span></div>
+      </div>
+      <div class="account-row-actions">
+        ${item.status === 'active' ? `
+          ${capabilities.canWriteKml ? `<button type="button" data-account-action="move-kml" data-id="${escapeHtml(item.id)}">移动</button><button type="button" data-account-action="edit-kml" data-id="${escapeHtml(item.id)}">编辑信息</button>` : ''}
+          <button type="button" data-account-action="export-kml" data-id="${escapeHtml(item.id)}">导出</button>
+          ${capabilities.canWriteKml ? `<button type="button" class="is-danger" data-account-action="trash-kml" data-id="${escapeHtml(item.id)}" ${item.isDefault ? 'disabled title="请先设置其他默认 KML"' : ''}>移入回收站</button>` : ''}
+        ` : `
+          ${capabilities.canWriteKml ? `<button type="button" data-account-action="restore-kml" data-id="${escapeHtml(item.id)}">恢复</button>
+          <button type="button" class="is-danger" data-account-action="delete-kml" data-id="${escapeHtml(item.id)}">永久删除</button>` : ''}
+        `}
+      </div>
+    </article>
+  `
+}
+
 function renderKmlRows (state) {
   const items = state.kml.items || []
   const capabilities = getAccountCapabilities(state.auth.user)
-  const selectable = capabilities.canWriteKml || capabilities.canManageShares
   if (!items.length) {
     return capabilities.canWriteKml
       ? '<div class="account-empty"><strong>暂无 KML</strong><p>可以新建空白文件、导入 .kml，或迁移浏览器中的本地数据。</p></div>'
       : '<div class="account-empty"><strong>暂无可查看的 KML</strong><p>当前角色只有查看权限，不能在此创建文件。</p></div>'
   }
-  return `<div class="account-data-list">${items.map(item => {
-    const selected = state.kml.selected.has(item.id)
-    const disabled = item.status !== 'active'
+  const manualOrder = capabilities.canWriteKml && state.kml.status === 'active' && !state.kml.search && state.kml.sort === 'position' && state.kml.order === 'asc'
+  const groups = groupKmlDocumentsByDirectory(items, state.kml.directories)
+  return `<div class="account-directory-list">${groups.map(group => {
+    const activeItems = group.items.filter(item => item.status === 'active')
+    const allSelected = activeItems.length > 0 && activeItems.every(item => state.kml.selected.has(item.id))
+    const nextVisibility = group.visibilityState !== 'visible'
+    const entityDirectory = Boolean(group.id)
     return `
-      <article class="account-data-row ${selected ? 'is-selected' : ''}">
-        ${selectable ? `<label class="account-row-check" title="选择 ${escapeHtml(item.name)}">
-          <input type="checkbox" data-kml-select="${escapeHtml(item.id)}" ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
-        </label>` : ''}
-        <span class="account-file-mark" style="--file-color:${escapeHtml(item.color || '#0f766e')}">KML</span>
-        <div class="account-row-main">
-          <div class="account-row-title"><strong>${escapeHtml(item.name)}</strong>${item.isDefault ? '<span class="account-badge">默认</span>' : ''}<span class="account-badge is-muted">${kmlStatusLabel(item.status)}</span>${item.enabled === false ? '<span class="account-badge is-muted">已禁用</span>' : ''}</div>
-          <p>${escapeHtml(getFeatureDescriptionText(item.description) || '暂无描述')}</p>
-          <div class="account-row-meta"><span>${Number(item.featureCount || 0).toLocaleString()} 个要素</span><span>${formatBytes(item.byteSize)}</span><span>${Number(item.shareReferenceCount || 0)} 个分享引用${Number(item.outdatedShareReferenceCount || 0) > 0 ? `（${Number(item.outdatedShareReferenceCount)} 待同步）` : ''}</span><span>${formatDateTime(item.updatedAt)}</span></div>
+      <section class="account-kml-directory ${manualOrder && entityDirectory ? 'is-draggable' : ''}"
+        data-account-kml-directory-drop="${escapeHtml(group.id || '')}"
+        ${manualOrder && entityDirectory ? `draggable="true" data-account-kml-directory-draggable="true" data-id="${escapeHtml(group.id)}"` : ''}>
+        <header class="account-kml-directory-heading">
+          <div><span class="account-directory-drag" aria-hidden="true">${manualOrder && entityDirectory ? '⋮⋮' : '▰'}</span><strong>${escapeHtml(group.name)}</strong><span>${group.items.length}</span></div>
+          <div>
+            ${activeItems.length ? `<button type="button" data-account-action="select-directory-kml" data-id="${escapeHtml(group.id || '')}" data-selected="${allSelected}">${allSelected ? '取消全选' : '全选目录'}</button>` : ''}
+            ${capabilities.canWriteKml && state.kml.status !== 'trashed' ? `<button type="button" data-account-action="toggle-directory-visibility" data-id="${escapeHtml(group.id || '')}" data-enabled="${nextVisibility}" title="${nextVisibility ? '显示' : '隐藏'}目录文件">${group.visibilityState === 'mixed' ? '部分显示' : nextVisibility ? '显示' : '隐藏'}</button>` : ''}
+            ${capabilities.canWriteKml && entityDirectory ? `<button type="button" data-account-action="edit-kml-directory" data-id="${escapeHtml(group.id)}">重命名</button><button type="button" class="is-danger" data-account-action="delete-kml-directory" data-id="${escapeHtml(group.id)}">删除</button>` : ''}
+          </div>
+        </header>
+        <div class="account-data-list">${group.items.length
+          ? group.items.map(item => renderKmlRow(state, item, { draggable: manualOrder })).join('')
+          : '<div class="account-directory-empty">拖动 KML 到这里</div>'}
         </div>
-        <div class="account-row-actions">
-          ${item.status === 'active' ? `
-            ${capabilities.canWriteKml ? `<button type="button" data-account-action="edit-kml" data-id="${escapeHtml(item.id)}">编辑信息</button>` : ''}
-            <button type="button" data-account-action="export-kml" data-id="${escapeHtml(item.id)}">导出</button>
-            ${capabilities.canWriteKml ? `<button type="button" class="is-danger" data-account-action="trash-kml" data-id="${escapeHtml(item.id)}" ${item.isDefault ? 'disabled title="请先设置其他默认 KML"' : ''}>移入回收站</button>` : ''}
-          ` : `
-            ${capabilities.canWriteKml ? `<button type="button" data-account-action="restore-kml" data-id="${escapeHtml(item.id)}">恢复</button>
-            <button type="button" class="is-danger" data-account-action="delete-kml" data-id="${escapeHtml(item.id)}">永久删除</button>` : ''}
-          `}
-        </div>
-      </article>
+      </section>
     `
   }).join('')}</div>`
 }
@@ -181,6 +215,7 @@ function renderKml (state) {
       <div class="account-section-heading">
         <div><p class="account-eyebrow">个人数据</p><h2>我的 KML</h2><p>所有文件默认私有，只有加入分享包后才可通过链接读取。</p></div>
         ${capabilities.canWriteKml ? `<div class="account-heading-actions">
+          <button type="button" class="account-secondary-button" data-account-action="create-kml-directory">新建目录</button>
           <input type="file" id="account-kml-import" accept=".kml,application/vnd.google-earth.kml+xml" hidden>
           <button type="button" class="account-secondary-button" data-account-action="import-kml">导入 KML</button>
           ${canImportTwoBulu ? '<button type="button" class="account-secondary-button" data-account-action="import-2bulu">从两步路导入</button>' : ''}
@@ -192,7 +227,7 @@ function renderKml (state) {
         <form data-account-form="kml-filter" class="account-search-form">
           <input name="search" value="${escapeHtml(state.kml.search)}" placeholder="搜索名称或描述">
           <select name="status"><option value="active" ${state.kml.status === 'active' ? 'selected' : ''}>使用中</option><option value="trashed" ${state.kml.status === 'trashed' ? 'selected' : ''}>回收站</option><option value="all" ${state.kml.status === 'all' ? 'selected' : ''}>全部</option></select>
-          <select name="sort" aria-label="排序字段"><option value="updatedAt" ${state.kml.sort === 'updatedAt' ? 'selected' : ''}>更新时间</option><option value="createdAt" ${state.kml.sort === 'createdAt' ? 'selected' : ''}>创建时间</option><option value="name" ${state.kml.sort === 'name' ? 'selected' : ''}>名称</option><option value="featureCount" ${state.kml.sort === 'featureCount' ? 'selected' : ''}>要素数量</option></select>
+          <select name="sort" aria-label="排序字段"><option value="position" ${state.kml.sort === 'position' ? 'selected' : ''}>目录顺序</option><option value="updatedAt" ${state.kml.sort === 'updatedAt' ? 'selected' : ''}>更新时间</option><option value="createdAt" ${state.kml.sort === 'createdAt' ? 'selected' : ''}>创建时间</option><option value="name" ${state.kml.sort === 'name' ? 'selected' : ''}>名称</option><option value="featureCount" ${state.kml.sort === 'featureCount' ? 'selected' : ''}>要素数量</option></select>
           <select name="order" aria-label="排序方向"><option value="desc" ${state.kml.order === 'desc' ? 'selected' : ''}>降序</option><option value="asc" ${state.kml.order === 'asc' ? 'selected' : ''}>升序</option></select>
           <button type="submit">查询</button>
         </form>
@@ -200,7 +235,7 @@ function renderKml (state) {
           <span>已选 ${selectedCount} 个</span>
           <button type="button" data-account-action="select-all-kml">全选本页</button>
           ${capabilities.canWriteKml ? `<button type="button" class="is-danger" data-account-action="trash-selected-kml" ${selectedCount ? '' : 'disabled'}>批量移入回收站</button>` : ''}
-          ${capabilities.canManageShares ? `<button type="button" class="account-primary-button" data-account-action="create-share" ${selectedCount ? '' : 'disabled'}>创建多 KML 分享</button>` : ''}
+          ${capabilities.canManageShares ? `<button type="button" class="account-primary-button" data-account-action="create-share" ${state.kml.items.some(item => item.status === 'active') ? '' : 'disabled'}>创建多 KML 分享</button>` : ''}
         </div>` : ''}
       </div>
       ${quota.maxKmlFiles ? `<p class="account-usage">已使用 ${Number(usage.fileCount || 0)} / ${Number(quota.maxKmlFiles)} 个文件，${Number(usage.featureCount || 0).toLocaleString()} 个要素</p>` : ''}

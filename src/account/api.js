@@ -8,12 +8,23 @@ export const accountApi = {
   getProfile: () => apiRequest('/users/me'),
   updateProfile: body => apiRequest('/users/me', { method: 'PUT', body }),
   listKml: query => apiRequest('/kml/files', { query }),
+  listKmlDirectories: () => apiRequest('/kml/directories'),
+  createKmlDirectory: body => apiRequest('/kml/directories', { method: 'POST', body }),
+  updateKmlDirectory: (id, body) => apiRequest(`/kml/directories/${pathId(id)}`, { method: 'PUT', body }),
+  deleteKmlDirectory: id => apiRequest(`/kml/directories/${pathId(id)}`, { method: 'DELETE' }),
+  reorderKmlDirectories: ids => apiRequest('/kml/directories/reorder', { method: 'POST', body: { ids } }),
+  setKmlDirectoryVisibility: (id, enabled) => apiRequest(`/kml/directories/${id == null ? 'uncategorized' : pathId(id)}/visibility`, {
+    method: 'POST',
+    body: { enabled },
+  }),
   createKml: body => apiRequest('/kml/files', { method: 'POST', body }),
   getKml: id => apiRequest(`/kml/files/${pathId(id)}`),
   updateKml: (id, body) => apiRequest(`/kml/files/${pathId(id)}`, { method: 'PUT', body }),
   trashKml: id => apiRequest(`/kml/files/${pathId(id)}`, { method: 'DELETE' }),
   restoreKml: id => apiRequest(`/kml/files/${pathId(id)}/restore`, { method: 'POST' }),
   deleteKmlPermanently: id => apiRequest(`/kml/files/${pathId(id)}/permanent`, { method: 'DELETE' }),
+  moveKml: (id, body) => apiRequest(`/kml/files/${pathId(id)}/move`, { method: 'POST', body }),
+  reorderKml: body => apiRequest('/kml/files/reorder', { method: 'POST', body }),
   importKml: (file, options = {}) => {
     const formData = new FormData()
     formData.set('file', file, file.name)

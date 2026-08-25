@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 8
+export const USER_DATABASE_VERSION = 9
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -549,6 +549,57 @@ export class UserDatabase {
         }
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(8, new Date().toISOString())
+      })
+    }
+
+    if (current < 9) {
+      this.transaction(() => {
+        const tableExists = (tableName) => Boolean(this.database.prepare(`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+        `).get(tableName))
+        const columnsOf = (tableName) => tableExists(tableName)
+          ? this.database.prepare(`PRAGMA table_info(${tableName})`).all().map(column => column.name)
+          : []
+        const addColumn = (tableName, columnName, definition) => {
+          if (tableExists(tableName) && !columnsOf(tableName).includes(columnName)) {
+            this.database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+          }
+        }
+        const now = new Date().toISOString()
+        this.database.exec(`
+          CREATE TABLE IF NOT EXISTS kml_directories (
+            id TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            name_normalized TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (owner_id, name_normalized),
+            FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS idx_kml_directories_owner_position
+            ON kml_directories(owner_id, position, id);
+        `)
+        addColumn('kml_documents', 'directory_id', 'TEXT')
+        addColumn('kml_documents', 'position', 'INTEGER NOT NULL DEFAULT 0')
+        addColumn('kml_share_items', 'directory_id', 'TEXT')
+        addColumn('kml_share_items', 'source_directory_id', 'TEXT')
+        addColumn('kml_share_items', 'directory_name', "TEXT NOT NULL DEFAULT ''")
+        addColumn('kml_share_items', 'source_position', 'INTEGER NOT NULL DEFAULT 0')
+        if (tableExists('kml_documents')) {
+          const owners = this.database.prepare('SELECT DISTINCT owner_id FROM kml_documents').all()
+          owners.forEach(owner => {
+            const rows = this.database.prepare(`
+              SELECT id FROM kml_documents WHERE owner_id = ? ORDER BY id ASC
+            `).all(owner.owner_id)
+            const update = this.database.prepare('UPDATE kml_documents SET position = ? WHERE id = ?')
+            rows.forEach((row, index) => update.run(index, row.id))
+          })
+        }
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(9, now)
       })
     }
 

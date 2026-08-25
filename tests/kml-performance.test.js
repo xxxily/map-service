@@ -71,7 +71,7 @@ test('2D KML popup content is lazy and feature focus has no fixed 850ms wait', (
 test('share mode fits before one layer render and collapsed files do not mount hidden feature rows', () => {
   const source = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
   const shareInitSource = source.match(/async function initShareKmlSupport \(map(?:, options = \{\})?\)[\s\S]*?\n}\n\nfunction bindKmlFeatureOrganizationEvents/)?.[0] || ''
-  assert.equal(shareInitSource.match(/renderAllKmls\(map\)/g)?.length, 1)
+  assert.match(shareInitSource, /\n  renderAllKmls\(map\)\n/)
   assert.ok(shareInitSource.indexOf('fitKmlFilesBounds(') < shareInitSource.indexOf('renderAllKmls(map)'))
   assert.match(shareInitSource, /if \(options\.fitShareView !== false\)/)
 
@@ -151,8 +151,10 @@ test('collapsed KML sections do not build their child cards', () => {
   const map2d = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
   const map3d = readFileSync(new URL('../src/map3d/kml.js', import.meta.url), 'utf8')
 
-  assert.match(map2d, /\$\{personalExpanded\s*\? \(kmlList\.map\(kmlFile =>/)
-  assert.match(map2d, /\$\{publicExpanded\s*\? \(publicKmlList\.map\(kmlFile =>/)
-  assert.match(map3d, /\$\{personalExpanded \? \(kmlList\.map\(renderKmlCard\)/)
-  assert.match(map3d, /\$\{publicExpanded \? \(publicKmlList\.map\(renderKmlCard\)/)
+  assert.match(map2d, /\$\{personalExpanded\s*\? kmlDirectories\.map\(directory =>/)
+  assert.match(map2d, /\$\{directoryExpanded\s*\? directoryFiles\.map\(kmlFile =>/)
+  assert.match(map2d, /function renderShareKmlPanel \(map\)[\s\S]*groups\.map\(group =>/)
+  assert.match(map3d, /\$\{personalExpanded \? renderKmlDirectoryGroups\(kmlList, false\) : ''\}/)
+  assert.match(map3d, /publicExpanded[\s\S]*?publicKmlList\.length[\s\S]*?renderKmlDirectoryGroups\(publicKmlList, false\)/)
+  assert.match(map3d, /\$\{expanded \? `\$\{emptyMessage\}\$\{group\.files\.map\(renderKmlCard\)\.join\(''\)\}` : ''\}/)
 })

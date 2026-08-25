@@ -1,5 +1,12 @@
 const ACCOUNT_TABS = new Set(['profile', 'kml', 'favorites', 'shares', 'security'])
-const KML_SORT_FIELDS = new Set(['updatedAt', 'createdAt', 'name', 'featureCount'])
+const KML_SORT_FIELDS = new Set(['updatedAt', 'createdAt', 'name', 'featureCount', 'position'])
+const DEFAULT_KML_POINT_CLUSTERING = Object.freeze({
+  enabled: false,
+  minZoom: 0,
+  maxClusterZoom: 13,
+  gridSize: 64,
+  maxMembersPerCluster: 5000,
+})
 
 export function isAccountLocation (locationLike) {
   const pathname = typeof locationLike === 'string'
@@ -117,6 +124,67 @@ export function buildShareItems (selectedIds, documents) {
     }))
 }
 
+export function normalizeKmlDirectoryCatalog (value = {}) {
+  const items = Array.isArray(value?.items) ? value.items : []
+  const normalizedItems = items
+    .filter(item => item?.id)
+    .map((item, index) => ({
+      ...item,
+      id: String(item.id),
+      name: String(item.name || '未命名目录'),
+      position: Number.isFinite(Number(item.position)) ? Number(item.position) : index,
+    }))
+    .sort((left, right) => left.position - right.position || left.name.localeCompare(right.name, 'zh-CN'))
+  return {
+    items: normalizedItems,
+    uncategorized: {
+      ...(value?.uncategorized || {}),
+      id: null,
+      name: String(value?.uncategorized?.name || '未分类'),
+      position: normalizedItems.length,
+    },
+  }
+}
+
+export function groupKmlDocumentsByDirectory (documents, directoryCatalog = {}) {
+  const catalog = normalizeKmlDirectoryCatalog(directoryCatalog)
+  const groups = [
+    ...catalog.items.map(directory => ({ ...directory, items: [] })),
+    { ...catalog.uncategorized, items: [] },
+  ]
+  const byId = new Map(groups.map(group => [String(group.id || ''), group]))
+  for (const document of documents || []) {
+    const directoryId = document?.directoryId == null ? '' : String(document.directoryId)
+    let group = byId.get(directoryId)
+    if (!group) {
+      group = {
+        id: directoryId || null,
+        name: String(document?.directoryName || (directoryId ? '未命名目录' : '未分类')),
+        position: groups.length,
+        items: [],
+      }
+      groups.push(group)
+      byId.set(directoryId, group)
+    }
+    group.items.push(document)
+  }
+  groups.forEach(group => group.items.sort((left, right) => (
+    Number(left?.position || 0) - Number(right?.position || 0) ||
+    String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-CN') ||
+    String(left?.id || '').localeCompare(String(right?.id || ''))
+  )))
+  groups.forEach(group => {
+    const activeItems = group.items.filter(item => item?.status === 'active')
+    const visibleCount = activeItems.filter(item => item.enabled !== false).length
+    group.activeFileCount = activeItems.length
+    group.visibleFileCount = visibleCount
+    group.visibilityState = activeItems.length === 0 || visibleCount === activeItems.length
+      ? 'visible'
+      : visibleCount === 0 ? 'hidden' : 'mixed'
+  })
+  return groups
+}
+
 export function normalizeKmlSort (sort, order) {
   return {
     sort: KML_SORT_FIELDS.has(String(sort || '')) ? String(sort) : 'updatedAt',
@@ -196,6 +264,33 @@ export function buildShareViewConfig (input = {}, fallback = {}) {
 
   if (typeof current.layerId === 'string' && current.layerId) result.layerId = current.layerId
   if (typeof current.showOwnerDisplayName === 'boolean') result.showOwnerDisplayName = current.showOwnerDisplayName
+  const clusteringInput = input.kmlPointClustering === undefined
+    ? current.kmlPointClustering
+    : input.kmlPointClustering
+  if (clusteringInput !== undefined) {
+    const clustering = clusteringInput && typeof clusteringInput === 'object' && !Array.isArray(clusteringInput)
+      ? clusteringInput
+      : {}
+    if (clustering.enabled !== true) {
+      result.kmlPointClustering = { enabled: false }
+    } else {
+      const integer = (name, minimum, maximum, message) => {
+        const value = Number(clustering[name] ?? DEFAULT_KML_POINT_CLUSTERING[name])
+        if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(message)
+        return value
+      }
+      const minZoom = integer('minZoom', 0, 24, '聚合起始级别需为 0～24 的整数')
+      const maxClusterZoom = integer('maxClusterZoom', 0, 24, '聚合结束级别需为 0～24 的整数')
+      if (minZoom > maxClusterZoom) throw new Error('聚合起始级别不能高于结束级别')
+      result.kmlPointClustering = {
+        enabled: true,
+        minZoom,
+        maxClusterZoom,
+        gridSize: integer('gridSize', 24, 128, '聚合网格需为 24～128 像素的整数'),
+        maxMembersPerCluster: integer('maxMembersPerCluster', 100, 20000, '聚合成员上限需为 100～20000 的整数'),
+      }
+    }
+  }
   return result
 }
 

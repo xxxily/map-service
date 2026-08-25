@@ -2356,8 +2356,9 @@ body.admin-view #footer-bar {
   position: fixed;
   top: var(--control-top-desktop);
   right: calc(var(--safe-area-right) + 68px);
-  width: 320px;
+  width: min(360px, calc(100vw - var(--safe-area-right) - 88px));
   max-height: calc(100vh - var(--control-top-desktop) - var(--safe-area-bottom) - 14px);
+  max-height: calc(100dvh - var(--control-top-desktop) - var(--safe-area-bottom) - 14px);
   z-index: 9999;
   display: flex;
   flex-direction: column;
@@ -2370,7 +2371,13 @@ body.admin-view #footer-bar {
   box-shadow: 0 12px 40px rgba(20, 37, 42, 0.18);
   font-family: inherit;
   color: #1c2b2f;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.kml-panel *,
+.kml-panel *::before,
+.kml-panel *::after {
+  box-sizing: border-box;
 }
 
 .kml-panel[hidden] {
@@ -2384,7 +2391,8 @@ body.admin-view #footer-bar {
     bottom: var(--safe-area-bottom);
     left: var(--safe-area-left);
     width: calc(100% - var(--safe-area-left) - var(--safe-area-right));
-    max-height: 70vh;
+    max-height: 78vh;
+    max-height: min(78dvh, calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 8px));
     border-radius: 16px 16px 0 0;
     border-top: 1px solid rgba(18, 57, 63, 0.14);
     border-right: none;
@@ -2398,6 +2406,7 @@ body.admin-view #footer-bar {
   justify-content: space-between;
   padding: 14px 16px;
   border-bottom: 1px solid rgba(18, 57, 63, 0.08);
+  flex: 0 0 auto;
 }
 
 .kml-panel-heading {
@@ -2486,6 +2495,9 @@ body.admin-view #footer-bar {
 }
 
 .kml-close-btn {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
   background: none;
   border: none;
   font-size: 24px;
@@ -2504,7 +2516,9 @@ body.admin-view #footer-bar {
 
 .kml-panel-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -2520,7 +2534,7 @@ body.admin-view #footer-bar {
   border-radius: 8px;
   background: rgba(15, 118, 110, 0.03);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
   text-align: center;
 }
 
@@ -2605,10 +2619,166 @@ body.admin-view #footer-bar {
 .kml-files-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  min-width: 0;
+  gap: 10px;
+}
+
+.kml-section-header,
+.kml-section-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  min-height: 36px;
+  gap: 8px;
+  border-bottom: 1px solid rgba(22, 61, 61, 0.14);
+  padding: 5px 2px 7px;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.kml-section-header {
+  cursor: pointer;
+  user-select: none;
+}
+
+.kml-section-header:hover {
+  border-bottom-color: rgba(15, 118, 110, 0.32);
+}
+
+.kml-section-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kml-section-actions {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.kml-section-chevron,
+.kml-directory-chevron {
+  display: inline-grid;
+  width: 14px;
+  flex: 0 0 14px;
+  place-items: center;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.kml-section-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 4px;
+}
+
+.kml-section-list[hidden],
+.kml-directory-files[hidden],
+.kml-file-detail[hidden] {
+  display: none !important;
+}
+
+.kml-empty {
+  padding: 12px 8px;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.kml-directory-group {
+  min-width: 0;
+  overflow: visible;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  border-radius: 10px;
+  background: rgba(248, 252, 251, 0.82);
+  box-shadow: 0 2px 8px rgba(18, 57, 63, 0.035);
+}
+
+.kml-directory-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  min-height: 40px;
+  gap: 8px;
+  border-radius: 9px 9px 0 0;
+  padding: 7px 9px;
+  background: rgba(15, 118, 110, 0.065);
+  cursor: pointer;
+  user-select: none;
+}
+
+.kml-directory-head:hover {
+  background: rgba(15, 118, 110, 0.1);
+}
+
+.kml-directory-head[draggable="true"],
+.kml-file-head[draggable="true"],
+.kml-file-card[draggable="true"] .kml-file-head {
+  cursor: grab;
+}
+
+.kml-directory-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: #174e4c;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.kml-directory-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kml-directory-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.kml-directory-files {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid rgba(15, 118, 110, 0.08);
+  padding: 8px;
+}
+
+.kml-directory-files > .kml-file-card {
+  width: 100%;
+}
+
+.kml-directory-empty {
+  border: 1px dashed rgba(100, 116, 139, 0.22);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.64);
 }
 
 .kml-file-card {
+  min-width: 0;
   border: 1px solid rgba(18, 57, 63, 0.08);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.7);
@@ -2621,9 +2791,11 @@ body.admin-view #footer-bar {
 }
 
 .kml-file-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
+  min-width: 0;
+  gap: 8px;
   padding: 10px 12px;
   background: rgba(18, 57, 63, 0.02);
   cursor: pointer;
@@ -2637,12 +2809,15 @@ body.admin-view #footer-bar {
 .kml-file-title {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px 6px;
   min-width: 0;
 }
 
 .kml-file-name {
+  min-width: 72px;
+  flex: 1 1 118px;
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
@@ -2656,6 +2831,7 @@ body.admin-view #footer-bar {
 }
 
 .kml-file-count {
+  flex: 0 0 auto;
   font-size: 10px;
   color: #0f766e;
   background: rgba(15, 118, 110, 0.08);
@@ -2679,11 +2855,40 @@ body.admin-view #footer-bar {
   color: #0f766e;
 }
 
+.kml-file-state.is-public {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.kml-file-state.is-editing {
+  background: #fef3c7;
+  color: #b45309;
+}
+
 .kml-file-actions {
   display: flex;
+  min-width: 0;
+  max-width: 64px;
+  flex: 0 0 auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
-  margin-left: 8px;
+}
+
+.kml-file-more-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  border-top: 1px solid rgba(18, 57, 63, 0.06);
+  padding: 4px 10px;
+  background: rgba(15, 118, 110, 0.025);
+}
+
+.kml-file-more-actions[hidden] {
+  display: none !important;
 }
 
 .kml-file-tool-actions {
@@ -2693,10 +2898,13 @@ body.admin-view #footer-bar {
 }
 
 .kml-file-btn {
+  appearance: none;
+  flex: 0 0 28px;
   background: none;
   border: none;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
   padding: 0;
   cursor: pointer;
   font-size: 14px;
@@ -2705,7 +2913,13 @@ body.admin-view #footer-bar {
   align-items: center;
   justify-content: center;
   border-radius: 4px;
-  transition: all 0.2s ease;
+  line-height: 1;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.kml-file-btn .svg-icon {
+  width: 15px;
+  height: 15px;
 }
 
 .kml-file-btn:hover {
@@ -2718,11 +2932,22 @@ body.admin-view #footer-bar {
   color: #ef4444;
 }
 
-.kml-section-actions {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
+.kml-file-btn:focus-visible,
+.kml-section-header:focus-visible,
+.kml-directory-head:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.55);
+  outline-offset: 2px;
+}
+
+.kml-section-action-button {
+  width: 28px;
+  min-width: 28px;
+  flex-basis: 28px;
+  padding: 0;
+}
+
+.kml-section-icon-button {
+  flex-basis: 28px;
 }
 
 .kml-batch-toolbar {
@@ -2819,7 +3044,8 @@ body.admin-view #footer-bar {
   cursor: pointer;
 }
 
-.kml-visibility-btn {
+.kml-visibility-btn,
+.kml-directory-visibility {
   position: relative;
 }
 
@@ -2843,15 +3069,18 @@ body.admin-view #footer-bar {
   transform: translate(-50%, -50%);
 }
 
-.kml-visibility-btn.is-visible {
+.kml-visibility-btn.is-visible,
+.kml-directory-visibility.is-visible {
   color: #0f766e;
 }
 
-.kml-visibility-btn.is-hidden {
+.kml-visibility-btn.is-hidden,
+.kml-directory-visibility.is-hidden {
   color: #94a3b8;
 }
 
-.kml-visibility-btn.is-hidden .kml-eye-icon::after {
+.kml-visibility-btn.is-hidden .kml-eye-icon::after,
+.kml-directory-visibility.is-hidden .kml-eye-icon::after {
   content: "";
   position: absolute;
   top: 50%;
@@ -2927,11 +3156,43 @@ body.admin-view #footer-bar {
 
 .kml-file-toolbox {
   display: flex;
-  align-items: center;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
   padding: 8px 12px;
   background: rgba(248, 250, 252, 0.88);
+}
+
+.kml-file-settings {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 210px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 6px;
+}
+
+.kml-file-style-settings {
+  display: flex;
+  min-width: 0;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
+}
+
+.kml-file-style-settings > span,
+.kml-setting-label {
+  color: #475569;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.kml-color-label {
+  margin-left: 4px;
 }
 
 .kml-file-toolbox .kml-correction-switch {
@@ -2953,7 +3214,7 @@ body.admin-view #footer-bar {
   contain-intrinsic-size: 36px;
   padding: 8px 12px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .kml-feature-item.is-draggable {
@@ -2963,6 +3224,20 @@ body.admin-view #footer-bar {
 .kml-feature-item.is-kml-dragging {
   opacity: 0.45;
   background: rgba(15, 118, 110, 0.08);
+}
+
+.kml-file-head.is-kml-file-dragging,
+.kml-file-card.is-kml-file-dragging,
+.kml-directory-head.is-kml-directory-dragging {
+  opacity: 0.5;
+}
+
+.kml-file-card.is-kml-file-drop-target,
+.kml-directory-group.is-kml-file-drop-target,
+.kml-directory-group.is-kml-directory-drop-target {
+  outline: 2px dashed rgba(15, 118, 110, 0.58);
+  outline-offset: -2px;
+  background: rgba(15, 118, 110, 0.07);
 }
 
 .kml-feature-item.is-kml-drop-target,
@@ -2980,6 +3255,106 @@ body.admin-view #footer-bar {
   line-height: 1;
   letter-spacing: -3px;
   user-select: none;
+}
+
+@media (max-width: 640px) {
+  .kml-panel-header {
+    padding: 11px 14px;
+  }
+
+  .kml-panel-header h2 {
+    font-size: 14px;
+  }
+
+  .kml-close-btn {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+  }
+
+  .kml-panel-body {
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .kml-import-section {
+    padding: 14px 12px;
+  }
+
+  .kml-import-icon {
+    margin-bottom: 5px;
+    font-size: 26px;
+  }
+
+  .kml-import-text {
+    font-size: 12px;
+  }
+
+  .kml-section-header {
+    min-height: 38px;
+  }
+
+  .kml-section-actions {
+    gap: 3px;
+  }
+
+  .kml-file-btn {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+  }
+
+  .kml-section-action-button {
+    width: 30px;
+    min-width: 30px;
+    flex-basis: 30px;
+  }
+
+  .kml-directory-head {
+    min-height: 42px;
+    padding: 7px 8px;
+  }
+
+  .kml-directory-actions {
+    gap: 1px;
+  }
+
+  .kml-directory-files {
+    gap: 7px;
+    padding: 7px;
+  }
+
+  .kml-file-head {
+    align-items: flex-start;
+    gap: 6px;
+    padding: 9px;
+  }
+
+  .kml-file-actions {
+    max-width: 60px;
+    gap: 1px;
+  }
+
+  .kml-file-more-actions {
+    padding: 4px 8px;
+  }
+
+  .kml-file-toolbox {
+    gap: 8px;
+    padding: 8px 9px;
+  }
+
+  .kml-file-settings {
+    flex-basis: 100%;
+  }
+
+  .kml-file-tool-actions {
+    width: 100%;
+    justify-content: flex-end;
+    padding-top: 6px;
+    border-top: 1px solid rgba(18, 57, 63, 0.06);
+  }
 }
 
 .kml-feature-item:hover {
@@ -5965,6 +6340,25 @@ body.media-preview-window-resizing .media-preview-root {
 .kml-simple-point-icon {
   background: none;
   border: none;
+}
+
+.kml-point-cluster-icon {
+  display: grid !important;
+  place-items: center;
+  border: 3px solid rgba(255, 255, 255, 0.94);
+  border-radius: 50%;
+  background: #0f766e;
+  box-shadow: 0 3px 12px rgba(15, 80, 76, 0.34);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.kml-point-cluster-icon span {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
 }
 
 .kml-simple-dot {

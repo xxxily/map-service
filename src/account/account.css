@@ -707,9 +707,72 @@ button:disabled {
   gap: 8px;
 }
 
+.account-directory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.account-kml-directory {
+  border: 1px solid rgba(19, 62, 61, 0.1);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.account-kml-directory-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 4px 10px;
+  color: #315254;
+  font-size: 12px;
+}
+
+.account-kml-directory-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.account-kml-directory-heading > div:last-child {
+  justify-content: flex-end;
+}
+
+.account-kml-directory-heading button {
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 6px;
+  background: #eef5f3;
+  color: #28726b;
+  font-size: 10px;
+}
+
+.account-kml-directory-heading button.is-danger {
+  color: #b34640;
+}
+
+.account-directory-drag,
+.account-row-drag {
+  color: #9aacac;
+  font-size: 14px;
+  letter-spacing: -3px;
+}
+
+.account-directory-empty {
+  border: 1px dashed rgba(22, 72, 69, 0.16);
+  border-radius: 8px;
+  padding: 14px;
+  color: #8a999a;
+  font-size: 11px;
+  text-align: center;
+}
+
 .account-data-row {
   display: grid;
-  grid-template-columns: 22px 46px minmax(0, 1fr) auto;
+  grid-template-columns: 18px 22px 46px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
   border: 1px solid rgba(19, 62, 61, 0.1);
@@ -719,9 +782,30 @@ button:disabled {
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
+.account-data-row.is-draggable,
+.account-kml-directory.is-draggable {
+  cursor: grab;
+}
+
+.account-data-row.is-draggable:active,
+.account-kml-directory.is-draggable:active {
+  cursor: grabbing;
+}
+
 .account-data-row.is-selected {
   border-color: rgba(15, 118, 110, 0.48);
   box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.07);
+}
+
+.account-data-row.is-account-kml-dragging,
+.account-kml-directory.is-account-kml-dragging {
+  opacity: 0.55;
+}
+
+.account-data-row.is-account-kml-drop-target,
+.account-kml-directory.is-account-kml-drop-target {
+  border-color: rgba(15, 118, 110, 0.72);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.14);
 }
 
 .account-row-check input {

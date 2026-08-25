@@ -782,6 +782,89 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/kml/directories',
+    method: 'get',
+    describe: '列出个人 KML 目录',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.listUserKmlDirectories(requireUser(req, 'kml.own.read')))
+    },
+  },
+  {
+    path: '/kml/directories',
+    method: 'post',
+    describe: '新建个人 KML 目录',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.status(201).jsonSuc(service.createUserKmlDirectory(
+        requireUser(req, 'kml.own.write'),
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/kml/directories/reorder',
+    method: 'post',
+    describe: '调整个人 KML 目录顺序',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.reorderUserKmlDirectories(
+        requireUser(req, 'kml.own.write'),
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/kml/directories/:id',
+    method: 'put',
+    describe: '更新个人 KML 目录',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.updateUserKmlDirectory(
+        requireUser(req, 'kml.own.write'),
+        req.params.id,
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/kml/directories/:id',
+    method: 'delete',
+    describe: '删除个人 KML 目录并将文件移入未分类',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.deleteUserKmlDirectory(
+        requireUser(req, 'kml.own.write'),
+        req.params.id,
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/kml/directories/:id/visibility',
+    method: 'post',
+    describe: '批量设置 KML 目录文件显隐',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      const directoryId = req.params.id === 'uncategorized' ? null : req.params.id
+      res.jsonSuc(service.setUserKmlDirectoryVisibility(
+        requireUser(req, 'kml.own.write'),
+        directoryId,
+        req.body?.enabled,
+        requestContext(req)
+      ))
+    },
+  },
+  {
     path: '/kml/files',
     method: 'get',
     describe: '列出个人 KML',
@@ -789,6 +872,35 @@ const userApiRoutes = [
     handler: async (req, res) => {
       noStore(res)
       res.jsonSuc(service.listUserKmlFiles(requireUser(req, 'kml.own.read'), req.query || {}))
+    },
+  },
+  {
+    path: '/kml/files/reorder',
+    method: 'post',
+    describe: '调整个人 KML 文件顺序',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.reorderUserKmlFiles(
+        requireUser(req, 'kml.own.write'),
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
+    path: '/kml/files/:id/move',
+    method: 'post',
+    describe: '移动个人 KML 文件到目录或指定位置',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.moveUserKmlFile(
+        requireUser(req, 'kml.own.write'),
+        req.params.id,
+        req.body || {},
+        requestContext(req)
+      ))
     },
   },
   {

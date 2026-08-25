@@ -412,6 +412,38 @@ const service = {
     return userContent.listKmlFiles(actor, input)
   },
 
+  listUserKmlDirectories (actor) {
+    return userContent.listKmlDirectories(actor)
+  },
+
+  createUserKmlDirectory (actor, input, context) {
+    return userContent.createKmlDirectory(actor, input, context)
+  },
+
+  updateUserKmlDirectory (actor, id, input, context) {
+    return userContent.updateKmlDirectory(actor, id, input, context)
+  },
+
+  deleteUserKmlDirectory (actor, id, context) {
+    return userContent.deleteKmlDirectory(actor, id, context)
+  },
+
+  reorderUserKmlDirectories (actor, input, context) {
+    return userContent.reorderKmlDirectories(actor, input, context)
+  },
+
+  setUserKmlDirectoryVisibility (actor, id, enabled, context) {
+    return userContent.setKmlDirectoryVisibility(actor, id, enabled, context)
+  },
+
+  reorderUserKmlFiles (actor, input, context) {
+    return userContent.reorderKmlFiles(actor, input, context)
+  },
+
+  moveUserKmlFile (actor, id, input, context) {
+    return userContent.moveKmlFile(actor, id, input, context)
+  },
+
   createUserKml (actor, input, context) {
     return userContent.createKml(actor, input, context)
   },

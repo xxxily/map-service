@@ -14,6 +14,10 @@ test('2D share view keeps the full read-only KML browsing lifecycle', () => {
   assert.match(source, /function renderShareKmlPanel \(map\)[\s\S]*class="kml-features-list"/)
   assert.match(source, /data-share-kml-action="focus-layer"/)
   assert.match(source, /data-share-kml-action="focus-feature"/)
+  assert.match(source, /groupsById = new Map\(\)/)
+  assert.match(source, /data-share-kml-action="toggle-directory-visible"/)
+  assert.match(source, /publicKmlList\.filter\(file => String\(file\.directoryId \|\| ''\) === directoryId\)/)
+  assert.match(source, /if \(sharePointClusteringConfig\?\.enabled\) renderAllKmls\(map\)/)
   assert.match(source, /getKmlMediaListIcon\(feature\)/)
   assert.match(source, /fitKmlFilesBounds\([\s\S]*publicKmlList\.filter\(kmlFile => isKmlEnabled\(kmlFile\)/)
   assert.ok(initSource.indexOf('bindKmlPopupActions(map)') < initSource.indexOf('if (getActiveShare())'))
@@ -28,6 +32,17 @@ test('2D share view keeps the full read-only KML browsing lifecycle', () => {
   assert.doesNotMatch(styles, /kml-share-banner/)
 })
 
+test('share clustering redraw clears feature references and keeps exact counts', () => {
+  const source = readSource('../src/map/kml.js')
+  const cleanup = source.match(/function removeShareClusterLayers \(map\)[\s\S]*?\n}/)?.[0] || ''
+
+  assert.match(cleanup, /shareClusterLayerGroup\.eachLayer/)
+  assert.match(cleanup, /featureLayers\.delete\(getFeatureLayerKey\(kmlId, featureId\)\)/)
+  assert.match(source, /layer\._mapServiceKmlFileId = String\(kmlId \|\| ''\)/)
+  assert.match(source, /Number\(count\)\.toLocaleString\('zh-CN'\)/)
+  assert.doesNotMatch(source, /9999\+/)
+})
+
 test('3D share view exposes full features and automatically fits enabled content', () => {
   const source = readSource('../src/map3d/kml.js')
   const mainSource = readSource('../src/3d.js')
@@ -40,5 +55,8 @@ test('3D share view exposes full features and automatically fits enabled content
   assert.match(source, /await fitShareKmlView\(\)/)
   assert.match(source, /renderFeatureItem\(kmlFile, feature, editable\)/)
   assert.match(source, /getFeatureEntityKey\(kmlId, featureId\)/)
+  assert.match(source, /renderKmlDirectoryGroups\(publicKmlList, true\)/)
+  assert.match(source, /data-kml-action="toggle-directory-visible"/)
+  assert.match(source, /const files = \(getActiveShare\(\) \? publicKmlList : kmlList\)\.filter/)
   assert.doesNotMatch(source, /showShareBanner3d/)
 })

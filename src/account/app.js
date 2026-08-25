@@ -3,10 +3,12 @@ import { accountApi, saveDownload } from './api.js'
 import { showAccountPasswordDialog, showAccountShareAccessEventsDialog, showAccountShareDialog } from './dialogs.js'
 import {
   buildShareItems,
+  groupKmlDocumentsByDirectory,
   getAccountCapabilities,
   isAccountLocation,
   normalizeAccountTab,
   normalizeKmlSort,
+  normalizeKmlDirectoryCatalog,
   normalizePagedResult,
   parseLocalKmlFiles,
   parseTags,
@@ -44,7 +46,8 @@ const LOCAL_KML_KEY = 'map_kml_list'
 const LOCAL_MIGRATION_STATE_KEY = 'map_account_local_migration'
 const KML_WRITE_ACTIONS = new Set([
   'create-kml', 'edit-kml', 'import-kml', 'import-2bulu', 'migrate-local', 'trash-selected-kml',
-  'trash-kml', 'restore-kml', 'delete-kml',
+  'trash-kml', 'restore-kml', 'delete-kml', 'create-kml-directory', 'edit-kml-directory',
+  'delete-kml-directory', 'toggle-directory-visibility', 'move-kml',
 ])
 const SHARE_ACTIONS = new Set([
   'create-share', 'go-kml-share', 'copy-share', 'edit-share', 'toggle-share',
@@ -52,6 +55,9 @@ const SHARE_ACTIONS = new Set([
 ])
 const FAVORITE_ACTIONS = new Set(['edit-favorite', 'cancel-favorite-edit', 'delete-favorite'])
 const SESSION_ACTIONS = new Set(['revoke-session', 'logout-other-sessions'])
+
+const KML_FILE_DRAG_MIME = 'application/x-map-service-kml-file'
+const KML_DIRECTORY_DRAG_MIME = 'application/x-map-service-kml-directory'
 
 const state = {
   root: null,
@@ -65,6 +71,7 @@ const state = {
   profile: null,
   kml: {
     items: [],
+    directories: { items: [], uncategorized: { id: null, name: '未分类' } },
     usage: {},
     status: 'active',
     search: '',
@@ -95,6 +102,7 @@ function setMessage (notice = '', error = '') {
 function clearPrivateState () {
   state.profile = null
   state.kml.items = []
+  state.kml.directories = { items: [], uncategorized: { id: null, name: '未分类' } }
   state.kml.usage = {}
   state.kml.selected.clear()
   state.favorites.items = []
@@ -176,22 +184,124 @@ async function loadProfile () {
   state.profile = await accountApi.getProfile()
 }
 
+async function listAllKml (query = {}) {
+  const items = []
+  let page = 1
+  let total = 0
+  let usage = {}
+  const limit = 100
+  while (page <= 100) {
+    const raw = await accountApi.listKml({ ...query, page, limit })
+    const result = normalizePagedResult(raw)
+    items.push(...result.items)
+    total = result.total
+    usage = result.usage || usage
+    if (!result.items.length || items.length >= total || result.items.length < limit) break
+    page += 1
+  }
+  return { items, page: 1, limit: items.length || limit, total: total || items.length, usage }
+}
+
 async function loadKml () {
   const sorting = normalizeKmlSort(state.kml.sort, state.kml.order)
   state.kml.sort = sorting.sort
   state.kml.order = sorting.order
-  const result = normalizePagedResult(await accountApi.listKml({
-    page: 1,
-    limit: 100,
-    status: state.kml.status,
-    search: state.kml.search,
-    sort: state.kml.sort,
-    order: state.kml.order,
-  }))
+  const [rawResult, directories] = await Promise.all([
+    listAllKml({
+      status: state.kml.status,
+      search: state.kml.search,
+      sort: state.kml.sort,
+      order: state.kml.order,
+    }),
+    accountApi.listKmlDirectories(),
+  ])
+  const result = normalizePagedResult(rawResult)
   state.kml.items = result.items
+  state.kml.directories = normalizeKmlDirectoryCatalog(directories)
   state.kml.usage = result.usage || {}
   const visibleIds = new Set(result.items.map(item => item.id))
   state.kml.selected = new Set(Array.from(state.kml.selected).filter(id => visibleIds.has(id)))
+}
+
+async function createKmlDirectory () {
+  if (!requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  const values = await showEditDialog({
+    title: '新建 KML 目录',
+    fields: [{ name: 'name', label: '目录名称' }],
+    values: { name: '' },
+    confirmText: '创建',
+  })
+  if (!values?.name?.trim()) return
+  const result = await runAction(() => accountApi.createKmlDirectory({ name: values.name.trim() }), {
+    progress: '正在创建目录…', success: 'KML 目录已创建',
+  })
+  if (result) await loadKml()
+  render()
+}
+
+async function editKmlDirectory (id) {
+  if (!requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  const directory = state.kml.directories.items.find(item => item.id === id)
+  if (!directory) return
+  const values = await showEditDialog({
+    title: '编辑 KML 目录',
+    fields: [{ name: 'name', label: '目录名称' }],
+    values: { name: directory.name },
+    confirmText: '保存',
+  })
+  if (!values?.name?.trim() || values.name.trim() === directory.name) return
+  const result = await runAction(() => accountApi.updateKmlDirectory(id, { name: values.name.trim() }), {
+    progress: '正在保存目录…', success: 'KML 目录已更新',
+  })
+  if (result) await loadKml()
+  render()
+}
+
+async function deleteKmlDirectory (id) {
+  if (!requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  const directory = state.kml.directories.items.find(item => item.id === id)
+  if (!directory) return
+  if (!(await showConfirm(`删除“${directory.name}”后，目录内文件会转入未分类。`, { title: '删除 KML 目录', confirmText: '删除目录' }))) return
+  const result = await runAction(() => accountApi.deleteKmlDirectory(id), {
+    progress: '正在删除目录…', success: 'KML 目录已删除',
+  })
+  if (result) await loadKml()
+  render()
+}
+
+async function toggleKmlDirectoryVisibility (id, enabled) {
+  if (!requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  const result = await runAction(() => accountApi.setKmlDirectoryVisibility(id || null, enabled), {
+    progress: enabled ? '正在显示目录文件…' : '正在隐藏目录文件…',
+    success: enabled ? '目录文件已显示' : '目录文件已隐藏',
+  })
+  if (result) await loadKml()
+  render()
+}
+
+async function moveKmlFile (id) {
+  if (!requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  const file = state.kml.items.find(item => item.id === id)
+  if (!file) return
+  const groups = groupKmlDocumentsByDirectory(
+    state.kml.items.filter(item => item.status === 'active'),
+    state.kml.directories,
+  )
+  const options = groups.map(group => ({ value: String(group.id || ''), label: group.name }))
+  const values = await showEditDialog({
+    title: '移动 KML 文件',
+    fields: [{ name: 'directoryId', label: '目标目录', type: 'select', options }],
+    values: { directoryId: String(file.directoryId || '') },
+    confirmText: '移动',
+  })
+  if (!values) return
+  const targetId = values.directoryId || null
+  if (String(file.directoryId || '') === String(targetId || '')) return
+  const result = await runAction(() => accountApi.moveKml(id, { directoryId: targetId }), {
+    progress: '正在移动 KML 文件…', success: 'KML 文件已移动',
+  })
+  if (result) await loadKml()
+  render()
 }
 
 async function loadFavorites () {
@@ -613,19 +723,24 @@ async function trashSelectedKml () {
 
 async function createShareFromSelection () {
   if (!requireCapability('canManageShares')) return
-  const items = buildShareItems(state.kml.selected, state.kml.items)
-  if (!items.length) return
-  const selectedNames = state.kml.items.filter(item => state.kml.selected.has(item.id)).map(item => item.name)
+  const catalogResult = await runAction(() => listAllKml({ status: 'active', sort: 'position', order: 'asc' }), {
+    progress: '正在读取完整 KML 目录…',
+  })
+  if (!catalogResult) return
+  const documents = catalogResult.items
+  const items = buildShareItems(state.kml.selected, documents)
+  const selectedNames = documents.filter(item => state.kml.selected.has(item.id)).map(item => item.name)
   const values = await showAccountShareDialog({
     mode: 'create',
     share: {
-      title: selectedNames.join('、').slice(0, 200),
+      title: (selectedNames.join('、') || '我的 KML 分享').slice(0, 200),
       storedStatus: 'active',
       allowDownload: true,
       items,
       viewConfig: { mapMode: '2d' },
     },
-    documents: state.kml.items,
+    documents,
+    directoryCatalog: state.kml.directories,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
     spatialUnrestrictedTileMaxZoom: spatialTileZoomMax(),
@@ -674,16 +789,23 @@ async function createShareFromSelection () {
 async function editShare (id) {
   if (!requireCapability('canManageShares')) return
   const loaded = await runAction(async () => {
-    const [share, kmlResult] = await Promise.all([
+    const [share, kmlResult, directories] = await Promise.all([
       accountApi.getShare(id),
       capabilities().canReadKml
-        ? accountApi.listKml({ page: 1, limit: 100, status: 'active', sort: 'name', order: 'asc' })
+        ? listAllKml({ status: 'active', sort: 'position', order: 'asc' })
         : Promise.resolve({ items: [] }),
+      capabilities().canReadKml
+        ? accountApi.listKmlDirectories()
+        : Promise.resolve(state.kml.directories),
     ])
-    return { share, documents: normalizePagedResult(kmlResult).items }
+    return {
+      share,
+      documents: normalizePagedResult(kmlResult).items,
+      directories: normalizeKmlDirectoryCatalog(directories),
+    }
   }, { progress: '正在读取分享和可选 KML…' })
   if (!loaded) return
-  const { share, documents } = loaded
+  const { share, documents, directories } = loaded
   if (share.status === 'blocked' || share.storedStatus === 'blocked') {
     await showAlert(`该分享已被管理员封禁，不能编辑。${share.blockedReason ? `\n封禁原因：${share.blockedReason}` : ''}`, {
       title: '分享不可编辑',
@@ -693,6 +815,7 @@ async function editShare (id) {
   const values = await showAccountShareDialog({
     share,
     documents,
+    directoryCatalog: directories,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
     spatialUnrestrictedTileMaxZoom: spatialTileZoomMax(),
@@ -871,6 +994,24 @@ async function handleClick (event) {
     render()
   } else if (action === 'create-kml') {
     await createKml()
+  } else if (action === 'create-kml-directory') {
+    await createKmlDirectory()
+  } else if (action === 'edit-kml-directory') {
+    await editKmlDirectory(id)
+  } else if (action === 'delete-kml-directory') {
+    await deleteKmlDirectory(id)
+  } else if (action === 'toggle-directory-visibility') {
+    await toggleKmlDirectoryVisibility(id || null, target.dataset.enabled === 'true')
+  } else if (action === 'select-directory-kml') {
+    const directoryId = id || null
+    const group = groupKmlDocumentsByDirectory(state.kml.items, state.kml.directories)
+      .find(item => String(item.id || '') === String(directoryId || ''))
+    const activeIds = (group?.items || []).filter(item => item.status === 'active').map(item => item.id)
+    const selected = target.dataset.selected === 'true'
+    activeIds.forEach(itemId => selected ? state.kml.selected.delete(itemId) : state.kml.selected.add(itemId))
+    render()
+  } else if (action === 'move-kml') {
+    await moveKmlFile(id)
   } else if (action === 'edit-kml') {
     await editKml(id)
   } else if (action === 'import-kml') {
@@ -986,11 +1127,144 @@ function handleChange (event) {
   }
 }
 
+function clearKmlDragState (root) {
+  root?.querySelectorAll('.is-account-kml-dragging, .is-account-kml-drop-target').forEach(element => {
+    element.classList.remove('is-account-kml-dragging', 'is-account-kml-drop-target')
+  })
+  return null
+}
+
+function bindKmlOrganizationEvents (root) {
+  if (!root || root.dataset.accountKmlOrganizationBound === 'true') return
+  root.dataset.accountKmlOrganizationBound = 'true'
+  let dragState = null
+
+  const clearState = () => {
+    clearKmlDragState(root)
+    dragState = null
+  }
+
+  root.addEventListener('dragstart', event => {
+    const fileTarget = event.target.closest?.('[data-account-kml-file-draggable="true"]')
+    if (fileTarget && root.contains(fileTarget)) {
+      const id = String(fileTarget.dataset.id || '')
+      if (!id || !capabilities().canWriteKml) {
+        event.preventDefault()
+        return
+      }
+      dragState = { type: 'file', id }
+      fileTarget.classList.add('is-account-kml-dragging')
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move'
+        event.dataTransfer.setData(KML_FILE_DRAG_MIME, JSON.stringify({ kmlId: id }))
+        event.dataTransfer.setData('text/plain', id)
+      }
+      return
+    }
+
+    const directoryTarget = event.target.closest?.('[data-account-kml-directory-draggable="true"]')
+    if (!directoryTarget || !root.contains(directoryTarget)) return
+    const id = String(directoryTarget.dataset.id || '')
+    if (!id || !capabilities().canWriteKml) {
+      event.preventDefault()
+      return
+    }
+    dragState = { type: 'directory', id }
+    directoryTarget.classList.add('is-account-kml-dragging')
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData(KML_DIRECTORY_DRAG_MIME, JSON.stringify({ directoryId: id }))
+      event.dataTransfer.setData('text/plain', id)
+    }
+  })
+
+  root.addEventListener('dragover', event => {
+    if (!dragState) return
+    let target = null
+    if (dragState.type === 'file') {
+      target = event.target.closest?.('[data-account-kml-file-drop], [data-account-kml-directory-drop]')
+    } else if (dragState.type === 'directory') {
+      target = event.target.closest?.('[data-account-kml-directory-drop]')
+    }
+    if (!target || !root.contains(target)) return
+    if (dragState.type === 'file' && target.dataset.accountKmlFileDrop === dragState.id) return
+    if (dragState.type === 'directory' && target.dataset.accountKmlDirectoryDrop === dragState.id) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+    root.querySelectorAll('.is-account-kml-drop-target').forEach(element => {
+      if (element !== target) element.classList.remove('is-account-kml-drop-target')
+    })
+    target.classList.add('is-account-kml-drop-target')
+  })
+
+  root.addEventListener('dragleave', event => {
+    const target = event.target.closest?.('.is-account-kml-drop-target')
+    if (!target || target.contains(event.relatedTarget)) return
+    target.classList.remove('is-account-kml-drop-target')
+  })
+
+  root.addEventListener('drop', async event => {
+    if (!dragState) return
+    const current = dragState
+    let target
+    if (current.type === 'file') {
+      target = event.target.closest?.('[data-account-kml-file-drop], [data-account-kml-directory-drop]')
+    } else {
+      target = event.target.closest?.('[data-account-kml-directory-drop]')
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    clearState()
+    if (!target) return
+
+    if (current.type === 'directory') {
+      const targetId = String(target.dataset.accountKmlDirectoryDrop || '')
+      if (!targetId || targetId === current.id) return
+      const ids = state.kml.directories.items.map(item => String(item.id))
+      const sourceIndex = ids.indexOf(current.id)
+      const targetIndex = ids.indexOf(targetId)
+      if (sourceIndex < 0 || targetIndex < 0) return
+      ids.splice(sourceIndex, 1)
+      ids.splice(ids.indexOf(targetId), 0, current.id)
+      const result = await runAction(() => accountApi.reorderKmlDirectories(ids), {
+        progress: '正在调整 KML 目录顺序…', success: 'KML 目录顺序已更新',
+      })
+      if (result) await loadKml()
+      render()
+      return
+    }
+
+    const source = state.kml.items.find(item => String(item.id) === current.id)
+    if (!source) return
+    const targetFileId = String(target.dataset.accountKmlFileDrop || '')
+    const targetFile = targetFileId ? state.kml.items.find(item => String(item.id) === targetFileId) : null
+    if (targetFile && String(targetFile.id) === String(source.id)) return
+    const directoryId = targetFile
+      ? (targetFile.directoryId || null)
+      : (String(target.dataset.accountKmlDirectoryDrop || '') || null)
+    const beforeId = targetFile && targetFile.id !== source.id ? targetFile.id : null
+    if (String(source.directoryId || '') === String(directoryId || '') && !beforeId) {
+      const siblings = state.kml.items
+        .filter(item => item.status === 'active' && String(item.directoryId || '') === String(directoryId || ''))
+        .sort((left, right) => Number(left.position || 0) - Number(right.position || 0))
+      if (siblings.at(-1)?.id === source.id) return
+    }
+    const result = await runAction(() => accountApi.moveKml(source.id, { directoryId, beforeId }), {
+      progress: '正在调整 KML 文件位置…', success: 'KML 文件位置已更新',
+    })
+    if (result) await loadKml()
+    render()
+  })
+
+  root.addEventListener('dragend', clearState)
+}
+
 export async function initAccountApp () {
   document.body.classList.add('account-view')
   state.root = document.getElementById('account-root')
   if (!state.root) throw new Error('缺少用户中心根节点')
   state.root.hidden = false
+  bindKmlOrganizationEvents(state.root)
   const pathTab = window.location.pathname.split('/').filter(Boolean)[1]
   state.activeTab = normalizeAccountTab(window.location.hash || pathTab)
   state.root.addEventListener('submit', handleSubmit)
