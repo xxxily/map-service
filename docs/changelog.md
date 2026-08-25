@@ -1,5 +1,13 @@
 # 变更日志
 
+## 未发布
+
+### Artalk 可选依赖边界说明
+
+- 统一明确内部 Interaction Service 独立承载留言、审核、举报和 AI 辅助审核；Artalk 仅为可选单向镜像和第三方 provider POC，未安装、关闭或故障不会阻塞交互主链路。
+- 补充代码默认关闭、161 内测显式开启、66 生产强制关闭的环境差异，以及 Artalk 后台不作为正式审核工作台、手工修改可能被内部状态校准覆盖的边界。
+- 说明 `/admin/interaction-ai` 当前只提供 Artalk 脱敏状态、连接验证和排空校准，不提供 Endpoint 或凭据编辑；161 专用发布脚本要求 Artalk 是内测验收策略，不代表应用运行依赖。
+
 ## 1.5.45 - 2026-08-25
 
 ### Artalk 修复完整发布
@@ -108,7 +116,7 @@
 - 需求将留言服务、审核服务、举报服务与地图集成适配层分开，第三方评论系统仅作为通过适配器 POC 后的候选实现。
 - 完成 Phase 0 契约冻结：新增留言/审核/举报状态机、动作矩阵、权限目录、匿名联系方式与保留策略；公开分享快照接入稳定 Feature/Media `resourceRefs` 校验，兼容历史随机 `publicId` 和用户 Feature ID。
 - 补充重复媒体来源的 occurrence 级稳定 `mediaId`，并对部分/未知资源元数据、损坏快照和缺失 `features` 执行 fail-closed 校验；完全缺少资源索引的历史快照仍只读兼容派生且不回写。
-- 新增 Remark42/Artalk/Isso/Cusdis 官方资料评审与适配器 POC，Artalk 为首选、Remark42 为第二候选，Cusdis 因归档/弃用/GPL-3.0 排除；POC 不接入生产依赖。
+- 新增 Remark42/Artalk/Isso/Cusdis 官方资料评审与适配器 POC，Artalk 为第三方 provider POC 首选、Remark42 为第二候选，Cusdis 因归档/弃用/GPL-3.0 排除；POC 不接入生产依赖。
 
 ## 1.5.37 - 2026-08-23
 

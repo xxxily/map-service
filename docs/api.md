@@ -118,13 +118,15 @@ Phase 1A 的内部数据契约和独立数据库已经冻结，Phase 1B/C 已接
 | `POST` | `/api/v1/admin/moderation/events/replay` | `admin.moderation.ai.manage` + CSRF | 将失败的审核 outbox 事件按上限重新入队 |
 | `POST` | `/api/v1/admin/comments/:id/ai-replay` | `admin.moderation.ai.manage` + CSRF | 对单条留言重放 AI 审核并追加决策链，不覆盖人工结论 |
 
-Artalk 只作为 161 内测的受控单向镜像，不提供公开 API。浏览器仍必须调用本项目的公开留言接口；以下管理接口只返回脱敏状态：
+Artalk 是可选的旁路镜像，只在 161 内测环境启用；它不是留言、审核或举报 API 的依赖。未安装、关闭或不可用时，以下公开留言/审核/举报接口仍由 map-service 内部服务独立提供。Artalk 不提供本项目的公开 API，浏览器仍必须调用本项目的公开留言接口；以下管理接口只返回脱敏状态：
 
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/admin/comment-providers/artalk/status` | `admin.comment.policy.manage` | 返回启用、配置、outbox 和投影聚合计数，不返回 endpoint、密码或 Token |
 | `POST` | `/api/v1/admin/comment-providers/artalk/verify` | `admin.comment.policy.manage` + CSRF | 发送版本探针验证 161 Artalk 连接 |
 | `POST` | `/api/v1/admin/comment-providers/artalk/drain` | `admin.comment.policy.manage` + CSRF | 排空评论 outbox 并按内部状态校准镜像；可显式传入 `force=true` |
+
+上述接口只用于查看和运维已配置的镜像，不用于创建/切换 Artalk Endpoint，也不把 Artalk 后台的手工改动同步回内部 Comment/Moderation Service。Endpoint、账号和凭据只能通过受控服务器配置变更；正式审核、隐藏、拒绝和删除必须使用 map-service 管理接口。
 
 配置只接受服务端注册的 `adapterId`（当前为 `openai-compatible`）；浏览器不能提交函数、请求头或密钥明文。新 provider 默认保持未验证/不可用，必须先调用 `verify`；未通过验证的 provider 不能成为默认项。`endpoint` 只允许 HTTPS，拒绝凭据、localhost、内网/环回、link-local、metadata、文档保留地址和未在 allowlist 中的主机；实际请求会重新解析 DNS、固定公开地址并拒绝重定向。provider 请求有独立并发槽位、每日预算、每次重试独立计费和熔断；引擎强制超时，即使适配器忽略 `AbortSignal` 也会释放槽位。留言正文在外发前脱敏邮箱、手机号、IP、会话令牌和内部 ID。
 

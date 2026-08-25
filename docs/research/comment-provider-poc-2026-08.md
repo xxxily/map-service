@@ -4,11 +4,13 @@
 >
 > 范围：Remark42、Artalk、Isso、Cusdis。只采用项目官方仓库、官方文档和 GitHub 官方 API 作为证据。这里的“匿名”指不要求第三方社交登录即可提交评论；是否要求昵称、邮箱或验证码另行说明。
 >
-> 状态：Phase 0 评审已完成；Artalk `2.10.0` 已在 161 完成隔离 sidecar 部署、运维实测和 map-service 单向镜像接入，公开生产页面嵌入仍延期。
+> 状态：Phase 0 评审已完成；Artalk `2.10.0` 已在 161 完成隔离 sidecar 部署、运维实测和 map-service 可选单向镜像接入，公开生产页面嵌入仍延期。map-service 内部 Interaction Service 已独立提供正式留言、审核和举报能力。
 
 ## 结论摘要
 
 **POC 首选 Artalk，Remark42 作为第二候选；Isso 仅适合轻量、低管理要求的部署；Cusdis 排除。**
+
+这里的“首选”只表示在需要第三方评论 UI、旁路镜像、导出迁移或未来替代方案时，Artalk 是当前优先候选；不表示 map-service 默认依赖、必须安装或已经把公开留言后端切换到 Artalk。当前代码默认关闭 Artalk 镜像，161 内测显式开启，66 生产保持关闭。
 
 Artalk 在当前四个候选中同时满足：MIT 许可证、活跃版本发布、匿名/免验证评论、后台审核与反垃圾能力、OpenAPI HTTP API，以及明确的导入导出格式。Remark42 的数据备份/API/权限能力最完整，但部署时至少要配置一个 OAuth2 提供商，匿名只是可选 provider；另外近期安全公告要求严格配置可信反向代理。Isso 仍有维护提交且支持匿名和审核队列，但以 SQLite 和较窄的服务 API 为主，官方资料没有提供像 Artalk/Remark42 那样清晰的通用批量导出链路。Cusdis 官方 README 已明确标记为 deprecated，仓库 archived，且数据导出需要联系作者，不适合作为新项目依赖。
 
@@ -72,7 +74,7 @@ Artalk 在当前四个候选中同时满足：MIT 许可证、活跃版本发布
 
 ## 最终建议与落地顺序
 
-1. **保留 Artalk 161 隔离 sidecar**：已锁定 `2.10.0` 和镜像 digest，已接入 map-service 单向镜像用于适配器、迁移和运维回归；公开页面仍使用内部 Interaction Service。
+1. **保留 Artalk 161 隔离 sidecar**：已锁定 `2.10.0` 和镜像 digest，已接入 map-service 可选单向镜像用于适配器、迁移和运维回归；公开页面仍使用内部 Interaction Service。普通环境无需安装 Artalk，Artalk 后台也不承担正式审核。
 2. **保留 Remark42 备选**：当需求更看重 OAuth provider 丰富度、成熟备份/恢复、Disqus/WordPress 迁移时再做 provider 实测；部署前必须完成可信代理与安全公告核对。
 3. **不投入 Cusdis POC**；Isso 仅在需要极简匿名评论、可接受自行验证导出和 SQLite 运维时考虑。
 

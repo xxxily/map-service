@@ -2,9 +2,9 @@
 
 > 文档用途：记录从 Phase 0 到生产闭环的任务、决策、耗时、验证证据和下一步计划。每次执行阶段性工作后同步更新。
 > 
-> 首选留言方案：Artalk（通过 Interaction Adapter 接入；内部服务掌握最终审核、资源身份和审计事实）。
+> 第三方留言 provider POC 首选：Artalk（通过 Interaction Adapter 接入）；正式留言、审核、举报仍由内部 Interaction Service 掌握最终状态和审计事实，Artalk 不属于运行前置依赖。
 > 
-> 当前状态：Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测与 Phase 3 AI 审核均已完成；Artalk 已通过 Interaction Adapter 以单向镜像接入 161 内测，公开生产部署仍明确延期，不作为内部事实源的上线前置条件。
+> 当前状态：Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测与 Phase 3 AI 审核均已完成；Artalk 作为可选单向镜像接入 161 内测，公开生产部署仍明确延期，不作为内部留言、审核或举报的上线前置条件。
 >
 > 部署、初始化、接入、备份恢复和 agent 执行入口见 [交互功能部署与接入手册](./interaction-deployment-and-integration.md)。
 > 
@@ -57,7 +57,7 @@
 - [x] 冻结匿名留言默认关闭、邮箱/手机联系方式策略。
 - [x] 冻结公开/非公开/匿名联系方式/AI 原始结果/举报保留期。
 - [x] 为公开快照建立稳定 Feature/Media `resourceRefs`，兼容历史快照并 fail-closed。
-- [x] 完成 Artalk、Remark42、Isso、Cusdis POC；确定 Artalk 为首选。
+- [x] 完成 Artalk、Remark42、Isso、Cusdis POC；确定 Artalk 为第三方 provider POC 首选，但不作为核心依赖。
 - [x] 补充 Phase 0 纯函数、资源引用、POC 和 RBAC 回归测试。
 - [x] 运行 `npm run check`、`npm test`（765/765）、`npm run build`。
 - [x] 提交 Phase 0 契约与 POC 变更并记录提交号：`840f713`。
@@ -122,7 +122,7 @@
 
 - [x] （Phase 2 POC）锁定 Artalk 版本，验证容器/API/OpenAPI 契约和 export/import smoke。
 - [x] 在 161 以固定 `2.10.0` 镜像 digest 部署隔离 sidecar，完成 pending、审核/删除、导入导出、持久化和 CORS 验收。
-- [ ] （明确延期）使用受控 HTTPS origin 对公开生产页面接入 Artalk；当前内部 headless Comment Service 继续作为事实源。
+- [ ] （明确延期且可选）使用受控 HTTPS origin 对公开生产页面接入 Artalk；当前内部 headless Comment Service 继续作为事实源，未安装 Artalk 时留言与审核闭环照常运行。
 - [x] 完成 Adapter 页面键、外部用户/匿名字段、审核同步边界和 CORS/CSRF 设计联调。
 - [x] 完成评论/审核历史导入导出边界与恢复 smoke；生产迁移需独立维护窗口。
 - [x] 接入 AI provider registry、密钥引用、提示词版本、结构化 JSON 校验、超时/重试/预算熔断。
@@ -137,7 +137,8 @@
 - 留言和举报的同意策略版本由服务端选择并引用版本表，禁止静默使用默认版本或接受不存在的版本。
 - 举报永不进入公开留言、AI 或敏感词拒绝流水线。
 - 所有公开资源引用必须来自已发布快照；资源不一致、损坏或部分缺失时 fail-closed。
-- AI/第三方 provider 故障时地图和媒体继续可用，留言进入人工队列或返回明确的 503。
+- AI provider 故障时地图和媒体继续可用，留言进入人工队列或返回明确的 503。
+- Artalk 未安装、关闭或故障时，留言提交、公开列表/计数、人工审核、AI 辅助审核和举报不得被阻塞；Artalk 只能产生镜像滞后，不能改变内部最终状态。
 - 原文、联系方式、Token、密钥、IP/UA 摘要不得进入公开响应或普通日志。
 - 分享级封禁/暂停动作必须展示影响范围并写审计；未实现的媒体隐藏不得伪造成功。
 
@@ -157,7 +158,7 @@
 
 | 时间 | 事件 | 证据/提交 |
 | --- | --- | --- |
-| 2026-08-23 | 建立全局执行清单；确定 Artalk 首选，采用内部服务为最终事实源 | 本文档、需求文档 v1.0 |
+| 2026-08-23 | 建立全局执行清单；确定 Artalk 为第三方 provider POC 首选，采用内部服务为最终事实源 | 本文档、需求文档 v1.0 |
 | 2026-08-23 | Phase 0 验证完成 | `npm run check`、`npm test` 765/765、`npm run build` |
 | 2026-08-23 | Phase 1A 完成独立交互契约与 SQLite v1 实现 | 定向测试 28/28、全量测试 778/778、`npm run check`、`npm run build` |
 | 2026-08-23 | Phase 1B/C 留言垂直切片接入 | Interaction Adapter、Comment/Moderation Service、outbox、公开留言策略/列表/计数/提交及管理审核/重新审核/策略/关键词 API；重新审核按内容与当前策略版本幂等并保留决策链 |
@@ -166,4 +167,4 @@
 
 ## 8. 收尾与延期事项
 
-Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测和 Phase 3 AI 审核均已完成；最终质量门需保留全量测试、静态检查、构建、清理报告、独立代码/架构审查和架构不变量审计的证据。Artalk 已在 161 通过内部单向镜像闭环验收，公开生产接入仍明确延期；后续公开接入必须沿用已锁定的 `2.10.0` 版本、受控 HTTPS origin 和现有 Interaction Adapter 边界。
+Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测和 Phase 3 AI 审核均已完成；最终质量门需保留全量测试、静态检查、构建、清理报告、独立代码/架构审查和架构不变量审计的证据。Artalk 已在 161 通过内部单向镜像闭环验收，但它仍是可选旁路能力，公开生产接入仍明确延期；后续公开接入必须沿用已锁定的 `2.10.0` 版本、受控 HTTPS origin 和现有 Interaction Adapter 边界，且不得削弱无 Artalk 时的内部功能。

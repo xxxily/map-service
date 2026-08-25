@@ -1,6 +1,6 @@
 # KML 点位留言、内容举报与审核治理需求
 
-> 状态：Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测与 Phase 3 AI 审核已完成；Artalk 已通过 Interaction Adapter 以单向镜像接入 161 内测，公开生产嵌入仍延期，内部 Interaction Service 继续作为事实源。
+> 状态：Phase 0、Phase 1A-F、Phase 2 受控 POC/161 隔离 sidecar 实测与 Phase 3 AI 审核已完成；内部 Interaction Service 已独立提供全部留言、审核和举报能力，Artalk 仅作为 161 可选单向镜像，公开生产嵌入仍延期。
 > 版本：v1.0
 > 更新日期：2026-08-25
 > 适用范围：2D/3D 地图、公开 KML 分享、KML 点位富媒体浏览、用户体系、管理后台
@@ -32,7 +32,8 @@ Interaction Adapter（集成适配层）
 - 匿名留言是管理员可配置的站点能力，不是前端自行决定的降级路径；默认关闭。
 - 关键词过滤是确定性前置规则，AI 是可配置的辅助判断，人工复核拥有最终覆盖权。
 - 举报不进入公开留言流，不做 AI 审核或敏感词过滤；举报只进入管理员工单和审计链路。
-- 第三方评论系统可以作为候选实现，但不能直接成为本项目的业务事实源。必须通过适配器映射稳定资源 ID、审核状态、权限和审计数据。
+- 内部 Interaction Service 是当前正式留言实现；安装、配置或运行 Artalk 不是留言、审核、举报或 AI 审核的前置条件。
+- 第三方评论系统只能作为可选 UI、旁路镜像或未来候选实现，不能直接成为本项目的业务事实源。必须通过适配器映射稳定资源 ID、审核状态、权限和审计数据。
 - 第一阶段可以在同一仓库中按独立模块和独立数据库表实现，第二阶段再拆成独立进程或容器；服务边界、事件和 API 从第一天按可拆部署设计。
 
 ## 2. 现有系统基线
@@ -85,6 +86,7 @@ Interaction Adapter（集成适配层）
 - 本期不承诺 AI 自动判断违法、侵权或事实真伪；AI 结果必须可解释、可复核且可被人工覆盖。
 - 本期不把举报内容公开给分享所有者或其他查看者；是否通知分享所有者属于后续策略。
 - 本期不要求一次性迁移到微服务平台、消息队列或独立搜索集群；先定义边界和契约，再按规模拆部署。
+- 本期不要求部署 Artalk，也不把 Artalk 后台作为正式审核入口；Artalk 缺失或故障不得影响内部交互主链路。
 
 ## 4. 用户角色与主要场景
 
@@ -236,6 +238,8 @@ AI 凭据只保存在该服务或外部密钥管理系统中；map-service 和�
 | P2 | 独立服务 + outbox/event bus | 服务各自数据库，事件可重放 | 多实例、异步审核和更高吞吐 |
 
 在 P0/P1 中不强行引入 RabbitMQ/Kafka；使用带幂等键的 outbox 和定时 worker 即可。需要水平扩展时，再将 outbox 消费替换为 NATS/SQS 等受控消息系统。
+
+Artalk 不属于上述阶段的必需基础设施。当前仅由可选 outbox consumer 将内部已批准留言投影到 161 sidecar；关闭 consumer 或不存在 sidecar 时，Comment/Moderation/Report Service 的数据模型、API 和状态机不发生变化。
 
 ## 7. 留言产品需求
 
@@ -767,7 +771,7 @@ Content-Type: application/json
 6. 能够导出完整评论、审核历史和删除事件，避免供应商锁定。
 7. 许可证、维护活跃度、漏洞响应、中文本地化、升级方式和备份恢复经过评审。
 
-推荐的技术姿态是“第三方负责通用评论 UI/基础存储，内部服务掌握资源引用、最终可见性、AI/规则、举报和审计”。如果 POC 无法满足上述条件，直接建设 headless Comment Service，前端 UI 继续使用 map-service 组件体系。
+当前已经采用的技术姿态是“内部 headless Comment/Moderation/Report Service 负责正式存储、公开 API 和最终状态，第三方只做可选 UI、旁路镜像、导出迁移或未来替代方案验证”。如果未来改为由第三方承担公开评论 UI 或基础存储，必须另立需求、完成双向同步与迁移验收，不能把现有 161 单向镜像直接视为生产切换完成。
 
 ## 16. 分阶段交付
 
@@ -800,6 +804,8 @@ Phase 0 交付物已落库：资源引用和状态策略纯函数、权限码种
 - 锁定 `2.10.0` 与镜像 digest，完成 HTTP API/OpenAPI、pending 隔离、管理审核/删除、Artrans 导出、临时 SQLite 导入、重启持久化和 CORS 验收。
 - 161 入口为 `http://192.168.0.161:33089`，仅对内网维护人员开放；数据、管理凭据和 1Panel 模板均保留在 161 受控目录。
 - Artalk 不作为内部事实源；公开页面仍调用 map-service 同源 Interaction Adapter。后续公开生产接入需要独立 HTTPS origin、审核双向同步方案和维护窗口。
+- Phase 2 是可选技术验证，不是 Phase 1 留言闭环的运行依赖。代码默认关闭 Artalk 镜像，161 内测显式开启，66 生产保持关闭；未安装或停用 Artalk 时 Phase 1/3 能力仍必须全部可用。
+- Artalk 后台仅用于查看镜像和受控导出，不作为正式审核工作台；在 Artalk 中直接修改的状态不会回写内部服务，且可能被后续校准覆盖或重建。
 
 ### Phase 3：AI 审核和运营配置（已完成）
 
@@ -813,9 +819,9 @@ Phase 0 交付物已落库：资源引用和状态策略纯函数、权限码种
 Phase 3 的实际代码和入口：
 
 - 运行时：`service/bin/interaction/aiModeration.js`、`providerRegistry.js`、`interactionService.js`、`moderationService.js`；AI 扩展表和提示词版本表由 `service/bin/interaction/database.js` 的幂等迁移创建。
-- 管理后台：`/admin/interaction-ai`，菜单名为“AI 审核与规则”。页面包含 AI 运行配置、provider、关键词规则、提示词版本、影响预览、失败事件重放和 Artalk 镜像状态卡；进入页面仍由服务端权限 `admin.moderation.ai.manage`、`admin.moderation.keyword.manage`、`admin.comment.policy.manage` 控制。
+- 管理后台：`/admin/interaction-ai`，菜单名为“AI 审核与规则”。页面包含 AI 运行配置、provider、关键词规则、提示词版本、影响预览、失败事件重放和可选 Artalk 镜像状态卡；进入页面仍由服务端权限 `admin.moderation.ai.manage`、`admin.moderation.keyword.manage`、`admin.comment.policy.manage` 控制。
 - 管理 API：`/api/v1/admin/moderation/ai/settings`、`/moderation/providers`、`/moderation/keywords`、`/moderation/ai/prompts`、`/moderation/ai/impact-preview`、`/moderation/events/replay` 和 `/admin/comments/:id/ai-replay`。所有写操作使用会话、细粒度 RBAC、CSRF 和审计。
-- Artalk 161 镜像：`service/bin/interaction/artalkMirror.js` 与 `service/bin/cronJob/artalkMirror.js`。内部留言状态是唯一事实源，只有 `active + approved` 才会投影到 Artalk；Artalk 不可用时留言、举报和公开审核链路继续运行。默认关闭，161 通过受控 `.env` 开启，66 保持关闭。
+- Artalk 161 可选镜像：`service/bin/interaction/artalkMirror.js` 与 `service/bin/cronJob/artalkMirror.js`。内部留言状态是唯一事实源，只有 `active + approved` 才会投影到 Artalk；Artalk 不可用时留言、举报和公开审核链路继续运行。默认关闭，161 通过受控 `.env` 开启，66 保持关闭；镜像 Endpoint、账号和凭据不通过后台页面修改。
 
 ### Phase 4：通知和更细粒度治理（待开始）
 

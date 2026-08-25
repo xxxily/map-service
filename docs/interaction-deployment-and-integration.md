@@ -2,13 +2,13 @@
 
 > 状态：适用于当前内部 Interaction Service 实现
 >
-> 更新日期：2026-08-24
+> 更新日期：2026-08-25
 >
 > 事实源：service/bin/interaction/、shared/interaction-contracts.js、shared/interaction-policy.js、[交互 API 契约](./api.md#交互领域契约-phase-1bc)
 
 本文是留言、审核、举报和可选 AI 审核的主运行手册。系统维护者可以按本文完成安装、初始化、上线、升级、备份、恢复和故障排查；前端或受控自动化 agent 可以按本文完成 API 接入。
 
-本文描述的是当前同仓库、同进程、单机单写进程的内部服务。Artalk 2.10.0 已在 161 以隔离 sidecar 完成受控实测，但不替代内部事实源，也不作为公开页面接入前置条件；当前 interaction.sqlite 和内部 Comment/Moderation/Report Service 才是留言、审核和举报的最终事实源。
+本文描述的是当前同仓库、同进程、单机单写进程的内部服务。**安装或配置 Artalk 不是留言、审核、举报或 AI 审核的前置条件**；`interaction.sqlite` 和内部 Comment/Moderation/Report Service 才是最终事实源。Artalk 2.10.0 只在 161 以隔离 sidecar 完成受控单向镜像实测，当前不承载公开留言 API，也不替代内部服务。
 
 ## 1. 运行边界
 
@@ -26,6 +26,22 @@
 - hide_media、hide_comment 举报动作在受控治理能力接入前会明确拒绝，不会返回伪造成功。
 - 不承诺多实例横向扩展。登录/注册/分享密码/留言限流包含单进程内存状态，SQLite 也按单写进程部署。
 - 不要求先部署 Artalk；如果未来接入，必须继续经过 Interaction Adapter，不能绕过本系统资源授权、审核最终状态或审计。
+
+### 1.3 Artalk 可选性结论
+
+Artalk 的定位是**可选旁路镜像和第三方评论系统 POC**，不是 map-service 的默认留言后端。代码默认 `MAP_SERVICE_ARTALK_MIRROR_ENABLED=false`；未安装 Artalk、未配置 Endpoint/凭据、主动关闭或 Artalk 临时故障时，map-service 的留言提交、公开列表、数量统计、关键词/人工/AI 审核、举报工单和管理后台仍按内部链路运行。
+
+接入 Artalk 的实际目的限于：在 161 提供独立的评论后台和数据导出能力，验证第三方 provider 的适配、迁移和恢复路径，并为未来可能的评论 UI/插件方案保留选择。它当前不负责公开页面留言渲染、不负责最终审核、不承载举报工单，也不把 Artalk 后台的操作反向同步为内部状态。
+
+| 场景 | map-service 留言与审核 | Artalk |
+| --- | --- | --- |
+| 未安装或未配置 | 正常运行 | 不产生镜像 |
+| 镜像开关关闭 | 正常运行 | 不连接、不投影 |
+| 镜像开启且健康 | 正常运行 | 复制内部已批准且仍有效的留言 |
+| 镜像开启但 Artalk 故障 | 正常运行；内部状态继续作为最终结果 | 镜像暂时滞后，后续排空或校准 |
+| 在 Artalk 后台直接修改留言 | 不改变内部审核结论 | 可能被后续校准覆盖、删除或重建 |
+
+所有正式审核、隐藏、拒绝和删除操作都应在 map-service 管理后台完成。Artalk 后台当前只适合查看镜像、验证第三方运维能力和执行受控导出，不应被当作正式审核工作台。
 
 ## 2. 架构和数据流
 
@@ -45,6 +61,8 @@ InteractionService
   |-- AiModerationEngine      -> server-owned provider adapter
   v
 .db/interaction.sqlite (schema migration version 1 + additive AI tables)
+  |
+  `-- comment outbox --(仅镜像开启时)--> Artalk sidecar（可选、非事实源）
 ~~~
 
 公开留言只有同时满足 content_status=active 和 moderation_status=approved 才可见或计数。公开请求使用 publicId，服务端会解析为内部 canonicalShareId，再验证 shareItemId + featureId (+ mediaId) 是否属于已发布快照。无法区分“资源不存在”和“无权访问”时统一返回 RESOURCE_NOT_FOUND。
@@ -114,7 +132,32 @@ secretRef: env://MAP_SERVICE_AI_PROVIDER_KEY
 
 运行进程必须能读取 MAP_SERVICE_AI_PROVIDER_KEY，但 API 响应永远不会返回 secretRef 或密钥内容。
 
-### 4.3 数据保留
+### 4.3 Artalk 可选镜像
+
+以下配置只控制可选的 Artalk 单向镜像，不控制 map-service 自身的留言、审核或举报能力：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `MAP_SERVICE_ARTALK_MIRROR_ENABLED` | `false` | 是否启动 Artalk outbox 消费与校准；不启用时不要求安装 Artalk |
+| `MAP_SERVICE_ARTALK_MIRROR_ENDPOINT` | 空 | 服务端访问的 Artalk v2 API 根地址；只能配置受控内部服务地址 |
+| `MAP_SERVICE_ARTALK_MIRROR_SITE_NAME` | `map-service-internal` | Artalk 站点名 |
+| `MAP_SERVICE_ARTALK_MIRROR_EMAIL` | 空 | 服务账号邮箱；仅在没有 Token 时与密码配套使用 |
+| `MAP_SERVICE_ARTALK_MIRROR_PASSWORD` | 空 | 服务账号密码，不得进入 Git、日志、API 或文档 |
+| `MAP_SERVICE_ARTALK_MIRROR_TOKEN` | 空 | 可选服务 Token；配置后不要求邮箱密码登录 |
+| `MAP_SERVICE_ARTALK_MIRROR_BATCH_SIZE` | `20` | 单次消费上限 |
+| `MAP_SERVICE_ARTALK_MIRROR_POLL_INTERVAL_MS` | `5000` | 定时排空间隔 |
+| `MAP_SERVICE_ARTALK_MIRROR_TIMEOUT_MS` | `3000` | 单次 Artalk 请求超时 |
+| `MAP_SERVICE_ARTALK_MIRROR_SECRET` | 回退到 interaction secret | 生成不可逆镜像邮箱标识的 HMAC 密钥，应跨发布保持稳定 |
+
+不使用 Artalk 时，省略所有 `MAP_SERVICE_ARTALK_MIRROR_*` 配置或只显式设置：
+
+~~~dotenv
+MAP_SERVICE_ARTALK_MIRROR_ENABLED=false
+~~~
+
+当前后台 `/admin/interaction-ai` 的“Artalk 镜像”卡只提供脱敏状态、连接验证、outbox 排空和强制校准，**不提供 Endpoint、账号或凭据编辑入口**。如需切换 Artalk 实例，维护者必须在受控部署配置中更新 Endpoint/凭据、备份现有配置、重启单实例 map-service 并重新执行连接验证；禁止通过公开或管理 API 接受任意 URL。161 的专用 `deploy-161.sh` 会在每次发布时重新写入固定内网 Endpoint，因此直接手工修改 161 `.env` 不构成持久配置。
+
+### 4.4 数据保留
 
 | 环境变量 | 默认天数 | 清理对象 |
 | --- | ---: | --- |
@@ -537,7 +580,9 @@ AI 运行策略在后台菜单“AI 审核与规则”中维护，或通过独�
 
 `PUT /api/v1/admin/moderation/ai/settings` 只更新上述 AI 字段。发布后服务端读取活动策略并立即更新异步 AI 引擎；`unknown` 始终人工复核，`illegal_or_ip` 只能复核或隔离。没有活动策略时仍可读取部署环境的 bootstrap 配置，但第一次发布策略后以策略值为运行时准则。
 
-## 9.3.1 161 Artalk 隔离 sidecar 与 map-service 单向镜像
+## 9.3.1 161 Artalk 隔离 sidecar 与 map-service 可选单向镜像
+
+本节只描述 161 当前用于 POC、迁移和运维回归的专用环境，不是通用部署必做步骤。普通环境和 66 生产环境可以完全不安装 Artalk，并保持 `MAP_SERVICE_ARTALK_MIRROR_ENABLED=false`。
 
 Artalk 当前部署在 161 的 `artalk-161` 独立 1Panel 应用中：
 
@@ -547,6 +592,7 @@ Artalk 当前部署在 161 的 `artalk-161` 独立 1Panel 应用中：
 - map-service 通过 `service/bin/interaction/artalkMirror.js` 将内部 `comment.*` outbox 事件单向投影到 Artalk；内部 Comment/Moderation Service 是唯一事实源。只有 `content_status=active && moderation_status=approved` 的留言可见，删除、隐藏、拒绝、父留言失去资格或 Artalk 404 会被安全移除/重建。Artalk 不可用时，内部留言、举报、审核和公开列表不被阻塞。
 - Artalk `AdminGuard` 对评论写操作可能返回 `403`（而非 `401`）；镜像适配器会使用受限服务账号登录并最多重试一次，第二次 `401/403` 直接记录失败，禁止无限重试。创建后仍显式发送 `is_pending=false`，保证内部批准状态才会在 Artalk 可见。
 - 浏览器不直连 Artalk，也不使用 Artalk 作为公开留言 API；公开页面仍调用 `/api/v1/public/kml-shares/:publicId/comments`。
+- 不在 Artalk 后台执行正式通过、拒绝、隐藏或删除。Artalk 侧的手工变更不会回写 map-service，且可能在下一次 reconcile 时被内部状态覆盖或重建。
 
 161 map-service `.env` 的受控配置项（值不得写入文档或 Git）：
 
@@ -559,9 +605,9 @@ MAP_SERVICE_ARTALK_MIRROR_PASSWORD=<Artalk 管理员密码>
 MAP_SERVICE_ARTALK_MIRROR_SECRET=<独立 HMAC 密钥>
 ~~~
 
-默认 `MAP_SERVICE_ARTALK_MIRROR_ENABLED=false`；66 保持关闭。连接验证和手工校准入口为后台 `/admin/interaction-ai` 的“Artalk 镜像”卡，或管理 API `GET/POST /api/v1/admin/comment-providers/artalk/{status,verify,drain}`。定时任务 `service/bin/cronJob/artalkMirror.js` 每 5 秒批量排空并执行非强制 reconcile；人工排空使用 `force=true` 可校准全部当前留言。状态只展示数量和健康结果，不回显 endpoint、账号、密码、Token 或留言正文。
+默认 `MAP_SERVICE_ARTALK_MIRROR_ENABLED=false`；66 保持关闭，161 的专用验收配置显式开启。连接验证和手工校准入口为后台 `/admin/interaction-ai` 的“Artalk 镜像”卡，或管理 API `GET/POST /api/v1/admin/comment-providers/artalk/{status,verify,drain}`。这些入口不负责启停镜像或修改 Endpoint。定时任务 `service/bin/cronJob/artalkMirror.js` 每 5 秒批量排空并执行非强制 reconcile；人工排空使用 `force=true` 可校准全部当前留言。状态只展示数量和健康结果，不回显 endpoint、账号、密码、Token 或留言正文。
 
-维护者入口：`http://192.168.0.161:33089`（仅 161 内网）。管理凭据保存在 `/opt/1panel/apps/local/artalk-161/artalk-161/2.10.0/.credentials`，权限为 `0600`；凭据和 app key 在实测后已轮换，不写入 Git、Outline 或本文档。
+维护者入口：`http://192.168.0.161:33089/sidebar/`（仅 161 内网）。登录账号对应受控凭据文件中的 `ARTALK_ADMIN_EMAIL`，密码对应 `ARTALK_ADMIN_PASSWORD`；`ARTALK_ADMIN_NAME` 仅为显示名称。凭据保存在 `/opt/1panel/apps/local/artalk-161/artalk-161/2.10.0/.credentials`，权限为 `0600`；仅授权维护者可在服务器本地读取，不得复制到 Git、Outline、工单、聊天或普通终端日志。
 
 已执行的 sidecar 验收包括：`/api/v2/version`、OpenAPI、免登录提交（Artalk 原生仍要求填写昵称和邮箱）、pending 不公开、管理员登录与审核/删除、Artrans 导出、隔离 SQLite 导入 2 条记录、容器重启后数据保持，以及可信 Origin 返回 ACAO/恶意 Origin 不返回 ACAO。Artalk 分页查询必须显式传入 `offset=0&limit=20`，否则可能只返回总数而不返回当页数组。
 
@@ -699,7 +745,9 @@ NODE
 
 ### 12.0 161 内网一键发布
 
-本机工作区根目录的 `deploy-161.sh` 是 161 内测环境的唯一推荐发布入口。该脚本属于本机运维资产，已加入 `.gitignore`，不会进入 GitHub；部署机或新工作区需要通过受控运维方式单独配置。它默认连接 `root@192.168.0.161`，部署到 `/opt/1panel/apps/local/map-service/map-service`，映射端口 `33088`，容器名 `map-service-161`。
+本机工作区根目录的 `deploy-161.sh` 是**当前 161“map-service + Artalk 镜像验收环境”**的专用发布入口，不是通用 map-service 安装器。该脚本属于本机运维资产，已加入 `.gitignore`，不会进入 GitHub；部署机或新工作区需要通过受控运维方式单独配置。它默认连接 `root@192.168.0.161`，部署到 `/opt/1panel/apps/local/map-service/map-service`，映射端口 `33088`，容器名 `map-service-161`。
+
+该脚本会强制启用并验证 161 Artalk 镜像，所以 Artalk 未安装、凭据文件缺失或权限不安全时会拒绝发布。这是 **161 内测发布策略**，不代表 map-service 的留言和审核依赖 Artalk。部署不带 Artalk 的新环境时，应使用常规 Node/PM2/Docker 流程并保持镜像开关关闭；不要复制 161 专用脚本后据此判断 Artalk 是必需组件。
 
 发布前脚本会在本地依次执行 `npm run check`、`npm test`、`npm run build` 和 `git diff --check`，并要求工作树干净；随后打包当前 Git HEAD、校验 SHA-256，通过 SSH 传输。远端会：
 
@@ -805,6 +853,9 @@ agent 不得把 instances 改成大于 1，不得开启生产 MAP_SERVICE_ENABLE
 - 看到 hide_media/hide_comment 被拒绝时，应报告“能力未接入”，不能重试为任意数据库更新。
 - 看到 RESOURCE_NOT_FOUND 时，先检查 publicId、已发布快照和分享访问授权；不要用内部 ID 猜测或枚举资源。
 - 看到 migration、密钥或数据库锁错误时，先停止下游写操作，保留副本并升级给系统维护者。
+- 未安装 Artalk 或 `MAP_SERVICE_ARTALK_MIRROR_ENABLED=false` 时，不得把它报告为留言/审核部署失败；只需验证内部留言、审核和举报接口。
+- 只有执行 161 专用镜像验收时，Artalk 容器、`.credentials` 和镜像健康才属于发布门禁；66 及普通环境不适用该门禁。
+- 不得在 Artalk 后台代替 map-service 做正式审核；发现两侧状态不同应以内部联系统为准，使用受控 drain/reconcile 修复镜像。
 
 ## 14. 故障排查
 
@@ -847,6 +898,12 @@ agent 不得把 instances 改成大于 1，不得开启生产 MAP_SERVICE_ENABLE
 ### AI provider 不执行或变为 unknown
 
 按顺序检查 MAP_SERVICE_AI_ENABLED、MAP_SERVICE_AI_ALLOWED_HOSTS、secretRef 对应环境变量、adapter 是否为 openai-compatible、endpoint 是否 HTTPS、provider 是否已 verify 且未超过 TTL、default 指针和 PM2 环境是否为最新。查看 provider 脱敏状态和 AI_PROVIDER_* 错误码，不打印原始请求或响应。
+
+### Artalk 未安装、关闭或连接失败
+
+先确认当前环境是否明确要求 Artalk。普通部署和 66 生产环境默认不要求，`MAP_SERVICE_ARTALK_MIRROR_ENABLED=false` 时状态接口显示关闭或跳过属于正常结果；继续验证留言提交、人工审核、公开列表、计数和举报即可。
+
+只有镜像开关为 `true` 时才检查 Endpoint、服务账号、Artalk 容器、版本探针和 outbox。Artalk 故障期间不要暂停内部审核，也不要修改 SQLite 强行对齐；恢复后通过 `/admin/interaction-ai` 的“连接验证”和“排空并强制校准”修复镜像。若 161 专用发布脚本因缺少 Artalk 凭据拒绝运行，应报告为“161 镜像验收配置不完整”，不能表述为“留言系统依赖缺失”。
 
 ### 保留任务没有清理
 
