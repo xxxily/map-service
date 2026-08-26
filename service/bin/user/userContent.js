@@ -2367,12 +2367,24 @@ export class UserContentService {
     const row = this.requireKmlAccess(actor, kmlId, 'write')
     if (row.status === 'active') return this.kmlViewFromRow(row, { includeFeatures: true })
     const now = this.nowIso()
-    this.database.prepare(`
-      UPDATE kml_documents
-      SET status = 'active', is_default = 0, revision = revision + 1,
-          updated_at = ?, deleted_at = NULL
-      WHERE id = ?
-    `).run(now, row.id)
+    this.database.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE kml_documents
+        SET status = 'active', is_default = 0, revision = revision + 1,
+            updated_at = ?, deleted_at = NULL
+        WHERE id = ? AND owner_id = ? AND status = 'trashed'
+      `).run(now, row.id, row.owner_id)
+      if (Number(result.changes) !== 1) {
+        throw createHttpError('KML 状态已被其他客户端更新，请重新加载', 409, 'KML_REVISION_CONFLICT')
+      }
+      this.insertAudit({
+        actorUserId: this.actorUser(actor).id,
+        action: 'kml.restore',
+        targetType: 'kml',
+        targetId: row.id,
+        metadata: { previousRevision: Number(row.revision), featureCount: Number(row.feature_count) },
+      })
+    })
     return this.getKml(actor, row.id)
   }
 

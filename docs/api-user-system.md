@@ -342,7 +342,7 @@ KML 写入模型：
 
 `trash` 正常使用稳定服务端 `kmlId`。若 `create` 已发送但客户端未收到响应，用户随后删除了该本地项，客户端必须发送同一 `clientId` 的 `trash` 操作。服务端按当前用户的持久幂等账本解析并移入回收站；若创建尚未到达，则先持久化用户范围的删除墓碑并返回 `{ "status": "absent" }`，随后乱序到达的同 `clientId` create 返回 `409 KML_CREATE_REPLAY_DELETED`。若对应 KML 已永久删除，同样返回无副作用的 absent，原创建账本继续阻止复活。
 
-已同步文件删除成功后，客户端必须保留状态为 `trashed` 的服务端快照。用户在 2D/3D 中撤销删除时发送带 `kmlId` 的 `restore`，不得复用原 `clientId` 当作新建；恢复响应会返回新的 revision。若删除先于 create 到达并得到 absent，客户端保留无服务端 ID 的 trashed 快照，撤销时先发送带同一 `clientId` 的 `restore` 取消删除墓碑；服务端返回 absent 后客户端再发送原 create。若该 restore 在途时用户又重做删除，客户端收到 absent 后必须重新记录 `clientId` 删除意图并续发 `trash(clientId)`。若撤销后的本地内容与恢复出的服务端内容不同，客户端在下一轮发送带新 revision 的普通 `update`。
+已同步文件删除成功后，客户端必须保留状态为 `trashed` 的服务端快照。用户在 2D/3D 中撤销删除时发送带 `kmlId` 的 `restore`，不得复用原 `clientId` 当作新建；恢复响应会返回新的 revision，并写入 `kml.restore` 审计记录。恢复是条件状态转换：请求开始时若文件已经 active，则幂等返回当前文档且不重复审计；若初次读取后状态又被并发请求改变，则返回 `409 KML_REVISION_CONFLICT`，不会额外递增 revision，也不会写入伪造的恢复审计。若删除先于 create 到达并得到 absent，客户端保留无服务端 ID 的 trashed 快照，撤销时先发送带同一 `clientId` 的 `restore` 取消删除墓碑；服务端返回 absent 后客户端再发送原 create。若该 restore 在途时用户又重做删除，客户端收到 absent 后必须重新记录 `clientId` 删除意图并续发 `trash(clientId)`。若撤销后的本地内容与恢复出的服务端内容不同，客户端在下一轮发送带新 revision 的普通 `update`。
 
 同步响应示例：
 

@@ -1290,6 +1290,8 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 }
 ```
 
+恢复接口只对仍处于 `trashed` 状态的文件执行一次条件状态转换；成功恢复会递增 `revision` 并写入 `kml.restore` 审计记录。请求开始时已为 active 的文件会幂等返回且不重复审计；若初次读取后状态被并发请求改变，接口返回 `409 KML_REVISION_CONFLICT`，不会产生额外恢复审计。
+
 ### `GET /api/v1/kml/media?url=<encoded-url>`
 
 获取固定旧图片下载地址的兼容响应。该接口不是任意 URL 代理，仅接受完整 URL 编码后的

@@ -172,6 +172,17 @@ test('personal KML CRUD enforces revisions, ownership and default protection', (
     assert.equal(trashedOldDefault.status, 'trashed')
     const restored = harness.service.restoreKml(harness.one, list.items[0].id)
     assert.equal(restored.status, 'active')
+    const restoreAudit = harness.database.prepare(`
+      SELECT action, target_type, target_id, metadata_json
+      FROM audit_logs
+      WHERE action = 'kml.restore' AND target_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(list.items[0].id)
+    assert.equal(restoreAudit.action, 'kml.restore')
+    assert.equal(restoreAudit.target_type, 'kml')
+    assert.equal(restoreAudit.target_id, list.items[0].id)
+    assert.deepEqual(JSON.parse(restoreAudit.metadata_json), { previousRevision: 2, featureCount: 0 })
     harness.service.trashKml(harness.one, list.items[0].id)
     assert.deepEqual(harness.service.deleteKmlPermanently(harness.one, list.items[0].id), {
       id: list.items[0].id,
@@ -214,6 +225,43 @@ test('KML sync switches the default file when the new default update runs first'
         .map(item => item.id),
       [nextDefault.id],
     )
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML restore is idempotent and only audits a real trashed-to-active transition', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '恢复竞态测试' })
+    harness.service.updateKml(harness.one, document.id, { revision: document.revision, name: '恢复竞态测试 2' })
+    harness.service.trashKml(harness.one, document.id)
+    const staleTrashedRow = harness.database.prepare('SELECT * FROM kml_documents WHERE id = ?').get(document.id)
+    const before = Number(harness.database.prepare(`
+      SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'kml.restore' AND target_id = ?
+    `).get(document.id)?.count || 0)
+
+    // Simulate a competing restore completing after the caller read its row,
+    // before the conditional state transition executes.
+    harness.database.prepare(`
+      UPDATE kml_documents SET status = 'active', revision = revision + 1, deleted_at = NULL WHERE id = ?
+    `).run(document.id)
+
+    const originalRequireKmlAccess = harness.service.requireKmlAccess
+    harness.service.requireKmlAccess = () => staleTrashedRow
+    assert.throws(
+      () => harness.service.restoreKml(harness.one, document.id),
+      error => error.statusCode === 409 && error.code === 'KML_REVISION_CONFLICT'
+    )
+    harness.service.requireKmlAccess = originalRequireKmlAccess
+    const after = Number(harness.database.prepare(`
+      SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'kml.restore' AND target_id = ?
+    `).get(document.id)?.count || 0)
+    assert.equal(after, before)
+
+    const repeated = harness.service.restoreKml(harness.one, document.id)
+    assert.equal(repeated.status, 'active')
+    assert.equal(repeated.revision, 4)
   } finally {
     harness.close()
   }
