@@ -43,11 +43,17 @@ const DEFAULT_SETTINGS = Object.freeze({
     maxFeaturesPerUser: 200000,
     trashRetentionDays: 30,
   },
+  kml: {
+    batchDownloadEnabled: false,
+  },
   share: {
     publicAccessPolicy: 'inherit_site_access',
     maxFilesPerShare: 20,
     accessTtlMs: 1000 * 60 * 60 * 12,
     passwordlessSharingEnabled: false,
+    kmlClusterForceEnabled: false,
+    kmlClusterMaxZoom: 12,
+    kmlClusterMinPoints: 250,
     spatialAccessEnabled: true,
     spatialPaddingMeters: 1000,
     spatialMaxAreaKm2: 10000,
@@ -465,6 +471,10 @@ export class UserSystemService {
         ...DEFAULT_SETTINGS.quota,
         ...(saved.quota || {}),
       },
+      kml: {
+        ...DEFAULT_SETTINGS.kml,
+        ...(saved.kml || {}),
+      },
       share: {
         ...DEFAULT_SETTINGS.share,
         ...(saved.share || {}),
@@ -485,6 +495,9 @@ export class UserSystemService {
         enabled: settings.registration.mode === 'open',
       },
       passwordPolicy: PASSWORD_POLICY,
+      kml: {
+        batchDownloadEnabled: settings.kml.batchDownloadEnabled === true,
+      },
       share: {
         passwordlessSharingEnabled: settings.share.passwordlessSharingEnabled === true,
         spatialUnrestrictedTileMaxZoom: Number(settings.share.spatialUnrestrictedTileMaxZoom),
@@ -568,6 +581,18 @@ export class UserSystemService {
       next.quota.trashRetentionDays = clampInteger(input.quota.trashRetentionDays, current.quota.trashRetentionDays, 1, 3650)
     }
 
+    if (input.kml !== undefined) {
+      this.assertPermission(actor, 'admin.security.manage')
+      if (!input.kml || typeof input.kml !== 'object' || Array.isArray(input.kml)) {
+        throw createHttpError('KML 设置格式不正确', 400, 'VALIDATION_FAILED')
+      }
+      next.kml.batchDownloadEnabled = normalizeBooleanSetting(
+        input.kml.batchDownloadEnabled,
+        current.kml.batchDownloadEnabled,
+        'KML 目录批量下载开关'
+      )
+    }
+
     if (input.share !== undefined) {
       this.assertPermission(actor, 'admin.security.manage')
       if (!input.share || typeof input.share !== 'object' || Array.isArray(input.share)) {
@@ -585,6 +610,9 @@ export class UserSystemService {
         current.share.passwordlessSharingEnabled,
         '允许无密码分享开关'
       )
+      next.share.kmlClusterForceEnabled = normalizeBooleanSetting(input.share.kmlClusterForceEnabled, current.share.kmlClusterForceEnabled, '大规模点位强制聚合开关')
+      next.share.kmlClusterMaxZoom = normalizeIntegerSetting(input.share.kmlClusterMaxZoom, current.share.kmlClusterMaxZoom, 0, 24, 'KML 聚合最大缩放级别')
+      next.share.kmlClusterMinPoints = normalizeIntegerSetting(input.share.kmlClusterMinPoints, current.share.kmlClusterMinPoints, 2, 1000, 'KML 聚合最少点位数')
 
       if (input.share.rateLimit !== undefined) {
         if (!input.share.rateLimit || typeof input.share.rateLimit !== 'object' || Array.isArray(input.share.rateLimit)) {
@@ -672,7 +700,7 @@ export class UserSystemService {
       next.analytics = normalizeAnalyticsSettings(input.analytics, current.analytics, { allowCustomScriptChange })
     }
 
-    if (['registration', 'session', 'quota', 'share', 'analytics'].some(section => Object.hasOwn(input, section))) {
+    if (['registration', 'session', 'quota', 'kml', 'share', 'analytics'].some(section => Object.hasOwn(input, section))) {
       this.assertRecentReauth(actor)
     }
 

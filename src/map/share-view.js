@@ -3,6 +3,19 @@ import { loadAnalyticsScript } from '../analytics.js'
 import { applySharePageMetadata, getSharePageCanonicalUrl } from '../../shared/share-page-metadata.js'
 
 let activeShare = null
+const activeShareFileLoads = new Map()
+let shareFileApiRequest = apiRequest
+
+export function setShareFileApiRequestForTests (request) {
+  shareFileApiRequest = request instanceof Function ? request : apiRequest
+}
+
+export function setActiveShareForTests (share) {
+  activeShareFileLoads.clear()
+  activeShare = share
+    ? { publicId: String(share.publicId || ''), manifest: { ...(share.manifest || {}) } }
+    : null
+}
 
 function takeSharePasswordFromLocation (publicId) {
   if (typeof window === 'undefined') return ''
@@ -207,6 +220,7 @@ export async function prepareShareView (init) {
         window.location.replace(`${url.pathname}${url.search}${url.hash}`)
         return
       }
+      activeShareFileLoads.clear()
       activeShare = { publicId, manifest }
       applySharePageMetadata({
         title: manifest.title,
@@ -268,6 +282,7 @@ export async function loadActiveShareFiles (options = {}) {
   if (!activeShare) return []
   const publicId = activeShare.publicId
   const items = activeShare.manifest.items || []
+  const loadHidden = options.loadHidden === true
   const concurrency = Math.max(1, Math.min(6, Number(options.concurrency) || 4))
   const results = new Array(items.length)
   let nextIndex = 0
@@ -277,42 +292,88 @@ export async function loadActiveShareFiles (options = {}) {
       const index = nextIndex
       nextIndex += 1
       const summary = items[index]
-      try {
-        const detail = await apiRequest(
-          `/public/kml-shares/${encodeURIComponent(publicId)}/files/${encodeURIComponent(summary.shareItemId)}`,
-          { csrf: false }
-        )
+      if (!loadHidden && summary.visibleByDefault === false) {
         results[index] = {
           ...summary,
-          ...detail,
           id: summary.shareItemId,
           sharePublicId: publicId,
           shareItemId: summary.shareItemId,
           isPublic: true,
           isShare: true,
-          enabled: summary.visibleByDefault !== false,
-          lockDrag: true,
-          readOnly: true,
-          allowDownload: Boolean(activeShare.manifest.allowDownload),
-          features: Array.isArray(detail.features) ? detail.features : [],
-        }
-      } catch (error) {
-        results[index] = {
-          ...summary,
-          id: summary.shareItemId,
-          shareItemId: summary.shareItemId,
-          isPublic: true,
-          isShare: true,
           enabled: false,
           readOnly: true,
-          allowDownload: false,
+          allowDownload: Boolean(activeShare.manifest.allowDownload),
           features: [],
-          loadError: error.message || '加载失败',
+          contentLoaded: false,
         }
+        continue
       }
+      results[index] = await loadActiveShareFile(summary)
     }
   }
 
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
   return results.filter(Boolean)
+}
+
+export async function loadActiveShareFile (fileOrSummary) {
+  if (!activeShare || !fileOrSummary) return null
+  const publicId = activeShare.publicId
+  const summary = fileOrSummary
+  if (summary.contentLoaded === true) return summary
+
+  const shareItemId = String(summary.shareItemId || summary.id || '')
+  if (!shareItemId) {
+    summary.enabled = false
+    summary.loadError = '分享文件标识无效'
+    summary.contentLoaded = false
+    return summary
+  }
+
+  const loadKey = `${publicId}:${shareItemId}`
+  const pending = activeShareFileLoads.get(loadKey)
+  if (pending) {
+    const loaded = await pending
+    if (loaded !== summary) Object.assign(summary, loaded)
+    return summary
+  }
+
+  const runtimeEnabled = typeof summary.enabled === 'boolean'
+    ? summary.enabled
+    : summary.visibleByDefault !== false
+  const load = (async () => {
+    try {
+      const detail = await shareFileApiRequest(
+        `/public/kml-shares/${encodeURIComponent(publicId)}/files/${encodeURIComponent(shareItemId)}`,
+        { csrf: false }
+      )
+      Object.assign(summary, {
+        ...detail,
+        id: shareItemId,
+        sharePublicId: publicId,
+        shareItemId,
+        isPublic: true,
+        isShare: true,
+        enabled: runtimeEnabled,
+        lockDrag: true,
+        readOnly: true,
+        allowDownload: Boolean(activeShare.manifest.allowDownload),
+        features: Array.isArray(detail.features) ? detail.features : [],
+        contentLoaded: true,
+        loadError: null,
+      })
+    } catch (error) {
+      summary.enabled = false
+      summary.loadError = error.message || '加载失败'
+      summary.contentLoaded = false
+    }
+    return summary
+  })()
+
+  activeShareFileLoads.set(loadKey, load)
+  try {
+    return await load
+  } finally {
+    if (activeShareFileLoads.get(loadKey) === load) activeShareFileLoads.delete(loadKey)
+  }
 }

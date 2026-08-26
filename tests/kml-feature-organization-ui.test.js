@@ -28,13 +28,16 @@ test('2D and 3D KML editors expose shared move, copy and drag organization flows
     assert.match(source, /action === 'batch-select-all' \|\| action === 'batch-invert'/)
   }
 
-  assert.match(map2d, /const featureOrderingAvailable = writable && !kmlBatchSelection\.isActive\(\) && \([\s\S]*!kmlFile\.isLiveTrack/)
+  assert.match(map2d, /const featureOrderingAvailable = writable && !directoryBatchSelectable && !kmlBatchSelection\.isActive\(\) && \([\s\S]*!kmlFile\.isLiveTrack/)
+  assert.match(map2d, /kmlFile\.id === kmlBatchFileId/)
+  assert.match(map2d, /kml-file-more-actions[\s\S]*renderKmlBatchToolbar\(safeKmlId\)/)
+  assert.doesNotMatch(map2d, /kml-section-actions[\s\S]{0,400}renderKmlBatchToolbar\(\)/)
   assert.match(map2d, /application\/x-map-service-kml-file/)
   assert.match(map2d, /application\/x-map-service-kml-feature/)
   assert.match(map2d, /data-kml-file-draggable="true"/)
   assert.match(map2d, /data-kml-action="move-file"/)
   assert.match(map2d, /async function moveKmlFileFromPanel/)
-  assert.match(map3d, /const featureOrderingAvailable = expanded && transferable && !kmlBatchSelection\.isActive\(\) && displayFeatures\.length === \(kmlFile\.features \|\| \[\]\)\.length/)
+  assert.match(map3d, /const featureOrderingAvailable = expanded && transferable && !\(kmlBatchSelection\.isActive\(\) && kmlBatchFileId === kmlFile\.id\) && displayFeatures\.length === \(kmlFile\.features \|\| \[\]\)\.length/)
   assert.match(map3d, /application\/x-map-service-kml-file/)
   assert.match(map3d, /application\/x-map-service-kml-directory/)
   assert.match(map3d, /application\/x-map-service-kml-feature/)
@@ -51,6 +54,47 @@ test('2D and 3D KML editors expose shared move, copy and drag organization flows
   assert.match(styles, /\.kml-batch-toolbar/)
   assert.match(styles, /\.kml-feature-batch-check/)
   assert.match(styles, /\.kml-feature-item\.is-batch-selected/)
+})
+
+test('2D cross-file feature transfers load account summaries before changing either file', () => {
+  const map2d = readSource('../src/map/kml.js')
+  const editFlow = map2d.slice(
+    map2d.indexOf('async function handleEditFeature'),
+    map2d.indexOf('async function handleDeleteFeature'),
+  )
+  const dragFlow = map2d.slice(
+    map2d.indexOf('function bindKmlFeatureOrganizationEvents'),
+    map2d.indexOf('function bindKmlFileOrganizationEvents'),
+  )
+
+  assert.match(editFlow, /kmlFile\.contentLoaded === false[\s\S]*await loadAccountKmlFileForUse\(kmlFile\)[\s\S]*const feature = kmlFile\.features\.find/)
+  assert.match(editFlow, /targetKmlFile\.contentLoaded === false[\s\S]*await loadAccountKmlFileForUse\(targetKmlFile\)[\s\S]*transferKmlFeature\(kmlList/)
+  assert.match(dragFlow, /const filesToLoad = \[sourceKml, targetKml\][\s\S]*await loadAccountKmlFileForUse\(file\)[\s\S]*return[\s\S]*transferKmlFeature\(kmlList/)
+})
+
+test('2D and 3D personal KML metadata changes load account details before mutation or history', () => {
+  const map2d = readSource('../src/map/kml.js')
+  const map3d = readSource('../src/map3d/kml.js')
+  const change2d = map2d.slice(map2d.indexOf("panel.addEventListener('change', async"), map2d.indexOf('// 监听键盘事件'))
+  const change3d = map3d.slice(map3d.indexOf("panel.addEventListener('change', async"), map3d.indexOf('function bindCanvasPickEvents'))
+
+  for (const [source, loader] of [
+    [change2d, 'loadAccountKmlFileForUse'],
+    [change3d, 'ensureAccountKmlFilesLoaded'],
+  ]) {
+    assert.match(source, new RegExp(`${loader}\\(kmlFile\\)[\\s\\S]*kmlFile\\.coordCorrection =`))
+    assert.match(source, new RegExp(`${loader}\\(kmlFile\\)[\\s\\S]*kmlFile\\.lockDrag =`))
+    assert.match(source, new RegExp(`${loader}\\(kmlFile\\)[\\s\\S]*kmlFile\\.theme = target\\.value`))
+    assert.match(source, new RegExp(`${loader}\\(kmlFile\\)[\\s\\S]*kmlFile\\.color = target\\.value`))
+    assert.match(source, /KML 文件详情加载失败，未修改/)
+  }
+
+  for (const property of ['coordCorrection', 'lockDrag', 'theme', 'color']) {
+    const mutationIndex = change3d.indexOf(`kmlFile.${property} =`)
+    const historyIndex = change3d.lastIndexOf('pushKmlHistory()', mutationIndex)
+    const loadIndex = change3d.lastIndexOf('ensureAccountKmlFilesLoaded(kmlFile)', mutationIndex)
+    assert.ok(loadIndex >= 0 && loadIndex < historyIndex, `${property} must load before creating history`)
+  }
 })
 
 test('2D and 3D KML panels keep directory and file controls in the shared layout contract', () => {

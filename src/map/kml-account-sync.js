@@ -41,6 +41,7 @@ let accountLoadReady = false
 let latestDraftWrite = Promise.resolve(true)
 let draftPersistenceQueue = Promise.resolve()
 let workingFilesReplacementHandler = null
+const accountDocumentLoads = new Map()
 const KML_RECOVERY_STRATEGIES = new Set([
   'discard',
   'restore',
@@ -70,6 +71,34 @@ export function setKmlAccountAuthForTests (request) {
 function cloneValue (value) {
   if (typeof structuredClone === 'function') return structuredClone(value)
   return JSON.parse(JSON.stringify(value))
+}
+
+function hasLoadedKmlContent (document) {
+  return Boolean(document && document.contentLoaded !== false && Array.isArray(document.features))
+}
+
+function kmlDocumentSummary (document, options = {}) {
+  const source = cloneValue(document || {})
+  const existing = options.existing && String(options.existing.id || '') === String(source.id || '')
+    ? options.existing
+    : null
+  const sameRevision = existing && Number(existing.revision || 0) === Number(source.revision || 0)
+  if (sameRevision && hasLoadedKmlContent(existing)) {
+    return {
+      ...source,
+      features: cloneValue(existing.features),
+      featureCount: Number(source.featureCount ?? existing.featureCount ?? existing.features.length),
+      contentLoaded: true,
+      loadError: '',
+    }
+  }
+  return {
+    ...source,
+    features: Array.isArray(source.features) ? cloneValue(source.features) : [],
+    featureCount: Number(source.featureCount ?? source.features?.length ?? 0),
+    contentLoaded: Array.isArray(source.features),
+    loadError: '',
+  }
 }
 
 function conflictSessionFingerprint (merge) {
@@ -252,6 +281,7 @@ function snapshotForDocument (document, localId = document.id) {
     hash: JSON.stringify(base),
     base,
     status: document.status === 'trashed' ? 'trashed' : 'active',
+    contentLoaded: hasLoadedKmlContent(document),
   }
 }
 
@@ -414,6 +444,11 @@ export function buildKmlSyncOperations (files, currentSnapshots = snapshots, del
       if (data.isDefault === true) defaultRestores.push(restore)
     } else if (!snapshot.serverId) {
       operations.push({ action: 'create', clientId: localId, data })
+    } else if (file.contentLoaded === false || snapshot.contentLoaded === false) {
+      // A list summary intentionally carries no features. Never serialize its
+      // placeholder empty array as an update, otherwise a metadata-only edit
+      // could erase the authoritative server content.
+      return
     } else if (snapshot.hash !== hash) {
       operations.push({
         action: 'update',
@@ -1096,6 +1131,24 @@ export function buildKmlRecoveryResolution (serverFiles, draft, strategy, option
   }
 }
 
+function validateAccountDocumentDetail (document, id) {
+  if (!document || typeof document !== 'object' || String(document.id || '') !== String(id || '') || !Array.isArray(document.features)) {
+    throw Object.assign(new Error('KML 文件详情不完整，已停止同步'), { code: 'KML_DETAILS_INCOMPLETE' })
+  }
+  return {
+    ...cloneValue(document),
+    features: cloneValue(document.features),
+    featureCount: Number(document.featureCount ?? document.features.length),
+    contentLoaded: true,
+    loadError: '',
+  }
+}
+
+async function requestAccountDocumentDetail (id) {
+  const document = await apiRequestForSync(`/kml/files/${encodeURIComponent(id)}`)
+  return validateAccountDocumentDetail(document, id)
+}
+
 async function loadDocuments (items, concurrency = 4) {
   if (!Array.isArray(items)) throw Object.assign(new Error('KML 文件清单格式不正确'), { code: 'KML_LIST_INVALID' })
   if (items.some(item => !item || typeof item !== 'object' || !String(item.id || ''))) {
@@ -1107,11 +1160,7 @@ async function loadDocuments (items, concurrency = 4) {
     while (nextIndex < items.length) {
       const index = nextIndex
       nextIndex += 1
-      const document = await apiRequestForSync(`/kml/files/${encodeURIComponent(items[index].id)}`)
-      if (!document || typeof document !== 'object' || String(document.id || '') !== String(items[index].id)) {
-        throw Object.assign(new Error('KML 文件详情不完整，已停止同步'), { code: 'KML_DETAILS_INCOMPLETE' })
-      }
-      results[index] = document
+      results[index] = await requestAccountDocumentDetail(items[index].id)
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
@@ -1159,7 +1208,29 @@ async function loadAllAccountDocuments (options = {}) {
   if (expectedTotal === null || items.length !== expectedTotal) {
     throw Object.assign(new Error('KML 文件列表分页不完整，已停止同步'), { code: 'KML_LIST_INCOMPLETE' })
   }
-  return { files: await loadDocuments(items), usage }
+  const existingById = new Map((options.existingFiles || [])
+    .map(file => [String(file?.id || ''), file])
+    .filter(([id]) => id))
+  const summaries = items.map(item => kmlDocumentSummary(item, {
+    existing: existingById.get(String(item.id || '')),
+  }))
+  const indexesToLoad = []
+  summaries.forEach((document, index) => {
+    const shouldLoad = options.loadHidden === true || document.isDefault === true || document.enabled !== false
+    if (!shouldLoad || document.contentLoaded === true) return
+    if (Object.hasOwn(items[index], 'featureCount') && Number(document.featureCount || 0) === 0) {
+      document.contentLoaded = true
+      return
+    }
+    indexesToLoad.push(index)
+  })
+  if (indexesToLoad.length) {
+    const details = await loadDocuments(indexesToLoad.map(index => summaries[index]))
+    indexesToLoad.forEach((summaryIndex, detailIndex) => {
+      summaries[summaryIndex] = details[detailIndex]
+    })
+  }
+  return { files: summaries, usage }
 }
 
 async function loadKmlDirectories () {
@@ -1175,6 +1246,64 @@ async function loadKmlDirectories () {
 
 export async function loadKmlAccountDocumentsForTests (options = {}) {
   return loadAllAccountDocuments(options)
+}
+
+export async function loadKmlAccountDocument (fileOrId) {
+  if (!accountMode || !accountLoadReady) {
+    throw Object.assign(new Error('账号 KML 尚未完成加载'), { code: 'KML_ACCOUNT_NOT_READY' })
+  }
+  const requestedFile = fileOrId && typeof fileOrId === 'object' ? fileOrId : null
+  const id = String(requestedFile?.id || fileOrId || '')
+  if (!id) throw Object.assign(new Error('KML 文件标识无效'), { code: 'KML_ID_INVALID' })
+  const current = latestFiles.find(file => String(file?.id || '') === id)
+  const target = requestedFile || current
+  if (!target) throw Object.assign(new Error('KML 文件不存在'), { code: 'RESOURCE_NOT_FOUND' })
+  if (hasLoadedKmlContent(target)) return target
+
+  const requestEpoch = syncEpoch
+  const requestUserId = accountUserId
+  let pending = accountDocumentLoads.get(id)
+  if (!pending) {
+    pending = (async () => {
+      const detail = await requestAccountDocumentDetail(id)
+      if (!accountMode || !accountLoadReady || requestEpoch !== syncEpoch || requestUserId !== accountUserId) {
+        throw Object.assign(new Error('账号会话已变化，请重新加载 KML'), { code: 'KML_ACCOUNT_CHANGED' })
+      }
+      const working = latestFiles.find(file => String(file?.id || '') === id)
+      if (!working) throw Object.assign(new Error('KML 文件不存在'), { code: 'RESOURCE_NOT_FOUND' })
+      if (Number(detail.revision || 0) < Number(working.revision || 0)) {
+        throw Object.assign(new Error('KML 文件详情已过期，请重试加载'), { code: 'KML_DETAILS_STALE' })
+      }
+      const loaded = {
+        ...cloneValue(working),
+        ...detail,
+        features: cloneValue(detail.features),
+        featureCount: Number(detail.featureCount ?? detail.features.length),
+        contentLoaded: true,
+        loadError: '',
+      }
+      Object.assign(working, cloneValue(loaded))
+      snapshots = registerKmlAccountDocumentSnapshot(snapshots, loaded, id)
+      return working
+    })()
+    accountDocumentLoads.set(id, pending)
+    pending.finally(() => {
+      if (accountDocumentLoads.get(id) === pending) accountDocumentLoads.delete(id)
+    }).catch(() => {})
+  }
+
+  try {
+    const loaded = await pending
+    if (target !== loaded) Object.assign(target, cloneValue(loaded))
+    return target
+  } catch (error) {
+    const message = error?.message || 'KML 文件详情加载失败'
+    const internal = latestFiles.find(file => String(file?.id || '') === id)
+    if (internal) internal.loadError = message
+    target.loadError = message
+    target.contentLoaded = false
+    throw error
+  }
 }
 
 function rebaseSnapshotsToServer (serverFiles, currentSnapshots = snapshots) {
@@ -1214,7 +1343,7 @@ export function mergeKmlRecoveryDraft (draft, serverFiles, options = {}) {
 }
 
 async function prepareKmlConflictMerge (draft, options = {}) {
-  const loaded = options.loaded || await loadAllAccountDocuments({ status: 'all' })
+  const loaded = options.loaded || await loadAllAccountDocuments({ status: 'all', loadHidden: true })
   return mergeKmlRecoveryDraft(draft, loaded.files, { usage: loaded.usage })
 }
 
@@ -1423,6 +1552,7 @@ export async function initializeKmlAccountMode () {
   pendingConflict = null
   embeddedAuthRequired = false
   accountLoadReady = false
+  accountDocumentLoads.clear()
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = null
   bindDraftLifecycle()
@@ -1487,8 +1617,10 @@ export async function initializeKmlAccountMode () {
   }
 
   try {
-    const [loaded, directories] = await Promise.all([
-      loadAllAccountDocuments(),
+    let [loaded, directories] = await Promise.all([
+      loadAllAccountDocuments({
+        existingFiles: previousState.accountUserId === accountUserId ? previousState.latestFiles : [],
+      }),
       loadKmlDirectories(),
     ])
     if (!accountMode || initializationEpoch !== syncEpoch) return { mode: 'guest', files: [] }
@@ -1503,13 +1635,18 @@ export async function initializeKmlAccountMode () {
         const storedRecord = await getKmlAccountDraftStore().get(accountUserId, { includeDeleted: true })
         draftGeneration = Math.max(draftGeneration, storedRecoveryGeneration(storedRecord))
         const stored = normalizeRecoveryDraft(storedRecord, accountUserId)
+        if (stored) {
+          loaded = await loadAllAccountDocuments({ loadHidden: true })
+          latestFiles = loaded.files
+          snapshots = snapshotsForServerFiles(loaded.files)
+        }
         const analysis = stored ? analyzeKmlRecoveryDraft(loaded.files, stored) : null
         if (stored && (analysis?.hasChanges || stored.incompleteWrite)) {
           activeDraft = stored
           draftGeneration = Math.max(draftGeneration, storedRecoveryGeneration(stored))
           recovery = { draft: stored, analysis }
           if ((analysis?.conflictedLocalIds?.length || stored.conflictSession?.retryExhausted) && !stored.legacyVersion) {
-            const mergeLoaded = await loadAllAccountDocuments({ status: 'all' })
+            const mergeLoaded = await loadAllAccountDocuments({ status: 'all', loadHidden: true })
             const merge = await prepareKmlConflictMerge(stored, { loaded: mergeLoaded })
             recovery.merge = merge
             pendingConflict = { draft: cloneValue(stored), merge: cloneValue(merge) }
@@ -1646,12 +1783,22 @@ export function registerKmlAccountDocument (document, options = {}) {
   if (currentSnapshot && documentRevision(document) < documentRevision(currentSnapshot)) return false
 
   const currentFile = options.localFile || latestFiles.find(file => String(file?.id || '') === localId)
+  const contentLoaded = Array.isArray(document.features) || hasLoadedKmlContent(currentFile) || currentSnapshot?.contentLoaded === true
   const serverDocument = completeKmlOrganizationDocument(document, currentSnapshot?.base || currentFile || {})
   const mergedDocument = currentFile
     ? mergeKmlAccountOrganizationDocument(currentFile, currentSnapshot, { ...document, ...serverDocument, id: serverId })
     : { ...cloneValue(document), ...serverDocument }
+  mergedDocument.contentLoaded = contentLoaded
+  mergedDocument.featureCount = Number(document.featureCount ?? currentFile?.featureCount ?? mergedDocument.features?.length ?? 0)
+  if (!contentLoaded) mergedDocument.features = []
 
-  snapshots = registerKmlAccountDocumentSnapshot(snapshots, { ...document, ...serverDocument, id: serverId }, localId)
+  snapshots = registerKmlAccountDocumentSnapshot(snapshots, {
+    ...document,
+    ...serverDocument,
+    id: serverId,
+    contentLoaded,
+    ...(contentLoaded ? {} : { features: [] }),
+  }, localId)
   unconfirmedCreateIds.delete(localId)
   pendingCreateDeletes.delete(localId)
   pendingSyncOperations = pendingSyncOperations.filter(operation => (
@@ -1991,7 +2138,7 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
   if (persistedRecord?.deleted && compareRecoveryRecords(persistedRecord, stored) >= 0) {
     throw new Error('KML 恢复草稿已被丢弃')
   }
-  const loaded = await loadAllAccountDocuments()
+  const loaded = await loadAllAccountDocuments({ loadHidden: true })
   if (!accountMode || !accountCanWrite || resolutionEpoch !== syncEpoch || resolutionUserId !== accountUserId) {
     throw new Error('账号会话已变化，请重新加载 KML')
   }
@@ -2003,7 +2150,9 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
     throw new Error('KML 草稿在处理期间又有更新，请重新选择处理方式')
   }
   if (normalizedStrategy === 'restore' && !stored.legacyVersion && recovery?.merge && !recovery.merge.legacy) {
-    const merge = await prepareKmlConflictMerge(stored, { loaded: await loadAllAccountDocuments({ status: 'all' }) })
+    const merge = await prepareKmlConflictMerge(stored, {
+      loaded: await loadAllAccountDocuments({ status: 'all', loadHidden: true }),
+    })
     if (merge.conflicts.length) {
       snapshots = snapshotMap(stored.snapshots)
       latestFiles = cloneValue(stored.files || [])
@@ -2202,6 +2351,7 @@ export function suspendKmlAccountSync (options = {}) {
   activeDraft = null
   pendingConflict = null
   accountLoadReady = false
+  accountDocumentLoads.clear()
   embeddedAuthRequired = isEmbeddedDocument()
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = null

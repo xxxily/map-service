@@ -3,6 +3,7 @@ export const DEFAULT_KML_POINT_CLUSTERING_CONFIG = Object.freeze({
   minZoom: 0,
   maxClusterZoom: 16,
   gridSize: 64,
+  minClusterPoints: 2,
   maxMembersPerCluster: null,
 })
 
@@ -35,6 +36,7 @@ function normalizeMember (member) {
 export function normalizeKmlPointClusteringConfig (config = {}) {
   const gridSize = Number(config.gridSize ?? DEFAULT_KML_POINT_CLUSTERING_CONFIG.gridSize)
   const maxMembers = config.maxMembersPerCluster
+  const minClusterPoints = Number(config.minClusterPoints ?? DEFAULT_KML_POINT_CLUSTERING_CONFIG.minClusterPoints)
   return {
     enabled: config.enabled ?? DEFAULT_KML_POINT_CLUSTERING_CONFIG.enabled,
     minZoom: finiteNumber(config.minZoom ?? DEFAULT_KML_POINT_CLUSTERING_CONFIG.minZoom, 'minZoom'),
@@ -43,6 +45,7 @@ export function normalizeKmlPointClusteringConfig (config = {}) {
       'maxClusterZoom',
     ),
     gridSize: Math.min(128, Math.max(24, Number.isFinite(gridSize) ? gridSize : DEFAULT_KML_POINT_CLUSTERING_CONFIG.gridSize)),
+    minClusterPoints: Math.min(1000, Math.max(2, Number.isFinite(minClusterPoints) ? Math.floor(minClusterPoints) : DEFAULT_KML_POINT_CLUSTERING_CONFIG.minClusterPoints)),
     maxMembersPerCluster: maxMembers == null
       ? null
       : Math.max(0, Math.floor(finiteNumber(maxMembers, 'maxMembersPerCluster'))),
@@ -126,8 +129,8 @@ export function clusterKmlPoints (points, zoom, config = {}, project) {
 
   return [...cells.values()]
     .sort((left, right) => left.cellY - right.cellY || left.cellX - right.cellX)
-    .map(cell => {
-      if (cell.members.length === 1) return singleResult(cell.members[0])
+    .flatMap(cell => {
+      if (cell.members.length < options.minClusterPoints) return cell.members.map(singleResult)
       return {
         type: 'cluster',
         id: `cluster:${normalizedZoom}:${cell.cellX}:${cell.cellY}`,

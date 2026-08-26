@@ -1273,9 +1273,13 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 
 分享 `POST/PUT /api/v1/kml/shares` 的 `items` 兼容 `{kmlId}`，也接受 `{directoryId}`；目录项在保存时展开为当前 active 文件并按目录顺序去重。`viewConfig.kmlPointClustering` 的默认值为 `{enabled:false}`，完整字段与边界见[需求文档](./requirements/kml-directory-ordering-and-share-point-clustering.md)。公开分享 manifest 只返回渲染所需的目录 ID/名称和归一化聚合配置。
 
+分享项还会返回 `visibleByDefault`、`directoryId`、`directoryName`、`featureCount` 等摘要。`visibleByDefault=false` 的文件在 manifest 中保留摘要但不含 `features`；分享页面首次加载不请求详情，用户显示、展开、导出或批量选择时才调用详情接口。详情接口为 `GET /api/v1/public/kml-shares/:publicId/files/:shareItemId`，并按分享授权校验；并发请求同一文件只产生一次上游加载。详情加载失败返回统一 `RESOURCE_NOT_FOUND` 或授权错误，文件保持隐藏且可重试。
+
+管理员公开配置字段：`share.kmlClusterForceEnabled`（默认 `false`）、`share.kmlClusterMaxZoom`（默认 `12`，范围 0～24）、`share.kmlClusterMinPoints`（默认 `250`，范围 2～1000）以及 `kml.batchDownloadEnabled`（默认 `false`）。强制聚合开启时，公开 manifest 将管理员策略与分享配置按更积极聚合合成：缩放范围取并集、网格大小取较大值、最少聚合点数取较小值，并返回 `forcedByPolicy=true`；分享配置不能通过收窄范围或提高阈值绕过策略。分享级 `viewConfig.kmlPointClustering` 仅聚合 Point；LineString/Polygon 始终完整返回和渲染。
+
 ### `POST /api/v1/kml/sync`
 
-同步个人 KML 文件的创建、更新、回收站和恢复操作，请求体为 `{operations:[...]}`，单次 1–100 条。每条操作的 `action` 支持 `create`、`update`、`trash` 、`restore` 和 `deletePermanent`。
+同步个人 KML 文件的创建、更新、回收站和恢复操作，请求体为 `{operations:[...]}`，单次 1–100 条。每条操作的 `action` 支持 `create`、`update`、`trash` 和 `restore`。永久删除不得通过同步接口执行，提交 `deletePermanent` 返回 HTTP `409`、错误码 `REAUTH_REQUIRED`，同步服务不会被调用；必须使用 `DELETE /api/v1/kml/files/:id/permanent` 并提交 `{password}` 进行二次验证。
 
 为防止页面加载中的不完整列表误将文件移入回收站，只要请求包含任意 `trash`，都必须显式传递顶层字段 `deletionIntent`，值为 `user-confirmed` 或 `user-confirmed-batch`；该字段只能由用户确认删除的界面设置。单条和批量删除均执行此校验。
 

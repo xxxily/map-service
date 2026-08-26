@@ -15,6 +15,7 @@ import {
   rebaseKmlFileToServerDocument,
   resolveKmlAccountMode,
   initializeKmlAccountMode,
+  loadKmlAccountDocument,
   loadKmlAccountDocumentsForTests,
   setKmlAccountApiForTests,
   setKmlAccountAuthForTests,
@@ -100,6 +101,43 @@ test('KML account sync does not infer trash from a temporarily missing working f
     status: 'active',
   }]])
   assert.deepEqual(buildKmlSyncOperations([], snapshots), [])
+})
+
+test('KML account sync never serializes an unloaded summary as an empty update', () => {
+  const serverDocument = {
+    id: 'server-summary',
+    name: '服务器文件',
+    description: '保留内容',
+    features: [{ id: 'feature-1', type: 'Point', name: '点位', coordinates: [1, 2] }],
+  }
+  const snapshots = new Map([['local-summary', {
+    localId: 'local-summary',
+    serverId: 'server-summary',
+    revision: 7,
+    hash: kmlFingerprint(serverDocument),
+    status: 'active',
+    contentLoaded: true,
+  }]])
+  const unloadedSummary = {
+    id: 'local-summary',
+    name: '服务器文件（目录内）',
+    featureCount: 1,
+    contentLoaded: false,
+    features: [],
+  }
+  assert.deepEqual(buildKmlSyncOperations([unloadedSummary], snapshots), [])
+
+  const loadedEdit = {
+    ...unloadedSummary,
+    contentLoaded: true,
+    features: serverDocument.features,
+  }
+  const [update] = buildKmlSyncOperations([loadedEdit], snapshots)
+  assert.equal(update.action, 'update')
+  assert.equal(update.kmlId, 'server-summary')
+  assert.equal(update.data.revision, 7)
+  assert.equal(update.data.name, loadedEdit.name)
+  assert.deepEqual(update.data.features, serverDocument.features)
 })
 
 test('KML account sync promotes an existing new default before clearing the old default', () => {
@@ -668,6 +706,170 @@ test('KML account document loading rejects an incomplete page before replacing l
     )
   } finally {
     setKmlAccountApiForTests()
+  }
+})
+
+test('账号 KML 首屏只加载显示文件详情并保留隐藏文件摘要', async () => {
+  const requests = []
+  setKmlAccountApiForTests(async (path) => {
+    requests.push(path)
+    if (path === '/kml/files') {
+      return {
+        total: 2,
+        items: [
+          { id: 'visible', revision: 1, enabled: true, featureCount: 1 },
+          { id: 'hidden', revision: 2, enabled: false, featureCount: 2 },
+        ],
+      }
+    }
+    if (path === '/kml/files/visible') {
+      return { ...accountFile('visible', '显示文件', 1), enabled: true, features: [{ id: 'p1', type: 'Point', coordinates: [1, 2] }] }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    const result = await loadKmlAccountDocumentsForTests()
+    assert.deepEqual(requests, ['/kml/files', '/kml/files/visible'])
+    assert.equal(result.files[0].contentLoaded, true)
+    assert.equal(result.files[0].features.length, 1)
+    assert.equal(result.files[1].contentLoaded, false)
+    assert.equal(result.files[1].featureCount, 2)
+    assert.deepEqual(result.files[1].features, [])
+  } finally {
+    setKmlAccountApiForTests()
+  }
+})
+
+test('账号 KML 完整恢复加载会请求隐藏文件详情', async () => {
+  const requests = []
+  setKmlAccountApiForTests(async (path) => {
+    requests.push(path)
+    if (path === '/kml/files') {
+      return { total: 1, items: [{ id: 'hidden', revision: 2, enabled: false, featureCount: 1 }] }
+    }
+    if (path === '/kml/files/hidden') {
+      return { ...accountFile('hidden', '隐藏文件', 2), enabled: false, features: [{ id: 'p1', type: 'Point', coordinates: [1, 2] }] }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    const result = await loadKmlAccountDocumentsForTests({ loadHidden: true })
+    assert.deepEqual(requests, ['/kml/files', '/kml/files/hidden'])
+    assert.equal(result.files[0].contentLoaded, true)
+    assert.equal(result.files[0].features.length, 1)
+  } finally {
+    setKmlAccountApiForTests()
+  }
+})
+
+test('未加载的账号 KML 摘要不会生成清空要素的 update', () => {
+  const summary = {
+    id: 'hidden',
+    name: '隐藏文件',
+    revision: 2,
+    enabled: false,
+    featureCount: 30,
+    features: [],
+    contentLoaded: false,
+  }
+  const snapshots = registerKmlAccountDocumentSnapshot(new Map(), summary)
+  assert.deepEqual(buildKmlSyncOperations([{ ...summary, name: '仅修改摘要名称' }], snapshots), [])
+})
+
+test('隐藏账号 KML 详情请求会去重，元数据保存仍携带完整要素', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let detailCalls = 0
+  let releaseDetail
+  const syncBodies = []
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path, options = {}) => {
+    if (path === '/kml/files') {
+      return { total: 1, items: [{ id: 'hidden', name: '隐藏文件', revision: 1, enabled: false, featureCount: 1 }] }
+    }
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    if (path === '/kml/files/hidden') {
+      detailCalls += 1
+      await new Promise(resolve => { releaseDetail = resolve })
+      return {
+        ...accountFile('hidden', '隐藏文件', 1),
+        enabled: false,
+        features: [{ id: 'point-1', type: 'Point', name: '完整点位', coordinates: [113, 23] }],
+      }
+    }
+    if (path === '/kml/sync') {
+      syncBodies.push(options.body)
+      return {
+        syncedAt: new Date().toISOString(),
+        results: [{
+          action: 'update',
+          document: {
+            ...accountFile('hidden', '隐藏文件', 2),
+            enabled: false,
+            theme: options.body.operations[0].data.theme,
+            features: options.body.operations[0].data.features,
+          },
+        }],
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    const initialized = await initializeKmlAccountMode()
+    const file = initialized.files[0]
+    assert.equal(file.contentLoaded, false)
+    const first = loadKmlAccountDocument(file)
+    const second = loadKmlAccountDocument(file)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(detailCalls, 1)
+    releaseDetail()
+    await Promise.all([first, second])
+    assert.equal(file.contentLoaded, true)
+    assert.equal(file.features[0].name, '完整点位')
+
+    file.theme = 'simple'
+    scheduleKmlAccountSync([file], { delayMs: 0 })
+    await flushKmlAccountSync()
+    assert.equal(syncBodies.length, 1)
+    assert.equal(syncBodies[0].operations[0].data.theme, 'simple')
+    assert.deepEqual(syncBodies[0].operations[0].data.features, file.features)
+  } finally {
+    await resetSyncHarness()
+  }
+})
+
+test('隐藏账号 KML 详情失败后保持未加载并允许重试', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let detailCalls = 0
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path) => {
+    if (path === '/kml/files') {
+      return { total: 1, items: [{ id: 'hidden', revision: 1, enabled: false, featureCount: 1 }] }
+    }
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    if (path === '/kml/files/hidden') {
+      detailCalls += 1
+      if (detailCalls === 1) throw Object.assign(new Error('详情暂时不可用'), { code: 'NETWORK_ERROR' })
+      return {
+        ...accountFile('hidden', '隐藏文件', 1),
+        enabled: false,
+        features: [{ id: 'point-1', type: 'Point', coordinates: [113, 23] }],
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    const initialized = await initializeKmlAccountMode()
+    const file = initialized.files[0]
+    await assert.rejects(loadKmlAccountDocument(file), /详情暂时不可用/)
+    assert.equal(file.contentLoaded, false)
+    assert.equal(file.enabled, false)
+    await loadKmlAccountDocument(file)
+    assert.equal(detailCalls, 2)
+    assert.equal(file.contentLoaded, true)
+  } finally {
+    await resetSyncHarness()
   }
 })
 

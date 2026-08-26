@@ -218,6 +218,8 @@ test('registration mode and safe default roles are enforced by the service', asy
   })
   assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, false)
   assert.equal(service.getPublicConfig().share.spatialUnrestrictedTileMaxZoom, 14)
+  assert.equal(service.getPublicConfig().kml.batchDownloadEnabled, false)
+  assert.equal(service.getSettings().share.kmlClusterForceEnabled, false)
   await assert.rejects(
     service.register({
       username: 'closed.user',
@@ -292,6 +294,76 @@ test('公开配置和管理员设置暴露无密码分享开关并严格校验�
   })
   assert.equal(disabled.share.passwordlessSharingEnabled, false)
   assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, false)
+})
+
+test('KML 目录批量下载默认关闭且管理员设置严格校验布尔值', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+
+  assert.equal(service.getSettings().kml.batchDownloadEnabled, false)
+  assert.equal(service.getPublicConfig().kml.batchDownloadEnabled, false)
+
+  const enabled = service.updateSettings(rootSession, {
+    kml: { batchDownloadEnabled: true },
+  })
+  assert.equal(enabled.kml.batchDownloadEnabled, true)
+  assert.equal(service.getPublicConfig().kml.batchDownloadEnabled, true)
+
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      kml: { batchDownloadEnabled: 'true' },
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+  assert.throws(
+    () => service.updateSettings(rootSession, { kml: [] }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+
+  const disabled = service.updateSettings(rootSession, {
+    kml: { batchDownloadEnabled: false },
+  })
+  assert.equal(disabled.kml.batchDownloadEnabled, false)
+  assert.equal(service.getPublicConfig().kml.batchDownloadEnabled, false)
+})
+
+test('分享点位强制聚合默认关闭且管理员阈值严格校验', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+
+  assert.equal(service.getSettings().share.kmlClusterForceEnabled, false)
+  assert.equal(service.getSettings().share.kmlClusterMaxZoom, 12)
+  assert.equal(service.getSettings().share.kmlClusterMinPoints, 250)
+
+  const enabled = service.updateSettings(rootSession, {
+    share: {
+      kmlClusterForceEnabled: true,
+      kmlClusterMaxZoom: 11,
+      kmlClusterMinPoints: 180,
+    },
+  })
+  assert.equal(enabled.share.kmlClusterForceEnabled, true)
+  assert.equal(enabled.share.kmlClusterMaxZoom, 11)
+  assert.equal(enabled.share.kmlClusterMinPoints, 180)
+
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      share: { kmlClusterForceEnabled: 'true' },
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      share: { kmlClusterMaxZoom: 25 },
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      share: { kmlClusterMinPoints: 1 },
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
 })
 
 test('管理员可调整范围外底图放宽最大级别并拒绝非法值', async t => {

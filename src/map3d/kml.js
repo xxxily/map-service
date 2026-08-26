@@ -27,6 +27,11 @@ import {
   createKmlBatchSelectionModel,
   KML_FEATURE_BATCH_ACTIONS,
 } from '../map/kml-batch-operations.js'
+import {
+  createKmlDirectoryBatchSelectionModel,
+  toggleKmlDirectoryBatchSelectionAll,
+} from '../map/kml-directory-batch.js'
+import { loadKmlFilesWithConcurrency } from '../map/kml-detail-loading.js'
 import { getKmlFeatureDisplayName, getKmlFeatureNamePresentation } from '../map/kml-feature-name.js'
 import { invalidateKmlMediaGallery } from '../map/kml-media-gallery.js'
 import { getKmlMediaBillboard, getKmlMediaListIcon } from '../map/kml-media-marker.js'
@@ -54,6 +59,7 @@ import { showAlert, showChoiceDialog, showConfirm, showEditDialog } from '../ui/
 import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListeners } from '../ui/controls.js'
 import { flyToLngLat } from './location.js'
 import { apiRequest } from '../auth/api.js'
+import { accountApi, saveDownload } from '../account/api.js'
 import { getAuthSnapshot, hasPermission } from '../auth/session.js'
 import {
   bindKmlAccountSyncStatus,
@@ -61,6 +67,7 @@ import {
   isAccountKmlMode,
   isAccountKmlWritable,
   isEmbeddedKmlAuthRequired,
+  loadKmlAccountDocument,
   refreshKmlAccountDirectories,
   registerKmlAccountDocument,
   scheduleKmlAccountSync,
@@ -70,12 +77,13 @@ import {
   bindKmlAccountConflictRecovery,
   promptKmlAccountRecovery,
 } from '../map/kml-account-recovery-ui.js'
-import { getActiveShare, loadActiveShareFiles } from '../map/share-view.js'
+import { getActiveShare, loadActiveShareFile, loadActiveShareFiles } from '../map/share-view.js'
 import {
   enrichKmlDescriptionWithShareLinks,
   getEditableKmlDescription,
 } from '../integrations/kml-share-links.js'
 import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
+import { clusterKmlPoints, normalizeKmlPointClusteringConfig } from '../map/kml-point-clustering.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_DIRECTORIES_STORAGE_KEY = 'map_kml_directories'
@@ -146,6 +154,8 @@ const featureOrderingAvailability = new Map()
 const expandedKmlIds = new Set()
 const expandedKmlActionIds = new Set()
 const kmlBatchSelection = createKmlBatchSelectionModel()
+const kmlDirectoryBatchSelection = createKmlDirectoryBatchSelectionModel()
+let kmlBatchFileId = ''
 let kmlBatchActionBusy = false
 const kmlUndoStack = []
 const kmlRedoStack = []
@@ -366,6 +376,8 @@ function normalizeKmlFile (kmlFile) {
     position: Number.isFinite(Number(kmlFile.position)) ? Number(kmlFile.position) : 0,
     enabled: kmlFile.enabled !== false,
     features: Array.isArray(kmlFile.features) ? kmlFile.features.map(normalizeKmlFeatureMarkerIcon) : [],
+    featureCount: Number(kmlFile.featureCount ?? kmlFile.features?.length ?? 0),
+    contentLoaded: kmlFile.contentLoaded !== false,
   }
 }
 
@@ -713,6 +725,99 @@ function markEntity (entity, kmlId, featureId) {
   return entity
 }
 
+export function projectKmlPoint3d (latLng, zoom) {
+  const normalizedZoom = Number.isFinite(Number(zoom)) ? Number(zoom) : 0
+  const scale = 256 * (2 ** normalizedZoom)
+  const lat = Math.max(-85.05112878, Math.min(85.05112878, Number(latLng?.lat) || 0))
+  const lng = Number(latLng?.lng) || 0
+  const sin = Math.sin((lat * Math.PI) / 180)
+  return {
+    x: ((lng + 180) / 360) * scale,
+    y: (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * scale,
+  }
+}
+
+function renderShareCluster (cluster) {
+  if (!viewerRef || !cluster || cluster.type !== 'cluster') return null
+  const color = Color.fromCssColorString('#0f766e')
+  const entity = viewerRef.entities.add({
+    name: `${cluster.count} 个点位`,
+    position: Cartesian3.fromDegrees(cluster.center.lng, cluster.center.lat, 10),
+    point: {
+      pixelSize: 18,
+      color: color.withAlpha(0.9),
+      outlineColor: Color.WHITE,
+      outlineWidth: 2,
+      heightReference: HeightReference.CLAMP_TO_GROUND,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+    label: {
+      text: String(cluster.count),
+      font: '11px sans-serif',
+      fillColor: Color.WHITE,
+      outlineColor: Color.BLACK,
+      outlineWidth: 2,
+      style: LabelStyle.FILL_AND_OUTLINE,
+      verticalOrigin: VerticalOrigin.CENTER,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+  })
+  entity._map3dKmlCluster = {
+    count: cluster.count,
+    center: cluster.center,
+  }
+  addRenderedEntity('__share-clusters__', entity)
+  return entity
+}
+
+function getSharePointClusteringConfig3d () {
+  const raw = getActiveShare()?.manifest?.viewConfig?.kmlPointClustering
+  return raw?.enabled ? normalizeKmlPointClusteringConfig(raw) : null
+}
+
+export function getKmlVisibilityRenderMode3d (options = {}) {
+  return options.activeShare === true && options.clusteringEnabled === true ? 'all' : 'files'
+}
+
+function renderVisibilityChangedKmlFiles3d (files) {
+  const mode = getKmlVisibilityRenderMode3d({
+    activeShare: Boolean(getActiveShare()),
+    clusteringEnabled: Boolean(getSharePointClusteringConfig3d()),
+  })
+  if (mode === 'all') {
+    renderAllKmls()
+    return
+  }
+  files.forEach(file => renderKmlLayers(file))
+}
+
+function renderShareClusterLayers3d (config) {
+  const records = []
+  const zoom = getViewportOptions3d().zoom ?? 0
+  publicKmlList.filter(kmlFile => (
+    kmlFile.isShare && isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError
+  )).forEach(kmlFile => {
+    const features = kmlFile.features || []
+    features.forEach(feature => {
+      if (feature.type !== 'Point') {
+        renderFeature(kmlFile, feature)
+        return
+      }
+      const point = getPointLatLng(kmlFile, feature)
+      records.push({ id: `${kmlFile.id}:${feature.id}`, latLng: point, kmlFile, feature })
+    })
+  })
+  const recordById = new Map(records.map(record => [record.id, record]))
+  clusterKmlPoints(records, zoom, config, projectKmlPoint3d).forEach(item => {
+    if (item.type === 'cluster') {
+      renderShareCluster(item)
+      return
+    }
+    const record = recordById.get(item.id)
+    if (record) renderFeature(record.kmlFile, record.feature)
+  })
+}
+
 function getKmlFileById (kmlId) {
   return kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
 }
@@ -730,7 +835,7 @@ function isWritablePersonalKml (kmlFile) {
 }
 
 function isKmlBatchFeatureSelectable (kmlFile, feature) {
-  return Boolean(kmlBatchSelection.isActive() && feature?.id && isWritablePersonalKml(kmlFile))
+  return Boolean(kmlBatchSelection.isActive() && kmlBatchFileId === kmlFile?.id && feature?.id && isWritablePersonalKml(kmlFile))
 }
 
 function pruneKmlBatchSelection () {
@@ -742,6 +847,7 @@ function pruneKmlBatchSelection () {
 
 function exitKmlBatchMode () {
   kmlBatchSelection.deactivate()
+  kmlBatchFileId = ''
   kmlBatchActionBusy = false
 }
 
@@ -751,10 +857,10 @@ function getKmlBatchTargets () {
     .map(file => ({ value: file.id, label: `${file.name}${file.isDefault ? '（默认）' : ''}` }))
 }
 
-function renderKmlBatchToolbar () {
-  if (!canWritePersonalKml()) return ''
-  if (!kmlBatchSelection.isActive()) {
-    return '<button type="button" class="kml-batch-toggle kml-file-btn" data-kml-action="toggle-batch" title="批量选择 KML 要素" aria-label="批量选择 KML 要素">☷</button>'
+function renderKmlBatchToolbar (kmlFile) {
+  if (!isWritablePersonalKml(kmlFile) || kmlDirectoryBatchSelection.active) return ''
+  if (!kmlBatchSelection.isActive() || kmlBatchFileId !== kmlFile.id) {
+    return `<button type="button" class="kml-batch-toggle kml-file-btn" data-kml-action="toggle-batch" data-kml-id="${escapeHtml(kmlFile.id)}" title="批量选择 KML 要素" aria-label="批量选择 KML 要素">☷</button>`
   }
   const count = kmlBatchSelection.count
   return `
@@ -773,6 +879,123 @@ function getVisibleKmlBatchSelection (panel) {
       kmlId: button.getAttribute('data-kml-id'),
       featureId: button.getAttribute('data-feature-id'),
     }))
+    .filter(item => item.kmlId === kmlBatchFileId)
+}
+
+function isKmlDirectoryBatchDownloadEnabled () {
+  return getAuthSnapshot().config?.kml?.batchDownloadEnabled === true
+}
+
+function exitKmlDirectoryBatchMode () {
+  kmlDirectoryBatchSelection.deactivate()
+}
+
+function getDirectoryBatchFiles (directoryId = kmlDirectoryBatchSelection.directoryId) {
+  const normalizedDirectoryId = String(directoryId || '')
+  return kmlList.filter(file => file.status !== 'trashed' && directoryKey(file) === normalizedDirectoryId)
+}
+
+function renderKmlDirectoryBatchControls (group) {
+  if (!isKmlDirectoryBatchDownloadEnabled() || group.files.length === 0) return ''
+  if (!kmlDirectoryBatchSelection.isActive(group.id)) {
+    return '<button type="button" class="kml-file-btn" data-kml-action="directory-batch-start" data-directory-id="' + escapeHtml(group.id) + '" title="批量下载目录内 KML" aria-label="批量下载目录内 KML"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>'
+  }
+  const selectedFiles = group.files.filter(file => kmlDirectoryBatchSelection.has(file.id))
+  const count = selectedFiles.length
+  const deletableCount = selectedFiles.filter(file => !file.isDefault).length
+  const allSelected = count === group.files.length
+  return `
+    <span class="kml-batch-toolbar kml-directory-batch-toolbar" role="toolbar" aria-label="批量管理目录 KML">
+      <button type="button" class="kml-file-btn kml-batch-select-all" data-kml-action="directory-batch-select-all" data-directory-id="${escapeHtml(group.id)}">${allSelected ? '全不选' : '全选'}</button>
+      ${count ? `<button type="button" class="kml-file-btn kml-batch-operate" data-kml-action="directory-batch-download" data-directory-id="${escapeHtml(group.id)}">下载 ${count}</button>` : ''}
+      ${canWritePersonalKml() && deletableCount ? `<button type="button" class="kml-file-btn delete kml-batch-operate" data-kml-action="directory-batch-delete" data-directory-id="${escapeHtml(group.id)}">删除 ${deletableCount}</button>` : ''}
+      <button type="button" class="kml-file-btn kml-batch-cancel" data-kml-action="directory-batch-cancel" data-directory-id="${escapeHtml(group.id)}" aria-label="退出目录批量选择">×</button>
+    </span>
+  `
+}
+
+async function loadSharedKmlFileForUse (kmlFile, options = {}) {
+  if (!kmlFile?.isShare || kmlFile.contentLoaded !== false) return Boolean(kmlFile && !kmlFile.loadError)
+  const loaded = await loadActiveShareFile(kmlFile)
+  const succeeded = Boolean(loaded?.contentLoaded && !loaded.loadError)
+  if (!succeeded) kmlFile.enabled = false
+  else if (options.enableOnSuccess === true) kmlFile.enabled = true
+  return succeeded
+}
+
+async function loadAccountKmlFileForUse (kmlFile) {
+  if (!kmlFile || !isAccountKmlMode() || kmlFile.contentLoaded !== false) {
+    return Boolean(kmlFile && !kmlFile.loadError)
+  }
+  try {
+    await loadKmlAccountDocument(kmlFile)
+    return kmlFile.contentLoaded === true && !kmlFile.loadError
+  } catch (error) {
+    kmlFile.loadError = error?.message || 'KML 文件详情加载失败'
+    return false
+  }
+}
+
+async function ensureAccountKmlFilesLoaded (...files) {
+  const candidates = files.filter(Boolean)
+  if (!isAccountKmlMode() || !candidates.length) return true
+  const results = await loadKmlFilesWithConcurrency(candidates, loadAccountKmlFileForUse)
+  return results.every(Boolean)
+}
+
+async function downloadDirectoryBatchFiles () {
+  const files = getDirectoryBatchFiles().filter(file => kmlDirectoryBatchSelection.has(file.id))
+  if (!files.length) return
+  const failures = []
+  let downloaded = 0
+  for (const file of files) {
+    try {
+      if (isAccountKmlMode()) {
+        // Always validate each account file through the server export endpoint
+        // so permissions, status and the latest revision are authoritative.
+        const download = await accountApi.exportKml(file.id)
+        saveDownload(download, `${file.name || 'map'}.kml`)
+      } else {
+        const loaded = file.isShare
+          ? await loadSharedKmlFileForUse(file)
+          : await loadAccountKmlFileForUse(file)
+        if (!loaded) throw new Error(file.loadError || '文件内容加载失败')
+        downloadKmlFile(file.name, generateKmlText(file.name, file.features || [], file.description))
+      }
+      downloaded += 1
+    } catch (error) {
+      failures.push(`${file.name}：${error?.message || '下载失败'}`)
+    }
+  }
+  await showAlert(failures.length
+    ? `已开始下载 ${downloaded} 个文件，${failures.length} 个失败：${failures.join('；')}`
+    : `已开始下载 ${downloaded} 个 KML 文件。`, {
+    title: failures.length ? '批量下载部分完成' : '批量下载',
+  })
+}
+
+async function deleteDirectoryBatchFiles () {
+  if (!canWritePersonalKml()) return
+  const selectedIds = new Set(kmlDirectoryBatchSelection.getSelectedIds())
+  const deletable = getDirectoryBatchFiles().filter(file => selectedIds.has(file.id) && !file.isDefault)
+  if (!deletable.length) {
+    await showAlert('默认 KML 文件不能删除。')
+    return
+  }
+  if (!(await showConfirm(`确认删除已选的 ${deletable.length} 个 KML 文件及其中全部标注吗？`))) return
+  const deletedIds = deletable.map(file => file.id)
+  const deletedIdSet = new Set(deletedIds)
+  pushKmlHistory()
+  kmlList = kmlList.filter(file => !deletedIdSet.has(file.id))
+  deletedIds.forEach(id => {
+    expandedKmlIds.delete(id)
+    expandedKmlActionIds.delete(id)
+    removeKmlLayers(id)
+  })
+  if (deletedIdSet.has(getRememberedTargetKmlId())) rememberTargetKmlId(DEFAULT_KML_ID)
+  saveToStorage({ deletedIds, deletionIntent: 'user-confirmed-batch' })
+  exitKmlDirectoryBatchMode()
+  updateKmlPanelUI()
 }
 
 async function executeKmlBatchAction () {
@@ -811,6 +1034,12 @@ async function executeKmlBatchAction () {
 
   kmlBatchActionBusy = true
   try {
+    const sourceFiles = selection.map(item => kmlList.find(file => file.id === item.kmlId))
+    const targetFile = targetKmlId ? kmlList.find(file => file.id === targetKmlId) : null
+    if (!(await ensureAccountKmlFilesLoaded(...sourceFiles, targetFile))) {
+      await showAlert('部分 KML 文件详情加载失败，未执行批量操作。')
+      return
+    }
     const result = applyKmlFeatureBatch(kmlList, { selection, mode: action, targetKmlId })
     if (!result.changed) {
       await showAlert('所选要素已经位于目标文件，无需移动。')
@@ -854,11 +1083,15 @@ function buildFeatureTargetOptions () {
     }))
 }
 
-function applyFeatureOperation (options = {}) {
+async function applyFeatureOperation (options = {}) {
   const sourceFile = kmlList.find(item => item.id === options.sourceKmlId)
   const targetFile = kmlList.find(item => item.id === options.targetKmlId)
   if (!isWritablePersonalKml(sourceFile) || !isWritablePersonalKml(targetFile)) {
     throw new Error('只能在可写的个人 KML 文件之间移动或复制标注。')
+  }
+
+  if (!(await ensureAccountKmlFilesLoaded(sourceFile, targetFile))) {
+    throw new Error('KML 文件详情加载失败，未修改数据。')
   }
 
   const result = transferKmlFeature(kmlList, options)
@@ -1014,7 +1247,11 @@ function getViewportOptions3d () {
   return { zoom, viewer3d: viewerRef }
 }
 
-function renderKmlLayers (kmlFile) {
+function renderKmlLayers (kmlFile, options = {}) {
+  if (kmlFile?.isShare && getSharePointClusteringConfig3d() && options.individualShareRender !== true) {
+    renderAllKmls()
+    return
+  }
   removeKmlLayers(kmlFile)
   if (!isKmlEnabled(kmlFile)) return
   const viewportOptions = getViewportOptions3d()
@@ -1043,8 +1280,11 @@ function renderAllKmls () {
   renderedKmlEntities.clear()
   featureEntities.clear()
 
-  kmlList.forEach(kmlFile => renderKmlLayers(kmlFile))
-  publicKmlList.forEach(kmlFile => renderKmlLayers(kmlFile))
+  kmlList.forEach(kmlFile => renderKmlLayers(kmlFile, { individualShareRender: true }))
+  const shareClusteringConfig = getSharePointClusteringConfig3d()
+  publicKmlList.filter(kmlFile => !kmlFile.isShare).forEach(kmlFile => renderKmlLayers(kmlFile, { individualShareRender: true }))
+  if (shareClusteringConfig) renderShareClusterLayers3d(shareClusteringConfig)
+  else publicKmlList.filter(kmlFile => kmlFile.isShare).forEach(kmlFile => renderKmlLayers(kmlFile, { individualShareRender: true }))
 }
 
 function bindAccountSessionExpiry3d () {
@@ -1053,6 +1293,7 @@ function bindAccountSessionExpiry3d () {
   window.addEventListener('map-auth-session-expired', () => {
     if (!isAccountKmlMode()) return
     exitKmlBatchMode()
+    exitKmlDirectoryBatchMode()
     suspendKmlAccountSync({ preserveDraft: true, reason: 'session-expired' })
     if (!isEmbeddedKmlAuthRequired()) loadFromStorage()
     else kmlList = []
@@ -1350,7 +1591,7 @@ async function handleEditFeature (kmlId, featureId) {
       featurePatch.resourceCollection = editedFeature.resourceCollection
     }
     try {
-      applyFeatureOperation({
+      await applyFeatureOperation({
         sourceKmlId: kmlId,
         targetKmlId,
         featureId,
@@ -1530,6 +1771,10 @@ async function createPointAtLatLng (latlng, options = {}) {
   const kmlFile = getKmlFileById(selectedKmlId)
   if (!kmlFile || !isKmlEditable(kmlFile)) {
     await showAlert('目标 KML 当前为只读，不能新增标注。')
+    return
+  }
+  if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+    await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，无法新增标注。')
     return
   }
   if (!isKmlEnabled(kmlFile)) {
@@ -1927,7 +2172,7 @@ function renderKmlCard (kmlFile) {
       : getTrackDisplayFeatures(kmlFile, getViewportOptions3d())
   const editable = isKmlEditable(kmlFile)
   const transferable = isWritablePersonalKml(kmlFile)
-  const featureOrderingAvailable = expanded && transferable && !kmlBatchSelection.isActive() && displayFeatures.length === (kmlFile.features || []).length
+  const featureOrderingAvailable = expanded && transferable && !(kmlBatchSelection.isActive() && kmlBatchFileId === kmlFile.id) && displayFeatures.length === (kmlFile.features || []).length
   featureOrderingAvailability.set(kmlFile.id, featureOrderingAvailable)
   const personalReadOnly = !kmlFile.isPublic && !editable
   const styleEditable = (kmlFile.isPublic && !kmlFile.isShare) || editable
@@ -1937,6 +2182,8 @@ function renderKmlCard (kmlFile) {
     : (personalReadOnly ? '当前 KML 为只读，不能修改显隐状态' : (enabled ? `隐藏此${kmlFile.isPublic ? '公共' : ''}图层` : `显示此${kmlFile.isPublic ? '公共' : ''}图层`))
   const isEditingThis = isEditingPublicKml && editingPublicKmlId === kmlFile.id
   const actionsExpanded = expandedKmlActionIds.has(kmlFile.id)
+  const directoryBatchSelectable = kmlDirectoryBatchSelection.isActive(directoryKey(kmlFile)) && !kmlFile.isPublic
+  const directoryBatchSelected = directoryBatchSelectable && kmlDirectoryBatchSelection.has(kmlFile.id)
   const visibilityButton = `
       <button type="button" class="kml-file-btn kml-visibility-btn ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-visible" data-kml-id="${safeKmlId}" aria-label="${visibilityTitle}" aria-pressed="${enabled}" title="${visibilityTitle}" ${visibilityDisabled ? 'disabled' : ''}>
         <span class="kml-eye-icon" aria-hidden="true"></span>
@@ -1960,11 +2207,12 @@ function renderKmlCard (kmlFile) {
     : ''
 
   return `
-    <div class="kml-file-card ${enabled ? '' : 'is-disabled'}" data-kml-card-id="${safeKmlId}" ${featureOrderingAvailable ? `data-kml-drop-target="file" data-kml-id="${safeKmlId}"` : ''} ${transferable && !kmlFile.isDefault ? 'draggable="true" data-kml-file-draggable="true"' : ''}>
+    <div class="kml-file-card ${enabled ? '' : 'is-disabled'}${directoryBatchSelected ? ' is-batch-selected' : ''}" data-kml-card-id="${safeKmlId}" ${featureOrderingAvailable ? `data-kml-drop-target="file" data-kml-id="${safeKmlId}"` : ''} ${transferable && !kmlFile.isDefault && !directoryBatchSelectable ? 'draggable="true" data-kml-file-draggable="true"' : ''}>
       <div class="kml-file-head ${expanded ? 'is-expanded' : ''}" data-kml-action="toggle-collapse" data-kml-id="${safeKmlId}" aria-expanded="${expanded}" title="点击展开 KML 详情、操作和要素">
         <div class="kml-file-title">
+          ${directoryBatchSelectable ? `<button type="button" class="kml-feature-batch-check kml-directory-file-check" data-kml-action="directory-batch-toggle-file" data-kml-id="${safeKmlId}" aria-pressed="${directoryBatchSelected}" aria-label="${directoryBatchSelected ? '取消选择' : '选择'}${escapeHtml(kmlFile.name)}"><span aria-hidden="true">${directoryBatchSelected ? '✓' : ''}</span></button>` : ''}
           <span class="kml-file-name" title="${escapeHtml(kmlFile.name)}">${escapeHtml(kmlFile.name)}</span>
-          <span class="kml-file-count">${kmlFile.features ? kmlFile.features.length : (kmlFile.featureCount || 0)}</span>
+          <span class="kml-file-count">${kmlFile.contentLoaded === false ? Number(kmlFile.featureCount || 0) : (kmlFile.features || []).length}</span>
           ${kmlFile.isShare ? '<span class="kml-file-state">只读</span>' : (kmlFile.isPublic ? '<span class="kml-file-state is-default">公共</span>' : '')}
           ${kmlFile.isDefault ? '<span class="kml-file-state is-default">默认</span>' : ''}
           ${personalReadOnly ? '<span class="kml-file-state">只读</span>' : ''}
@@ -1979,6 +2227,7 @@ function renderKmlCard (kmlFile) {
       <div class="kml-file-more-actions" id="file-actions-${safeKmlId}" ${actionsExpanded ? '' : 'hidden'}>
         ${renameButton}
         ${moveButton}
+        ${renderKmlBatchToolbar(kmlFile)}
         ${shareButton}
         ${!kmlFile.isShare || kmlFile.allowDownload ? `<button type="button" class="kml-file-btn" data-kml-action="export" data-kml-id="${safeKmlId}" title="导出 KML 文件" aria-label="导出 KML 文件"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>` : ''}
         ${deleteButton}
@@ -2037,6 +2286,7 @@ function updateKmlPanelUI () {
   const share = getActiveShare()
   if (share) {
     if (kmlBatchSelection.isActive()) exitKmlBatchMode()
+    if (kmlDirectoryBatchSelection.isActive()) exitKmlDirectoryBatchMode()
     container.innerHTML = `
       <section class="kml-share-summary">
         <strong>${escapeHtml(share.manifest.title || 'KML 分享')}</strong>
@@ -2058,7 +2308,11 @@ function updateKmlPanelUI () {
   if (correctionOption) correctionOption.hidden = !personalKmlWritable
   if (personalKmlWritable) ensureDefaultKmlFile()
   if (!personalKmlWritable && kmlBatchSelection.isActive()) exitKmlBatchMode()
+  if (!isKmlDirectoryBatchDownloadEnabled() && kmlDirectoryBatchSelection.isActive()) exitKmlDirectoryBatchMode()
   if (kmlBatchSelection.isActive()) pruneKmlBatchSelection()
+  if (kmlDirectoryBatchSelection.isActive()) {
+    kmlDirectoryBatchSelection.prune(getDirectoryBatchFiles().map(file => file.id))
+  }
 
   const personalExpanded = !expandedKmlIds.has('personal-section')
   const publicExpanded = !expandedKmlIds.has('public-section')
@@ -2071,7 +2325,6 @@ function updateKmlPanelUI () {
     <div class="kml-section-header kml-personal-section-header" data-kml-action="toggle-section" data-section-id="personal-section">
       <span class="kml-section-label">个人图层 (${kmlList.length})</span>
       <div class="kml-section-actions">
-        ${renderKmlBatchToolbar()}
         ${personalKmlWritable ? '<button type="button" class="kml-file-btn kml-section-icon-button" data-kml-action="create-directory" title="新建 KML 目录" aria-label="新建 KML 目录"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 12v6M9 15h6"/></svg></button>' : ''}
         <span class="kml-section-chevron" aria-hidden="true">${personalExpanded ? '▲' : '▼'}</span>
       </div>
@@ -2126,11 +2379,12 @@ function renderKmlDirectoryGroups (files, isShare = false) {
     const expanded = !expandedKmlIds.has(`directory:${group.id}`)
     const enabled = group.files.length === 0 || group.files.every(isKmlEnabled)
     const directory = kmlDirectories.find(item => item.id === group.id)
-    const visibilityButton = `<button type="button" class="kml-file-btn kml-directory-visibility ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-directory-visible" data-directory-id="${escapeHtml(group.id)}" aria-label="${enabled ? '隐藏' : '显示'}目录" title="${enabled ? '隐藏' : '显示'}目录"><span class="kml-eye-icon" aria-hidden="true"></span></button>`
+    const directoryWritable = isPersonal && canWritePersonalKml()
+    const visibilityButton = `<button type="button" class="kml-file-btn kml-directory-visibility ${enabled ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-directory-visible" data-directory-id="${escapeHtml(group.id)}" aria-label="${enabled ? '隐藏' : '显示'}目录" title="${enabled ? '隐藏' : '显示'}目录" ${isPersonal && !directoryWritable ? 'disabled' : ''}><span class="kml-eye-icon" aria-hidden="true"></span></button>`
     const controls = isShare
       ? visibilityButton
-      : isPersonal && canWritePersonalKml()
-        ? `${visibilityButton}${directory?.id ? `<button type="button" class="kml-file-btn" data-kml-action="rename-directory" data-directory-id="${escapeHtml(group.id)}" title="重命名目录" aria-label="重命名目录">✎</button><button type="button" class="kml-file-btn delete" data-kml-action="delete-directory" data-directory-id="${escapeHtml(group.id)}" title="删除目录" aria-label="删除目录">×</button>` : ''}`
+      : isPersonal
+        ? `${visibilityButton}${renderKmlDirectoryBatchControls(group)}${directoryWritable && directory?.id && !kmlDirectoryBatchSelection.isActive(group.id) ? `<button type="button" class="kml-file-btn" data-kml-action="rename-directory" data-directory-id="${escapeHtml(group.id)}" title="重命名目录" aria-label="重命名目录">✎</button><button type="button" class="kml-file-btn delete" data-kml-action="delete-directory" data-directory-id="${escapeHtml(group.id)}" title="删除目录" aria-label="删除目录">×</button>` : ''}`
         : ''
     const emptyMessage = isPersonal && group.files.length === 0
       ? '<div class="kml-empty kml-directory-empty">目录暂无 KML 文件</div>'
@@ -2320,7 +2574,7 @@ function bindPanelEvents () {
       if (!['move', 'copy'].includes(mode)) return
     }
     try {
-      applyFeatureOperation({
+      await applyFeatureOperation({
         sourceKmlId: drag.sourceKmlId,
         targetKmlId,
         featureId: drag.featureId,
@@ -2360,12 +2614,14 @@ function bindPanelEvents () {
       updateKmlPanelUI()
     } else {
       exitKmlBatchMode()
+      exitKmlDirectoryBatchMode()
     }
   }
 
   panel.querySelector('.kml-close-btn')?.addEventListener('click', () => {
     panel.hidden = true
     exitKmlBatchMode()
+    exitKmlDirectoryBatchMode()
     if (isAddingPoint) {
       togglePickupMode(null)
     }
@@ -2435,8 +2691,18 @@ function bindPanelEvents () {
 
     if (action === 'toggle-batch') {
       event.stopPropagation()
-      if (!canWritePersonalKml()) return
+      const kmlFile = kmlList.find(file => file.id === kmlId)
+      if (!isWritablePersonalKml(kmlFile)) return
+      if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+        await showAlert(kmlFile?.loadError || 'KML 文件详情加载失败，无法进入批量操作。')
+        return
+      }
+      exitKmlDirectoryBatchMode()
+      exitKmlBatchMode()
       kmlBatchSelection.activate()
+      kmlBatchFileId = kmlFile.id
+      expandedKmlIds.add(kmlFile.id)
+      expandedKmlActionIds.add(kmlFile.id)
       updateKmlPanelUI()
       return
     }
@@ -2469,7 +2735,7 @@ function bindPanelEvents () {
 
     if (action === 'toggle-batch-feature') {
       event.stopPropagation()
-      if (!kmlBatchSelection.isActive() || !kmlId || !featureId) return
+      if (!kmlBatchSelection.isActive() || kmlId !== kmlBatchFileId || !featureId) return
       kmlBatchSelection.toggle(kmlId, featureId)
       updateKmlPanelUI()
       return
@@ -2484,6 +2750,69 @@ function bindPanelEvents () {
     if (action === 'create-directory') {
       event.stopPropagation()
       await createKmlDirectoryFromPanel()
+      return
+    }
+
+    if (action === 'directory-batch-start') {
+      event.stopPropagation()
+      if (!isKmlDirectoryBatchDownloadEnabled()) return
+      exitKmlBatchMode()
+      const directoryId = actionTarget.getAttribute('data-directory-id') || ''
+      kmlDirectoryBatchSelection.activate(directoryId)
+      expandedKmlIds.delete(`directory:${directoryId}`)
+      updateKmlPanelUI()
+      return
+    }
+
+    if (action === 'directory-batch-cancel') {
+      event.stopPropagation()
+      exitKmlDirectoryBatchMode()
+      updateKmlPanelUI()
+      return
+    }
+
+    if (action === 'directory-batch-toggle-file') {
+      event.stopPropagation()
+      if (!kmlDirectoryBatchSelection.active || !kmlId) return
+      const file = kmlList.find(item => item.id === kmlId)
+      if (!file || directoryKey(file) !== kmlDirectoryBatchSelection.directoryId) return
+      if (!(await ensureAccountKmlFilesLoaded(file))) {
+        await showAlert(file.loadError || 'KML 文件详情加载失败，无法选择。')
+        return
+      }
+      kmlDirectoryBatchSelection.toggle(kmlId)
+      updateKmlPanelUI()
+      return
+    }
+
+    if (action === 'directory-batch-select-all') {
+      event.stopPropagation()
+      const directoryId = actionTarget.getAttribute('data-directory-id') || ''
+      if (!kmlDirectoryBatchSelection.isActive(directoryId)) return
+      const directoryFiles = getDirectoryBatchFiles(directoryId)
+      const result = await toggleKmlDirectoryBatchSelectionAll({
+        selection: kmlDirectoryBatchSelection,
+        directoryId,
+        files: directoryFiles,
+        loadFiles: files => loadKmlFilesWithConcurrency(files, loadAccountKmlFileForUse),
+      })
+      if (!result.changed && result.reason === 'load-failed') {
+        await showAlert(result.failedFile?.loadError || result.error?.message || '目录中部分 KML 详情加载失败，未更新批量选择。')
+        return
+      }
+      updateKmlPanelUI()
+      return
+    }
+
+    if (action === 'directory-batch-download') {
+      event.stopPropagation()
+      await downloadDirectoryBatchFiles()
+      return
+    }
+
+    if (action === 'directory-batch-delete') {
+      event.stopPropagation()
+      await deleteDirectoryBatchFiles()
       return
     }
 
@@ -2509,6 +2838,11 @@ function bindPanelEvents () {
 
     if (action === 'move-file') {
       event.stopPropagation()
+      const moveTarget = kmlList.find(file => file.id === kmlId)
+      if (moveTarget && !(await ensureAccountKmlFilesLoaded(moveTarget))) {
+        await showAlert(moveTarget.loadError || 'KML 文件详情加载失败，无法移动。')
+        return
+      }
       await moveKmlFileFromPanel(kmlId)
       return
     }
@@ -2529,10 +2863,26 @@ function bindPanelEvents () {
       if (!files.length) return
       const enabled = !files.every(isKmlEnabled)
       if (getActiveShare()) {
-        files.forEach(file => { file.enabled = enabled })
-        files.forEach(file => renderKmlLayers(file))
+        if (enabled) {
+          const visibilityBeforeLoad = files.map(file => file.enabled)
+          const loaded = await loadKmlFilesWithConcurrency(files, file => loadSharedKmlFileForUse(file))
+          if (!loaded.every(Boolean)) {
+            files.forEach((file, index) => { file.enabled = visibilityBeforeLoad[index] })
+            await showAlert('目录中部分分享 KML 详情加载失败，未修改显隐状态。')
+            updateKmlPanelUI()
+            return
+          }
+          files.forEach(file => { file.enabled = true })
+        } else {
+          files.forEach(file => { file.enabled = false })
+        }
+        renderVisibilityChangedKmlFiles3d(files)
       } else {
         if (!canWritePersonalKml()) return
+        if (enabled && !(await ensureAccountKmlFilesLoaded(...files))) {
+          await showAlert('目录中部分 KML 详情加载失败，未修改显隐状态。')
+          return
+        }
         if (isAccountKmlMode()) {
           const result = await apiRequest(`/kml/directories/${encodeURIComponent(directoryId || 'uncategorized')}/visibility`, { method: 'POST', body: { enabled } })
           files.forEach(file => { file.enabled = enabled })
@@ -2549,6 +2899,11 @@ function bindPanelEvents () {
 
     if (action === 'rename-file') {
       event.stopPropagation()
+      const renameTarget = kmlList.find(file => file.id === kmlId)
+      if (renameTarget && !(await ensureAccountKmlFilesLoaded(renameTarget))) {
+        await showAlert(renameTarget.loadError || 'KML 文件详情加载失败，无法重命名。')
+        return
+      }
       await handleRenameKmlFile(kmlId)
       return
     }
@@ -2592,6 +2947,11 @@ function bindPanelEvents () {
       const kmlFile = kmlList.find(k => k.id === kmlId)
       if (!kmlFile) return
 
+      if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+        await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，无法发布。')
+        return
+      }
+
       const confirmed = await showConfirm(`确认将个人图层“${escapeHtml(kmlFile.name)}”共享为公共 KML 图层吗？`)
       if (!confirmed) return
 
@@ -2618,8 +2978,19 @@ function bindPanelEvents () {
       const willExpand = !expandedKmlIds.has(kmlId)
       if (willExpand) {
         expandedKmlIds.add(kmlId)
-        const kmlFile = publicKmlList.find(k => k.id === kmlId)
-        if (kmlFile && !kmlFile.isShare && kmlFile.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
+        const kmlFile = publicKmlList.find(k => k.id === kmlId) || kmlList.find(k => k.id === kmlId)
+        if (kmlFile && !kmlFile.isShare && !getActiveShare() && !(await ensureAccountKmlFilesLoaded(kmlFile))) {
+          expandedKmlIds.delete(kmlId)
+          await showAlert(kmlFile.loadError || '加载 KML 详情失败')
+          return
+        }
+        if (kmlFile?.isShare && kmlFile.contentLoaded === false) {
+          const loaded = await loadSharedKmlFileForUse(kmlFile)
+          if (!loaded) {
+            expandedKmlIds.delete(kmlId)
+            await showAlert(kmlFile.loadError || '加载分享 KML 详情失败')
+          }
+        } else if (kmlFile && !kmlFile.isShare && kmlFile.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
           try {
             const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
             kmlFile.features = detail.features || []
@@ -2640,7 +3011,17 @@ function bindPanelEvents () {
       event.stopPropagation()
       let kmlFile = publicKmlList.find(k => k.id === kmlId)
       if (kmlFile) {
-        kmlFile.enabled = !kmlFile.enabled
+        const nextEnabled = !kmlFile.enabled
+        if (kmlFile.isShare && nextEnabled) {
+          const loaded = await loadSharedKmlFileForUse(kmlFile, { enableOnSuccess: true })
+          if (!loaded) {
+            await showAlert(kmlFile.loadError || '加载分享 KML 详情失败')
+            updateKmlPanelUI()
+            return
+          }
+        } else {
+          kmlFile.enabled = nextEnabled
+        }
         publicKmlPrefs[kmlFile.id] = kmlFile.enabled
         savePublicPrefs()
 
@@ -2653,7 +3034,7 @@ function bindPanelEvents () {
           }
         }
 
-        renderKmlLayers(kmlFile)
+        renderVisibilityChangedKmlFiles3d([kmlFile])
         updateKmlPanelUI()
         return
       }
@@ -2662,6 +3043,10 @@ function bindPanelEvents () {
       if (!kmlFile || kmlFile.isDefault) return
       if (!canWritePersonalKml()) {
         await showAlert('当前账号只有 KML 查看权限，不能修改显隐状态。')
+        return
+      }
+      if (!isKmlEnabled(kmlFile) && !(await ensureAccountKmlFilesLoaded(kmlFile))) {
+        await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，未修改显隐状态。')
         return
       }
       pushKmlHistory()
@@ -2724,7 +3109,12 @@ function bindPanelEvents () {
       let kmlFile = publicKmlList.find(k => k.id === kmlId)
       if (kmlFile) {
         if (kmlFile.isShare) {
-          if (!kmlFile.allowDownload || kmlFile.loadError) return
+          if (!kmlFile.allowDownload) return
+          if (kmlFile.contentLoaded === false && !(await loadSharedKmlFileForUse(kmlFile))) {
+            await showAlert(kmlFile.loadError || '获取分享 KML 数据失败')
+            updateKmlPanelUI()
+            return
+          }
           downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features || [], kmlFile.description))
           return
         }
@@ -2743,6 +3133,10 @@ function bindPanelEvents () {
 
       kmlFile = kmlList.find(k => k.id === kmlId)
       if (kmlFile) {
+        if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+          await showAlert(kmlFile.loadError || '获取 KML 数据失败')
+          return
+        }
         downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features, kmlFile.description))
       }
       return
@@ -2755,6 +3149,10 @@ function bindPanelEvents () {
         await showAlert('目标 KML 当前为只读，不能新增标注。')
         return
       }
+      if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+        await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，无法新增标注。')
+        return
+      }
       if (!isKmlEnabled(kmlFile)) {
         showAlert('该 KML 文件已隐藏，请先启用后再新增标注。')
         return
@@ -2763,13 +3161,19 @@ function bindPanelEvents () {
     }
   })
 
-  panel.addEventListener('change', (event) => {
+  panel.addEventListener('change', async (event) => {
     const target = event.target
     if (target.matches('[data-kml-correction]')) {
       const kmlId = target.getAttribute('data-kml-id')
       const kmlFile = kmlList.find(k => k.id === kmlId)
       if (!kmlFile) return
       if (!canWritePersonalKml()) {
+        updateKmlPanelUI()
+        return
+      }
+
+      if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+        await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，未修改纠偏设置。')
         updateKmlPanelUI()
         return
       }
@@ -2793,6 +3197,12 @@ function bindPanelEvents () {
         return
       }
 
+      if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+        await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，未修改拖拽锁定。')
+        updateKmlPanelUI()
+        return
+      }
+
       pushKmlHistory()
       kmlFile.lockDrag = target.checked
       saveToStorage()
@@ -2808,6 +3218,11 @@ function bindPanelEvents () {
       let kmlFile = kmlList.find(k => k.id === kmlId)
       if (kmlFile) {
         if (!canWritePersonalKml()) {
+          updateKmlPanelUI()
+          return
+        }
+        if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+          await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，未修改主题。')
           updateKmlPanelUI()
           return
         }
@@ -2834,6 +3249,11 @@ function bindPanelEvents () {
       let kmlFile = kmlList.find(k => k.id === kmlId)
       if (kmlFile) {
         if (!canWritePersonalKml()) {
+          updateKmlPanelUI()
+          return
+        }
+        if (!(await ensureAccountKmlFilesLoaded(kmlFile))) {
+          await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，未修改颜色。')
           updateKmlPanelUI()
           return
         }
@@ -2875,6 +3295,16 @@ function bindCanvasPickEvents () {
     }
 
     const picked = viewerRef.scene.pick(movement.position)
+    const cluster = picked?.id?._map3dKmlCluster
+    if (cluster) {
+      const currentHeight = Number(viewerRef.camera.positionCartographic?.height) || 10000
+      viewerRef.camera.flyTo({
+        destination: Cartesian3.fromDegrees(cluster.center.lng, cluster.center.lat, Math.max(80, currentHeight / 2)),
+        orientation: { heading: 0, pitch: CesiumMath.toRadians(-90), roll: 0 },
+        duration: 0.35,
+      })
+      return
+    }
     const meta = picked?.id?._map3dKmlFeature
     if (meta) {
       const featureKey = getFeatureEntityKey(meta.kmlId, meta.featureId)
@@ -2937,15 +3367,20 @@ function scheduleKmlViewportRerender3d () {
   kmlViewportRerenderTimer3d = setTimeout(() => {
     kmlViewportRerenderTimer3d = null
     if (!viewerRef) return
+    const hasShareClustering = Boolean(getActiveShare()?.manifest?.viewConfig?.kmlPointClustering?.enabled)
     const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
                          publicKmlList.some(k => k.isLiveTrack && !k.isShare && k.enabled)
-    if (!hasLiveTrack) return
+    if (!hasLiveTrack && !hasShareClustering) return
 
-    // 缓存跳过：当前相机位置在上次渲染的缓冲范围内则不重渲染
-    if (isCameraWithinCache3d()) return
+    // 聚合依赖当前相机投影；只有纯实时轨迹重渲染可以使用视口缓存跳过。
+    if (!hasShareClustering && isCameraWithinCache3d()) return
 
     // 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先绘制再渲染
     setTimeout(() => {
+      if (hasShareClustering) {
+        renderAllKmls()
+        return
+      }
       kmlList.forEach(kmlFile => {
         if (kmlFile.isLiveTrack && !kmlFile.isShare && kmlFile.enabled) {
           renderKmlLayers(kmlFile)
@@ -2961,11 +3396,17 @@ function scheduleKmlViewportRerender3d () {
   }, 150)
 }
 
+export function getShareFitEntities3d (files, renderedEntities) {
+  const entities = (files || [])
+    .filter(kmlFile => isKmlEnabled(kmlFile) && !kmlFile.loadError)
+    .flatMap(kmlFile => [...(renderedEntities.get(kmlFile.id) || [])])
+  entities.push(...(renderedEntities.get('__share-clusters__') || []))
+  return entities
+}
+
 async function fitShareKmlView () {
   if (!viewerRef) return false
-  const entities = publicKmlList
-    .filter(kmlFile => isKmlEnabled(kmlFile) && !kmlFile.loadError)
-    .flatMap(kmlFile => [...(renderedKmlEntities.get(kmlFile.id) || [])])
+  const entities = getShareFitEntities3d(publicKmlList, renderedKmlEntities)
   if (!entities.length) return false
   try {
     await viewerRef.flyTo(entities, { duration: 0 })

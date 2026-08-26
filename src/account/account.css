@@ -737,6 +737,23 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.account-kml-directory-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.account-kml-directory-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-kml-directory-title > span:last-child {
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
 .account-kml-directory-heading > div:last-child {
   justify-content: flex-end;
 }
@@ -1651,6 +1668,17 @@ body.account-view .app-dialog:not(.account-share-dialog) {
 }
 
 @media (max-width: 720px) {
+  .account-kml-directory-heading {
+    align-items: center;
+  }
+
+  .account-kml-directory-heading > div {
+    align-items: center;
+  }
+
+  .account-kml-directory-heading > div:last-child {
+    flex: 0 0 auto;
+  }
   .account-password-generation-options {
     grid-template-columns: 1fr;
     align-items: stretch;

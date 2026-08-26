@@ -42,6 +42,7 @@ export function renderUserSystemSettingsPage (state) {
   const registration = settings.registration || {}
   const session = settings.session || {}
   const quota = settings.quota || {}
+  const kml = settings.kml || {}
   const share = settings.share || {}
   const rateLimit = share.rateLimit || {}
   const analytics = settings.analytics || {}
@@ -124,6 +125,19 @@ export function renderUserSystemSettingsPage (state) {
             </fieldset>
 
             <fieldset class="admin-permission-fieldset">
+              <legend>KML 管理功能</legend>
+              <div class="admin-field-grid admin-field-grid-three">
+                <label>
+                  <span>目录批量下载</span>
+                  <select name="kmlBatchDownloadEnabled">
+                    <option value="false" ${kml.batchDownloadEnabled === true ? '' : 'selected'}>禁止</option>
+                    <option value="true" ${kml.batchDownloadEnabled === true ? 'selected' : ''}>允许</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="admin-permission-fieldset">
               <legend>公开分享策略</legend>
               <div class="admin-field-grid admin-field-grid-three">
                 <label>
@@ -141,6 +155,9 @@ export function renderUserSystemSettingsPage (state) {
                   </select>
                 </label>
                 <label><span>单个分享最多 KML 数</span><input name="maxFilesPerShare" type="number" min="1" max="20" value="${Number(share.maxFilesPerShare || 20)}" required></label>
+                <label><span>分享点位强制聚合</span><select name="kmlClusterForceEnabled"><option value="true" ${share.kmlClusterForceEnabled === true ? 'selected' : ''}>允许</option><option value="false" ${share.kmlClusterForceEnabled === true ? '' : 'selected'}>关闭</option></select></label>
+                <label><span>强制聚合结束级别</span><input name="kmlClusterMaxZoom" type="number" min="0" max="24" value="${Number(share.kmlClusterMaxZoom ?? 12)}" required></label>
+                <label><span>强制聚合最少点位数</span><input name="kmlClusterMinPoints" type="number" min="2" max="1000" value="${Number(share.kmlClusterMinPoints ?? 250)}" required></label>
                 <label><span>分享密码授权有效期（小时）</span><input name="shareAccessHours" type="number" min="1" max="168" value="${numberValue(share.accessTtlMs, HOUR_MS)}" required></label>
               </div>
             </fieldset>
@@ -274,9 +291,15 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
         maxFeaturesPerUser: integerField(data, 'maxFeaturesPerUser'),
         trashRetentionDays: integerField(data, 'trashRetentionDays'),
       },
+      kml: {
+        batchDownloadEnabled: data.get('kmlBatchDownloadEnabled') === 'true',
+      },
       share: {
         publicAccessPolicy: String(data.get('publicAccessPolicy') || 'inherit_site_access'),
         passwordlessSharingEnabled: data.get('passwordlessSharingEnabled') === 'true',
+        kmlClusterForceEnabled: data.get('kmlClusterForceEnabled') === 'true',
+        kmlClusterMaxZoom: integerField(data, 'kmlClusterMaxZoom'),
+        kmlClusterMinPoints: integerField(data, 'kmlClusterMinPoints'),
         maxFilesPerShare: integerField(data, 'maxFilesPerShare'),
         accessTtlMs: integerField(data, 'shareAccessHours') * HOUR_MS,
         rateLimit: {

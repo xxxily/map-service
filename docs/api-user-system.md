@@ -240,7 +240,7 @@ system.super_admin
 | `PUT` | `/kml/files/:id` | `kml.own.write` | 按 revision 更新 |
 | `DELETE` | `/kml/files/:id` | `kml.own.write` | 移入回收站 |
 | `POST` | `/kml/files/:id/restore` | `kml.own.write` | 从回收站恢复 |
-| `DELETE` | `/kml/files/:id/permanent` | `kml.own.write` | 永久删除回收站文件 |
+| `DELETE` | `/kml/files/:id/permanent` | `kml.own.write` | 永久删除回收站文件；请求体必须携带当前登录密码进行二次验证 |
 | `POST` | `/kml/import` | `kml.own.write` | `multipart/form-data` 导入 KML |
 | `POST` | `/kml/share-links/resolve` | `kml.own.write`、`kml.any.manage` 或 `admin.public_kml.manage` | 解析受支持的第三方分享短链 |
 | `POST` | `/kml/import/2bulu/browser-helper` | `kml.own.write` | 保存授权浏览器助手取得的标准 KML；网站使用此接口 |
@@ -248,6 +248,33 @@ system.super_admin
 | `GET` | `/kml/files/:id/export` | `kml.own.read` | 下载标准 KML 文本 |
 | `POST` | `/kml/sync` | `kml.own.write` | 地图编辑器增量批量同步 |
 | `POST` | `/kml/migrations/local` | `kml.own.write` | 幂等迁移浏览器本地 KML |
+
+目录与文件组织接口：
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/kml/directories` | `kml.own.read` | 返回目录、未分类摘要、文件数和显隐计数 |
+| `POST` | `/kml/directories` | `kml.own.write` | `{name}` 创建单层目录 |
+| `PUT` | `/kml/directories/:id` | `kml.own.write` | `{name?,enabled?}` |
+| `DELETE` | `/kml/directories/:id` | `kml.own.write` | 删除目录，active/trashed 文件均转入未分类 |
+| `POST` | `/kml/directories/reorder` | `kml.own.write` | `{ids:[...]}`，必须为完整目录顺序 |
+| `POST` | `/kml/directories/:id/visibility` | `kml.own.write` | `{enabled}`，批量设置 active 文件显隐；未分类使用 `uncategorized` |
+| `POST` | `/kml/files/reorder` | `kml.own.write` | `{directoryId,ids}`，提交目标目录完整文件顺序 |
+| `POST` | `/kml/files/:id/move` | `kml.own.write` | `{directoryId,beforeId?}` 移动并排序 |
+
+目录相关错误码包括 `KML_DIRECTORY_NOT_FOUND`、`KML_DIRECTORY_NAME_CONFLICT`、`KML_DIRECTORY_LIMIT_EXCEEDED`、`KML_REORDER_INVALID` 和 `KML_MOVE_INVALID`。`/auth/config` 的 `kml.batchDownloadEnabled` 控制目录批量下载入口，默认 `false`；当前前端按所选文件逐个使用导出接口，不存在绕过文件权限的目录打包接口。
+
+回收站通过 `GET /kml/files?status=trashed` 进入；列表只返回摘要，用户可调用 `GET /kml/files/:id` 获取详情。恢复使用 `POST /kml/files/:id/restore`。永久删除必须携带当前登录密码：
+
+```http
+DELETE /api/v1/kml/files/kml_xxx/permanent
+Content-Type: application/json
+X-CSRF-Token: <csrf>
+
+{"password":"当前登录密码"}
+```
+
+缺少密码返回 `400 REAUTH_REQUIRED`；密码错误返回 `401 INVALID_CREDENTIALS`；二次验证限流返回 `429`。校验失败不会修改 KML 或审计记录。默认 KML 受保护，不能移入回收站或永久删除；永久删除成功后写入一次 `kml.delete-permanent` 审计。
 
 列表参数：
 
@@ -321,6 +348,7 @@ KML 写入模型：
 - 集合浏览由独立的分页面板承载，默认每页 40 项；地图点位和文件级媒体画廊不会预先展开集合资源，点击资源后才进入统一媒体预览器。
 - 更新可携带当前 `revision`；版本不一致返回 `409 KML_REVISION_CONFLICT`，不会静默覆盖。
 - 每个用户始终有一个受保护的默认 KML；默认文件不能直接移入回收站或永久删除。
+- `GET /kml/files` 支持 `status=trashed` 查看回收站；回收站文件可恢复，永久删除必须走密码复核接口，不能通过 `/kml/sync` 绕过。
 
 增量同步请求：
 
@@ -335,6 +363,8 @@ KML 写入模型：
   ]
 }
 ```
+
+同步请求若包含任意 `trash`，顶层必须带 `deletionIntent`：`user-confirmed` 或 `user-confirmed-batch`。否则返回 `409 KML_DELETE_CONFIRMATION_REQUIRED`。`deletePermanent` action 一律返回 `409 REAUTH_REQUIRED`，不会调用同步服务。
 
 `create.clientId` 为必填的 1～160 字符稳定标识，只允许 ASCII 字母、数字、点、下划线、冒号和连字符，并在当前用户范围内作为幂等键。客户端必须在网络重试、页面恢复和响应丢失重放时复用原值，不得为同一创建意图重新生成 ID。服务端重复收到相同 `(ownerId, clientId)` 时返回首次创建的 `document`，不会再次校验或占用新增文件配额；如果本地内容在重试前已变化，客户端应先接收原 `document.id/revision`，再发送普通 `update`。
 
@@ -680,11 +710,19 @@ Content-Type: application/json
     "pitch": 0,
     "layerId": "amap-hybrid",
     "mapMode": "2d",
-    "showOwnerDisplayName": false
+    "showOwnerDisplayName": false,
+    "kmlPointClustering": {
+      "enabled": true,
+      "minZoom": 0,
+      "maxClusterZoom": 12,
+      "gridSize": 64,
+      "minClusterPoints": 3,
+      "maxMembersPerCluster": 5000
+    }
   },
   "items": [
     { "kmlId": "kml_a", "position": 0, "visibleByDefault": true, "displayName": "主路线" },
-    { "kmlId": "kml_b", "position": 1, "visibleByDefault": false, "displayName": "备用路线" }
+    { "directoryId": "kdir_weekend", "visibleByDefault": false }
   ],
   "revision": 2
 }
@@ -693,6 +731,10 @@ Content-Type: application/json
 约束：
 
 - 每个分享包包含 1～20 个归属当前用户且处于 active 状态的 KML；实际上限可由后台下调。
+- `items` 可提交 `{kmlId}` 或 `{directoryId}`；目录在保存时展开为当时的 active 文件并去重，公开 manifest 返回稳定的公开 `directoryId`、`directoryName` 和文件顺序快照。
+- `visibleByDefault=false` 在 manifest 中保持隐藏，同时返回 `enabled=false`。隐藏项仅返回名称、数量、目录等摘要，不返回 `features`；显示、展开、导出或批量关联时再请求单文件详情。
+- `viewConfig.kmlPointClustering.enabled=false` 为默认行为。开启时字段边界为：`minZoom/maxClusterZoom` 0～24，`gridSize` 24～128，`minClusterPoints` 2～1000，`maxMembersPerCluster` 100～20000；错误返回 `400 SHARE_CLUSTER_CONFIG_INVALID`。聚合只作用于 Point。
+- 管理员设置 `share.kmlClusterForceEnabled=true` 时，公开 manifest 始终返回 `forcedByPolicy=true`，并将策略与分享自身配置按更积极聚合合成：`minZoom` 取较小值，`maxClusterZoom` 和 `gridSize` 取较大值，`minClusterPoints` 取较小值；分享自身的 `maxMembersPerCluster` 保持有效。分享自身配置更积极时继续生效，但不能通过缩小聚合范围或提高点数阈值绕过管理员策略；默认强制开关关闭。
 - `publicId` 是不可枚举的稳定链接标识，内部 `id` 和 KML ID不会暴露给公开清单。
 - 更新时可携带 `revision`；冲突返回 `SHARE_REVISION_CONFLICT`。
 - 分享公开内容使用已发布快照。个人 KML 修改不会自动改变公开链接；所有者视图返回 `syncStatus`、`pendingSyncItemCount`，分享项返回 `sourceRevision`、`publishedRevision`、`syncStatus` 和 `publishedAt`。
@@ -746,6 +788,22 @@ Content-Type: application/json
 响应包含 `ttlMode` 和 `expiresAt`：`finite` 使用管理员配置的有限授权时长，`unlimited` 的 `expiresAt` 为 `null` 但仍受分享生命周期、策略版本、密码版本和服务端撤销控制。
 
 公开清单使用分享项 ID `shareItemId` 引用文件，不返回所有者邮箱、内部用户 ID、内部 KML ID、密码哈希、管理备注或代理凭据。分享 scoped catalog 当前只包含后台已发布、前台可见且受控的栅格图源；任意 URL、未公开图源和矢量图源不会通过分享接口暴露。
+
+公开 manifest 的文件摘要示例：
+
+```json
+{
+  "shareItemId": "shi_public_a",
+  "name": "备用路线",
+  "featureCount": 320,
+  "visibleByDefault": false,
+  "enabled": false,
+  "directoryId": "shd_public_weekend",
+  "directoryName": "周末路线"
+}
+```
+
+摘要不包含 `features`。客户端首次进入分享时只拉取默认显示文件；隐藏文件在显示、展开或导出时调用文件详情接口。同一 `shareItemId` 的并发详情请求应合并，失败后保持隐藏并允许重试。
 
 公开文件 `GET /public/kml-shares/:publicId/files/:shareItemId` 返回的每个 Feature 可能包含交互资源元数据：
 

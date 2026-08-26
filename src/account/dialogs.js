@@ -195,6 +195,7 @@ function normalizedClusteringConfig (value = {}) {
     minZoom: Number.isSafeInteger(Number(source.minZoom)) ? Number(source.minZoom) : 0,
     maxClusterZoom: Number.isSafeInteger(Number(source.maxClusterZoom)) ? Number(source.maxClusterZoom) : 13,
     gridSize: Number.isSafeInteger(Number(source.gridSize)) ? Number(source.gridSize) : 64,
+    minClusterPoints: Number.isSafeInteger(Number(source.minClusterPoints)) ? Number(source.minClusterPoints) : 2,
     maxMembersPerCluster: Number.isSafeInteger(Number(source.maxMembersPerCluster)) ? Number(source.maxMembersPerCluster) : 5000,
   }
 }
@@ -314,6 +315,7 @@ export function showAccountShareDialog (options = {}) {
     ...directoryCatalog,
     uncategorized: directoryCatalog.uncategorized || { id: null, name: '未分类' },
   })
+  const defaultVisibilityForKml = kmlId => documentMap.get(String(kmlId))?.enabled !== false
   let selectedItems = (share.items || [])
     .filter(item => documentMap.has(String(item?.kmlId || '')))
     .sort((left, right) => Number(left.position || 0) - Number(right.position || 0))
@@ -382,6 +384,7 @@ export function showAccountShareDialog (options = {}) {
               <label class="account-dialog-field"><span>起始缩放级别</span><input name="kmlClusteringMinZoom" type="number" min="0" max="24" step="1" value="${escapeHtml(clustering.minZoom)}"></label>
               <label class="account-dialog-field"><span>结束缩放级别</span><input name="kmlClusteringMaxZoom" type="number" min="0" max="24" step="1" value="${escapeHtml(clustering.maxClusterZoom)}"></label>
               <label class="account-dialog-field"><span>网格大小（像素）</span><input name="kmlClusteringGridSize" type="number" min="24" max="128" step="1" value="${escapeHtml(clustering.gridSize)}"></label>
+              <label class="account-dialog-field"><span>单网格最少聚合点数</span><input name="kmlClusteringMinPoints" type="number" min="2" max="1000" step="1" value="${escapeHtml(clustering.minClusterPoints)}"></label>
               <label class="account-dialog-field"><span>单簇明细上限</span><input name="kmlClusteringMaxMembers" type="number" min="100" max="20000" step="1" value="${escapeHtml(clustering.maxMembersPerCluster)}"></label>
             </div>
           </section>
@@ -630,7 +633,7 @@ export function showAccountShareDialog (options = {}) {
             return
           }
           if (!selectedItems.some(item => item.kmlId === kmlId)) {
-            selectedItems.push({ kmlId, visibleByDefault: true, displayName: '' })
+            selectedItems.push({ kmlId, visibleByDefault: defaultVisibilityForKml(kmlId), displayName: '' })
           }
         } else {
           selectedItems = selectedItems.filter(item => item.kmlId !== kmlId)
@@ -653,7 +656,9 @@ export function showAccountShareDialog (options = {}) {
         }
         if (nextChecked) {
           ids.forEach(kmlId => {
-            if (!selectedItems.some(item => item.kmlId === kmlId)) selectedItems.push({ kmlId, visibleByDefault: true, displayName: '' })
+            if (!selectedItems.some(item => item.kmlId === kmlId)) {
+              selectedItems.push({ kmlId, visibleByDefault: defaultVisibilityForKml(kmlId), displayName: '' })
+            }
           })
         } else {
           selectedItems = selectedItems.filter(item => !ids.includes(item.kmlId))
@@ -767,6 +772,7 @@ export function showAccountShareDialog (options = {}) {
             minZoom: Number(form.elements.kmlClusteringMinZoom.value),
             maxClusterZoom: Number(form.elements.kmlClusteringMaxZoom.value),
             gridSize: Number(form.elements.kmlClusteringGridSize.value),
+            minClusterPoints: Number(form.elements.kmlClusteringMinPoints.value),
             maxMembersPerCluster: Number(form.elements.kmlClusteringMaxMembers.value),
           }
         : { enabled: false }

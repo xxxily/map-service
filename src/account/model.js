@@ -5,6 +5,7 @@ const DEFAULT_KML_POINT_CLUSTERING = Object.freeze({
   minZoom: 0,
   maxClusterZoom: 13,
   gridSize: 64,
+  minClusterPoints: 2,
   maxMembersPerCluster: 5000,
 })
 
@@ -181,7 +182,7 @@ export function buildShareItems (selectedIds, documents) {
     .map((document, position) => ({
       kmlId: document.id,
       position,
-      visibleByDefault: true,
+      visibleByDefault: document.enabled !== false,
     }))
 }
 
@@ -348,6 +349,7 @@ export function buildShareViewConfig (input = {}, fallback = {}) {
         minZoom,
         maxClusterZoom,
         gridSize: integer('gridSize', 24, 128, '聚合网格需为 24～128 像素的整数'),
+        minClusterPoints: integer('minClusterPoints', 2, 1000, '强制聚合最少点位数需为 2～1000 的整数'),
         maxMembersPerCluster: integer('maxMembersPerCluster', 100, 20000, '聚合成员上限需为 100～20000 的整数'),
       }
     }

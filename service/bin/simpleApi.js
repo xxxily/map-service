@@ -11,6 +11,7 @@ import multer from 'multer'
 import utils from './utils/index.js'
 import baseConfig from '../config.js'
 import service from './service.js'
+import { createHttpError } from './user/security.js'
 import { sanitizeLogUrl } from './logSanitizer.js'
 import { TRANSPARENT_TILE_PNG } from './user/shareSpatialAccess.js'
 import whitelist from './whitelist.js'
@@ -982,15 +983,17 @@ const userApiRoutes = [
   {
     path: '/kml/files/:id/permanent',
     method: 'delete',
-    describe: '永久删除个人 KML',
+    describe: '永久删除个人 KML（需二次验证密码）',
     tags: ['kml'],
     handler: async (req, res) => {
       noStore(res)
-      res.jsonSuc(service.permanentlyDeleteUserKml(
-        requireAnyUserPermission(req, ['kml.own.write', 'kml.any.manage']),
-        req.params.id,
-        requestContext(req)
-      ))
+      const session = requireAnyUserPermission(req, ['kml.own.write', 'kml.any.manage'])
+      const password = typeof req.body?.password === 'string' ? req.body.password : ''
+      if (!password) {
+        throw createHttpError('永久删除前必须验证当前登录密码', 400, 'REAUTH_REQUIRED')
+      }
+      await service.reauthenticateUser(session, password, requestContext(req))
+      res.jsonSuc(service.permanentlyDeleteUserKml(session, req.params.id, requestContext(req)))
     },
   },
   {
@@ -1087,6 +1090,16 @@ const userApiRoutes = [
     tags: ['kml'],
     handler: async (req, res) => {
       noStore(res)
+      const operations = req.body?.operations || req.body?.changes
+      if (Array.isArray(operations) && operations.some(operation => (
+        String(operation?.action || operation?.operation || '') === 'deletePermanent'
+      ))) {
+        throw createHttpError(
+          '永久删除必须通过密码二次验证接口执行',
+          409,
+          'REAUTH_REQUIRED'
+        )
+      }
       res.jsonSuc(service.syncUserKmlFiles(
         requireUser(req, 'kml.own.write'),
         req.body || {},

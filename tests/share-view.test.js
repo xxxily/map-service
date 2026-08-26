@@ -83,3 +83,14 @@ test('空间受限分享必须提供 ready 状态的相机边界和最低缩放�
   })
   assert.equal(legacy.valid, false)
 })
+
+test('隐藏分享 KML 首屏只加载清单，并保留按需加载入口', () => {
+  const source = readFileSync(new URL('../src/map/share-view.js', import.meta.url), 'utf8')
+  const kmlSource = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
+  assert.match(source, /summary\.visibleByDefault === false[\s\S]*contentLoaded: false/)
+  assert.match(source, /export async function loadActiveShareFile/)
+  assert.match(kmlSource, /toggle-directory-visible[\s\S]*loadKmlFilesWithConcurrency\(files, file => loadSharedKmlFileForUse\(file\)/)
+  assert.match(kmlSource, /loadSharedKmlFileForUse\(kmlFile, \{ enableOnSuccess: true \}\)/)
+  assert.match(kmlSource, /willExpand && kmlFile\.contentLoaded === false[\s\S]*loadSharedKmlFileForUse\(kmlFile\)/)
+  assert.match(kmlSource, /kmlFile\.contentLoaded === false \? \(kmlFile\.featureCount \|\| 0\) : features\.length/)
+})

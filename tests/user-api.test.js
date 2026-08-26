@@ -1568,3 +1568,123 @@ test('unexpected server errors do not expose internal exception details', async 
     restore()
   }
 })
+
+test('auth config exposes the KML directory batch download feature flag', async () => {
+  const restore = withMockedService({
+    getAuthConfig: () => ({
+      registration: { mode: 'closed', enabled: false },
+      kml: { batchDownloadEnabled: true },
+    }),
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/auth/config')
+    assert.equal(result.response.status, 200)
+    assert.equal(result.payload.result.kml.batchDownloadEnabled, true)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('permanent KML deletion requires a second password verification', async () => {
+  const session = testSession()
+  let reauth = null
+  let deletion = null
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? session : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'csrf-token') {
+        const error = new Error('请求安全校验失败')
+        error.statusCode = 403
+        error.code = 'CSRF_INVALID'
+        throw error
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'kml.own.write')
+    },
+    reauthenticateUser: async (current, password) => {
+      reauth = { current, password }
+      if (password !== 'correct-password') {
+        const error = new Error('当前密码不正确')
+        error.statusCode = 401
+        error.code = 'INVALID_CREDENTIALS'
+        throw error
+      }
+      return { reauthenticatedAt: new Date().toISOString() }
+    },
+    permanentlyDeleteUserKml: (current, id) => {
+      deletion = { current, id }
+      return { id, status: 'deleted' }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+  try {
+    let result = await requestJson(baseUrl, '/api/v1/kml/files/kml-test/permanent', {
+      method: 'DELETE', headers: { Cookie: 'map_user_session=session-token', 'X-CSRF-Token': 'csrf-token' }, body: JSON.stringify({}),
+    })
+    assert.equal(result.response.status, 400)
+    assert.equal(result.payload.error.code, 'REAUTH_REQUIRED')
+    assert.equal(reauth, null)
+    assert.equal(deletion, null)
+
+    result = await requestJson(baseUrl, '/api/v1/kml/files/kml-test/permanent', {
+      method: 'DELETE', headers: { Cookie: 'map_user_session=session-token', 'X-CSRF-Token': 'csrf-token' }, body: JSON.stringify({ password: 'wrong-password' }),
+    })
+    assert.equal(result.response.status, 401)
+    assert.equal(result.payload.error.code, 'INVALID_CREDENTIALS')
+    assert.deepEqual(reauth, { current: session, password: 'wrong-password' })
+    assert.equal(deletion, null)
+
+    result = await requestJson(baseUrl, '/api/v1/kml/files/kml-test/permanent', {
+      method: 'DELETE', headers: { Cookie: 'map_user_session=session-token', 'X-CSRF-Token': 'csrf-token' }, body: JSON.stringify({ password: 'correct-password' }),
+    })
+    assert.equal(result.response.status, 200)
+    assert.deepEqual(reauth, { current: session, password: 'correct-password' })
+    assert.deepEqual(deletion, { current: session, id: 'kml-test' })
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
+test('KML sync rejects permanent deletion before invoking the sync service', async () => {
+  const session = testSession()
+  let syncCalls = 0
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? session : null,
+    verifyUserCsrf: (current, token) => {
+      if (current !== session || token !== 'csrf-token') {
+        const error = new Error('请求安全校验失败')
+        error.statusCode = 403
+        error.code = 'CSRF_INVALID'
+        throw error
+      }
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'kml.own.write')
+    },
+    syncUserKmlFiles: () => {
+      syncCalls += 1
+      return { results: [], syncedAt: new Date().toISOString() }
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/kml/sync', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token', 'X-CSRF-Token': 'csrf-token' },
+      body: JSON.stringify({ operations: [{ action: 'deletePermanent', kmlId: 'kml-test' }] }),
+    })
+    assert.equal(result.response.status, 409)
+    assert.equal(result.payload.error.code, 'REAUTH_REQUIRED')
+    assert.equal(syncCalls, 0)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})

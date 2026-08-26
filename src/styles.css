@@ -2756,6 +2756,7 @@ body.admin-view #footer-bar {
   align-items: center;
   justify-content: flex-end;
   gap: 2px;
+  min-height: 28px;
 }
 
 .kml-directory-files {
@@ -2788,6 +2789,11 @@ body.admin-view #footer-bar {
 
 .kml-file-card.is-disabled {
   background: rgba(241, 245, 249, 0.74);
+}
+
+.kml-file-card.is-batch-selected {
+  border-color: rgba(15, 118, 110, 0.42);
+  box-shadow: inset 3px 0 0 #0f766e;
 }
 
 .kml-file-head {
@@ -2960,6 +2966,17 @@ body.admin-view #footer-bar {
   background: rgba(15, 118, 110, 0.04);
 }
 
+.kml-directory-batch-toolbar {
+  min-width: 0;
+  max-width: min(230px, 66vw);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.kml-directory-batch-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
 .kml-batch-toggle,
 .kml-batch-select-all,
 .kml-batch-invert,
@@ -3026,6 +3043,10 @@ body.admin-view #footer-bar {
   font-size: 13px;
   font-weight: 800;
   line-height: 1;
+}
+
+.kml-directory-file-check {
+  margin-right: 1px;
 }
 
 .kml-feature-batch-check[aria-pressed="true"] {
@@ -3312,12 +3333,28 @@ body.admin-view #footer-bar {
   }
 
   .kml-directory-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     min-height: 42px;
     padding: 7px 8px;
   }
 
+  .kml-directory-name,
+  .kml-directory-actions {
+    align-self: center;
+    min-height: 30px;
+  }
+
+  .kml-directory-name {
+    flex-wrap: nowrap;
+  }
+
   .kml-directory-actions {
     gap: 1px;
+  }
+
+  .kml-directory-batch-toolbar {
+    max-width: min(205px, 68vw);
   }
 
   .kml-directory-files {
@@ -6345,12 +6382,12 @@ body.media-preview-window-resizing .media-preview-root {
 .kml-point-cluster-icon {
   display: grid !important;
   place-items: center;
-  border: 3px solid rgba(255, 255, 255, 0.94);
+  border: 2px solid rgba(255, 255, 255, 0.94);
   border-radius: 50%;
   background: #0f766e;
-  box-shadow: 0 3px 12px rgba(15, 80, 76, 0.34);
+  box-shadow: 0 2px 8px rgba(15, 80, 76, 0.3);
   color: #fff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
 }
 

@@ -76,7 +76,7 @@ test('share mode fits before one layer render and collapsed files do not mount h
   assert.match(shareInitSource, /if \(options\.fitShareView !== false\)/)
 
   const sharePanelSource = source.match(/function renderShareKmlPanel \(map\)[\s\S]*?\n}\n\nasync function initShareKmlSupport/)?.[0] || ''
-  assert.match(sharePanelSource, /\$\{expanded \? features\.map\(feature =>/)
+  assert.match(sharePanelSource, /\$\{expanded && kmlFile\.contentLoaded !== false \? features\.map\(feature =>/)
   assert.doesNotMatch(sharePanelSource, /\$\{features\.map\(feature =>/)
 })
 
@@ -141,7 +141,8 @@ test('collapsed KML cards skip overview work and 3D feature filtering', () => {
   const map2d = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
   const map3d = readFileSync(new URL('../src/map3d/kml.js', import.meta.url), 'utf8')
 
-  assert.equal(map2d.match(/expanded \? renderKmlFileOverview\(kmlFile\) : ''/g)?.length, 3)
+  assert.equal(map2d.match(/expanded \? renderKmlFileOverview\(kmlFile\) : ''/g)?.length, 2)
+  assert.match(map2d, /expanded && kmlFile\.contentLoaded !== false \? renderKmlFileOverview\(kmlFile\) : ''/)
   assert.match(map3d, /const displayFeatures = !expanded\s*\? \[\]/)
   assert.match(map3d, /\$\{expanded \? `[\s\S]*?\$\{renderKmlFileOverview\(kmlFile\)\}/)
   assert.match(map3d, /const willExpand = !expandedKmlIds\.has\(kmlId\)/)

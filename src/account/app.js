@@ -50,6 +50,7 @@ const KML_WRITE_ACTIONS = new Set([
   'trash-kml', 'restore-kml', 'delete-kml', 'create-kml-directory', 'edit-kml-directory',
   'delete-kml-directory', 'toggle-directory-visibility', 'move-kml',
 ])
+const KML_VIEW_ACTIONS = new Set(['open-kml-trash', 'back-kml-active'])
 const SHARE_ACTIONS = new Set([
   'create-share', 'go-kml-share', 'copy-share', 'edit-share', 'toggle-share',
   'share-access-events', 'sync-share', 'rotate-share', 'revoke-share', 'delete-share',
@@ -79,6 +80,7 @@ const state = {
     sort: 'updatedAt',
     order: 'desc',
     selected: new Set(),
+    trashCount: 0,
   },
   favorites: { items: [], search: '' },
   favoriteDraft: null,
@@ -195,7 +197,7 @@ async function loadKml () {
   const sorting = normalizeKmlSort(state.kml.sort, state.kml.order)
   state.kml.sort = sorting.sort
   state.kml.order = sorting.order
-  const [rawResult, directories] = await Promise.all([
+  const [rawResult, directories, trashSummary] = await Promise.all([
     listAllKml({
       status: state.kml.status,
       search: state.kml.search,
@@ -203,11 +205,15 @@ async function loadKml () {
       order: state.kml.order,
     }),
     accountApi.listKmlDirectories(),
+    state.kml.status === 'trashed' ? null : accountApi.listKml({ status: 'trashed', page: 1, limit: 1 }),
   ])
   const result = normalizePagedResult(rawResult)
   state.kml.items = result.items
   state.kml.directories = normalizeKmlDirectoryCatalog(directories)
   state.kml.usage = result.usage || {}
+  state.kml.trashCount = state.kml.status === 'trashed'
+    ? Number(result.total || result.items.length)
+    : Number(normalizePagedResult(trashSummary).total || 0)
   const visibleIds = new Set(result.items.map(item => item.id))
   state.kml.selected = new Set(Array.from(state.kml.selected).filter(id => visibleIds.has(id)))
 }
@@ -954,6 +960,7 @@ async function handleClick (event) {
   const id = target.dataset.id
 
   if (KML_WRITE_ACTIONS.has(action) && !requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  if (KML_VIEW_ACTIONS.has(action) && !requireCapability('canReadKml', '当前账号没有 KML 查看权限')) return
   if (SHARE_ACTIONS.has(action) && !requireCapability('canManageShares')) return
   if (FAVORITE_ACTIONS.has(action) && !requireCapability('canManageFavorites')) return
   if (SESSION_ACTIONS.has(action) && !requireCapability('canManageSessions')) return
@@ -983,6 +990,14 @@ async function handleClick (event) {
     render()
   } else if (action === 'create-kml') {
     await createKml()
+  } else if (action === 'open-kml-trash') {
+    state.kml.status = 'trashed'
+    state.kml.search = ''
+    await loadKml()
+  } else if (action === 'back-kml-active') {
+    state.kml.status = 'active'
+    state.kml.search = ''
+    await loadKml()
   } else if (action === 'create-kml-directory') {
     await createKmlDirectory()
   } else if (action === 'edit-kml-directory') {
@@ -1033,7 +1048,13 @@ async function handleClick (event) {
   } else if (action === 'delete-kml') {
     const confirmed = await showConfirm('永久删除后无法恢复。请先确认该文件不再需要。', { title: '永久删除 KML', confirmText: '永久删除' })
     if (!confirmed) return
-    const result = await runAction(() => accountApi.deleteKmlPermanently(id), { progress: '正在永久删除…', success: 'KML 已永久删除' })
+    const password = await showAccountPasswordDialog({
+      title: '验证密码后永久删除',
+      message: '请输入当前登录密码，确认永久删除该 KML。',
+      autocomplete: 'current-password',
+    })
+    if (!password) return
+    const result = await runAction(() => accountApi.deleteKmlPermanently(id, password), { progress: '正在永久删除…', success: 'KML 已永久删除' })
     if (result) await loadKml()
   } else if (action === 'edit-favorite') {
     state.favoriteDraft = state.favorites.items.find(item => item.id === id) || null

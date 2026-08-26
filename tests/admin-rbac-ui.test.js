@@ -96,6 +96,19 @@ test('空间分享策略只对超级管理员呈现', () => {
   assert.equal(typeof adminApi.previewUserSystemSettings, 'function')
 })
 
+test('用户体系设置展示 KML 批量下载与强制聚合开关且默认关闭', () => {
+  const html = renderUserSystemSettingsPage({
+    userSystemSettings: {},
+    roles: [],
+    session: sessionWith('admin.security.manage'),
+  })
+
+  assert.match(html, /name="kmlBatchDownloadEnabled"/)
+  assert.match(html, /value="false" selected>禁止/)
+  assert.match(html, /name="kmlClusterForceEnabled"/)
+  assert.match(html, /name="kmlClusterForceEnabled"[\s\S]*value="false" selected>关闭/)
+})
+
 test('分享治理页展示空间范围、授权模式和安全摘要', () => {
   const html = renderShareModerationPage({
     shareFilters: {},

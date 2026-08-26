@@ -94,6 +94,7 @@ const DEFAULT_KML_POINT_CLUSTERING = Object.freeze({
   minZoom: 0,
   maxClusterZoom: 13,
   gridSize: 64,
+  minClusterPoints: 2,
   maxMembersPerCluster: 5000,
 })
 
@@ -249,6 +250,12 @@ export function normalizeKmlPointClustering (value, fallback = DEFAULT_KML_POINT
       code: 'SHARE_CLUSTER_CONFIG_INVALID',
       message: '点位聚合网格大小需为 24～128 像素的整数',
     }),
+    minClusterPoints: normalizeIntegerField(source.minClusterPoints ?? DEFAULT_KML_POINT_CLUSTERING.minClusterPoints, {
+      minimum: 2,
+      maximum: 1000,
+      code: 'SHARE_CLUSTER_CONFIG_INVALID',
+      message: '强制聚合最少点位数需为 2～1000 的整数',
+    }),
     maxMembersPerCluster: normalizeIntegerField(
       source.maxMembersPerCluster ?? DEFAULT_KML_POINT_CLUSTERING.maxMembersPerCluster,
       {
@@ -258,6 +265,31 @@ export function normalizeKmlPointClustering (value, fallback = DEFAULT_KML_POINT
         message: '单个点位聚合成员上限需为 100～20000 的整数',
       }
     ),
+  }
+}
+
+// 强制策略与分享配置采用“更积极聚合”合成，避免分享通过收窄范围或提高阈值绕过策略。
+function applyForcedKmlPointClusteringPolicy (value, policy) {
+  if (policy?.kmlClusterForceEnabled !== true) return value
+  const adminMaxZoom = Number(policy.kmlClusterMaxZoom ?? 12)
+  const adminMinPoints = Number(policy.kmlClusterMinPoints ?? 250)
+  const user = value?.enabled === true ? normalizeKmlPointClustering(value) : null
+  const base = user || normalizeKmlPointClustering({
+    enabled: true,
+    minZoom: 0,
+    maxClusterZoom: adminMaxZoom,
+    gridSize: 64,
+    minClusterPoints: adminMinPoints,
+    maxMembersPerCluster: 5000,
+  })
+  return {
+    ...base,
+    enabled: true,
+    minZoom: Math.min(base.minZoom, 0),
+    maxClusterZoom: Math.max(base.maxClusterZoom, adminMaxZoom),
+    gridSize: Math.max(base.gridSize, 64),
+    minClusterPoints: Math.min(base.minClusterPoints, adminMinPoints),
+    forcedByPolicy: true,
   }
 }
 
@@ -2551,7 +2583,17 @@ export class UserContentService {
             ...(document ? { document } : { result: { status: 'absent' } }),
           }
         }
-        if (action === 'deletePermanent') return { action, result: this.permanentDeleteKml(actor, kmlId) }
+        // Permanent deletion is intentionally not part of the incremental sync
+        // protocol. It requires an explicit password re-authentication through
+        // DELETE /kml/files/:id/permanent; accepting it here would let any
+        // authenticated writer bypass that second factor.
+        if (action === 'deletePermanent') {
+          throw createHttpError(
+            '永久删除必须通过密码二次验证接口执行',
+            409,
+            'REAUTH_REQUIRED'
+          )
+        }
         throw createHttpError('同步操作类型不正确', 400, 'VALIDATION_FAILED')
       })
       return { results, syncedAt: this.nowIso() }
@@ -4060,19 +4102,20 @@ export class UserContentService {
 
   publicItemSummary (row) {
     const snapshot = row.snapshot || {}
+    const visibleByDefault = Boolean(row.visible_by_default)
     return {
       shareItemId: row.share_item_id,
       directoryId: row.directory_id || null,
       directoryName: row.directory_name || '',
       position: Number(row.position),
-      visibleByDefault: Boolean(row.visible_by_default),
+      visibleByDefault,
       name: row.display_name || snapshot.name || '',
       description: snapshot.description || '',
       coordCorrection: snapshot.coordCorrection,
       theme: snapshot.theme,
       color: snapshot.color,
       lockDrag: true,
-      enabled: true,
+      enabled: visibleByDefault,
       isLiveTrack: Boolean(snapshot.isLiveTrack),
       featureCount: Number(snapshot.featureCount || 0),
       revision: Number(row.published_revision || snapshot.revision || 0),
@@ -4092,6 +4135,11 @@ export class UserContentService {
     `).run(now, current.id)
     this.recordShareAccessEvent(current, context, current.__shareAccessMethod || context.accessMethod || (context.accessToken ? 'session' : 'open'))
     const viewConfig = parseJson(current.view_config_json, {})
+    const clusterPolicy = this.getSettings().share || {}
+    viewConfig.kmlPointClustering = applyForcedKmlPointClusteringPolicy(
+      viewConfig.kmlPointClustering,
+      clusterPolicy
+    )
     const result = {
       publicId: current.public_id,
       title: current.title,

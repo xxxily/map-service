@@ -18,7 +18,7 @@ const USER_PERMISSIONS = [
 test('KML point clustering configuration normalizes and rejects unsafe ranges', () => {
   assert.deepEqual(normalizeKmlPointClustering({ enabled: false, gridSize: 1 }), { enabled: false })
   assert.deepEqual(normalizeKmlPointClustering({ enabled: true, minZoom: 2, maxClusterZoom: 8, gridSize: 48, maxMembersPerCluster: 300 }), {
-    enabled: true, minZoom: 2, maxClusterZoom: 8, gridSize: 48, maxMembersPerCluster: 300,
+    enabled: true, minZoom: 2, maxClusterZoom: 8, gridSize: 48, minClusterPoints: 2, maxMembersPerCluster: 300,
   })
   assert.throws(() => normalizeKmlPointClustering({ enabled: true, minZoom: 9, maxClusterZoom: 8 }), error => error.code === 'SHARE_CLUSTER_CONFIG_INVALID')
   assert.throws(() => normalizeKmlPointClustering({ enabled: true, gridSize: 8 }), error => error.code === 'SHARE_CLUSTER_CONFIG_INVALID')
@@ -312,6 +312,33 @@ test('KML sync requires explicit confirmation before every trash operation', () 
   }
 })
 
+test('KML sync rejects permanent deletion and leaves the recycle-bin record untouched', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '密码保护删除测试' })
+    harness.service.trashKml(harness.one, document.id)
+    const beforeAudit = Number(harness.database.prepare(`
+      SELECT COUNT(*) AS count FROM audit_logs
+      WHERE action = 'kml.delete-permanent' AND target_id = ?
+    `).get(document.id)?.count || 0)
+
+    assert.throws(
+      () => harness.service.syncKmlFiles(harness.one, {
+        operations: [{ action: 'deletePermanent', kmlId: document.id }],
+      }),
+      error => error.statusCode === 409 && error.code === 'REAUTH_REQUIRED'
+    )
+
+    assert.equal(harness.service.getKml(harness.one, document.id).status, 'trashed')
+    assert.equal(Number(harness.database.prepare(`
+      SELECT COUNT(*) AS count FROM audit_logs
+      WHERE action = 'kml.delete-permanent' AND target_id = ?
+    `).get(document.id)?.count || 0), beforeAudit)
+  } finally {
+    harness.close()
+  }
+})
+
 test('deleting a KML directory clears active and trashed file directory ids', () => {
   const harness = createHarness()
   try {
@@ -341,7 +368,98 @@ test('directory share expansion deduplicates files and preserves directory metad
     assert.equal(share.items[0].directoryName, '分享目录')
     const synced = harness.service.syncShareContent(harness.one, share.id, { revision: share.revision })
     assert.equal(synced.items[0].directoryName, '分享目录')
-    assert.deepEqual(synced.viewConfig.kmlPointClustering, { enabled: true, minZoom: 1, maxClusterZoom: 10, gridSize: 64, maxMembersPerCluster: 500 })
+    assert.deepEqual(synced.viewConfig.kmlPointClustering, { enabled: true, minZoom: 1, maxClusterZoom: 10, gridSize: 64, minClusterPoints: 2, maxMembersPerCluster: 500 })
+  } finally {
+    harness.close()
+  }
+})
+
+test('public share manifest preserves hidden items and combines forced clustering with share configuration', () => {
+  const harness = createHarness({
+    share: {
+      kmlClusterForceEnabled: true,
+      kmlClusterMaxZoom: 11,
+      kmlClusterMinPoints: 180,
+    },
+  })
+  try {
+    const document = harness.service.createKml(harness.one, {
+      name: '密集点位',
+      features: [point('dense-point')],
+    })
+    const forcedShare = harness.service.createShare(harness.one, {
+      title: '策略强制聚合',
+      items: [{ kmlId: document.id, visibleByDefault: false }],
+      viewConfig: { kmlPointClustering: { enabled: false } },
+    })
+    const forcedManifest = harness.service.getPublicShareManifest(forcedShare.publicId)
+
+    assert.equal(forcedManifest.items[0].visibleByDefault, false)
+    assert.equal(forcedManifest.items[0].enabled, false)
+    assert.equal('features' in forcedManifest.items[0], false)
+    assert.deepEqual(forcedManifest.viewConfig.kmlPointClustering, {
+      enabled: true,
+      minZoom: 0,
+      maxClusterZoom: 11,
+      gridSize: 64,
+      minClusterPoints: 180,
+      maxMembersPerCluster: 5000,
+      forcedByPolicy: true,
+    })
+
+    const explicitShare = harness.service.createShare(harness.one, {
+      title: '分享自定义聚合',
+      items: [{ kmlId: document.id }],
+      viewConfig: {
+        kmlPointClustering: {
+          enabled: true,
+          minZoom: 3,
+          maxClusterZoom: 9,
+          gridSize: 48,
+          minClusterPoints: 7,
+          maxMembersPerCluster: 800,
+        },
+      },
+    })
+    assert.deepEqual(
+      harness.service.getPublicShareManifest(explicitShare.publicId).viewConfig.kmlPointClustering,
+      {
+        enabled: true,
+        minZoom: 0,
+        maxClusterZoom: 11,
+        gridSize: 64,
+        minClusterPoints: 7,
+        maxMembersPerCluster: 800,
+        forcedByPolicy: true,
+      }
+    )
+
+    const aggressiveShare = harness.service.createShare(harness.one, {
+      title: '分享更积极聚合',
+      items: [{ kmlId: document.id }],
+      viewConfig: {
+        kmlPointClustering: {
+          enabled: true,
+          minZoom: 0,
+          maxClusterZoom: 15,
+          gridSize: 96,
+          minClusterPoints: 2,
+          maxMembersPerCluster: 600,
+        },
+      },
+    })
+    assert.deepEqual(
+      harness.service.getPublicShareManifest(aggressiveShare.publicId).viewConfig.kmlPointClustering,
+      {
+        enabled: true,
+        minZoom: 0,
+        maxClusterZoom: 15,
+        gridSize: 96,
+        minClusterPoints: 2,
+        maxMembersPerCluster: 600,
+        forcedByPolicy: true,
+      }
+    )
   } finally {
     harness.close()
   }

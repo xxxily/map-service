@@ -138,6 +138,9 @@ function renderKmlRow (state, item, options = {}) {
   const selected = state.kml.selected.has(item.id)
   const disabled = item.status !== 'active'
   const draggable = options.draggable && !item.isDefault && !disabled
+  const lifecycleMeta = item.status === 'trashed'
+    ? `<span>删除时间：${formatDateTime(item.deletedAt || item.updatedAt)}</span><span>原目录：${escapeHtml(item.directoryName || '未分类')}</span>`
+    : `<span>${formatDateTime(item.updatedAt)}</span>`
   return `
     <article class="account-data-row ${selected ? 'is-selected' : ''} ${draggable ? 'is-draggable' : ''}"
       data-account-kml-file-drop="${escapeHtml(item.id)}"
@@ -151,7 +154,7 @@ function renderKmlRow (state, item, options = {}) {
       <div class="account-row-main">
         <div class="account-row-title"><strong>${escapeHtml(item.name)}</strong>${item.isDefault ? '<span class="account-badge">默认</span>' : ''}<span class="account-badge is-muted">${kmlStatusLabel(item.status)}</span>${item.enabled === false ? '<span class="account-badge is-muted">已隐藏</span>' : ''}</div>
         <p>${escapeHtml(getFeatureDescriptionText(item.description) || '暂无描述')}</p>
-        <div class="account-row-meta"><span>${Number(item.featureCount || 0).toLocaleString()} 个要素</span><span>${formatBytes(item.byteSize)}</span><span>${Number(item.shareReferenceCount || 0)} 个分享引用${Number(item.outdatedShareReferenceCount || 0) > 0 ? `（${Number(item.outdatedShareReferenceCount)} 待同步）` : ''}</span><span>${formatDateTime(item.updatedAt)}</span></div>
+        <div class="account-row-meta"><span>${Number(item.featureCount || 0).toLocaleString()} 个要素</span><span>${formatBytes(item.byteSize)}</span><span>${Number(item.shareReferenceCount || 0)} 个分享引用${Number(item.outdatedShareReferenceCount || 0) > 0 ? `（${Number(item.outdatedShareReferenceCount)} 待同步）` : ''}</span>${lifecycleMeta}</div>
       </div>
       <div class="account-row-actions">
         ${item.status === 'active' ? `
@@ -187,7 +190,7 @@ function renderKmlRows (state) {
         data-account-kml-directory-drop="${escapeHtml(group.id || '')}"
         ${manualOrder && entityDirectory ? `draggable="true" data-account-kml-directory-draggable="true" data-id="${escapeHtml(group.id)}"` : ''}>
         <header class="account-kml-directory-heading">
-          <div><span class="account-directory-drag" aria-hidden="true">${manualOrder && entityDirectory ? '⋮⋮' : '▰'}</span><strong>${escapeHtml(group.name)}</strong><span>${group.items.length}</span></div>
+          <div class="account-kml-directory-title"><span class="account-directory-drag" aria-hidden="true">${manualOrder && entityDirectory ? '⋮⋮' : '▰'}</span><strong>${escapeHtml(group.name)}</strong><span>${group.items.length}</span></div>
           <div>
             ${activeItems.length ? `<button type="button" data-account-action="select-directory-kml" data-id="${escapeHtml(group.id || '')}" data-selected="${allSelected}">${allSelected ? '取消全选' : '全选目录'}</button>` : ''}
             ${capabilities.canWriteKml && state.kml.status !== 'trashed' ? `<button type="button" data-account-action="toggle-directory-visibility" data-id="${escapeHtml(group.id || '')}" data-enabled="${nextVisibility}" title="${nextVisibility ? '显示' : '隐藏'}目录文件">${group.visibilityState === 'mixed' ? '部分显示' : nextVisibility ? '显示' : '隐藏'}</button>` : ''}
@@ -221,9 +224,11 @@ function renderKml (state) {
           ${canImportTwoBulu ? '<button type="button" class="account-secondary-button" data-account-action="import-2bulu">从两步路导入</button>' : ''}
           <button type="button" class="account-secondary-button" data-account-action="migrate-local">迁移本地数据</button>
           <button type="button" class="account-primary-button" data-account-action="create-kml">新建 KML</button>
+          <button type="button" class="account-secondary-button" data-account-action="open-kml-trash">回收站${state.kml.trashCount ? ` (${state.kml.trashCount})` : ''}</button>
         </div>` : '<span class="account-badge is-muted">只读 KML</span>'}
       </div>
       <div class="account-toolbar">
+        ${state.kml.status === 'trashed' ? '<button type="button" class="account-link-button" data-account-action="back-kml-active">返回使用中 KML</button>' : ''}
         <form data-account-form="kml-filter" class="account-search-form">
           <input name="search" value="${escapeHtml(state.kml.search)}" placeholder="搜索名称或描述">
           <select name="status"><option value="active" ${state.kml.status === 'active' ? 'selected' : ''}>使用中</option><option value="trashed" ${state.kml.status === 'trashed' ? 'selected' : ''}>回收站</option><option value="all" ${state.kml.status === 'all' ? 'selected' : ''}>全部</option></select>

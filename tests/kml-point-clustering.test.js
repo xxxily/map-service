@@ -101,3 +101,19 @@ test('输入顺序不影响簇、成员和输出顺序', () => {
   assert.deepEqual(reverse, forward)
   assert.deepEqual(forward.map(item => item.memberIds), [['a', 'b'], ['c', 'd']])
 })
+
+test('密度阈值以下保留独立点位，达到阈值后才强制聚合', () => {
+  const sparse = clusterKmlPoints([
+    point('a', 1, 1),
+    point('b', 2, 2),
+  ], 8, { enabled: true, minClusterPoints: 3 }, project)
+  assert.deepEqual(sparse.map(item => item.type), ['point', 'point'])
+
+  const dense = clusterKmlPoints([
+    point('a', 1, 1),
+    point('b', 2, 2),
+    point('c', 3, 3),
+  ], 8, { enabled: true, minClusterPoints: 3 }, project)
+  assert.equal(dense[0].type, 'cluster')
+  assert.equal(dense[0].count, 3)
+})

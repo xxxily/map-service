@@ -49,6 +49,7 @@ import {
   getShareDirectorySelectionState,
   SHARE_PASSWORD_LENGTH_OPTIONS,
 } from '../src/account/dialogs.js'
+import { renderAccountShell } from '../src/account/views.js'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -229,6 +230,7 @@ test('多 KML 分享只包含所选活跃文件且最多 20 个', () => {
   const documents = Array.from({ length: 23 }, (_, index) => ({
     id: `kml_${index}`,
     status: index === 1 ? 'trashed' : 'active',
+    enabled: index !== 0,
   }))
   const items = buildShareItems(documents.map(item => item.id), documents)
   assert.equal(items.length, 20)
@@ -236,8 +238,22 @@ test('多 KML 分享只包含所选活跃文件且最多 20 个', () => {
   assert.deepEqual(items[0], {
     kmlId: 'kml_0',
     position: 0,
-    visibleByDefault: true,
+    visibleByDefault: false,
   })
+})
+
+test('新加入分享的 KML 继承源文件显隐状态', () => {
+  assert.deepEqual(buildShareItems(new Set(['visible', 'hidden']), [
+    { id: 'visible', status: 'active', enabled: true },
+    { id: 'hidden', status: 'active', enabled: false },
+  ]), [
+    { kmlId: 'visible', position: 0, visibleByDefault: true },
+    { kmlId: 'hidden', position: 1, visibleByDefault: false },
+  ])
+
+  const dialogSource = fs.readFileSync(path.join(projectRoot, 'src/account/dialogs.js'), 'utf8')
+  assert.match(dialogSource, /defaultVisibilityForKml/)
+  assert.doesNotMatch(dialogSource, /selectedItems\.push\(\{ kmlId, visibleByDefault: true, displayName: '' \}\)/)
 })
 
 test('KML 排序和批量回收选择只接受服务端支持的安全范围', () => {
@@ -481,6 +497,10 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
 
   assert.match(viewSource, /name="sort"/)
   assert.match(viewSource, /data-account-action="trash-selected-kml"/)
+  assert.match(viewSource, /data-account-action="open-kml-trash"/)
+  assert.match(viewSource, /data-account-action="back-kml-active"/)
+  assert.match(viewSource, /account-kml-directory-title/)
+  assert.match(appSource, /state\.kml\.trashCount/)
   assert.match(appSource, /for \(const item of selection\.eligible\)/)
   assert.match(appSource, /passwordlessSharingEnabled: passwordlessSharingEnabled\(\)/)
   assert.match(appSource, /spatialUnrestrictedTileMaxZoom: spatialTileZoomMax\(\)/)
@@ -537,6 +557,61 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.doesNotMatch(appSource, /state\.auth = await refreshAuthSession\(\)\s*await loadSessions\(\)/)
   assert.doesNotMatch(sessionSource, /export async function logout \(\) \{[\s\S]*?\} finally \{/)
   assert.doesNotMatch(accountSource, /(?:window\.)?(?:alert|confirm|prompt)\s*\(/)
+})
+
+test('KML 回收站条目显示删除时间和原目录', () => {
+  const html = renderAccountShell({
+    auth: {
+      user: {
+        username: 'trash-owner',
+        displayName: '回收站用户',
+        permissions: ['account.self.read', 'kml.own.write'],
+      },
+      config: {},
+    },
+    activeTab: 'kml',
+    loading: false,
+    notice: '',
+    error: '',
+    kml: {
+      status: 'trashed',
+      search: '',
+      sort: 'updatedAt',
+      order: 'desc',
+      selected: new Set(),
+      trashCount: 2,
+      usage: {},
+      directories: { items: [], uncategorized: { name: '未分类' } },
+      items: [
+        {
+          id: 'kml-in-directory',
+          name: '已删除路线',
+          status: 'trashed',
+          directoryId: 'directory-a',
+          directoryName: '旧项目',
+          deletedAt: '2026-08-27T02:30:00.000Z',
+          updatedAt: '2026-08-26T01:00:00.000Z',
+          featureCount: 8,
+          byteSize: 1024,
+        },
+        {
+          id: 'kml-uncategorized',
+          name: '未分类文件',
+          status: 'trashed',
+          deletedAt: '2026-08-27T03:30:00.000Z',
+          updatedAt: '2026-08-26T01:00:00.000Z',
+          featureCount: 2,
+          byteSize: 512,
+        },
+      ],
+    },
+  })
+
+  assert.match(html, /删除时间：/)
+  assert.match(html, /原目录：旧项目/)
+  assert.match(html, /原目录：未分类/)
+  assert.match(html, /data-account-action="restore-kml"/)
+  assert.match(html, /data-account-action="delete-kml"/)
 })
 
 test('分享密码生成器支持长度和特殊字符选项，并排除 URL 查询分隔符', () => {
