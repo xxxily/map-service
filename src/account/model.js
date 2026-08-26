@@ -108,6 +108,67 @@ export function normalizePagedResult (result) {
   }
 }
 
+export function normalizeCompletePagedResult (result, options = {}) {
+  const requestedPage = Number(options.page || 1)
+  const requestedLimit = Number(options.limit || 100)
+  const fail = message => {
+    throw Object.assign(new Error(message), { code: 'KML_LIST_INCOMPLETE' })
+  }
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.items)) {
+    fail('KML 文件列表响应不完整，已停止加载')
+  }
+  const total = Number(result.total)
+  const page = Number(result.page ?? requestedPage)
+  const limit = Number(result.limit ?? requestedLimit)
+  if (!Number.isSafeInteger(total) || total < 0 || page !== requestedPage || limit !== requestedLimit) {
+    fail('KML 文件列表分页参数不正确，已停止加载')
+  }
+  if (result.items.length > requestedLimit || result.items.length > total) {
+    fail('KML 文件列表条目数量不正确，已停止加载')
+  }
+  if (result.items.some(item => !item || typeof item !== 'object' || !String(item.id || ''))) {
+    fail('KML 文件列表包含无效文件，已停止加载')
+  }
+  return { ...result, items: result.items, page, limit, total }
+}
+
+export async function loadCompleteKmlPages (requestPage, options = {}) {
+  const limit = Number(options.limit || 100)
+  const maxPages = Number(options.maxPages || 1000)
+  if (!(requestPage instanceof Function) || !Number.isSafeInteger(limit) || limit < 1 ||
+      !Number.isSafeInteger(maxPages) || maxPages < 1) {
+    throw Object.assign(new Error('KML 文件分页加载参数不正确'), { code: 'KML_LIST_INCOMPLETE' })
+  }
+  const items = []
+  const seenIds = new Set()
+  let total = null
+  let usage = {}
+  for (let page = 1; page <= maxPages; page += 1) {
+    const result = normalizeCompletePagedResult(await requestPage({ page, limit }), { page, limit })
+    if (total === null) total = result.total
+    if (result.total !== total) {
+      throw Object.assign(new Error('KML 文件列表在加载期间发生变化，已停止加载'), { code: 'KML_LIST_CHANGED' })
+    }
+    const expectedCount = Math.min(limit, total - items.length)
+    if (result.items.length !== expectedCount) {
+      throw Object.assign(new Error('KML 文件列表分页不完整，已停止加载'), { code: 'KML_LIST_INCOMPLETE' })
+    }
+    for (const item of result.items) {
+      const id = String(item.id)
+      if (seenIds.has(id)) {
+        throw Object.assign(new Error('KML 文件列表包含重复文件，已停止加载'), { code: 'KML_LIST_INCOMPLETE' })
+      }
+      seenIds.add(id)
+    }
+    items.push(...result.items)
+    usage = result.usage || usage
+    if (items.length === total) {
+      return { items, page: 1, limit: items.length || limit, total, usage }
+    }
+  }
+  throw Object.assign(new Error('KML 文件列表分页不完整，已停止加载'), { code: 'KML_LIST_INCOMPLETE' })
+}
+
 export function registrationEnabled (config) {
   return config?.registration?.enabled === true || config?.registration?.mode === 'open'
 }

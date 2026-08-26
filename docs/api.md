@@ -1273,6 +1273,23 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 
 分享 `POST/PUT /api/v1/kml/shares` 的 `items` 兼容 `{kmlId}`，也接受 `{directoryId}`；目录项在保存时展开为当前 active 文件并按目录顺序去重。`viewConfig.kmlPointClustering` 的默认值为 `{enabled:false}`，完整字段与边界见[需求文档](./requirements/kml-directory-ordering-and-share-point-clustering.md)。公开分享 manifest 只返回渲染所需的目录 ID/名称和归一化聚合配置。
 
+### `POST /api/v1/kml/sync`
+
+同步个人 KML 文件的创建、更新、回收站和恢复操作，请求体为 `{operations:[...]}`，单次 1–100 条。每条操作的 `action` 支持 `create`、`update`、`trash` 、`restore` 和 `deletePermanent`。
+
+为防止页面加载中的不完整列表误将文件移入回收站，只要请求包含任意 `trash`，都必须显式传递顶层字段 `deletionIntent`，值为 `user-confirmed` 或 `user-confirmed-batch`；该字段只能由用户确认删除的界面设置。单条和批量删除均执行此校验。
+
+未带确认标记的回收站请求（单条或批量）返回 HTTP `409`：
+
+```json
+{
+  "error": {
+    "code": "KML_DELETE_CONFIRMATION_REQUIRED",
+    "message": "移入回收站前需要用户确认"
+  }
+}
+```
+
 ### `GET /api/v1/kml/media?url=<encoded-url>`
 
 获取固定旧图片下载地址的兼容响应。该接口不是任意 URL 代理，仅接受完整 URL 编码后的

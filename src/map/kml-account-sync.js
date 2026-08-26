@@ -8,6 +8,9 @@ import {
 } from './kml-conflict-merge.js'
 import { getKmlAccountDraftStore } from './kml-account-draft-store.js'
 
+let apiRequestForSync = apiRequest
+let refreshAuthSessionForSync = refreshAuthSession
+
 let accountMode = false
 let accountCanWrite = false
 let accountCanManageShares = false
@@ -15,6 +18,11 @@ let accountUserId = ''
 let snapshots = new Map()
 let unconfirmedCreateIds = new Set()
 let pendingCreateDeletes = new Set()
+// A file may only be moved to the recycle bin after an explicit user action.
+// Keep this separate from create tombstones: the latter are idempotency
+// bookkeeping for a local file that has not received a server id yet.
+let pendingDeleteIntents = new Set()
+let pendingDeletionIntent = ''
 let pendingSyncOperations = []
 let syncTimer = null
 let syncInFlight = false
@@ -29,7 +37,9 @@ let pendingConflict = null
 let lifecycleBound = false
 let latestSyncState = { state: 'guest', detail: {} }
 let embeddedAuthRequired = false
+let accountLoadReady = false
 let latestDraftWrite = Promise.resolve(true)
+let draftPersistenceQueue = Promise.resolve()
 let workingFilesReplacementHandler = null
 const KML_RECOVERY_STRATEGIES = new Set([
   'discard',
@@ -38,6 +48,24 @@ const KML_RECOVERY_STRATEGIES = new Set([
   'reload-conflicts',
   'save-as-conflicts',
 ])
+const KML_DELETION_INTENTS = new Set(['user-confirmed', 'user-confirmed-batch'])
+
+function isValidKmlDeletionIntent (value) {
+  return KML_DELETION_INTENTS.has(String(value || ''))
+}
+
+function normalizeDeletionIntent (value) {
+  const intent = String(value || '')
+  return isValidKmlDeletionIntent(intent) ? intent : ''
+}
+
+export function setKmlAccountApiForTests (request) {
+  apiRequestForSync = request instanceof Function ? request : apiRequest
+}
+
+export function setKmlAccountAuthForTests (request) {
+  refreshAuthSessionForSync = request instanceof Function ? request : refreshAuthSession
+}
 
 function cloneValue (value) {
   if (typeof structuredClone === 'function') return structuredClone(value)
@@ -227,6 +255,43 @@ function snapshotForDocument (document, localId = document.id) {
   }
 }
 
+function localKeyForDocument (document) {
+  // Server IDs are the canonical identity for an account document.  The
+  // syncClientId is only an idempotency key for create; using it as the
+  // working-set key after the create response causes a false create+trash
+  // pair on the next load.
+  return String(document?.id || document?.serverId || document?.syncClientId || '')
+}
+
+function normalizedIdSet (values) {
+  return new Set(Array.from(values || [], value => String(value || '')).filter(Boolean))
+}
+
+function idsForFiles (files) {
+  return new Set((Array.isArray(files) ? files : [])
+    .map(file => String(file?.id || ''))
+    .filter(Boolean))
+}
+
+function combinedDeleteIds () {
+  return new Set([...pendingCreateDeletes, ...pendingDeleteIntents])
+}
+
+function findSnapshotById (snapshotValues, id) {
+  const normalizedId = String(id || '')
+  if (!normalizedId) return null
+  return snapshotValues.get(normalizedId) || [...snapshotValues.values()]
+    .find(snapshot => String(snapshot?.serverId || '') === normalizedId) || null
+}
+
+function committedCreateLocalId (document, draftIds) {
+  const serverId = String(document?.id || '')
+  if (serverId && draftIds.has(serverId)) return serverId
+  const syncClientId = String(document?.syncClientId || '')
+  if (syncClientId && draftIds.has(syncClientId)) return syncClientId
+  return ''
+}
+
 function snapshotMap (values = []) {
   if (values instanceof Map) return new Map(values)
   return new Map((values || []).flatMap(value => {
@@ -249,11 +314,13 @@ export function registerKmlAccountDocumentSnapshot (currentSnapshots, document, 
   return next
 }
 
-function normalizePendingSyncOperations (values = []) {
+function normalizePendingSyncOperations (values = [], options = {}) {
   if (!Array.isArray(values)) return []
+  const allowTrash = options.allowTrash !== false
   return values.slice(0, 100).flatMap((value) => {
     const action = String(value?.action || '')
     if (!['create', 'update', 'trash', 'restore'].includes(action)) return []
+    if (action === 'trash' && !allowTrash) return []
     const kmlId = String(value?.kmlId || '')
     const clientId = String(value?.clientId || '')
     if (action === 'create') {
@@ -271,32 +338,70 @@ function normalizePendingSyncOperations (values = []) {
   })
 }
 
+function recoveryDeletionState (draft = {}) {
+  const deletionIntent = normalizeDeletionIntent(draft?.deletionIntent)
+  const rawPendingOperations = normalizePendingSyncOperations(draft?.pendingOperations)
+  const rawDeletedClientIds = [...new Set((draft?.deletedClientIds || [])
+    .map(id => String(id || ''))
+    .filter(Boolean))]
+  const rawDeletedFileIds = [...new Set((draft?.deletedFileIds || [])
+    .map(id => String(id || ''))
+    .filter(Boolean))]
+  const rawTrashOperations = rawPendingOperations.filter(operation => operation.action === 'trash')
+  if (deletionIntent) {
+    return {
+      deletionIntent,
+      deletedClientIds: rawDeletedClientIds,
+      deletedFileIds: rawDeletedFileIds,
+      pendingOperations: rawPendingOperations,
+      ignoredDeletionCount: 0,
+    }
+  }
+  return {
+    deletionIntent: '',
+    deletedClientIds: [],
+    deletedFileIds: [],
+    pendingOperations: rawPendingOperations.filter(operation => operation.action !== 'trash'),
+    ignoredDeletionCount: Math.max(
+      Number(draft?.ignoredDeletionCount || 0),
+      rawDeletedClientIds.length + rawDeletedFileIds.length + rawTrashOperations.length,
+    ),
+  }
+}
+
 function snapshotsWithCommittedCreates (serverFiles, draft) {
   const next = snapshotMap(draft?.snapshots)
   const draftIds = new Set([
     ...(draft?.files || []).map(file => String(file?.id || '')).filter(Boolean),
     ...(draft?.deletedClientIds || []).map(id => String(id || '')).filter(Boolean),
+    ...(draft?.deletedFileIds || []).map(id => String(id || '')).filter(Boolean),
   ])
   const knownServerIds = new Set(Array.from(next.values(), snapshot => String(snapshot.serverId || '')))
   for (const document of serverFiles || []) {
-    const localId = String(document?.syncClientId || '')
+    // A create response may arrive without its HTTP response reaching the
+    // browser. In that recovery-only case syncClientId is the sole bridge to
+    // the local draft; ordinary server lists always use the server id.
     const serverId = String(document?.id || '')
-    if (!localId || !serverId || !draftIds.has(localId) || next.has(localId) || knownServerIds.has(serverId)) continue
+    if (!serverId || knownServerIds.has(serverId)) continue
+    const localId = committedCreateLocalId(document, draftIds)
+    if (!localId || next.has(localId)) continue
     next.set(localId, snapshotForDocument(document, localId))
     knownServerIds.add(serverId)
   }
   return next
 }
 
-export function buildKmlSyncOperations (files, currentSnapshots = snapshots, deletedClientIds = []) {
+export function buildKmlSyncOperations (files, currentSnapshots = snapshots, deletedClientIds = [], deletedFileIds = []) {
   const operations = []
   const defaultRestores = []
   const activeIds = new Set()
-  files.forEach(file => {
+  const snapshotValues = snapshotMap(currentSnapshots)
+  const sourceFiles = Array.isArray(files) ? files : []
+  sourceFiles.forEach(file => {
     const localId = String(file.id || '')
     if (!localId) return
     activeIds.add(localId)
-    const snapshot = currentSnapshots.get(localId)
+    const snapshot = snapshotValues.get(localId)
     const data = serializableKml(file)
     const hash = JSON.stringify(data)
     if (!snapshot) {
@@ -307,6 +412,8 @@ export function buildKmlSyncOperations (files, currentSnapshots = snapshots, del
         : { action: 'restore', clientId: localId }
       operations.push(restore)
       if (data.isDefault === true) defaultRestores.push(restore)
+    } else if (!snapshot.serverId) {
+      operations.push({ action: 'create', clientId: localId, data })
     } else if (snapshot.hash !== hash) {
       operations.push({
         action: 'update',
@@ -315,15 +422,26 @@ export function buildKmlSyncOperations (files, currentSnapshots = snapshots, del
       })
     }
   })
-  currentSnapshots.forEach(snapshot => {
-    if (!activeIds.has(snapshot.localId) && snapshot.status !== 'trashed') {
-      operations.push({ action: 'trash', kmlId: snapshot.serverId })
-    }
-  })
-  for (const clientId of deletedClientIds || []) {
-    const normalizedId = String(clientId || '')
-    if (!normalizedId || activeIds.has(normalizedId) || currentSnapshots.has(normalizedId)) continue
-    operations.push({ action: 'trash', clientId: normalizedId })
+  const explicitDeletes = new Set()
+  for (const deletedId of deletedClientIds || []) {
+    explicitDeletes.add(String(deletedId || ''))
+  }
+  for (const deletedId of deletedFileIds || []) {
+    explicitDeletes.add(String(deletedId || ''))
+  }
+  const deleteTargets = new Set()
+  for (const deletedId of explicitDeletes) {
+    const normalizedId = String(deletedId || '')
+    if (!normalizedId || activeIds.has(normalizedId)) continue
+    const snapshot = findSnapshotById(snapshotValues, normalizedId)
+    if (snapshot?.status === 'trashed') continue
+    const operation = snapshot?.serverId
+      ? { action: 'trash', kmlId: snapshot.serverId }
+      : { action: 'trash', clientId: normalizedId }
+    const target = operation.kmlId ? `kml:${operation.kmlId}` : `client:${operation.clientId}`
+    if (deleteTargets.has(target)) continue
+    deleteTargets.add(target)
+    operations.push(operation)
   }
   // Restoring a file always returns it as non-default. When that local file is
   // intended to become the new default, restore it in an isolated first phase;
@@ -338,6 +456,68 @@ export function buildKmlSyncOperations (files, currentSnapshots = snapshots, del
     else remainingOperations.push(operation)
   })
   return [...defaultPromotions, ...remainingOperations]
+}
+
+function deleteIntentIdsForSnapshot (snapshotValues, id) {
+  const snapshot = findSnapshotById(snapshotValues, id)
+  if (!snapshot) return [String(id || '')].filter(Boolean)
+  return [...new Set([snapshot.localId, snapshot.serverId].map(value => String(value || '')).filter(Boolean))]
+}
+
+function addExplicitDeleteIntents (ids = [], options = {}) {
+  const snapshotValues = snapshotMap(snapshots)
+  for (const rawId of ids || []) {
+    const id = String(rawId || '')
+    if (!id) continue
+    const snapshot = findSnapshotById(snapshotValues, id)
+    const intentIds = deleteIntentIdsForSnapshot(snapshotValues, id)
+    if (snapshot?.serverId) {
+      intentIds.forEach(intentId => pendingDeleteIntents.add(intentId))
+      pendingCreateDeletes.delete(snapshot.localId)
+    } else {
+      pendingCreateDeletes.add(id)
+    }
+  }
+  const deletionIntent = normalizeDeletionIntent(options.deletionIntent)
+  if (deletionIntent) pendingDeletionIntent = deletionIntent
+}
+
+function replaceDeleteIntentState (options = {}) {
+  const deletionIntent = normalizeDeletionIntent(options.deletionIntent)
+  pendingCreateDeletes = deletionIntent ? normalizedIdSet(options.deletedClientIds) : new Set()
+  pendingDeleteIntents = deletionIntent ? normalizedIdSet(options.deletedFileIds) : new Set()
+  pendingDeletionIntent = deletionIntent
+}
+
+function updateDeleteIntentState (files, options = {}) {
+  const deletionIntent = normalizeDeletionIntent(options.deletionIntent)
+  if (options.replaceDeleteIntents) {
+    replaceDeleteIntentState({ ...options, deletionIntent })
+  }
+  if (deletionIntent) {
+    const intentOptions = { ...options, deletionIntent }
+    addExplicitDeleteIntents(options.deletedIds, intentOptions)
+    if (Array.isArray(options.deletedClientIds) && !options.replaceDeleteIntents) {
+      addExplicitDeleteIntents(options.deletedClientIds, intentOptions)
+    }
+    if (Array.isArray(options.deletedFileIds) && !options.replaceDeleteIntents) {
+      addExplicitDeleteIntents(options.deletedFileIds, intentOptions)
+    }
+  }
+  for (const id of idsForFiles(files)) removeExplicitDeleteIntents([id])
+}
+
+function removeExplicitDeleteIntents (ids = []) {
+  const snapshotValues = snapshotMap(snapshots)
+  for (const rawId of ids || []) {
+    const id = String(rawId || '')
+    if (!id) continue
+    deleteIntentIdsForSnapshot(snapshotValues, id).forEach(intentId => {
+      pendingDeleteIntents.delete(intentId)
+      pendingCreateDeletes.delete(intentId)
+    })
+  }
+  if (pendingDeleteIntents.size === 0 && pendingCreateDeletes.size === 0) pendingDeletionIntent = ''
 }
 
 export function reduceKmlSyncResult (currentSnapshots, result) {
@@ -363,7 +543,7 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
 
     if (entry.action === 'update' && entry.document) {
       const previous = findByServerId(entry.document.id)
-      const localId = String(previous?.localId || entry.document.syncClientId || entry.document.id || '')
+      const localId = String(previous?.localId || entry.document.id || '')
       if (localId) {
         const incoming = snapshotForDocument(entry.document, localId)
         const current = nextSnapshots.get(localId)
@@ -405,7 +585,7 @@ export function reduceKmlSyncResult (currentSnapshots, result) {
     if (entry.action === 'restore') {
       const clientId = String(entry.clientId || '')
       const previous = entry.document ? findByServerId(entry.document.id) : null
-      const localId = String(clientId || previous?.localId || entry.document?.syncClientId || entry.document?.id || '')
+      const localId = String(clientId || previous?.localId || entry.document?.id || '')
       if (entry.document && localId) {
         const incoming = snapshotForDocument(entry.document, localId)
         const current = nextSnapshots.get(localId)
@@ -439,6 +619,58 @@ function localIdForOperation (operation, files, currentSnapshots) {
   return String([...snapshotMap(currentSnapshots).values()]
     .find(snapshot => String(snapshot.serverId || '') === serverId)?.localId ||
     files.find(file => String(file?.serverId || file?.id || '') === serverId)?.id || '')
+}
+
+function uncertainPresenceOperations (operations = []) {
+  const compensated = []
+  const seen = new Set()
+  const add = operation => {
+    if (!operation || !operation.action) return
+    const target = operation.kmlId
+      ? `kml:${operation.kmlId}`
+      : `client:${operation.clientId || ''}`
+    const key = `${operation.action}:${target}`
+    if (seen.has(key)) return
+    seen.add(key)
+    compensated.push(operation)
+  }
+
+  for (const operation of operations) {
+    const action = String(operation?.action || '')
+    if (action !== 'trash' && action !== 'restore') continue
+    const localId = localIdForOperation(operation, latestFiles, snapshots) ||
+      String(operation?.clientId || operation?.kmlId || '')
+    if (!localId) continue
+    const fileExists = latestFiles.some(file => String(file?.id || '') === localId)
+    const snapshot = findSnapshotById(snapshots, localId)
+    const serverId = String(operation?.kmlId || snapshot?.serverId || '')
+    const clientId = String(operation?.clientId || (!serverId ? localId : '') || '')
+    const target = serverId ? { kmlId: serverId } : (clientId ? { clientId } : null)
+    if (!target) continue
+
+    if (fileExists) {
+      // The user's latest intent is presence. Compensate an uncertain trash
+      // (and keep restore idempotent when the server never trashed it).
+      add({ action: 'restore', ...target })
+      continue
+    }
+
+    // A missing file means the latest intent is deletion only when a valid
+    // explicit marker is still present. Never resurrect implicit/legacy trash
+    // merely because a transport request failed.
+    const intentIds = new Set([
+      localId,
+      serverId,
+      clientId,
+    ].filter(Boolean))
+    const hasDeleteIntent = [...intentIds].some(id =>
+      pendingDeleteIntents.has(id) || pendingCreateDeletes.has(id)
+    )
+    if (hasDeleteIntent && isValidKmlDeletionIntent(pendingDeletionIntent)) {
+      add({ action: 'trash', ...target })
+    }
+  }
+  return compensated
 }
 
 function transportFieldsFromDocument (file, document) {
@@ -526,6 +758,7 @@ export function mergeKmlAccountOrganizationDocument (localFile, snapshot, docume
 }
 
 export function buildKmlRecoveryDraft (userId, files, currentSnapshots, options = {}) {
+  const deletionIntent = normalizeDeletionIntent(options.deletionIntent)
   const draft = {
     version: 2,
     userId: String(userId || ''),
@@ -534,9 +767,15 @@ export function buildKmlRecoveryDraft (userId, files, currentSnapshots, options 
     updatedAt: options.updatedAt || new Date().toISOString(),
     files: cloneValue(Array.isArray(files) ? files : []),
     snapshots: Array.from(snapshotMap(currentSnapshots).values(), value => cloneValue(value)),
-    deletedClientIds: [...new Set(Array.from(options.deletedClientIds || [], id => String(id || '')).filter(Boolean))],
-    pendingOperations: normalizePendingSyncOperations(options.pendingOperations),
+    deletedClientIds: deletionIntent
+      ? [...new Set(Array.from(options.deletedClientIds || [], id => String(id || '')).filter(Boolean))]
+      : [],
+    deletedFileIds: deletionIntent
+      ? [...new Set(Array.from(options.deletedFileIds || [], id => String(id || '')).filter(Boolean))]
+      : [],
+    pendingOperations: normalizePendingSyncOperations(options.pendingOperations, { allowTrash: Boolean(deletionIntent) }),
   }
+  if (deletionIntent) draft.deletionIntent = deletionIntent
   const conflictSession = normalizeConflictSession(options.conflictSession)
   if (conflictSession) draft.conflictSession = conflictSession
   return draft
@@ -550,7 +789,9 @@ function normalizeRecoveryDraft (value, userId) {
     reason: value.reason,
     updatedAt: value.updatedAt,
     deletedClientIds: value.deletedClientIds,
+    deletedFileIds: value.deletedFileIds,
     pendingOperations: value.pendingOperations,
+    deletionIntent: value.deletionIntent,
     conflictSession: value.conflictSession,
   })
   if (value.incompleteWrite) {
@@ -560,6 +801,8 @@ function normalizeRecoveryDraft (value, userId) {
       Number(value.generation || 0)
     )
   }
+  const ignoredDeletionCount = recoveryDeletionState(value).ignoredDeletionCount
+  if (ignoredDeletionCount > 0) normalized.ignoredDeletionCount = ignoredDeletionCount
   if (Number(value.version) === 1) normalized.legacyVersion = 1
   return normalized
 }
@@ -585,9 +828,22 @@ function newestRecoveryDraft (values, userId) {
 }
 
 export function analyzeKmlRecoveryDraft (serverFiles, draft) {
-  const draftSnapshots = snapshotsWithCommittedCreates(serverFiles, draft)
-  const operations = buildKmlSyncOperations(draft?.files || [], draftSnapshots, draft?.deletedClientIds)
-  const pendingOperations = normalizePendingSyncOperations(draft?.pendingOperations)
+  const deletionState = recoveryDeletionState(draft)
+  const normalizedDraft = {
+    ...(draft || {}),
+    deletedClientIds: deletionState.deletedClientIds,
+    deletedFileIds: deletionState.deletedFileIds,
+    pendingOperations: deletionState.pendingOperations,
+    deletionIntent: deletionState.deletionIntent,
+  }
+  const draftSnapshots = snapshotsWithCommittedCreates(serverFiles, normalizedDraft)
+  const operations = buildKmlSyncOperations(
+    normalizedDraft.files || [],
+    draftSnapshots,
+    deletionState.deletedClientIds,
+    deletionState.deletedFileIds,
+  )
+  const pendingOperations = deletionState.pendingOperations
   const serverById = new Map((serverFiles || []).map(file => [String(file.id || ''), file]))
   const snapshotByServerId = new Map(Array.from(draftSnapshots.values(), item => [item.serverId, item]))
   const pendingPresenceLocalIds = [...new Set(pendingOperations
@@ -618,6 +874,7 @@ export function analyzeKmlRecoveryDraft (serverFiles, draft) {
     pendingOperations,
     pendingPresenceLocalIds,
     conflictedLocalIds,
+    ignoredDeletionCount: deletionState.ignoredDeletionCount,
     createdLocalIds: operations.filter(item => item.action === 'create').map(item => item.clientId),
     updatedLocalIds: operations.filter(item => item.action === 'update')
       .map(item => snapshotByServerId.get(item.kmlId)?.localId)
@@ -656,12 +913,44 @@ function mappedServerFiles (serverFiles, draftSnapshots) {
   })
 }
 
+function recoveryDraftForServer (serverFiles, draft) {
+  const deletionState = recoveryDeletionState(draft)
+  const normalized = {
+    ...(draft || {}),
+    deletedClientIds: deletionState.deletedClientIds,
+    deletedFileIds: deletionState.deletedFileIds,
+    pendingOperations: deletionState.pendingOperations,
+    deletionIntent: deletionState.deletionIntent,
+  }
+  const draftSnapshots = snapshotsWithCommittedCreates(serverFiles, normalized)
+  if (!deletionState.ignoredDeletionCount) {
+    return { draft: normalized, snapshots: draftSnapshots }
+  }
+  const files = cloneValue(Array.isArray(normalized.files) ? normalized.files : [])
+  const presentIds = new Set(files.map(file => String(file?.id || '')).filter(Boolean))
+  for (const snapshot of draftSnapshots.values()) {
+    const localId = String(snapshot?.localId || '')
+    const serverId = String(snapshot?.serverId || '')
+    if (!localId || presentIds.has(localId) || !serverId) continue
+    const serverFile = (serverFiles || []).find(file => String(file?.id || '') === serverId)
+    if (!serverFile || serverFile.status === 'trashed') continue
+    files.push({ ...cloneValue(serverFile), id: localId, serverId })
+    presentIds.add(localId)
+  }
+  return {
+    draft: { ...normalized, files, ignoredDeletionCount: deletionState.ignoredDeletionCount },
+    snapshots: draftSnapshots,
+  }
+}
+
 export function buildKmlRecoveryResolution (serverFiles, draft, strategy, options = {}) {
   if (!KML_RECOVERY_STRATEGIES.has(strategy)) throw new Error('KML 恢复处理方式无效')
-  const analysis = analyzeKmlRecoveryDraft(serverFiles, draft)
-  const draftFiles = cloneValue(draft?.files || [])
+  const safeRecovery = recoveryDraftForServer(serverFiles, draft)
+  const normalizedDraft = safeRecovery.draft
+  const analysis = analyzeKmlRecoveryDraft(serverFiles, normalizedDraft)
+  const draftFiles = cloneValue(normalizedDraft?.files || [])
   const draftById = new Map(draftFiles.map(file => [String(file.id || ''), file]))
-  const draftSnapshots = snapshotsWithCommittedCreates(serverFiles, draft)
+  const draftSnapshots = safeRecovery.snapshots
   const serverViews = mappedServerFiles(serverFiles, draftSnapshots)
   const serverByLocalId = new Map(serverViews.map(file => [String(file.id || ''), file]))
   const idFactory = options.idFactory || defaultRecoveryId
@@ -681,7 +970,10 @@ export function buildKmlRecoveryResolution (serverFiles, draft, strategy, option
     : (['reload-conflicts', 'save-as-conflicts'].includes(strategy)
         ? normalizedPendingOperations.filter(operation => !conflictIds.has(pendingOperationLocalId(operation)))
         : [])
-  const draftDeletedClientIds = [...new Set((draft?.deletedClientIds || [])
+  const draftDeletedClientIds = [...new Set((normalizedDraft.deletedClientIds || [])
+    .map(id => String(id || ''))
+    .filter(Boolean))]
+  const draftDeletedFileIds = [...new Set((normalizedDraft.deletedFileIds || [])
     .map(id => String(id || ''))
     .filter(Boolean))]
   const buildResolutionSnapshotMap = (options = {}) => {
@@ -707,6 +999,8 @@ export function buildKmlRecoveryResolution (serverFiles, draft, strategy, option
       shouldSync: false,
       blockedByConflict: false,
       deletedClientIds: [],
+      deletedFileIds: [],
+      deletionIntent: '',
       pendingOperations: [],
     }
   }
@@ -725,6 +1019,8 @@ export function buildKmlRecoveryResolution (serverFiles, draft, strategy, option
       shouldSync: copies.length > 0,
       blockedByConflict: false,
       deletedClientIds: [],
+      deletedFileIds: [],
+      deletionIntent: '',
       pendingOperations: [],
     }
   }
@@ -781,32 +1077,45 @@ export function buildKmlRecoveryResolution (serverFiles, draft, strategy, option
   })
   const activeIds = new Set(files.map(file => String(file?.id || '')).filter(Boolean))
   const deletedClientIds = draftDeletedClientIds.filter(id => !activeIds.has(id))
+  const deletedFileIds = draftDeletedFileIds.filter(id => !activeIds.has(id))
   return {
     files,
     snapshots: snapshotList(nextSnapshots),
     analysis,
     copiedCount: copies.length,
     shouldSync: !analysis.conflictedLocalIds.length || strategy !== 'restore'
-      ? replayPendingOperations.length > 0 || buildKmlSyncOperations(files, nextSnapshots, deletedClientIds).length > 0
+      ? replayPendingOperations.length > 0 || buildKmlSyncOperations(files, nextSnapshots, deletedClientIds, deletedFileIds).length > 0
       : false,
     blockedByConflict: strategy === 'restore' && analysis.conflictedLocalIds.length > 0,
     deletedClientIds,
+    deletedFileIds,
+    deletionIntent: deletedClientIds.length || deletedFileIds.length
+      ? normalizedDraft.deletionIntent
+      : '',
     pendingOperations: replayPendingOperations,
   }
 }
 
 async function loadDocuments (items, concurrency = 4) {
+  if (!Array.isArray(items)) throw Object.assign(new Error('KML 文件清单格式不正确'), { code: 'KML_LIST_INVALID' })
+  if (items.some(item => !item || typeof item !== 'object' || !String(item.id || ''))) {
+    throw Object.assign(new Error('KML 文件清单包含无效文件'), { code: 'KML_LIST_INVALID' })
+  }
   const results = new Array(items.length)
   let nextIndex = 0
   async function worker () {
     while (nextIndex < items.length) {
       const index = nextIndex
       nextIndex += 1
-      results[index] = await apiRequest(`/kml/files/${encodeURIComponent(items[index].id)}`)
+      const document = await apiRequestForSync(`/kml/files/${encodeURIComponent(items[index].id)}`)
+      if (!document || typeof document !== 'object' || String(document.id || '') !== String(items[index].id)) {
+        throw Object.assign(new Error('KML 文件详情不完整，已停止同步'), { code: 'KML_DETAILS_INCOMPLETE' })
+      }
+      results[index] = document
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
-  return results.filter(Boolean)
+  return results
 }
 
 async function loadAllAccountDocuments (options = {}) {
@@ -816,26 +1125,56 @@ async function loadAllAccountDocuments (options = {}) {
   const items = []
   let page = 1
   let usage = null
+  let expectedTotal = null
   while (page <= 100) {
-    const list = await apiRequest('/kml/files', {
+    const list = await apiRequestForSync('/kml/files', {
       query: { page, limit: 100, status },
     })
-    const pageItems = Array.isArray(list?.items) ? list.items : []
+    if (!list || typeof list !== 'object' || !Array.isArray(list.items)) {
+      throw Object.assign(new Error('KML 文件列表响应不完整，已停止同步'), { code: 'KML_LIST_INCOMPLETE' })
+    }
+    const total = Number(list.total)
+    if (!Number.isSafeInteger(total) || total < 0) {
+      throw Object.assign(new Error('KML 文件总数响应不正确，已停止同步'), { code: 'KML_LIST_INCOMPLETE' })
+    }
+    if (expectedTotal === null) expectedTotal = total
+    if (total !== expectedTotal) {
+      throw Object.assign(new Error('KML 文件列表在加载期间发生变化，已停止同步'), { code: 'KML_LIST_CHANGED' })
+    }
+    const pageItems = list.items
+    if (pageItems.some(item => !item || typeof item !== 'object' || !String(item.id || ''))) {
+      throw Object.assign(new Error('KML 文件列表包含无效文件，已停止同步'), { code: 'KML_LIST_INCOMPLETE' })
+    }
     items.push(...pageItems)
     usage = list?.usage || usage
-    const total = Number(list?.total || items.length)
-    if (!pageItems.length || items.length >= total || pageItems.length < 100) break
+    if (items.length > total) {
+      throw Object.assign(new Error('KML 文件列表数量超过服务端总数，已停止同步'), { code: 'KML_LIST_INCOMPLETE' })
+    }
+    if (items.length >= expectedTotal) break
+    if (!pageItems.length || pageItems.length < 100) {
+      throw Object.assign(new Error('KML 文件列表分页不完整，已停止同步'), { code: 'KML_LIST_INCOMPLETE' })
+    }
     page += 1
+  }
+  if (expectedTotal === null || items.length !== expectedTotal) {
+    throw Object.assign(new Error('KML 文件列表分页不完整，已停止同步'), { code: 'KML_LIST_INCOMPLETE' })
   }
   return { files: await loadDocuments(items), usage }
 }
 
 async function loadKmlDirectories () {
-  const result = await apiRequest('/kml/directories')
+  const result = await apiRequestForSync('/kml/directories')
+  if (!result || typeof result !== 'object' || !Array.isArray(result.items)) {
+    throw Object.assign(new Error('KML 目录列表响应不完整，已停止同步'), { code: 'KML_DIRECTORY_LIST_INCOMPLETE' })
+  }
   return {
-    items: Array.isArray(result?.items) ? result.items : [],
+    items: result.items,
     uncategorized: result?.uncategorized || { id: null, name: '未分类', position: 0 },
   }
+}
+
+export async function loadKmlAccountDocumentsForTests (options = {}) {
+  return loadAllAccountDocuments(options)
 }
 
 function rebaseSnapshotsToServer (serverFiles, currentSnapshots = snapshots) {
@@ -847,28 +1186,30 @@ function rebaseSnapshotsToServer (serverFiles, currentSnapshots = snapshots) {
 }
 
 export function mergeKmlRecoveryDraft (draft, serverFiles, options = {}) {
-  const legacy = Number(draft?.legacyVersion || draft?.version || 0) < 2 ||
-    (draft?.snapshots || []).some(snapshot => snapshot?.serverId && snapshot?.base == null)
+  const safeRecovery = recoveryDraftForServer(serverFiles, draft)
+  const safeDraft = safeRecovery.draft
+  const legacy = Number(safeDraft?.legacyVersion || safeDraft?.version || 0) < 2 ||
+    (safeDraft?.snapshots || []).some(snapshot => snapshot?.serverId && snapshot?.base == null)
   if (legacy) {
     return {
-      files: cloneValue(draft?.files || []),
+      files: cloneValue(safeDraft?.files || []),
       conflicts: [],
       autoMergedCount: 0,
       conflictSummary: { total: 0, files: 0, fields: 0, features: 0, resources: 0, orders: 0 },
       serverFiles: cloneValue(serverFiles || []),
       usage: options.usage || null,
-      draft: cloneValue(draft),
+      draft: cloneValue(safeDraft),
       legacy: true,
       supported: false,
     }
   }
-  const merge = mergeKmlFileSets(draft?.files || [], serverFiles, draft?.snapshots || [])
+  const merge = mergeKmlFileSets(safeDraft?.files || [], serverFiles, safeDraft?.snapshots || [])
   return {
     ...merge,
-    ...(draft?.conflictSession?.retryExhausted ? { retryExhausted: true } : {}),
+    ...(safeDraft?.conflictSession?.retryExhausted ? { retryExhausted: true } : {}),
     serverFiles: cloneValue(serverFiles || []),
     usage: options.usage || null,
-    draft: cloneValue(draft),
+    draft: cloneValue(safeDraft),
   }
 }
 
@@ -885,9 +1226,15 @@ async function attemptAutomaticConflictMerge (draft) {
     reason: 'auto-merge',
     autoMergedCount: Number(prepared.autoMergedCount || 0),
   })
-  pendingCreateDeletes = new Set((draft?.deletedClientIds || []).filter(id => (
-    !latestFiles.some(file => String(file?.id || '') === String(id || ''))
-  )))
+  replaceDeleteIntentState({
+    deletedClientIds: (draft?.deletedClientIds || []).filter(id => (
+      !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+    )),
+    deletedFileIds: (draft?.deletedFileIds || []).filter(id => (
+      !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+    )),
+    deletionIntent: draft?.deletionIntent,
+  })
   pendingSyncOperations = []
   unconfirmedCreateIds = new Set()
   trackUnconfirmedCreates(latestFiles)
@@ -902,7 +1249,7 @@ function snapshotsForServerFiles (serverFiles, draftSnapshots = []) {
   const previousByServerId = new Map(Array.from(snapshotMap(draftSnapshots).values(), item => [item.serverId, item]))
   serverFiles.forEach(document => {
     const previous = previousByServerId.get(String(document.id || ''))
-    const localId = previous?.localId || document.syncClientId || document.id
+    const localId = previous?.localId || localKeyForDocument(document)
     next.set(localId, snapshotForDocument(document, localId))
   })
   return next
@@ -910,6 +1257,7 @@ function snapshotsForServerFiles (serverFiles, draftSnapshots = []) {
 
 function trackUnconfirmedCreates (files) {
   const activeIds = new Set((files || []).map(file => String(file?.id || '')).filter(Boolean))
+  activeIds.forEach(localId => removeExplicitDeleteIntents([localId]))
   activeIds.forEach((localId) => {
     pendingCreateDeletes.delete(localId)
     if (snapshots.has(localId)) unconfirmedCreateIds.delete(localId)
@@ -918,8 +1266,63 @@ function trackUnconfirmedCreates (files) {
   for (const localId of unconfirmedCreateIds) {
     if (activeIds.has(localId)) continue
     unconfirmedCreateIds.delete(localId)
-    pendingCreateDeletes.add(localId)
   }
+}
+
+function freshKmlClientId () {
+  const random = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return `kml-${random}`
+}
+
+function rotateRejectedCreateIds (operations = [], rejectedClientId = '') {
+  const createOperations = operations.filter(operation => operation?.action === 'create' && operation.clientId)
+  const targetId = String(rejectedClientId || '')
+  const targets = targetId
+    ? createOperations.filter(operation => String(operation.clientId) === targetId)
+    : (createOperations.length === 1 ? createOperations : [])
+  if (targets.length !== 1) return false
+  const replacements = new Map()
+  targets.forEach(operation => {
+    const oldId = String(operation.clientId)
+    let nextId = freshKmlClientId()
+    while (replacements.has(nextId) || latestFiles.some(file => String(file?.id || '') === nextId)) {
+      nextId = freshKmlClientId()
+    }
+    replacements.set(oldId, nextId)
+  })
+  latestFiles.forEach(file => {
+    const oldId = String(file?.id || '')
+    const nextId = replacements.get(oldId)
+    if (!nextId) return
+    file.id = nextId
+    // A rejected create has no authoritative server identity. Remove stale
+    // transport fields so the next operation is a fresh create.
+    delete file.serverId
+    delete file.revision
+    delete file.updatedAt
+  })
+  replacements.forEach((nextId, oldId) => {
+    const snapshot = snapshots.get(oldId)
+    if (snapshot) {
+      snapshots.delete(oldId)
+      snapshots.set(nextId, { ...cloneValue(snapshot), localId: nextId, serverId: '' })
+    }
+    if (pendingCreateDeletes.has(oldId)) {
+      pendingCreateDeletes.delete(oldId)
+      pendingCreateDeletes.add(nextId)
+    }
+    if (pendingDeleteIntents.has(oldId)) {
+      pendingDeleteIntents.delete(oldId)
+      pendingDeleteIntents.add(nextId)
+    }
+  })
+  return true
+}
+
+function queueDraftPersistence (operation) {
+  const task = draftPersistenceQueue.then(operation, operation)
+  draftPersistenceQueue = task.catch(() => {})
+  return task
 }
 
 function persistCurrentDraft (reason = 'dirty') {
@@ -929,13 +1332,15 @@ function persistCurrentDraft (reason = 'dirty') {
     generation: draftGeneration,
     reason,
     deletedClientIds: pendingCreateDeletes,
+    deletedFileIds: pendingDeleteIntents,
     pendingOperations: pendingSyncOperations,
+    deletionIntent: pendingDeletionIntent,
     conflictSession: pendingConflict?.merge,
   })
   activeDraft = draft
   if (syncBlockedByConflict) pendingConflict = { ...(pendingConflict || {}), draft: cloneValue(draft) }
-  const persistence = getKmlAccountDraftStore().put(draft)
-  latestDraftWrite = Promise.resolve(persistence).then(
+  const persistence = queueDraftPersistence(() => getKmlAccountDraftStore().put(draft))
+  latestDraftWrite = persistence.then(
     () => true,
     (error) => {
       dispatchSyncState('error', {
@@ -954,9 +1359,10 @@ function clearRecoveryDraft () {
   draftGeneration += 1
   activeDraft = null
   pendingConflict = null
-  Promise.resolve(getKmlAccountDraftStore().delete(accountUserId, {
+  const persistence = queueDraftPersistence(() => getKmlAccountDraftStore().delete(accountUserId, {
     generation: draftGeneration,
-  })).catch(() => {})
+  }))
+  latestDraftWrite = persistence.then(() => true, () => false)
 }
 
 function bindDraftLifecycle () {
@@ -965,7 +1371,7 @@ function bindDraftLifecycle () {
   const preserve = reason => {
     if (!accountMode || !accountCanWrite) return
     const hasPending = syncBlockedByConflict || pendingSyncOperations.length > 0 ||
-      buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes).length > 0
+      buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes, pendingDeleteIntents).length > 0
     if (hasPending) persistCurrentDraft(reason)
   }
   window.addEventListener('pagehide', () => preserve('pagehide'))
@@ -978,6 +1384,26 @@ function bindDraftLifecycle () {
 
 export async function initializeKmlAccountMode () {
   const initializationEpoch = ++syncEpoch
+  const previousState = {
+    accountMode,
+    accountCanWrite,
+    accountCanManageShares,
+    accountUserId,
+    snapshots,
+    unconfirmedCreateIds,
+    pendingCreateDeletes,
+    pendingDeleteIntents,
+    pendingDeletionIntent,
+    pendingSyncOperations,
+    latestFiles,
+    latestDirectories,
+    syncPending,
+    syncBlockedByConflict,
+    activeDraft,
+    pendingConflict,
+    embeddedAuthRequired,
+    accountLoadReady,
+  }
   accountMode = false
   accountCanWrite = false
   accountCanManageShares = false
@@ -985,6 +1411,8 @@ export async function initializeKmlAccountMode () {
   snapshots = new Map()
   unconfirmedCreateIds = new Set()
   pendingCreateDeletes = new Set()
+  pendingDeleteIntents = new Set()
+  pendingDeletionIntent = ''
   pendingSyncOperations = []
   latestFiles = []
   latestDirectories = { items: [], uncategorized: { id: null, name: '未分类', position: 0 } }
@@ -994,11 +1422,54 @@ export async function initializeKmlAccountMode () {
   activeDraft = null
   pendingConflict = null
   embeddedAuthRequired = false
+  accountLoadReady = false
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = null
   bindDraftLifecycle()
 
-  const auth = await refreshAuthSession()
+  let auth
+  try {
+    auth = await refreshAuthSessionForSync()
+  } catch (error) {
+    if (initializationEpoch !== syncEpoch) return { mode: 'guest', files: [] }
+    if (previousState.accountMode) {
+      accountMode = previousState.accountMode
+      accountCanWrite = false
+      accountCanManageShares = false
+      accountUserId = previousState.accountUserId
+      snapshots = previousState.snapshots
+      unconfirmedCreateIds = previousState.unconfirmedCreateIds
+      pendingCreateDeletes = previousState.pendingCreateDeletes
+      pendingDeleteIntents = previousState.pendingDeleteIntents
+      pendingDeletionIntent = previousState.pendingDeletionIntent
+      pendingSyncOperations = previousState.pendingSyncOperations
+      latestFiles = previousState.latestFiles
+      latestDirectories = previousState.latestDirectories
+      syncPending = false
+      syncBlockedByConflict = previousState.syncBlockedByConflict
+      activeDraft = previousState.activeDraft
+      pendingConflict = previousState.pendingConflict
+      embeddedAuthRequired = previousState.embeddedAuthRequired
+      accountLoadReady = false
+    } else {
+      // Authentication state is unknown. Stay out of guest mode so a transient
+      // session failure cannot load or overwrite browser-local KML.
+      accountMode = true
+      accountCanWrite = false
+      accountCanManageShares = false
+      accountUserId = ''
+      accountLoadReady = false
+    }
+    dispatchSyncState('error', { phase: 'load', code: error.code, message: error.message })
+    return {
+      mode: 'account',
+      files: latestFiles,
+      directories: cloneValue(latestDirectories),
+      canWrite: accountCanWrite && accountLoadReady,
+      userId: accountUserId,
+      error,
+    }
+  }
   if (initializationEpoch !== syncEpoch) return { mode: 'guest', files: [] }
   const resolvedMode = resolveKmlAccountMode(auth, { embedded: isEmbeddedDocument() })
   embeddedAuthRequired = resolvedMode === 'embedded-auth-required'
@@ -1024,6 +1495,7 @@ export async function initializeKmlAccountMode () {
     latestFiles = loaded.files
     latestDirectories = directories
     snapshots = snapshotsForServerFiles(loaded.files)
+    accountLoadReady = true
     let recovery = null
     let recoveryError = null
     if (accountCanWrite && accountUserId) {
@@ -1081,15 +1553,59 @@ export async function initializeKmlAccountMode () {
       files: loaded.files,
       directories: cloneValue(latestDirectories),
       usage: loaded.usage || null,
-      canWrite: accountCanWrite,
+      canWrite: accountCanWrite && accountLoadReady,
       userId: accountUserId,
       recovery,
       recoveryError,
     }
   } catch (error) {
     if (!accountMode || initializationEpoch !== syncEpoch) return { mode: 'guest', files: [] }
+    const sameAccount = previousState.accountMode && previousState.accountUserId &&
+      previousState.accountUserId === accountUserId
+    if (sameAccount) {
+      accountMode = previousState.accountMode
+      accountCanWrite = previousState.accountCanWrite
+      accountCanManageShares = previousState.accountCanManageShares
+      snapshots = previousState.snapshots
+      unconfirmedCreateIds = previousState.unconfirmedCreateIds
+      pendingCreateDeletes = previousState.pendingCreateDeletes
+      pendingDeleteIntents = previousState.pendingDeleteIntents
+      pendingDeletionIntent = previousState.pendingDeletionIntent
+      pendingSyncOperations = previousState.pendingSyncOperations
+      latestFiles = previousState.latestFiles
+      latestDirectories = previousState.latestDirectories
+      syncPending = previousState.syncPending
+      syncBlockedByConflict = previousState.syncBlockedByConflict
+      activeDraft = previousState.activeDraft
+      pendingConflict = previousState.pendingConflict
+      embeddedAuthRequired = previousState.embeddedAuthRequired
+      accountLoadReady = previousState.accountLoadReady
+    } else {
+      // Never expose or save the previous account's working set under a new
+      // user. Wait for a complete reload before enabling account writes.
+      latestFiles = []
+      latestDirectories = { items: [], uncategorized: { id: null, name: '未分类', position: 0 } }
+      snapshots = new Map()
+      unconfirmedCreateIds = new Set()
+      pendingCreateDeletes = new Set()
+      pendingDeleteIntents = new Set()
+      pendingDeletionIntent = ''
+      pendingSyncOperations = []
+      syncPending = false
+      syncBlockedByConflict = false
+      activeDraft = null
+      pendingConflict = null
+      accountLoadReady = false
+    }
     dispatchSyncState('error', { phase: 'load', code: error.code, message: error.message })
-    return { mode: 'account', files: [], directories: cloneValue(latestDirectories), canWrite: accountCanWrite, userId: accountUserId, error }
+    return {
+      mode: 'account',
+      files: latestFiles,
+      directories: cloneValue(latestDirectories),
+      canWrite: accountCanWrite && accountLoadReady,
+      userId: accountUserId,
+      error,
+    }
   }
 }
 
@@ -1102,7 +1618,7 @@ export function isEmbeddedKmlAuthRequired () {
 }
 
 export function isAccountKmlWritable () {
-  return accountMode && accountCanWrite
+  return accountMode && accountCanWrite && accountLoadReady
 }
 
 export function getKmlAccountDirectories () {
@@ -1110,13 +1626,19 @@ export function getKmlAccountDirectories () {
 }
 
 export async function refreshKmlAccountDirectories () {
-  if (!accountMode) return getKmlAccountDirectories()
-  latestDirectories = await loadKmlDirectories()
+  if (!accountMode || !accountLoadReady) return getKmlAccountDirectories()
+  const requestEpoch = syncEpoch
+  const requestUserId = accountUserId
+  const refreshed = await loadKmlDirectories()
+  if (!accountMode || !accountLoadReady || requestEpoch !== syncEpoch || requestUserId !== accountUserId) {
+    return getKmlAccountDirectories()
+  }
+  latestDirectories = refreshed
   return getKmlAccountDirectories()
 }
 
 export function registerKmlAccountDocument (document, options = {}) {
-  if (!accountMode || !accountCanWrite || !document || typeof document !== 'object') return false
+  if (!accountMode || !accountCanWrite || !accountLoadReady || !document || typeof document !== 'object') return false
   const localId = String(options.localId || document.id || '')
   const serverId = String(document.id || document.serverId || '')
   if (!localId || !serverId) return false
@@ -1152,7 +1674,9 @@ function applySyncResult (result, files, operations = []) {
   snapshots = reduced.snapshots
   reduced.resolvedLocalIds.forEach((localId) => {
     unconfirmedCreateIds.delete(localId)
-    pendingCreateDeletes.delete(localId)
+    if (files.some(candidate => String(candidate?.id || '') === localId)) {
+      pendingCreateDeletes.delete(localId)
+    }
   })
   reduced.releasedClientIds.forEach((localId) => {
     const fileExists = files.some(candidate => String(candidate?.id || '') === localId)
@@ -1166,9 +1690,14 @@ function applySyncResult (result, files, operations = []) {
   })
 
   operationResults.forEach((entry, index) => {
-    if (!entry.document) return
     const operation = operations[index]
     const localId = localIdForOperation(operation, files, beforeSnapshots)
+    if (entry.action === 'trash') {
+      deleteIntentIdsForSnapshot(beforeSnapshots, localId || operation?.kmlId || operation?.clientId)
+        .forEach(id => pendingDeleteIntents.delete(id))
+      if (!entry.document && operation?.clientId) pendingCreateDeletes.delete(String(operation.clientId))
+    }
+    if (!entry.document) return
     const file = files.find(candidate => String(candidate?.id || '') === localId)
     if (!file) return
     const currentSnapshot = snapshots.get(localId)
@@ -1181,8 +1710,44 @@ function applySyncResult (result, files, operations = []) {
   })
 }
 
+function syncResultIdentity (entry, operation) {
+  if (!entry || typeof entry !== 'object' || entry.action !== operation?.action) return false
+  const action = String(operation?.action || '')
+  if (action === 'create') {
+    return String(entry.clientId || '') === String(operation.clientId || '') &&
+      entry.document && typeof entry.document === 'object' && String(entry.document.id || '') !== ''
+  }
+  if (action === 'update') {
+    return String(entry.document?.id || '') === String(operation.kmlId || '') &&
+      entry.document && typeof entry.document === 'object'
+  }
+  if (action === 'trash' || action === 'restore') {
+    const expectedKmlId = String(operation.kmlId || '')
+    const expectedClientId = String(operation.clientId || '')
+    const entryKmlId = String(entry.document?.id || entry.result?.id || '')
+    const entryClientId = String(entry.clientId || '')
+    if (expectedKmlId) return entryKmlId === expectedKmlId
+    return entryClientId === expectedClientId && (
+      (entry.result && entry.result.status === 'absent') ||
+      (entry.document && typeof entry.document === 'object' && String(entry.document.id || '') !== '')
+    )
+  }
+  return false
+}
+
+export function validateKmlSyncResponse (result, operations) {
+  if (!result || typeof result !== 'object' || !Array.isArray(result.results) ||
+      result.results.length !== operations.length ||
+      result.results.some((entry, index) => !syncResultIdentity(entry, operations[index]))) {
+    throw Object.assign(new Error('服务器同步响应不完整，待保存内容已保留，请稍后重试'), {
+      code: 'KML_SYNC_RESPONSE_INCOMPLETE',
+    })
+  }
+  return result
+}
+
 async function flushSync (options = {}) {
-  if (!accountMode || !accountCanWrite || syncBlockedByConflict) return
+  if (!accountMode || !accountCanWrite || !accountLoadReady || syncBlockedByConflict) return
   if (syncInFlight) {
     syncPending = true
     return
@@ -1190,7 +1755,7 @@ async function flushSync (options = {}) {
   const queuedOperations = normalizePendingSyncOperations(pendingSyncOperations)
   let operations = queuedOperations.length > 0
     ? queuedOperations
-    : buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes)
+    : buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes, pendingDeleteIntents)
   if (!operations.length) {
     clearRecoveryDraft()
     dispatchSettledSyncState('saved')
@@ -1210,18 +1775,32 @@ async function flushSync (options = {}) {
       const draftPersisted = await draftWrite
       if (!accountMode || epoch !== syncEpoch) return
       if (!draftPersisted) {
-        pendingSyncOperations = []
+        dispatchSyncState('error', {
+          phase: 'recovery',
+          code: 'KML_RECOVERY_UNAVAILABLE',
+          message: '本机恢复草稿保存失败，待提交的 KML 修改仍已保留，请修复本地存储后重试',
+          pendingOperationCount: pendingSyncOperations.length,
+        })
         return
       }
     }
-    const result = await apiRequest('/kml/sync', {
+    const trashCount = operations.filter(operation => operation.action === 'trash').length
+    const result = validateKmlSyncResponse(await apiRequestForSync('/kml/sync', {
       method: 'POST',
-      body: { operations },
-    })
+      body: {
+        operations,
+        ...(trashCount > 0 && isValidKmlDeletionIntent(pendingDeletionIntent)
+          ? { deletionIntent: pendingDeletionIntent }
+          : {}),
+      },
+    }), operations)
     if (!accountMode || epoch !== syncEpoch) return
     pendingSyncOperations = []
     applySyncResult(result, latestFiles, operations)
-    const remainingOperations = buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes)
+    if (pendingDeleteIntents.size === 0 && pendingCreateDeletes.size === 0) {
+      pendingDeletionIntent = ''
+    }
+    const remainingOperations = buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes, pendingDeleteIntents)
     if (remainingOperations.length === 0) {
       clearRecoveryDraft()
       dispatchSettledSyncState('saved', { syncedAt: result.syncedAt })
@@ -1232,7 +1811,43 @@ async function flushSync (options = {}) {
     }
   } catch (error) {
     if (!accountMode || epoch !== syncEpoch) return
-    if (Number(error?.status || 0) > 0) pendingSyncOperations = []
+    // The working set may have changed while this request was in flight. The
+    // serialized batch is only a recovery checkpoint for the request that
+    // failed; rebuild it from the current files so a later retry cannot drop
+    // edits made after the request started. Do not auto-retry ordinary
+    // failures: the next explicit flush (or a new edit) is the retry boundary.
+    const compensationOperations = uncertainPresenceOperations(operations)
+    const latestOperations = buildKmlSyncOperations(
+      latestFiles,
+      snapshots,
+      pendingCreateDeletes,
+      pendingDeleteIntents,
+    )
+    // An uncertain presence transition must be settled before replaying any
+    // content update.  In particular, a trash request may already have been
+    // committed on the server even though its response was lost.  Sending an
+    // old-revision update in the same transaction as restore would make the
+    // update fail first (or roll the transaction back), leaving the document
+    // in the recycle bin.  Keep only the compensating presence operations for
+    // the next phase; once they succeed, the normal success path rebuilds the
+    // latest content operations from the current working set and new snapshot.
+    pendingSyncOperations = normalizePendingSyncOperations(
+      compensationOperations.length > 0 ? compensationOperations : latestOperations,
+    )
+    if (error.code === 'KML_CREATE_REPLAY_DELETED' && !options.replayRecoveryAttempted) {
+      const rotated = rotateRejectedCreateIds(operations, error.details?.clientId)
+      if (rotated) {
+        pendingSyncOperations = buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes, pendingDeleteIntents)
+        persistCurrentDraft('replay-create-recovered')
+        retryAfterAutoMerge = true
+        syncPending = true
+        dispatchSyncState('dirty', {
+          message: '检测到已失效的旧保存标识，已保留内容并生成新的保存副本',
+          operationCount: pendingSyncOperations.length,
+        })
+        return
+      }
+    }
     if (error.code === 'KML_REVISION_CONFLICT') {
       const draft = persistCurrentDraft('conflict') || activeDraft
       if (!options.autoMergeAttempted && draft) {
@@ -1288,6 +1903,7 @@ async function flushSync (options = {}) {
       dispatchResolutionRequest('automatic')
     } else {
       persistCurrentDraft('error')
+      syncPending = false
       dispatchSyncState('error', {
         code: error.code,
         message: error.message,
@@ -1300,20 +1916,27 @@ async function flushSync (options = {}) {
       syncPending = false
       if (syncTimer) clearTimeout(syncTimer)
       syncTimer = null
-      await flushSync(retryAfterAutoMerge ? { autoMergeAttempted: true } : {})
+      await flushSync({
+        ...options,
+        ...(retryAfterAutoMerge ? { autoMergeAttempted: true, replayRecoveryAttempted: true } : {}),
+      })
     }
   }
 }
 
 export function setKmlAccountWorkingFiles (files, options = {}) {
-  latestFiles = Array.isArray(files) ? files : []
+  const nextFiles = Array.isArray(files) ? files : []
+  updateDeleteIntentState(nextFiles, options)
+  latestFiles = nextFiles
   trackUnconfirmedCreates(latestFiles)
-  if (options.persist !== false && accountCanWrite) persistCurrentDraft(options.reason || 'dirty')
+  if (options.persist !== false && accountCanWrite && accountLoadReady) persistCurrentDraft(options.reason || 'dirty')
 }
 
 export function scheduleKmlAccountSync (files, options = {}) {
-  if (!accountMode || !accountCanWrite) return false
-  latestFiles = files
+  if (!accountMode || !accountCanWrite || !accountLoadReady) return false
+  const nextFiles = Array.isArray(files) ? files : []
+  updateDeleteIntentState(nextFiles, options)
+  latestFiles = nextFiles
   trackUnconfirmedCreates(latestFiles)
   persistCurrentDraft(syncBlockedByConflict ? 'conflict' : 'dirty')
   if (syncBlockedByConflict) {
@@ -1385,6 +2008,8 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
       snapshots = snapshotMap(stored.snapshots)
       latestFiles = cloneValue(stored.files || [])
       pendingCreateDeletes = new Set(stored.deletedClientIds || [])
+      pendingDeleteIntents = new Set(stored.deletedFileIds || [])
+      pendingDeletionIntent = stored.deletionIntent || ''
       pendingSyncOperations = normalizePendingSyncOperations(stored.pendingOperations)
       unconfirmedCreateIds = new Set()
       trackUnconfirmedCreates(latestFiles)
@@ -1407,14 +2032,21 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
         shouldSync: false,
         blockedByConflict: true,
         deletedClientIds: [...pendingCreateDeletes],
+        deletedFileIds: [...pendingDeleteIntents],
         pendingOperations: cloneValue(pendingSyncOperations),
       }
     }
     snapshots = rebaseSnapshotsToServer(merge.serverFiles, stored.snapshots || [])
     latestFiles = merge.files
-    pendingCreateDeletes = new Set((stored.deletedClientIds || []).filter(id => (
-      !latestFiles.some(file => String(file?.id || '') === String(id || ''))
-    )))
+    replaceDeleteIntentState({
+      deletedClientIds: (stored.deletedClientIds || []).filter(id => (
+        !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+      )),
+      deletedFileIds: (stored.deletedFileIds || []).filter(id => (
+        !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+      )),
+      deletionIntent: stored.deletionIntent,
+    })
     pendingSyncOperations = []
     unconfirmedCreateIds = new Set()
     trackUnconfirmedCreates(latestFiles)
@@ -1431,6 +2063,7 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
       shouldSync: true,
       blockedByConflict: false,
       deletedClientIds: [...pendingCreateDeletes],
+      deletedFileIds: [...pendingDeleteIntents],
       pendingOperations: [],
     }
   }
@@ -1438,7 +2071,11 @@ export async function resolveKmlAccountRecovery (strategy, recovery = null) {
 
   snapshots = snapshotMap(result.snapshots)
   latestFiles = result.files
-  pendingCreateDeletes = new Set(result.deletedClientIds || [])
+  replaceDeleteIntentState({
+    deletedClientIds: result.deletedClientIds || [],
+    deletedFileIds: result.deletedFileIds || [],
+    deletionIntent: stored.deletionIntent,
+  })
   pendingSyncOperations = normalizePendingSyncOperations(result.pendingOperations)
   unconfirmedCreateIds = new Set()
   trackUnconfirmedCreates(latestFiles)
@@ -1517,9 +2154,15 @@ export async function resolveKmlAccountConflictChoices (choices = {}) {
   const resolvedFiles = applyKmlMergeChoices(latest, choices)
   snapshots = rebaseSnapshotsToServer(latest.serverFiles, stored.snapshots || [])
   latestFiles = resolvedFiles
-  pendingCreateDeletes = new Set((stored.deletedClientIds || []).filter(id => (
-    !latestFiles.some(file => String(file?.id || '') === String(id || ''))
-  )))
+  replaceDeleteIntentState({
+    deletedClientIds: (stored.deletedClientIds || []).filter(id => (
+      !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+    )),
+    deletedFileIds: (stored.deletedFileIds || []).filter(id => (
+      !latestFiles.some(file => String(file?.id || '') === String(id || ''))
+    )),
+    deletionIntent: stored.deletionIntent,
+  })
   pendingSyncOperations = []
   unconfirmedCreateIds = new Set()
   trackUnconfirmedCreates(latestFiles)
@@ -1537,7 +2180,7 @@ export async function resolveKmlAccountConflictChoices (choices = {}) {
 export function suspendKmlAccountSync (options = {}) {
   if (options.preserveDraft !== false && accountMode && accountCanWrite) {
     const hasPending = syncBlockedByConflict || pendingSyncOperations.length > 0 ||
-      buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes).length > 0
+      buildKmlSyncOperations(latestFiles, snapshots, pendingCreateDeletes, pendingDeleteIntents).length > 0
     if (hasPending) persistCurrentDraft(options.reason || 'session-expired')
   }
   syncEpoch += 1
@@ -1548,6 +2191,8 @@ export function suspendKmlAccountSync (options = {}) {
   snapshots = new Map()
   unconfirmedCreateIds = new Set()
   pendingCreateDeletes = new Set()
+  pendingDeleteIntents = new Set()
+  pendingDeletionIntent = ''
   pendingSyncOperations = []
   latestFiles = []
   latestDirectories = { items: [], uncategorized: { id: null, name: '未分类', position: 0 } }
@@ -1556,6 +2201,7 @@ export function suspendKmlAccountSync (options = {}) {
   syncBlockedByConflict = false
   activeDraft = null
   pendingConflict = null
+  accountLoadReady = false
   embeddedAuthRequired = isEmbeddedDocument()
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = null

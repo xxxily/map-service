@@ -30,6 +30,8 @@ import {
   getAccountCapabilities,
   getAvailableAccountTabs,
   isAccountLocation,
+  loadCompleteKmlPages,
+  normalizeCompletePagedResult,
   normalizeAccountTab,
   normalizeKmlSort,
   normalizeSpatialAccess,
@@ -257,6 +259,65 @@ test('KML 排序和批量回收选择只接受服务端支持的安全范围', (
   assert.deepEqual(selection.skippedMissing, ['kml_missing'])
 })
 
+test('KML 分页规范化拒绝不完整响应并保留服务端分页契约', () => {
+  assert.deepEqual(normalizeCompletePagedResult({
+    items: [{ id: 'kml-a' }],
+    page: 1,
+    limit: 100,
+    total: 1,
+  }, { page: 1, limit: 100 }), {
+    items: [{ id: 'kml-a' }],
+    page: 1,
+    limit: 100,
+    total: 1,
+  })
+  assert.throws(
+    () => normalizeCompletePagedResult(null, { page: 1, limit: 100 }),
+    error => error.code === 'KML_LIST_INCOMPLETE',
+  )
+  assert.throws(
+    () => normalizeCompletePagedResult({ items: [{ name: '无 ID' }], page: 1, limit: 100, total: 1 }, { page: 1, limit: 100 }),
+    error => error.code === 'KML_LIST_INCOMPLETE',
+  )
+})
+
+test('KML 完整分页加载接受最终短页并拒绝中断、变更和重复项', async () => {
+  const documents = Array.from({ length: 150 }, (_, index) => ({ id: `kml-${index}` }))
+  const complete = await loadCompleteKmlPages(({ page, limit }) => ({
+    items: documents.slice((page - 1) * limit, page * limit),
+    page,
+    limit,
+    total: documents.length,
+  }))
+  assert.equal(complete.items.length, 150)
+  assert.equal(complete.total, 150)
+
+  await assert.rejects(
+    loadCompleteKmlPages(() => ({ items: [{ id: 'kml-a' }], page: 1, limit: 100, total: 2 })),
+    error => error.code === 'KML_LIST_INCOMPLETE',
+  )
+  await assert.rejects(
+    loadCompleteKmlPages(({ page, limit }) => ({
+      items: Array.from({ length: page === 1 ? 100 : 49 }, (_, index) => ({ id: `changed-${page}-${index}` })),
+      page,
+      limit,
+      total: page === 1 ? 150 : 149,
+    })),
+    error => error.code === 'KML_LIST_CHANGED',
+  )
+  await assert.rejects(
+    loadCompleteKmlPages(({ page, limit }) => ({
+      items: page === 1
+        ? Array.from({ length: 100 }, (_, index) => ({ id: `duplicate-${index}` }))
+        : [{ id: 'duplicate-99' }],
+      page,
+      limit,
+      total: 101,
+    })),
+    error => error.code === 'KML_LIST_INCOMPLETE',
+  )
+})
+
 test('账号 KML 目录和文件拖拽使用独立协议并接入持久化 API', () => {
   const appSource = fs.readFileSync(path.join(projectRoot, 'src/account/app.js'), 'utf8')
   const viewSource = fs.readFileSync(path.join(projectRoot, 'src/account/views.js'), 'utf8')
@@ -270,6 +331,7 @@ test('账号 KML 目录和文件拖拽使用独立协议并接入持久化 API',
   assert.match(appSource, /addEventListener\('drop'/)
   assert.match(appSource, /accountApi\.reorderKmlDirectories\(ids\)/)
   assert.match(appSource, /accountApi\.moveKml\(source\.id, \{ directoryId, beforeId \}\)/)
+  assert.match(appSource, /loadCompleteKmlPages\(\(\{ page, limit \}\) =>/)
 })
 
 test('分享编辑会重排去重文件并校验完整地图视图', () => {

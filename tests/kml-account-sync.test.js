@@ -14,12 +14,24 @@ import {
   reduceKmlSyncResult,
   rebaseKmlFileToServerDocument,
   resolveKmlAccountMode,
+  initializeKmlAccountMode,
+  loadKmlAccountDocumentsForTests,
+  setKmlAccountApiForTests,
+  setKmlAccountAuthForTests,
+  resetKmlAccountSyncForTests,
+  scheduleKmlAccountSync,
+  flushKmlAccountSync,
+  getKmlAccountDirectories,
+  isAccountKmlWritable,
+  refreshKmlAccountDirectories,
+  validateKmlSyncResponse,
 } from '../src/map/kml-account-sync.js'
 import { applyKmlMergeChoices } from '../src/map/kml-conflict-merge.js'
 import {
   createBrowserKmlAccountDraftStore,
   createMemoryKmlAccountDraftStore,
   kmlAccountDraftStorageKey,
+  setKmlAccountDraftStoreForTests,
 } from '../src/map/kml-account-draft-store.js'
 
 function createReadonlyIndexedDb (record) {
@@ -71,12 +83,23 @@ test('KML account sync builds create, update and trash operations from snapshots
   const operations = buildKmlSyncOperations([
     { id: 'server-1', name: '新名称', features: [] },
     { id: 'local-new', name: '新文件', features: [] },
-  ], snapshots)
+  ], snapshots, ['server-2'])
 
   assert.deepEqual(operations.map(item => item.action).sort(), ['create', 'trash', 'update'])
   assert.equal(operations.find(item => item.action === 'update').data.revision, 3)
   assert.equal(operations.find(item => item.action === 'create').clientId, 'local-new')
   assert.equal(operations.find(item => item.action === 'trash').kmlId, 'server-2')
+})
+
+test('KML account sync does not infer trash from a temporarily missing working file', () => {
+  const snapshots = new Map([['server-only', {
+    localId: 'server-only',
+    serverId: 'server-only',
+    revision: 1,
+    hash: kmlFingerprint({ name: '服务端文件', features: [] }),
+    status: 'active',
+  }]])
+  assert.deepEqual(buildKmlSyncOperations([], snapshots), [])
 })
 
 test('KML account sync promotes an existing new default before clearing the old default', () => {
@@ -224,7 +247,7 @@ test('KML account sync preserves delete state so undo restores and redo trashes 
     }],
   ])
 
-  assert.deepEqual(buildKmlSyncOperations([], currentSnapshots), [
+  assert.deepEqual(buildKmlSyncOperations([], currentSnapshots, ['local-stable']), [
     { action: 'trash', kmlId: 'server-stable' },
   ])
 
@@ -259,7 +282,7 @@ test('KML account sync preserves delete state so undo restores and redo trashes 
     }],
   }).snapshots
   assert.equal(currentSnapshots.get('local-stable').status, 'active')
-  assert.deepEqual(buildKmlSyncOperations([], currentSnapshots), [
+  assert.deepEqual(buildKmlSyncOperations([], currentSnapshots, ['local-stable']), [
     { action: 'trash', kmlId: 'server-stable' },
   ])
 })
@@ -580,8 +603,521 @@ test('KML recovery draft keeps create, update and delete intent with user isolat
     { id: 'server-a', revision: 1, name: 'A', features: [] },
     { id: 'server-b', revision: 1, name: 'B', features: [] },
   ], draft)
-  assert.deepEqual(analysis.operations.map(item => item.action).sort(), ['create', 'trash', 'update'])
+  assert.deepEqual(analysis.operations.map(item => item.action).sort(), ['create', 'update'])
+  const deleteDraft = buildKmlRecoveryDraft('user-a', draft.files, snapshots, {
+    deletedClientIds: ['server-b'],
+    deletionIntent: 'user-confirmed',
+  })
+  assert.deepEqual(analyzeKmlRecoveryDraft([
+    { id: 'server-a', revision: 1, name: 'A', features: [] },
+    { id: 'server-b', revision: 1, name: 'B', features: [] },
+  ], deleteDraft).operations.map(item => item.action).sort(), ['create', 'trash', 'update'])
   assert.deepEqual(analysis.conflictedLocalIds, [])
+})
+
+test('旧恢复草稿中的未确认删除意图会被忽略并补回服务端文件', () => {
+  const serverFile = accountFile('server-old-draft', '服务端仍存在', 3)
+  const snapshot = registerKmlAccountDocumentSnapshot(new Map(), serverFile)
+  const legacyDraft = {
+    version: 2,
+    userId: 'user-a',
+    generation: 7,
+    updatedAt: '2026-08-26T00:00:00.000Z',
+    files: [],
+    snapshots: Array.from(snapshot.values()),
+    deletedFileIds: ['server-old-draft'],
+    pendingOperations: [{ action: 'trash', kmlId: 'server-old-draft' }],
+  }
+
+  const analysis = analyzeKmlRecoveryDraft([serverFile], legacyDraft)
+  assert.equal(analysis.ignoredDeletionCount, 2)
+  assert.deepEqual(analysis.operations, [])
+  assert.deepEqual(analysis.pendingOperations, [])
+
+  const resolution = buildKmlRecoveryResolution([serverFile], legacyDraft, 'restore')
+  assert.deepEqual(resolution.files.map(file => file.id), ['server-old-draft'])
+  assert.equal(resolution.deletedFileIds.length, 0)
+  assert.equal(resolution.shouldSync, false)
+})
+
+test('KML account document loading rejects a failed detail response instead of dropping the file', async () => {
+  setKmlAccountApiForTests(async (path) => {
+    if (path === '/kml/files') return { total: 1, items: [{ id: 'server-a' }] }
+    if (path === '/kml/files/server-a') return null
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await assert.rejects(
+      loadKmlAccountDocumentsForTests(),
+      error => error.code === 'KML_DETAIL_INCOMPLETE' || /文件详情|响应不完整|无效/.test(error.message),
+    )
+  } finally {
+    setKmlAccountApiForTests()
+  }
+})
+
+test('KML account document loading rejects an incomplete page before replacing local state', async () => {
+  setKmlAccountApiForTests(async (path) => {
+    if (path === '/kml/files') return { total: 101, items: [{ id: 'server-a' }] }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await assert.rejects(
+      loadKmlAccountDocumentsForTests(),
+      error => error.code === 'KML_LIST_INCOMPLETE',
+    )
+  } finally {
+    setKmlAccountApiForTests()
+  }
+})
+
+function accountAuth (userId) {
+  return {
+    authenticated: true,
+    user: {
+      id: userId,
+      permissions: ['kml.own.read', 'kml.own.write', 'share.own.manage'],
+    },
+  }
+}
+
+function accountFile (id, name = '账号文件', revision = 1) {
+  return {
+    id,
+    name,
+    revision,
+    status: 'active',
+    isDefault: false,
+    features: [],
+  }
+}
+
+async function resetSyncHarness () {
+  resetKmlAccountSyncForTests()
+  setKmlAccountApiForTests()
+  setKmlAccountAuthForTests()
+  setKmlAccountDraftStoreForTests(null)
+}
+
+test('同账号重新加载失败时保留快照并仍可提交更新', async () => {
+  await resetSyncHarness()
+  const store = createMemoryKmlAccountDraftStore()
+  setKmlAccountDraftStoreForTests(store)
+  let phase = 'initial'
+  const syncBodies = []
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path, options = {}) => {
+    if (path === '/kml/files') {
+      if (phase === 'reload-fails') return { total: 1, items: [{ id: 'server-a' }] }
+      return { total: 1, items: [{ id: 'server-a' }] }
+    }
+    if (path === '/kml/files/server-a') {
+      if (phase === 'reload-fails') return null
+      return accountFile('server-a', '原始文件', 1)
+    }
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类', position: 0 } }
+    if (path === '/kml/sync') {
+      syncBodies.push(options.body)
+      return {
+        syncedAt: new Date().toISOString(),
+        results: [{ action: 'update', document: accountFile('server-a', '修改后', 2) }],
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    const first = await initializeKmlAccountMode()
+    assert.equal(first.files[0].id, 'server-a')
+    phase = 'reload-fails'
+    const failedReload = await initializeKmlAccountMode()
+    assert.equal(failedReload.error.code, 'KML_DETAILS_INCOMPLETE')
+    assert.equal(failedReload.files[0].id, 'server-a')
+    assert.equal(isAccountKmlWritable(), true)
+
+    assert.equal(scheduleKmlAccountSync([{ ...accountFile('server-a', '修改后', 1) }], { delayMs: 0 }), true)
+    await flushKmlAccountSync()
+    assert.equal(syncBodies.length, 1)
+    assert.deepEqual(syncBodies[0].operations.map(operation => operation.action), ['update'])
+    assert.equal(syncBodies[0].operations[0].kmlId, 'server-a')
+  } finally {
+    await resetSyncHarness()
+  }
+})
+
+test('跨账号加载失败时不泄漏上一账号工作集且禁止写入', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let userId = 'user-a'
+  let fail = false
+  setKmlAccountAuthForTests(async () => accountAuth(userId))
+  setKmlAccountApiForTests(async (path) => {
+    if (fail) throw Object.assign(new Error('暂时无法加载 KML'), { code: 'NETWORK_ERROR' })
+    if (path === '/kml/files') return { total: 1, items: [{ id: `${userId}-file` }] }
+    if (path === `/kml/files/${userId}-file`) return accountFile(`${userId}-file`, userId)
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    const first = await initializeKmlAccountMode()
+    assert.equal(first.files[0].name, 'user-a')
+    userId = 'user-b'
+    fail = true
+    const second = await initializeKmlAccountMode()
+    assert.deepEqual(second.files, [])
+    assert.equal(second.canWrite, false)
+    assert.equal(isAccountKmlWritable(), false)
+    assert.equal(scheduleKmlAccountSync([{ ...accountFile('user-a-file', '不应写入') }], { delayMs: 0 }), false)
+  } finally {
+    await resetSyncHarness()
+  }
+})
+
+test('目录刷新返回较晚时不会覆盖新账号目录状态', async () => {
+  await resetSyncHarness()
+  const store = createMemoryKmlAccountDraftStore()
+  setKmlAccountDraftStoreForTests(store)
+  let userId = 'user-a'
+  let directoryCalls = 0
+  let resolveStale
+  setKmlAccountAuthForTests(async () => accountAuth(userId))
+  setKmlAccountApiForTests(async (path) => {
+    if (path === '/kml/files') return { total: 0, items: [] }
+    if (path === '/kml/directories') {
+      directoryCalls += 1
+      if (userId === 'user-a' && directoryCalls > 1) {
+        return new Promise(resolve => { resolveStale = () => resolve({ items: [{ id: 'dir-a', name: '账号 A 目录' }] }) })
+      }
+      return { items: [{ id: 'dir-b', name: '账号 B 目录' }] }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await initializeKmlAccountMode()
+    const staleRefresh = refreshKmlAccountDirectories()
+    userId = 'user-b'
+    const second = await initializeKmlAccountMode()
+    assert.equal(second.directories.items[0].id, 'dir-b')
+    resolveStale()
+    await staleRefresh
+    assert.equal(getKmlAccountDirectories().items[0].id, 'dir-b')
+  } finally {
+    await resetSyncHarness()
+  }
+})
+
+test('同步请求失败后保留 pending 操作并允许下一次 flush 重试', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let attempts = 0
+  const syncBodies = []
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path, options = {}) => {
+    if (path === '/kml/files') return { total: 1, items: [{ id: 'server-a' }] }
+    if (path === '/kml/files/server-a') return accountFile('server-a', '原始文件', 1)
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    if (path === '/kml/sync') {
+      attempts += 1
+      syncBodies.push(options.body)
+      if (attempts === 1) throw Object.assign(new Error('网络暂时不可用'), { code: 'NETWORK_ERROR', status: 503 })
+      return {
+        syncedAt: new Date().toISOString(),
+        results: [{ action: 'update', document: accountFile('server-a', '重试成功', 2) }],
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await initializeKmlAccountMode()
+    assert.equal(scheduleKmlAccountSync([{ ...accountFile('server-a', '重试成功', 1) }], { delayMs: 0 }), true)
+    await flushKmlAccountSync()
+    assert.equal(attempts, 1)
+    await flushKmlAccountSync()
+    assert.equal(attempts, 2)
+    assert.deepEqual(syncBodies[0].operations, syncBodies[1].operations)
+  } finally {
+    await resetSyncHarness()
+  }
+})
+
+test('畸形 2xx 同步响应不会清空 pending，也不会自动循环请求', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let attempts = 0
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path, options = {}) => {
+    if (path === '/kml/files') return { total: 1, items: [{ id: 'server-a' }] }
+    if (path === '/kml/files/server-a') return accountFile('server-a', '原始文件', 1)
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    if (path === '/kml/sync') {
+      attempts += 1
+      if (attempts === 1) return { syncedAt: new Date().toISOString(), results: [] }
+      return {
+        syncedAt: new Date().toISOString(),
+        results: options.body.operations.map(operation => ({
+          action: 'update',
+          document: accountFile(operation.kmlId, operation.data.name, 2),
+        })),
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await initializeKmlAccountMode()
+    scheduleKmlAccountSync([{ ...accountFile('server-a', '新名称', 1) }], { delayMs: 0 })
+    await flushKmlAccountSync()
+    assert.equal(attempts, 1)
+    await flushKmlAccountSync()
+    assert.equal(attempts, 2)
+  } finally {
+    await resetSyncHarness()
+  }
+})
+
+test('在途请求失败期间的新编辑会替换旧 pending 批次且不会立即无限重试', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let attempts = 0
+  let releaseFirst
+  const firstRequest = new Promise(resolve => { releaseFirst = resolve })
+  const bodies = []
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path, options = {}) => {
+    if (path === '/kml/files') return { total: 1, items: [{ id: 'server-a' }] }
+    if (path === '/kml/files/server-a') return accountFile('server-a', '原始文件', 1)
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    if (path === '/kml/sync') {
+      attempts += 1
+      bodies.push(options.body)
+      if (attempts === 1) {
+        await firstRequest
+        throw Object.assign(new Error('网络暂时不可用'), { code: 'NETWORK_ERROR', status: 503 })
+      }
+      return {
+        syncedAt: new Date().toISOString(),
+        results: [{
+          action: 'update',
+          document: accountFile('server-a', options.body.operations[0].data.name, 2),
+        }],
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await initializeKmlAccountMode()
+    scheduleKmlAccountSync([{ ...accountFile('server-a', '第一次编辑', 1) }], { delayMs: 0 })
+    const firstFlush = flushKmlAccountSync()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    scheduleKmlAccountSync([{ ...accountFile('server-a', '第二次编辑', 1) }], { delayMs: 0 })
+    releaseFirst()
+    await firstFlush
+    assert.equal(attempts, 1)
+    await flushKmlAccountSync()
+    assert.equal(attempts, 2)
+    assert.equal(bodies[1].operations[0].data.name, '第二次编辑')
+  } finally {
+    releaseFirst?.()
+    await resetSyncHarness()
+  }
+})
+
+test('在途 trash 响应丢失后撤销删除会生成 restore 补偿操作', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let attempts = 0
+  let releaseFirst
+  const firstRequest = new Promise(resolve => { releaseFirst = resolve })
+  const bodies = []
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path, options = {}) => {
+    if (path === '/kml/files') return { total: 1, items: [{ id: 'server-a' }] }
+    if (path === '/kml/files/server-a') return accountFile('server-a', '可撤销文件', 1)
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    if (path === '/kml/sync') {
+      attempts += 1
+      bodies.push(options.body)
+      if (attempts === 1) {
+        await firstRequest
+        throw Object.assign(new Error('响应连接中断'), { code: 'NETWORK_ERROR', status: 0 })
+      }
+      const operation = options.body.operations[0]
+      assert.equal(operation.action, 'restore')
+      return {
+        syncedAt: new Date().toISOString(),
+        results: [{ action: 'restore', document: { ...accountFile('server-a', '可撤销文件', 2), status: 'active' } }],
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await initializeKmlAccountMode()
+    scheduleKmlAccountSync([], {
+      delayMs: 0,
+      deletedIds: ['server-a'],
+      deletionIntent: 'user-confirmed',
+    })
+    const firstFlush = flushKmlAccountSync()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // Equivalent to undo: the latest working set contains the file again.
+    scheduleKmlAccountSync([{ ...accountFile('server-a', '可撤销文件', 1) }], { delayMs: 0 })
+    releaseFirst()
+    await firstFlush
+    assert.equal(attempts, 1)
+    await flushKmlAccountSync()
+    assert.equal(attempts, 2)
+    assert.equal(bodies[1].operations[0].kmlId, 'server-a')
+  } finally {
+    releaseFirst?.()
+    await resetSyncHarness()
+  }
+})
+
+test('在途 trash 已提交但响应丢失后撤销并编辑会先恢复再保存最新内容', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let serverDocument = accountFile('server-a', '原始文件', 1)
+  let attempts = 0
+  let releaseFirst
+  const firstRequest = new Promise(resolve => { releaseFirst = resolve })
+  const bodies = []
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path, options = {}) => {
+    if (path === '/kml/files') return { total: 1, items: [{ id: 'server-a' }] }
+    if (path === '/kml/files/server-a') return structuredClone(serverDocument)
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    if (path === '/kml/sync') {
+      attempts += 1
+      bodies.push(structuredClone(options.body))
+      const operations = options.body.operations
+      if (attempts === 1) {
+        assert.deepEqual(operations.map(operation => operation.action), ['trash'])
+        serverDocument = { ...serverDocument, revision: 2, status: 'trashed' }
+        await firstRequest
+        throw Object.assign(new Error('服务端已提交但响应连接中断'), { code: 'NETWORK_ERROR', status: 0 })
+      }
+      if (attempts === 2) {
+        assert.deepEqual(operations.map(operation => operation.action), ['restore'])
+        serverDocument = { ...serverDocument, revision: 3, status: 'active' }
+        return {
+          syncedAt: new Date().toISOString(),
+          results: [{ action: 'restore', document: structuredClone(serverDocument) }],
+        }
+      }
+      assert.deepEqual(operations.map(operation => operation.action), ['update'])
+      assert.equal(operations[0].data.revision, 3)
+      serverDocument = {
+        ...serverDocument,
+        ...structuredClone(operations[0].data),
+        revision: 4,
+        status: 'active',
+      }
+      return {
+        syncedAt: new Date().toISOString(),
+        results: [{ action: 'update', document: structuredClone(serverDocument) }],
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await initializeKmlAccountMode()
+    scheduleKmlAccountSync([], {
+      delayMs: 0,
+      deletedIds: ['server-a'],
+      deletionIntent: 'user-confirmed',
+    })
+    const firstFlush = flushKmlAccountSync()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    scheduleKmlAccountSync([{ ...accountFile('server-a', '撤销后继续编辑', 1) }], { delayMs: 0 })
+    releaseFirst()
+    await firstFlush
+    assert.equal(attempts, 1)
+
+    await flushKmlAccountSync()
+    assert.equal(attempts, 3)
+    assert.deepEqual(bodies.map(body => body.operations.map(operation => operation.action)), [
+      ['trash'],
+      ['restore'],
+      ['update'],
+    ])
+    assert.equal(serverDocument.status, 'active')
+    assert.equal(serverDocument.name, '撤销后继续编辑')
+    assert.equal(serverDocument.revision, 4)
+  } finally {
+    releaseFirst?.()
+    await resetSyncHarness()
+  }
+})
+
+test('认证刷新失败时保留已有工作集但强制切换为只读', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let failRefresh = false
+  setKmlAccountAuthForTests(async () => {
+    if (failRefresh) throw Object.assign(new Error('会话暂时不可用'), { code: 'AUTH_REFRESH_FAILED' })
+    return accountAuth('user-a')
+  })
+  setKmlAccountApiForTests(async (path) => {
+    if (path === '/kml/files') return { total: 1, items: [{ id: 'server-a' }] }
+    if (path === '/kml/files/server-a') return accountFile('server-a', '仍可查看', 1)
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    const first = await initializeKmlAccountMode()
+    assert.equal(first.files[0].name, '仍可查看')
+    failRefresh = true
+    const failed = await initializeKmlAccountMode()
+    assert.equal(failed.files[0].name, '仍可查看')
+    assert.equal(failed.canWrite, false)
+    assert.equal(isAccountKmlWritable(), false)
+    assert.equal(scheduleKmlAccountSync([{ ...accountFile('server-a', '不应写入') }], { delayMs: 0 }), false)
+  } finally {
+    await resetSyncHarness()
+  }
+})
+
+test('多个 create 重放失败时只轮换服务端指出的旧 clientId', async () => {
+  await resetSyncHarness()
+  setKmlAccountDraftStoreForTests(createMemoryKmlAccountDraftStore())
+  let attempts = 0
+  const syncBodies = []
+  setKmlAccountAuthForTests(async () => accountAuth('user-a'))
+  setKmlAccountApiForTests(async (path, options = {}) => {
+    if (path === '/kml/files') return { total: 0, items: [] }
+    if (path === '/kml/directories') return { items: [], uncategorized: { id: null, name: '未分类' } }
+    if (path === '/kml/sync') {
+      attempts += 1
+      syncBodies.push(options.body)
+      if (attempts === 1) {
+        throw Object.assign(new Error('旧保存标识已失效'), {
+          code: 'KML_CREATE_REPLAY_DELETED',
+          details: { clientId: 'old-a' },
+        })
+      }
+      return {
+        syncedAt: new Date().toISOString(),
+        results: syncBodies[1].operations.map(operation => ({
+          action: 'create',
+          clientId: operation.clientId,
+          document: accountFile(`server-${operation.clientId}`, operation.data.name, 1),
+        })),
+      }
+    }
+    throw new Error(`unexpected request: ${path}`)
+  })
+  try {
+    await initializeKmlAccountMode()
+    const files = [accountFile('old-a', 'A'), accountFile('old-b', 'B')]
+    assert.equal(scheduleKmlAccountSync(files, { delayMs: 0 }), true)
+    await flushKmlAccountSync()
+    assert.equal(attempts, 2)
+    const firstIds = syncBodies[0].operations.map(operation => operation.clientId)
+    const retriedIds = syncBodies[1].operations.map(operation => operation.clientId)
+    assert.equal(firstIds[1], 'old-b')
+    assert.equal(retriedIds[1], 'old-b')
+    assert.notEqual(retriedIds[0], 'old-a')
+  } finally {
+    await resetSyncHarness()
+  }
 })
 
 test('KML v2 recovery draft keeps an immutable full base for three-way merge', () => {
@@ -670,6 +1206,7 @@ test('KML v2 无服务端 ID 的删除墓碑不会被误判为旧版草稿', () 
     status: 'trashed',
   }]]), {
     deletedClientIds: ['local-deleted'],
+    deletionIntent: 'user-confirmed',
   })
   const merged = mergeKmlRecoveryDraft(draft, [])
 
@@ -934,6 +1471,7 @@ test('KML recovery preserves deletion after a committed create response is lost'
   const draft = buildKmlRecoveryDraft('user-a', [], new Map(), {
     generation: 4,
     deletedClientIds: ['local-stable'],
+    deletionIntent: 'user-confirmed',
   })
   const serverFiles = [{
     id: 'server-created',
@@ -973,6 +1511,7 @@ test('KML recovery preserves the latest undo or redo intent around an unknown tr
   const undoDraft = buildKmlRecoveryDraft('user-a', [localFile], activeSnapshot, {
     generation: 6,
     pendingOperations: [{ action: 'trash', kmlId: 'server-a' }],
+    deletionIntent: 'user-confirmed',
   })
   const undoResolution = buildKmlRecoveryResolution([], undoDraft, 'restore')
   assert.deepEqual(undoResolution.files.map(file => file.id), ['local-a'])
@@ -995,6 +1534,7 @@ test('KML recovery preserves the latest undo or redo intent around an unknown tr
   const deleteDraft = buildKmlRecoveryDraft('user-a', [], activeSnapshot, {
     generation: 7,
     pendingOperations: [{ action: 'trash', kmlId: 'server-a' }],
+    deletionIntent: 'user-confirmed',
   })
   const deleteResolution = buildKmlRecoveryResolution([], deleteDraft, 'restore')
   const deleteSnapshots = new Map(deleteResolution.snapshots.map(item => [item.localId, item]))
@@ -1030,7 +1570,7 @@ test('KML recovery preserves the latest undo or redo intent around an unknown tr
   const restored = reduceKmlSyncResult(redoSnapshots, {
     results: [{ action: 'restore', document: activeServerFile }],
   }).snapshots
-  assert.deepEqual(buildKmlSyncOperations(redoResolution.files, restored), [
+  assert.deepEqual(buildKmlSyncOperations(redoResolution.files, restored, ['local-a']), [
     { action: 'trash', kmlId: 'server-a' },
   ])
 
@@ -1061,6 +1601,7 @@ test('KML recovery preserves the latest undo or redo intent around an unknown tr
     }],
   ]), {
     generation: 10,
+    deletionIntent: 'user-confirmed',
     pendingOperations: [
       { action: 'trash', kmlId: 'server-a' },
       {
@@ -1102,7 +1643,7 @@ test('KML recovery resolves revision conflicts by reload or conflict-copy withou
       revision: 1,
       hash: kmlFingerprint({ name: 'B', features: [] }),
     }],
-  ]))
+  ]), { deletedClientIds: ['server-b'], deletionIntent: 'user-confirmed' })
   const serverFiles = [
     { id: 'server-a', revision: 2, name: 'A 服务器版本', isDefault: true, features: [] },
     { id: 'server-b', revision: 1, name: 'B', features: [] },
@@ -1113,7 +1654,12 @@ test('KML recovery resolves revision conflicts by reload or conflict-copy withou
   assert.equal(restore.blockedByConflict, true)
   assert.equal(restore.files.find(file => file.id === 'local-a').name, 'A 本地修改')
   assert.deepEqual(
-    buildKmlSyncOperations(restore.files, new Map(restore.snapshots.map(item => [item.localId, item])))
+    buildKmlSyncOperations(
+      restore.files,
+      new Map(restore.snapshots.map(item => [item.localId, item])),
+      restore.deletedClientIds,
+      restore.deletedFileIds,
+    )
       .map(item => item.action)
       .sort(),
     ['create', 'trash', 'update'],
@@ -1151,8 +1697,13 @@ test('账号同步源码使用代次隔离会话失效后的在途响应', async
   assert.match(source, /pendingSyncOperations = normalizePendingSyncOperations\(operations\)/)
   assert.match(source, /persistCurrentDraft\('in-flight'\)/)
   assert.match(source, /const draftWrite = latestDraftWrite\s+const draftPersisted = await draftWrite/)
-  assert.match(source, /if \(!draftPersisted\) \{\s+pendingSyncOperations = \[\]\s+return\s+\}/)
-  assert.match(source, /Number\(error\?\.status \|\| 0\) > 0[\s\S]*pendingSyncOperations = \[\]/)
+  assert.match(source, /if \(!draftPersisted\) \{[\s\S]*pendingOperationCount: pendingSyncOperations\.length[\s\S]*return/)
+  assert.doesNotMatch(source, /if \(!draftPersisted\) \{\s+pendingSyncOperations = \[\]/)
+  assert.match(source, /error\.code === 'KML_CREATE_REPLAY_DELETED'[\s\S]*rotateRejectedCreateIds\(operations, error\.details\?\.clientId\)/)
+  assert.match(source, /pendingSyncOperations = buildKmlSyncOperations\(latestFiles, snapshots, pendingCreateDeletes, pendingDeleteIntents\)/)
+  assert.match(source, /let draftPersistenceQueue = Promise\.resolve\(\)/)
+  assert.match(source, /const task = draftPersistenceQueue\.then\(operation, operation\)/)
+  assert.match(source, /draftPersistenceQueue = task\.catch\(\(\) => \{\}\)/)
 })
 
 test('2D and 3D KML panels bind session expiry before account recovery and expose sync status', async () => {

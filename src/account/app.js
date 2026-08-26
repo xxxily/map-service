@@ -6,6 +6,7 @@ import {
   groupKmlDocumentsByDirectory,
   getAccountCapabilities,
   isAccountLocation,
+  loadCompleteKmlPages,
   normalizeAccountTab,
   normalizeKmlSort,
   normalizeKmlDirectoryCatalog,
@@ -185,21 +186,9 @@ async function loadProfile () {
 }
 
 async function listAllKml (query = {}) {
-  const items = []
-  let page = 1
-  let total = 0
-  let usage = {}
-  const limit = 100
-  while (page <= 100) {
-    const raw = await accountApi.listKml({ ...query, page, limit })
-    const result = normalizePagedResult(raw)
-    items.push(...result.items)
-    total = result.total
-    usage = result.usage || usage
-    if (!result.items.length || items.length >= total || result.items.length < limit) break
-    page += 1
-  }
-  return { items, page: 1, limit: items.length || limit, total: total || items.length, usage }
+  return loadCompleteKmlPages(({ page, limit }) => (
+    accountApi.listKml({ ...query, page, limit })
+  ))
 }
 
 async function loadKml () {

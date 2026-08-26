@@ -2482,6 +2482,19 @@ export class UserContentService {
     if (!Array.isArray(operations) || operations.length < 1 || operations.length > 100) {
       throw createHttpError('同步操作数量需为 1～100 条', 400, 'VALIDATION_FAILED')
     }
+    // A client can temporarily submit an incomplete working set while a page
+    // is loading or recovering from a conflict. Never allow that state to
+    // turn into a deletion: every trash operation must carry an explicit
+    // confirmation marker produced by a user deletion action.
+    const trashCount = operations.reduce((count, rawOperation) => {
+      if (!rawOperation || typeof rawOperation !== 'object') return count
+      const action = String(rawOperation.action || rawOperation.operation || '')
+      return count + (action === 'trash' ? 1 : 0)
+    }, 0)
+    const deletionIntent = String(input.deletionIntent || '')
+    if (trashCount > 0 && !['user-confirmed', 'user-confirmed-batch'].includes(deletionIntent)) {
+      throw createHttpError('移入回收站前需要用户确认', 409, 'KML_DELETE_CONFIRMATION_REQUIRED')
+    }
     return this.database.transaction(() => {
       this.ensureDefaultKmlForOwner(this.actorUser(actor).id)
       const results = operations.map((rawOperation, index) => {
@@ -2489,10 +2502,19 @@ export class UserContentService {
         const action = String(operation.action || operation.operation || '')
         if (action === 'create') {
           const clientId = normalizeSyncClientId(operation.clientId)
-          const document = this.createKml(actor, operation.data || operation.file || {}, {
-            skipEnsureDefault: true,
-            syncClientId: clientId,
-          })
+          let document
+          try {
+            document = this.createKml(actor, operation.data || operation.file || {}, {
+              skipEnsureDefault: true,
+              syncClientId: clientId,
+            })
+          } catch (error) {
+            if (error?.code === 'KML_CREATE_REPLAY_DELETED') {
+              error.details = { ...(error.details || {}), clientId }
+              error.exposeDetails = true
+            }
+            throw error
+          }
           return { action, clientId, document }
         }
         const kmlId = String(operation.kmlId || operation.id || '')

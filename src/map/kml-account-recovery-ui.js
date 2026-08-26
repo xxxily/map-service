@@ -14,11 +14,29 @@ async function applyResolution (result, replaceFiles) {
   const workingFiles = await replaceFiles(result.files, result)
   const files = Array.isArray(workingFiles) ? workingFiles : result.files
   if (result.blockedByConflict) {
-    setKmlAccountWorkingFiles(files, { persist: false })
+    setKmlAccountWorkingFiles(files, {
+      persist: false,
+      replaceDeleteIntents: true,
+      deletedClientIds: result.deletedClientIds,
+      deletedFileIds: result.deletedFileIds,
+      deletionIntent: result.deletionIntent,
+    })
   } else if (result.shouldSync) {
-    scheduleKmlAccountSync(files, { delayMs: 0 })
+    scheduleKmlAccountSync(files, {
+      delayMs: 0,
+      replaceDeleteIntents: true,
+      deletedClientIds: result.deletedClientIds,
+      deletedFileIds: result.deletedFileIds,
+      deletionIntent: result.deletionIntent,
+    })
   } else {
-    setKmlAccountWorkingFiles(files, { persist: false })
+    setKmlAccountWorkingFiles(files, {
+      persist: false,
+      replaceDeleteIntents: true,
+      deletedClientIds: result.deletedClientIds,
+      deletedFileIds: result.deletedFileIds,
+      deletionIntent: result.deletionIntent,
+    })
   }
   return { ...result, files }
 }
@@ -162,6 +180,9 @@ export async function promptKmlAccountRecovery (recovery, replaceFiles) {
     const incompleteHint = recovery.draft?.incompleteWrite
       ? '浏览器关闭前最后一次草稿写入未完成，将从最近一份完整草稿恢复。'
       : ''
+    const ignoredDeletionHint = Number(recovery.analysis?.ignoredDeletionCount || recovery.draft?.ignoredDeletionCount || 0) > 0
+      ? `已忽略 ${Number(recovery.analysis?.ignoredDeletionCount || recovery.draft?.ignoredDeletionCount || 0)} 项未经确认的删除，并保留服务器文件。`
+      : ''
     const choices = [
       {
         value: 'restore',
@@ -173,7 +194,7 @@ export async function promptKmlAccountRecovery (recovery, replaceFiles) {
     ]
     const choice = await showChoiceDialog({
       title: '恢复未同步的 KML',
-      message: `${changedCount ? `检测到当前账号有 ${changedCount} 项未完成的 KML 修改。` : ''}${conflictHint}${incompleteHint}`,
+      message: `${changedCount ? `检测到当前账号有 ${changedCount} 项未完成的 KML 修改。` : ''}${conflictHint}${incompleteHint}${ignoredDeletionHint}`,
       dismissible: false,
       choices,
     })

@@ -69,10 +69,14 @@ function jsonError (res, error, statusCode = 500) {
     message = '获取图层资源失败，连接上游服务超时或被拒绝'
   }
   res.status(statusCode)
-  res.jsonErr({
+  const payload = {
     code: error?.code || (statusCode === 500 ? 'INTERNAL_ERROR' : 'REQUEST_FAILED'),
     message,
-  })
+  }
+  if (error?.exposeDetails && error.details && typeof error.details === 'object') {
+    payload.details = error.details
+  }
+  res.jsonErr(payload)
 }
 
 function cacheControlHeader () {

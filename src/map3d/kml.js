@@ -290,7 +290,10 @@ function directoryForFile (file) {
 function commitAccountKmlOrganizationDocuments (documents = []) {
   if (!isAccountKmlMode()) return
   for (const document of documents || []) {
-    const file = kmlList.find(candidate => String(candidate.id) === String(document?.id || ''))
+    const file = kmlList.find(candidate => (
+      String(candidate.id) === String(document?.id || '') ||
+      String(candidate.serverId || '') === String(document?.id || '')
+    ))
     if (!file) continue
     registerKmlAccountDocument(document, { localId: file.id, localFile: file })
   }
@@ -299,11 +302,12 @@ function commitAccountKmlOrganizationDocuments (documents = []) {
 async function loadInitialKmlFiles () {
   const account = await initializeKmlAccountMode()
   if (account.mode === 'account') {
-    kmlList = (account.files || []).map(normalizeKmlFile)
     if (account.error) {
+      kmlList = (account.files || []).map(normalizeKmlFile)
       showAlert(`账号 KML 加载失败，当前不会读取或上传浏览器本地 KML。请稍后刷新重试：${account.error.message}`)
       return
     }
+    kmlList = (account.files || []).map(normalizeKmlFile)
     if (account.recovery) {
       await promptKmlAccountRecovery(account.recovery, files => {
         kmlList = files.map(normalizeKmlFile)
@@ -320,12 +324,26 @@ async function loadInitialKmlFiles () {
   loadFromStorage()
 }
 
-function saveToStorage () {
+function saveToStorage (options = {}) {
   if (isAccountKmlMode()) {
-    if (isAccountKmlWritable()) scheduleKmlAccountSync(kmlList)
+    if (isAccountKmlWritable()) scheduleKmlAccountSync(kmlList, options)
     return
   }
   localStorage.setItem(KML_STORAGE_KEY, JSON.stringify(kmlList))
+}
+
+function getRemovedKmlFileIds (previousFiles, nextFiles) {
+  const nextIds = new Set(nextFiles.map(file => String(file?.id || '')).filter(Boolean))
+  return [...new Set(previousFiles
+    .map(file => String(file?.id || ''))
+    .filter(id => id && !nextIds.has(id)))]
+}
+
+function saveKmlHistoryState (previousFiles) {
+  const deletedIds = getRemovedKmlFileIds(previousFiles, kmlList)
+  saveToStorage(deletedIds.length > 0
+    ? { deletedIds, deletionIntent: 'user-confirmed' }
+    : {})
 }
 
 function normalizeKmlFile (kmlFile) {
@@ -671,9 +689,10 @@ function pushKmlHistory () {
 function undoKml () {
   if (!canWritePersonalKml()) return
   if (kmlUndoStack.length === 0) return
+  const previousFiles = kmlList
   kmlRedoStack.push(JSON.parse(JSON.stringify(kmlList)))
   kmlList = kmlUndoStack.pop()
-  saveToStorage()
+  saveKmlHistoryState(previousFiles)
   renderAllKmls()
   updateKmlPanelUI()
 }
@@ -681,9 +700,10 @@ function undoKml () {
 function redoKml () {
   if (!canWritePersonalKml()) return
   if (kmlRedoStack.length === 0) return
+  const previousFiles = kmlList
   kmlUndoStack.push(JSON.parse(JSON.stringify(kmlList)))
   kmlList = kmlRedoStack.pop()
-  saveToStorage()
+  saveKmlHistoryState(previousFiles)
   renderAllKmls()
   updateKmlPanelUI()
 }
@@ -2692,7 +2712,7 @@ function bindPanelEvents () {
         if (getRememberedTargetKmlId() === kmlId) {
           rememberTargetKmlId(DEFAULT_KML_ID)
         }
-        saveToStorage()
+        saveToStorage({ deletedIds: [kmlId], deletionIntent: 'user-confirmed' })
         removeKmlLayers(kmlId)
         updateKmlPanelUI()
       }

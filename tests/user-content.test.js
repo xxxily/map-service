@@ -219,6 +219,51 @@ test('KML sync switches the default file when the new default update runs first'
   }
 })
 
+test('KML sync requires explicit confirmation before every trash operation', () => {
+  const harness = createHarness()
+  try {
+    const first = harness.service.createKml(harness.one, { name: '待删除文件一' })
+    const second = harness.service.createKml(harness.one, { name: '待删除文件二' })
+    const operations = [first, second].map(document => ({
+      action: 'trash',
+      kmlId: document.id,
+    }))
+
+    assert.throws(
+      () => harness.service.syncKmlFiles(harness.one, { operations }),
+      error => error.statusCode === 409 &&
+        error.code === 'KML_DELETE_CONFIRMATION_REQUIRED' &&
+        error.message === '移入回收站前需要用户确认'
+    )
+    assert.equal(harness.service.getKml(harness.one, first.id).status, 'active')
+    assert.equal(harness.service.getKml(harness.one, second.id).status, 'active')
+
+    assert.throws(
+      () => harness.service.syncKmlFiles(harness.one, {
+        operations: [{ action: 'trash', kmlId: first.id }],
+      }),
+      error => error.statusCode === 409 &&
+        error.code === 'KML_DELETE_CONFIRMATION_REQUIRED' &&
+        error.message === '移入回收站前需要用户确认'
+    )
+    assert.equal(harness.service.getKml(harness.one, first.id).status, 'active')
+
+    const confirmed = harness.service.syncKmlFiles(harness.one, {
+      deletionIntent: 'user-confirmed',
+      operations: [{ action: 'trash', kmlId: first.id }],
+    })
+    assert.equal(confirmed.results[0].document.status, 'trashed')
+
+    const confirmedBatch = harness.service.syncKmlFiles(harness.one, {
+      deletionIntent: 'user-confirmed-batch',
+      operations,
+    })
+    assert.deepEqual(confirmedBatch.results.map(item => item.document.status), ['trashed', 'trashed'])
+  } finally {
+    harness.close()
+  }
+})
+
 test('deleting a KML directory clears active and trashed file directory ids', () => {
   const harness = createHarness()
   try {
@@ -463,11 +508,13 @@ test('KML sync create is idempotent per owner and requires a stable clientId', (
     )
 
     const responseLossDelete = harness.service.syncKmlFiles(harness.one, {
+      deletionIntent: 'user-confirmed',
       operations: [{ action: 'trash', clientId: 'local-stable' }],
     })
     assert.equal(responseLossDelete.results[0].document.id, first.results[0].document.id)
     assert.equal(responseLossDelete.results[0].document.status, 'trashed')
     const missingDelete = harness.service.syncKmlFiles(harness.one, {
+      deletionIntent: 'user-confirmed',
       operations: [{ action: 'trash', clientId: 'never-created' }],
     })
     assert.deepEqual(missingDelete.results[0], {
