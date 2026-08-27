@@ -47,7 +47,7 @@
 
    - `share.kmlClusterForceEnabled`：是否对未显式开启聚合的分享强制启用，默认 `false`；
    - `share.kmlClusterMaxZoom`：管理员强制聚合的最大缩放级别，默认 `12`，范围 `0～24`；
-   - `share.kmlClusterMinPoints`：管理员强制聚合的最少点位数，默认 `250`，范围 `2～1000`；
+   - `share.kmlClusterMinPoints`：管理员强制聚合的最少点位数，默认 `250`，只校验为不小于 `2` 的安全整数，不设置固定业务最大值；
    - `kml.batchDownloadEnabled`：目录批量下载总开关，默认 `false`。
 
    服务端必须对整数、范围和布尔值归一化。分享自身通过 `viewConfig.kmlPointClustering` 配置 `enabled`、`minZoom`、`maxClusterZoom`、`gridSize`、`minClusterPoints`、`maxMembersPerCluster`。管理员强制开关开启时，无论分享是否自行开启聚合，都必须标记 `forcedByPolicy=true` 并按更积极聚合合成：缩放范围取并集、网格大小取较大值、最少聚合点数取较小值；分享自身的成员明细上限保持有效，更积极的配置继续生效，较弱配置不得绕过管理员阈值。

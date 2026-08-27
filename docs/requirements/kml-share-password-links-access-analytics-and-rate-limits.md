@@ -91,7 +91,7 @@
 }
 ```
 
-约束：`windowMs` 10 秒～10 分钟，瓦片 100～60000，清单 20～10000，条目 100～100000。空间受限范围外透明瓦片不计入 `tileMaxRequests`。
+`windowMs`、`tileMaxRequests`、`manifestMaxRequests` 和 `maxEntries` 均为管理员可调的正安全整数，不再设置任意固定业务最大值；`windowMs` 仍不得低于 1000 毫秒，以避免零窗口造成限流失效。空间受限范围外透明瓦片不计入 `tileMaxRequests`。部署容量、内存和运维策略由管理员自行裁量。
 
 ### 4.3 访问记录
 

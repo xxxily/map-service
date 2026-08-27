@@ -721,9 +721,9 @@ button:disabled {
 }
 
 .account-kml-directory-heading {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   padding: 2px 4px 10px;
   color: #315254;
@@ -734,31 +734,49 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 7px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .account-kml-directory-title {
-  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
   align-items: center;
+  height: 30px;
+  gap: 7px;
   white-space: nowrap;
 }
 
 .account-kml-directory-title strong {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.account-kml-directory-title > span:last-child {
-  flex: 0 0 auto;
+.account-kml-directory-count {
+  display: inline-flex;
+  min-width: 22px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  padding: 0 6px;
+  background: rgba(40, 114, 107, 0.09);
+  color: #28726b;
   line-height: 1;
 }
 
 .account-kml-directory-heading > div:last-child {
+  display: flex;
+  min-width: 0;
+  min-height: 30px;
+  align-items: center;
+  flex-wrap: nowrap;
   justify-content: flex-end;
 }
 
 .account-kml-directory-heading button {
+  min-height: 28px;
   border: 0;
   border-radius: 6px;
   padding: 4px 6px;
@@ -1670,6 +1688,7 @@ body.account-view .app-dialog:not(.account-share-dialog) {
 @media (max-width: 720px) {
   .account-kml-directory-heading {
     align-items: center;
+    gap: 6px;
   }
 
   .account-kml-directory-heading > div {
@@ -1678,6 +1697,12 @@ body.account-view .app-dialog:not(.account-share-dialog) {
 
   .account-kml-directory-heading > div:last-child {
     flex: 0 0 auto;
+    gap: 3px;
+  }
+
+  .account-kml-directory-heading button {
+    padding: 4px;
+    white-space: nowrap;
   }
   .account-password-generation-options {
     grid-template-columns: 1fr;

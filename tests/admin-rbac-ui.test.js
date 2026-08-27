@@ -109,6 +109,39 @@ test('用户体系设置展示 KML 批量下载与强制聚合开关且默认关
   assert.match(html, /name="kmlClusterForceEnabled"[\s\S]*value="false" selected>关闭/)
 })
 
+test('用户体系业务数值配置不渲染固定最大值，仅保留缩放级别硬边界和动态阈值', () => {
+  const html = renderUserSystemSettingsPage({
+    userSystemSettings: {
+      quota: { maxKmlFiles: 100000, maxKmlFileBytes: 50 * 1024 * 1024, maxFeaturesPerKml: 2000000, maxFeaturesPerUser: 8000000, trashRetentionDays: 5000 },
+      share: { maxFilesPerShare: 500, kmlClusterMinPoints: 2000, accessTtlMs: 720 * 60 * 60 * 1000, spatialPaddingMeters: 0, spatialMaxAreaKm2: 10000, spatialMaxDiagonalKm: 300, unlimitedAccessMaxAreaKm2: 2000, unlimitedAccessMaxDiagonalKm: 100 },
+    },
+    roles: [],
+    session: sessionWith('system.super_admin'),
+  })
+  for (const name of ['sessionTtlDays', 'rememberTtlDays', 'reauthMinutes', 'maxKmlFiles', 'maxFeaturesPerKml', 'maxFeaturesPerUser', 'trashRetentionDays', 'maxFilesPerShare', 'kmlClusterMinPoints', 'shareAccessHours', 'shareRateLimitWindowSeconds', 'shareTileMaxRequests', 'shareManifestMaxRequests', 'shareRateLimitMaxEntries', 'spatialPaddingMeters', 'spatialMaxAreaKm2', 'spatialMaxDiagonalKm']) {
+    assert.doesNotMatch(html, new RegExp(`name="${name}"[^>]*\\bmax="`), `${name} should not have a fixed max`)
+  }
+  assert.match(html, /name="maxKmlFileMb"[^>]*max="50"/)
+  assert.match(html, /name="spatialPaddingMeters"[^>]*min="0"[^>]*step="any"/)
+  assert.match(html, /name="kmlClusterMaxZoom"[^>]*max="24"/)
+  assert.match(html, /name="spatialUnrestrictedTileMaxZoom"[^>]*max="24"/)
+  assert.match(html, /name="unlimitedAccessMaxAreaKm2"[^>]*max="10000"/)
+  assert.match(html, /name="unlimitedAccessMaxDiagonalKm"[^>]*max="300"/)
+})
+
+test('个人配额覆盖不渲染固定最大值', () => {
+  const html = renderUsersPage({
+    session: sessionWith('admin.user.manage'),
+    roles: [],
+    adminUserFilters: {},
+    adminUsers: { items: [{ id: 'usr_1', username: 'operator', displayName: '操作员', status: 'active', roles: ['user'], usage: {}, quota: { maxKmlFiles: 100000 } }], page: 1, limit: 20, total: 1, technicalLimits: { kmlImportTransportMaxBytes: 80 * 1024 * 1024 } },
+  })
+  for (const name of ['maxKmlFiles', 'maxFeaturesPerKml', 'maxFeaturesPerUser', 'trashRetentionDays']) {
+    assert.doesNotMatch(html, new RegExp(`name="${name}"[^>]*\\bmax="`), `${name} should not have a fixed max`)
+  }
+  assert.match(html, /name="maxKmlFileMb"[^>]*max="80"/)
+})
+
 test('分享治理页展示空间范围、授权模式和安全摘要', () => {
   const html = renderShareModerationPage({
     shareFilters: {},

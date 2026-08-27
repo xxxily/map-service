@@ -14,6 +14,7 @@ import service from './service.js'
 import { createHttpError } from './user/security.js'
 import { sanitizeLogUrl } from './logSanitizer.js'
 import { TRANSPARENT_TILE_PNG } from './user/shareSpatialAccess.js'
+import { kmlImportTransportMaxBytes } from './user/limits.js'
 import whitelist from './whitelist.js'
 import {
   assertCommentAuthentication,
@@ -22,10 +23,26 @@ import {
 } from './interaction/accessGuards.js'
 
 const serviceConfig = baseConfig.staticService
-const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } })
+const upload = multer({ limits: { fileSize: kmlImportTransportMaxBytes() } })
 const routeSet = {}
 const CACHE_CONTROL_SECONDS = Math.floor((serviceConfig.fetchRelay?.browserMaxAge || 0) / 1000)
 const STALE_SECONDS = Math.floor((serviceConfig.fetchRelay?.browserStaleWhileRevalidate || 0) / 1000)
+
+export function runKmlFileUpload (req, res, uploadMiddleware = upload.single('file')) {
+  return new Promise((resolve, reject) => {
+    uploadMiddleware(req, res, err => {
+      if (err?.code === 'LIMIT_FILE_SIZE') {
+        reject(createHttpError(
+          `KML 文件超过服务运输层上限 ${kmlImportTransportMaxBytes()} 字节`,
+          413,
+          'KML_IMPORT_TRANSPORT_LIMIT_EXCEEDED',
+        ))
+        return
+      }
+      err ? reject(err) : resolve()
+    })
+  })
+}
 const ACCESS_COOKIE_NAME = 'map_access_token'
 const USER_COOKIE_NAMES = service.getUserSystemConfig()
 const USER_SESSION_COOKIE_NAME = USER_COOKIE_NAMES.sessionCookieName
@@ -1004,9 +1021,7 @@ const userApiRoutes = [
     handler: async (req, res) => {
       noStore(res)
       const session = requireUser(req, 'kml.own.write')
-      await new Promise((resolve, reject) => {
-        upload.single('file')(req, res, err => err ? reject(err) : resolve())
-      })
+      await runKmlFileUpload(req, res)
       if (!req.file) {
         const err = new Error('未上传 KML 文件')
         err.statusCode = 400
@@ -2629,12 +2644,7 @@ const simpleApi = {
       tags: ['admin'],
       handler: async (req, res) => {
         requireAdmin(req)
-        await new Promise((resolve, reject) => {
-          upload.single('file')(req, res, (err) => {
-            if (err) reject(err)
-            else resolve()
-          })
-        })
+        await runKmlFileUpload(req, res)
         if (!req.file) {
           const err = new Error('未上传 KML 文件')
           err.statusCode = 400

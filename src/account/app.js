@@ -131,6 +131,18 @@ function spatialTileZoomMax () {
   return Number.isSafeInteger(value) && value >= 0 && value <= 24 ? value : 14
 }
 
+function maxFilesPerShare () {
+  const value = Number(state.auth.config?.share?.maxFilesPerShare)
+  return Number.isSafeInteger(value) && value > 0 ? value : 20
+}
+
+function kmlImportLimitBytes () {
+  const quotaLimit = Number(state.kml.usage?.quota?.maxKmlFileBytes)
+  const transportLimit = Number(state.auth.config?.kml?.importTransportMaxBytes)
+  const values = [quotaLimit, transportLimit].filter(value => Number.isSafeInteger(value) && value > 0)
+  return values.length ? Math.min(...values) : 10 * 1024 * 1024
+}
+
 function requireCapability (key, message = '当前账号没有执行此操作的权限') {
   if (capabilities()[key]) return true
   setMessage('', message)
@@ -565,8 +577,9 @@ async function importKmlFile (file) {
     await showAlert('请选择 .kml 文件')
     return
   }
-  if (file.size > 10 * 1024 * 1024) {
-    await showAlert('KML 文件不能超过 10 MB')
+  const maximumBytes = kmlImportLimitBytes()
+  if (file.size > maximumBytes) {
+    await showAlert(`KML 文件不能超过 ${Math.max(1, Math.floor(maximumBytes / 1024 / 1024))} MB`)
     return
   }
   const result = await runAction(() => accountApi.importKml(file, {
@@ -738,6 +751,7 @@ async function createShareFromSelection () {
     directoryCatalog: state.kml.directories,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
+    maxFilesPerShare: maxFilesPerShare(),
     spatialUnrestrictedTileMaxZoom: spatialTileZoomMax(),
     onSpatialPreview: (previewItems, spatialOptions = {}) => accountApi.spatialPreview({
       items: previewItems,
@@ -813,6 +827,7 @@ async function editShare (id) {
     directoryCatalog: directories,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
+    maxFilesPerShare: maxFilesPerShare(),
     spatialUnrestrictedTileMaxZoom: spatialTileZoomMax(),
     onSpatialPreview: (previewItems, spatialOptions = {}) => accountApi.spatialPreview({
       items: previewItems,

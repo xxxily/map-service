@@ -190,7 +190,7 @@ function renderKmlRows (state) {
         data-account-kml-directory-drop="${escapeHtml(group.id || '')}"
         ${manualOrder && entityDirectory ? `draggable="true" data-account-kml-directory-draggable="true" data-id="${escapeHtml(group.id)}"` : ''}>
         <header class="account-kml-directory-heading">
-          <div class="account-kml-directory-title"><span class="account-directory-drag" aria-hidden="true">${manualOrder && entityDirectory ? '⋮⋮' : '▰'}</span><strong>${escapeHtml(group.name)}</strong><span>${group.items.length}</span></div>
+          <div class="account-kml-directory-title"><span class="account-directory-drag" aria-hidden="true">${manualOrder && entityDirectory ? '⋮⋮' : '▰'}</span><strong>${escapeHtml(group.name)}</strong><span class="account-kml-directory-count">${group.items.length}</span></div>
           <div>
             ${activeItems.length ? `<button type="button" data-account-action="select-directory-kml" data-id="${escapeHtml(group.id || '')}" data-selected="${allSelected}">${allSelected ? '取消全选' : '全选目录'}</button>` : ''}
             ${capabilities.canWriteKml && state.kml.status !== 'trashed' ? `<button type="button" data-account-action="toggle-directory-visibility" data-id="${escapeHtml(group.id || '')}" data-enabled="${nextVisibility}" title="${nextVisibility ? '显示' : '隐藏'}目录文件">${group.visibilityState === 'mixed' ? '部分显示' : nextVisibility ? '显示' : '隐藏'}</button>` : ''}
@@ -228,7 +228,7 @@ function renderKml (state) {
         </div>` : '<span class="account-badge is-muted">只读 KML</span>'}
       </div>
       <div class="account-toolbar">
-        ${state.kml.status === 'trashed' ? '<button type="button" class="account-link-button" data-account-action="back-kml-active">返回使用中 KML</button>' : ''}
+        ${state.kml.status === 'trashed' ? '<button type="button" class="account-link-button" data-account-action="back-kml-active" title="返回使用中的 KML">返回</button>' : ''}
         <form data-account-form="kml-filter" class="account-search-form">
           <input name="search" value="${escapeHtml(state.kml.search)}" placeholder="搜索名称或描述">
           <select name="status"><option value="active" ${state.kml.status === 'active' ? 'selected' : ''}>使用中</option><option value="trashed" ${state.kml.status === 'trashed' ? 'selected' : ''}>回收站</option><option value="all" ${state.kml.status === 'all' ? 'selected' : ''}>全部</option></select>
@@ -289,7 +289,7 @@ function renderShares (state) {
   const analyticsPolicy = state.auth.config?.analytics?.sharePolicy || {}
   return `
     <section class="account-panel-section">
-      <div class="account-section-heading"><div><p class="account-eyebrow">链接分享</p><h2>我的分享</h2><p>分享包可以包含 1～20 个 KML，可随时暂停、同步、撤销或删除；删除分享不会删除原始 KML。</p></div>${capabilities.canReadKml ? '<button type="button" class="account-secondary-button" data-account-action="go-kml-share">从 KML 创建分享</button>' : ''}</div>
+      <div class="account-section-heading"><div><p class="account-eyebrow">链接分享</p><h2>我的分享</h2><p>分享包可包含后台允许数量的 KML，可随时暂停、同步、撤销或删除；删除分享不会删除原始 KML。</p></div>${capabilities.canReadKml ? '<button type="button" class="account-secondary-button" data-account-action="go-kml-share">从 KML 创建分享</button>' : ''}</div>
       <form data-account-form="share-filter" class="account-search-form"><input name="search" value="${escapeHtml(state.shares.search)}" placeholder="搜索分享标题"><select name="status"><option value="">全部状态</option>${['active', 'paused', 'expired', 'revoked', 'blocked'].map(status => `<option value="${status}" ${state.shares.status === status ? 'selected' : ''}>${shareStatusLabel(status)}</option>`).join('')}</select><button type="submit">查询</button></form>
       ${state.shares.items.length ? `<div class="account-share-grid">${state.shares.items.map(item => {
         const pendingSyncItemCount = Math.max(0, Number(item.pendingSyncItemCount || 0))

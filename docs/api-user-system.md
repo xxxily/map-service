@@ -137,7 +137,7 @@ system.super_admin
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/auth/config` | 无 | 获取注册开关、账号密码规则和公开分享能力开关及空间瓦片上限 |
+| `GET` | `/auth/config` | 无 | 获取注册开关、账号密码规则、公开分享能力、分享文件数和 KML 导入运输层上限 |
 | `POST` | `/auth/register` | 无 | 自助注册；注册关闭时拒绝 |
 | `POST` | `/auth/login` | 无 | 用户登录 |
 | `POST` | `/auth/logout` | 会话 + CSRF | 注销当前会话 |
@@ -168,14 +168,19 @@ system.super_admin
 {
   "registration": { "enabled": false },
   "passwordPolicy": { "minLength": 12, "maxLength": 128 },
+  "kml": {
+    "batchDownloadEnabled": false,
+    "importTransportMaxBytes": 52428800
+  },
   "share": {
+    "maxFilesPerShare": 20,
     "passwordlessSharingEnabled": false,
     "spatialUnrestrictedTileMaxZoom": 14
   }
 }
 ```
 
-`share.passwordlessSharingEnabled=false` 时，前端不提供“不设置密码”或“移除密码”，服务端也会独立拒绝无密码分享请求。
+`share.passwordlessSharingEnabled=false` 时，前端不提供“不设置密码”或“移除密码”，服务端也会独立拒绝无密码分享请求。`share.maxFilesPerShare` 是管理员当前配置值，账号端不得再写死 20；`kml.importTransportMaxBytes` 是部署级技术硬边界，实际导入还需同时满足当前用户的单文件配额。
 
 字段通过校验且未触发限流时，注册接口统一返回 `202 Accepted`：
 
@@ -730,10 +735,10 @@ Content-Type: application/json
 
 约束：
 
-- 每个分享包包含 1～20 个归属当前用户且处于 active 状态的 KML；实际上限可由后台下调。
+- 每个分享包至少包含 1 个归属当前用户且处于 active 状态的 KML；最大数量使用管理员当前配置的 `share.maxFilesPerShare`，可以高于或低于默认值 20。
 - `items` 可提交 `{kmlId}` 或 `{directoryId}`；目录在保存时展开为当时的 active 文件并去重，公开 manifest 返回稳定的公开 `directoryId`、`directoryName` 和文件顺序快照。
 - `visibleByDefault=false` 在 manifest 中保持隐藏，同时返回 `enabled=false`。隐藏项仅返回名称、数量、目录等摘要，不返回 `features`；显示、展开、导出或批量关联时再请求单文件详情。
-- `viewConfig.kmlPointClustering.enabled=false` 为默认行为。开启时字段边界为：`minZoom/maxClusterZoom` 0～24，`gridSize` 24～128，`minClusterPoints` 2～1000，`maxMembersPerCluster` 100～20000；错误返回 `400 SHARE_CLUSTER_CONFIG_INVALID`。聚合只作用于 Point。
+- `viewConfig.kmlPointClustering.enabled=false` 为默认行为。分享级算法参数边界为：`minZoom/maxClusterZoom` 0～24，`gridSize` 24～128，`minClusterPoints` 2～1000，`maxMembersPerCluster` 100～20000；错误返回 `400 SHARE_CLUSTER_CONFIG_INVALID`。管理员强制聚合策略中的 `share.kmlClusterMinPoints` 只要求为不小于 2 的安全整数，不受分享级 1000 上限限制。聚合只作用于 Point。
 - 管理员设置 `share.kmlClusterForceEnabled=true` 时，公开 manifest 始终返回 `forcedByPolicy=true`，并将策略与分享自身配置按更积极聚合合成：`minZoom` 取较小值，`maxClusterZoom` 和 `gridSize` 取较大值，`minClusterPoints` 取较小值；分享自身的 `maxMembersPerCluster` 保持有效。分享自身配置更积极时继续生效，但不能通过缩小聚合范围或提高点数阈值绕过管理员策略；默认强制开关关闭。
 - `publicId` 是不可枚举的稳定链接标识，内部 `id` 和 KML ID不会暴露给公开清单。
 - 更新时可携带 `revision`；冲突返回 `SHARE_REVISION_CONFLICT`。
@@ -965,9 +970,19 @@ Content-Type: application/json
       "providerWebsiteIdAttribute": "data-website-id",
       "customScriptEnabled": false
     }
+  },
+  "technicalLimits": {
+    "kmlImportTransportMaxBytes": 52428800,
+    "kmlJsonTransportMaxBytes": 67108864
   }
 }
 ```
+
+除 `technicalLimits`、缩放级别和字段关系外，用户体系设置中的业务数值不设置任意固定最大值。会话、文件数、要素数、回收站天数、分享文件数、授权时长、聚合最少点位数、限流和空间范围只校验正数/非负数/安全整数。关系约束为：记住登录有效期不得短于普通会话；用户总要素数不得小于单文件要素数；不限授权面积和对角线不得大于空间限制总体阈值。
+
+`technicalLimits` 是部署级运输层保护，不是管理员业务配额。默认 multipart KML 上限为 50 MiB；JSON KML 编辑/同步上限取 64 MiB 与 multipart 上限 `1.25` 倍中的较大值。部署可通过 `MAP_SERVICE_KML_IMPORT_MAX_BYTES`、`MAP_SERVICE_KML_JSON_MAX_BYTES` 调整。管理员设置的 `quota.maxKmlFileBytes` 和个人覆盖均不得超过 multipart 运输层上限。
+
+为兼容旧版本持久化数据，读取系统配额和个人配额覆盖时只保留已知的正安全整数字段：超过当前 multipart 上限的 `maxKmlFileBytes` 会在响应和执行路径中收敛到当前上限；`maxFeaturesPerUser < maxFeaturesPerKml` 时会下调单文件要素数；未知字段和非法值忽略。该兼容读取不主动改写数据库，管理员新提交配额时仍按当前契约严格校验，因此仅编辑用户显示名称等普通资料不会被历史配额阻断。
 
 `registration.mode` 只支持 `open`、`closed`。注册默认角色必须包含 `user` 且不能包含管理权限。`publicAccessPolicy` 支持：
 
@@ -1047,7 +1062,9 @@ Content-Type: application/json
 | `422` | `SHARE_SPATIAL_RANGE_TOO_LARGE` | 超过空间限制总体阈值 |
 | `422` | `SHARE_PASSWORDLESS_DISABLED` | 后台未开放无密码分享，必须设置分享密码 |
 | `422` | `SHARE_UNLIMITED_ACCESS_DISABLED` / `SHARE_UNLIMITED_ACCESS_RANGE_TOO_LARGE` | 不限授权未开放或范围超过更严格阈值 |
-| `413` | `FILE_TOO_LARGE` | KML 文件或请求超过限制 |
+| `413` | `FILE_TOO_LARGE` | KML 文件或请求超过当前业务配额 |
+| `413` | `KML_IMPORT_TRANSPORT_LIMIT_EXCEEDED` | multipart KML 文件超过部署级导入运输层上限 |
+| `413` | `KML_JSON_TRANSPORT_LIMIT_EXCEEDED` | KML 编辑、同步或迁移 JSON 请求超过部署级运输层上限 |
 | `429` | `RATE_LIMITED` | 登录、注册或分享密码尝试过多 |
 | `429` | `SHARE_MANIFEST_RATE_LIMITED` | 单个分享和匿名访客的公开清单请求过于频繁 |
 | `429` | `SHARE_TILE_RATE_LIMITED` | 单个分享和匿名访客的瓦片请求过于频繁 |

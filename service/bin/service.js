@@ -25,6 +25,7 @@ import KmlShareLinkResolverService from './user/shareLinkResolver.js'
 import InteractionService from './interaction/interactionService.js'
 import ArtalkMirror from './interaction/artalkMirror.js'
 import { createHttpError, randomToken } from './user/security.js'
+import { kmlTransportLimits } from './user/limits.js'
 import { buildShareMapCatalog, isShareMapSourceAllowed } from './user/shareMapCatalog.js'
 import { classifyTileAgainstScope } from './user/shareSpatialAccess.js'
 import { shareSpatialTileMasker } from './user/shareSpatialTileMask.js'
@@ -345,15 +346,24 @@ const service = {
   },
 
   getUserSystemSettings () {
-    return userSystem.getSettings()
+    return {
+      ...userSystem.getSettings(),
+      technicalLimits: kmlTransportLimits(),
+    }
   },
 
   updateUserSystemSettings (actor, input, context) {
-    return userSystem.updateSettings(actor, input, context)
+    return {
+      ...userSystem.updateSettings(actor, input, context),
+      technicalLimits: kmlTransportLimits(),
+    }
   },
 
   previewUserSystemSettings (actor, input, context) {
-    return userSystem.updateSettings(actor, input, context, { preview: true })
+    return {
+      ...userSystem.updateSettings(actor, input, context, { preview: true }),
+      technicalLimits: kmlTransportLimits(),
+    }
   },
 
   createManagedUser (actor, input, context) {
@@ -361,7 +371,10 @@ const service = {
   },
 
   listManagedUsers (actor, input) {
-    return userSystem.listUsers(actor, input)
+    return {
+      ...userSystem.listUsers(actor, input),
+      technicalLimits: kmlTransportLimits(),
+    }
   },
 
   getManagedUser (actor, userId) {

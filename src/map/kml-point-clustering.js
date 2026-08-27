@@ -45,7 +45,7 @@ export function normalizeKmlPointClusteringConfig (config = {}) {
       'maxClusterZoom',
     ),
     gridSize: Math.min(128, Math.max(24, Number.isFinite(gridSize) ? gridSize : DEFAULT_KML_POINT_CLUSTERING_CONFIG.gridSize)),
-    minClusterPoints: Math.min(1000, Math.max(2, Number.isFinite(minClusterPoints) ? Math.floor(minClusterPoints) : DEFAULT_KML_POINT_CLUSTERING_CONFIG.minClusterPoints)),
+    minClusterPoints: Math.max(2, Number.isFinite(minClusterPoints) ? Math.floor(minClusterPoints) : DEFAULT_KML_POINT_CLUSTERING_CONFIG.minClusterPoints),
     maxMembersPerCluster: maxMembers == null
       ? null
       : Math.max(0, Math.floor(finiteNumber(maxMembers, 'maxMembersPerCluster'))),

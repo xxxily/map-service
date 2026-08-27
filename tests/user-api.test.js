@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Readable } from 'node:stream'
 import express from 'express'
+import multer from 'multer'
 import sharp from 'sharp'
 import commonMethods from '../service/bin/middleware/commonMethods/index.js'
 import service from '../service/bin/service.js'
-import simpleApi from '../service/bin/simpleApi.js'
+import simpleApi, { runKmlFileUpload } from '../service/bin/simpleApi.js'
+import { handleJsonPayloadTooLarge } from '../service/bin/user/limits.js'
 
 function createTestApp (options = {}) {
   Object.keys(simpleApi.routeSet).forEach(key => delete simpleApi.routeSet[key])
@@ -87,6 +89,74 @@ function testSession () {
     },
   }
 }
+
+test('KML multipart transport limit returns a stable 413 error contract', async () => {
+  const app = express()
+  app.use(commonMethods)
+  app.post('/upload', async (req, res) => {
+    try {
+      await runKmlFileUpload(req, res, multer({ limits: { fileSize: 4 } }).single('file'))
+      res.jsonSuc({ uploaded: true })
+    } catch (error) {
+      res.status(error.statusCode || 500).jsonErr({ code: error.code, message: error.message })
+    }
+  })
+  const { server, baseUrl } = await listen(app)
+
+  try {
+    const form = new FormData()
+    form.append('file', new Blob(['12345'], { type: 'application/vnd.google-earth.kml+xml' }), 'oversized.kml')
+    const response = await fetch(`${baseUrl}/upload`, { method: 'POST', body: form })
+    const payload = await response.json()
+    assert.equal(response.status, 413)
+    assert.equal(payload.error.code, 'KML_IMPORT_TRANSPORT_LIMIT_EXCEEDED')
+    assert.match(payload.error.message, /服务运输层上限/)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('JSON transport overflow mapping does not rewrite business quota 413 errors', () => {
+  const responses = []
+  const response = {
+    statusCode: 200,
+    status (value) {
+      this.statusCode = value
+      return this
+    },
+    jsonErr (payload) {
+      responses.push({ status: this.statusCode, payload })
+    },
+  }
+  const businessError = Object.assign(new Error('KML 文件超过单文件大小限制'), {
+    statusCode: 413,
+    code: 'FILE_TOO_LARGE',
+  })
+  let forwarded = null
+  handleJsonPayloadTooLarge(businessError, { path: '/api/v1/kml/files/kml_1' }, response, error => {
+    forwarded = error
+  })
+  assert.equal(forwarded, businessError)
+  assert.equal(responses.length, 0)
+
+  handleJsonPayloadTooLarge(
+    { type: 'entity.too.large', status: 413 },
+    { path: '/api/v1/kml/sync' },
+    response,
+    () => assert.fail('KML JSON 运输层超限不应继续传递'),
+  )
+  assert.equal(responses[0].status, 413)
+  assert.equal(responses[0].payload.code, 'KML_JSON_TRANSPORT_LIMIT_EXCEEDED')
+
+  handleJsonPayloadTooLarge(
+    { type: 'entity.too.large', status: 413 },
+    { path: '/api/v1/admin/user-system/settings' },
+    response,
+    () => assert.fail('普通 JSON 运输层超限不应继续传递'),
+  )
+  assert.equal(responses[1].status, 413)
+  assert.equal(responses[1].payload.code, 'REQUEST_BODY_TOO_LARGE')
+})
 
 test('user login uses HttpOnly session cookie and readable CSRF cookie without returning tokens', async () => {
   const session = testSession()

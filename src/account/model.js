@@ -178,7 +178,6 @@ export function buildShareItems (selectedIds, documents) {
   const selected = new Set(Array.from(selectedIds || [], String))
   return (documents || [])
     .filter(document => selected.has(String(document.id)) && document.status === 'active')
-    .slice(0, 20)
     .map((document, position) => ({
       kmlId: document.id,
       position,
@@ -289,7 +288,7 @@ export function buildShareUpdateItems (items) {
       visibleByDefault: item.visibleByDefault !== false,
       displayName: String(item.displayName || '').slice(0, 200),
     }]
-  }).slice(0, 20).map((item, position) => ({ ...item, position }))
+  }).map((item, position) => ({ ...item, position }))
 }
 
 export function buildShareViewConfig (input = {}, fallback = {}) {

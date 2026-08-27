@@ -2733,7 +2733,8 @@ body.admin-view #footer-bar {
 }
 
 .kml-directory-name {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
   align-items: center;
   gap: 6px;
@@ -2757,6 +2758,10 @@ body.admin-view #footer-bar {
   justify-content: flex-end;
   gap: 2px;
   min-height: 28px;
+}
+
+.kml-directory-actions > * {
+  align-self: center;
 }
 
 .kml-directory-files {
@@ -2837,7 +2842,11 @@ body.admin-view #footer-bar {
 }
 
 .kml-file-count {
+  display: inline-flex;
   flex: 0 0 auto;
+  min-height: 18px;
+  align-items: center;
+  line-height: 1;
   font-size: 10px;
   color: #0f766e;
   background: rgba(15, 118, 110, 0.08);
@@ -3346,7 +3355,7 @@ body.admin-view #footer-bar {
   }
 
   .kml-directory-name {
-    flex-wrap: nowrap;
+    height: 30px;
   }
 
   .kml-directory-actions {
@@ -3363,7 +3372,7 @@ body.admin-view #footer-bar {
   }
 
   .kml-file-head {
-    align-items: flex-start;
+    align-items: center;
     gap: 6px;
     padding: 9px;
   }

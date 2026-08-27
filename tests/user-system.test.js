@@ -217,8 +217,10 @@ test('registration mode and safe default roles are enforced by the service', asy
     enabled: false,
   })
   assert.equal(service.getPublicConfig().share.passwordlessSharingEnabled, false)
+  assert.equal(service.getPublicConfig().share.maxFilesPerShare, 20)
   assert.equal(service.getPublicConfig().share.spatialUnrestrictedTileMaxZoom, 14)
   assert.equal(service.getPublicConfig().kml.batchDownloadEnabled, false)
+  assert.equal(service.getPublicConfig().kml.importTransportMaxBytes, 50 * 1024 * 1024)
   assert.equal(service.getSettings().share.kmlClusterForceEnabled, false)
   await assert.rejects(
     service.register({
@@ -346,6 +348,13 @@ test('分享点位强制聚合默认关闭且管理员阈值严格校验', async
   assert.equal(enabled.share.kmlClusterMaxZoom, 11)
   assert.equal(enabled.share.kmlClusterMinPoints, 180)
 
+  const expanded = service.updateSettings(rootSession, {
+    share: { maxFilesPerShare: 250, kmlClusterMinPoints: 2500 },
+  })
+  assert.equal(expanded.share.maxFilesPerShare, 250)
+  assert.equal(expanded.share.kmlClusterMinPoints, 2500)
+  assert.equal(service.getPublicConfig().share.maxFilesPerShare, 250)
+
   assert.throws(
     () => service.updateSettings(rootSession, {
       share: { kmlClusterForceEnabled: 'true' },
@@ -364,6 +373,121 @@ test('分享点位强制聚合默认关闭且管理员阈值严格校验', async
     }),
     matchesError('VALIDATION_FAILED', 400)
   )
+})
+
+test('用户体系业务配额允许超过旧上限，并仅拒绝运输层硬上限和关系冲突', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+
+  const updated = service.updateSettings(rootSession, {
+    session: {
+      ttlMs: 120 * 24 * 60 * 60 * 1000,
+      rememberTtlMs: 365 * 24 * 60 * 60 * 1000,
+      reauthWindowMs: 24 * 60 * 60 * 1000,
+    },
+    quota: {
+      maxKmlFiles: 100000,
+      maxKmlFileBytes: 50 * 1024 * 1024,
+      maxFeaturesPerKml: 2000000,
+      maxFeaturesPerUser: 8000000,
+      trashRetentionDays: 5000,
+    },
+    share: {
+      accessTtlMs: 720 * 60 * 60 * 1000,
+      rateLimit: { windowMs: 1000, tileMaxRequests: 1, manifestMaxRequests: 1, maxEntries: 1 },
+    },
+  })
+  assert.equal(updated.quota.maxKmlFiles, 100000)
+  assert.equal(updated.quota.maxFeaturesPerKml, 2000000)
+  assert.equal(updated.quota.trashRetentionDays, 5000)
+  assert.equal(updated.share.accessTtlMs, 720 * 60 * 60 * 1000)
+  assert.equal(updated.share.rateLimit.tileMaxRequests, 1)
+  assert.equal(updated.quota.maxFeaturesPerUser, 8000000)
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      session: { ttlMs: 366 * 24 * 60 * 60 * 1000 },
+    }),
+    matchesError('VALIDATION_FAILED', 400),
+  )
+  assert.throws(
+    () => service.updateSettings(rootSession, { quota: { maxKmlFileBytes: 50 * 1024 * 1024 + 1 } }),
+    matchesError('KML_IMPORT_TRANSPORT_LIMIT_EXCEEDED', 400),
+  )
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      quota: { maxFeaturesPerKml: 2000000, maxFeaturesPerUser: 1000 },
+    }),
+    matchesError('VALIDATION_FAILED', 400),
+  )
+
+  const created = service.createUser(rootSession, {
+    username: 'large.quota.user',
+    displayName: '大配额用户',
+    quota: { maxFeaturesPerKml: 3000000, maxFeaturesPerUser: 9000000 },
+  })
+  assert.equal(created.user.quota.maxFeaturesPerKml, 3000000)
+  assert.equal(created.user.quota.maxFeaturesPerUser, 9000000)
+  assert.throws(
+    () => service.updateUser(rootSession, created.user.id, {
+      quota: { maxFeaturesPerKml: 3000000, maxFeaturesPerUser: 1000 },
+    }),
+    matchesError('VALIDATION_FAILED', 400),
+  )
+})
+
+test('历史配额读取时会丢弃未知字段并收敛运输层与要素关系', async t => {
+  const { database, service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+  const created = service.createUser(rootSession, {
+    username: 'legacy.quota.user',
+    displayName: '历史配额用户',
+    quota: { maxFeaturesPerKml: 1000, maxFeaturesPerUser: 2000 },
+  })
+
+  database.prepare('UPDATE user_system_settings SET value_json = ? WHERE key = ?').run(
+    JSON.stringify({
+      quota: {
+        maxKmlFileBytes: 100 * 1024 * 1024,
+        maxFeaturesPerKml: 9000,
+        maxFeaturesPerUser: 1000,
+        unknownSetting: 123,
+      },
+    }),
+    'user-system',
+  )
+  const settings = service.getSettings()
+  assert.equal(settings.quota.maxKmlFileBytes, 50 * 1024 * 1024)
+  assert.equal(settings.quota.maxFeaturesPerKml, 1000)
+  assert.equal(Object.hasOwn(settings.quota, 'unknownSetting'), false)
+
+  database.prepare('UPDATE users SET quota_json = ? WHERE id = ?').run(
+    JSON.stringify({
+      maxKmlFileBytes: 100 * 1024 * 1024,
+      maxFeaturesPerKml: 5000,
+      maxFeaturesPerUser: 1000,
+      unknownOverride: 'legacy',
+    }),
+    created.user.id,
+  )
+  const view = service.getUserById(created.user.id)
+  assert.deepEqual(view.quota, {
+    maxKmlFileBytes: 50 * 1024 * 1024,
+    maxFeaturesPerKml: 1000,
+    maxFeaturesPerUser: 1000,
+  })
+
+  const updated = service.updateUser(rootSession, created.user.id, {
+    displayName: '历史配额用户（已更新）',
+  })
+  assert.deepEqual(updated.quota, view.quota)
+
+  database.prepare('UPDATE users SET quota_json = ? WHERE id = ?').run(
+    JSON.stringify({ maxFeaturesPerUser: 100 }),
+    created.user.id,
+  )
+  assert.deepEqual(service.getUserById(created.user.id).quota, {
+    maxFeaturesPerUser: 1000,
+  })
 })
 
 test('管理员可调整范围外底图放宽最大级别并拒绝非法值', async t => {

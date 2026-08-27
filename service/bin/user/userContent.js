@@ -29,6 +29,10 @@ import {
   normalizeShareAnalyticsConfig,
   resolveShareAnalyticsDescriptor,
 } from './analytics.js'
+import {
+  normalizeStoredQuotaOverrides,
+  normalizeStoredQuotaSettings,
+} from './limits.js'
 
 const DEFAULT_SETTINGS = Object.freeze({
   quota: {
@@ -274,14 +278,14 @@ function applyForcedKmlPointClusteringPolicy (value, policy) {
   const adminMaxZoom = Number(policy.kmlClusterMaxZoom ?? 12)
   const adminMinPoints = Number(policy.kmlClusterMinPoints ?? 250)
   const user = value?.enabled === true ? normalizeKmlPointClustering(value) : null
-  const base = user || normalizeKmlPointClustering({
+  const base = user || {
     enabled: true,
     minZoom: 0,
     maxClusterZoom: adminMaxZoom,
     gridSize: 64,
     minClusterPoints: adminMinPoints,
     maxMembersPerCluster: 5000,
-  })
+  }
   return {
     ...base,
     enabled: true,
@@ -876,7 +880,7 @@ class FixedWindowLimiter {
     this.options = {
       maxRequests: Math.max(1, Number(options?.maxRequests) || 1),
       windowMs: Math.max(1000, Number(options?.windowMs) || 1000),
-      maxEntries: Math.max(100, Number(options?.maxEntries) || 10000),
+      maxEntries: Math.max(1, Number(options?.maxEntries) || 10000),
     }
     this.clock = clock
     this.entries = new Map()
@@ -915,7 +919,7 @@ class FixedWindowLimiter {
     this.options = {
       maxRequests: Math.max(1, Number(options.maxRequests) || this.options.maxRequests),
       windowMs: Math.max(1000, Number(options.windowMs) || this.options.windowMs),
-      maxEntries: Math.max(100, Number(options.maxEntries) || this.options.maxEntries),
+      maxEntries: Math.max(1, Number(options.maxEntries) || this.options.maxEntries),
     }
   }
 }
@@ -1020,7 +1024,7 @@ export class UserContentService {
   getSettings () {
     const settings = this.settingsProvider() || {}
     return {
-      quota: { ...DEFAULT_SETTINGS.quota, ...(settings.quota || {}) },
+      quota: normalizeStoredQuotaSettings(settings.quota, DEFAULT_SETTINGS.quota),
       share: {
         ...DEFAULT_SETTINGS.share,
         ...(settings.share || {}),
@@ -1041,10 +1045,10 @@ export class UserContentService {
     const rateLimit = this.getSettings().share.rateLimit || {}
     return {
       enabled: rateLimit.enabled !== false,
-      windowMs: Math.max(10 * 1000, Number(rateLimit.windowMs) || 60 * 1000),
-      tileMaxRequests: Math.max(100, Number(rateLimit.tileMaxRequests) || 3000),
-      manifestMaxRequests: Math.max(20, Number(rateLimit.manifestMaxRequests) || 300),
-      maxEntries: Math.max(100, Number(rateLimit.maxEntries) || 10000),
+      windowMs: Math.max(1000, Number(rateLimit.windowMs) || 60 * 1000),
+      tileMaxRequests: Math.max(1, Number(rateLimit.tileMaxRequests) || 3000),
+      manifestMaxRequests: Math.max(1, Number(rateLimit.manifestMaxRequests) || 300),
+      maxEntries: Math.max(1, Number(rateLimit.maxEntries) || 10000),
     }
   }
 
@@ -1587,13 +1591,9 @@ export class UserContentService {
   quotaForUser (userId) {
     const row = this.database.prepare('SELECT quota_json FROM users WHERE id = ?').get(userId)
     if (!row) throw createHttpError('用户不存在', 404, 'RESOURCE_NOT_FOUND')
-    const overrides = parseJson(row.quota_json, {})
-    const quota = { ...this.getSettings().quota }
-    Object.keys(quota).forEach(key => {
-      const value = Number(overrides[key])
-      if (Number.isSafeInteger(value) && value > 0) quota[key] = value
-    })
-    return quota
+    const quotaSettings = this.getSettings().quota
+    const overrides = normalizeStoredQuotaOverrides(parseJson(row.quota_json, {}), quotaSettings)
+    return normalizeStoredQuotaSettings(overrides, quotaSettings)
   }
 
   getKmlUsage (actor, ownerId = this.actorUser(actor).id) {
@@ -2944,7 +2944,7 @@ export class UserContentService {
     }
     const configuredMaximum = Number(this.getSettings().share.maxFilesPerShare)
     const maximum = Number.isSafeInteger(configuredMaximum) && configuredMaximum > 0
-      ? Math.min(20, configuredMaximum)
+      ? configuredMaximum
       : 20
     const minimum = options.allowEmpty ? 0 : 1
     if (value.length < minimum) throw createHttpError(`分享包至少需包含 ${minimum} 个 KML`, 400, 'VALIDATION_FAILED')

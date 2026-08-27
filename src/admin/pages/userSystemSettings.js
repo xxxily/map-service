@@ -46,6 +46,8 @@ export function renderUserSystemSettingsPage (state) {
   const share = settings.share || {}
   const rateLimit = share.rateLimit || {}
   const analytics = settings.analytics || {}
+  const technicalLimits = settings.technicalLimits || {}
+  const kmlImportTransportMaxMb = Math.max(1, Math.floor(Number(technicalLimits.kmlImportTransportMaxBytes || 50 * 1024 * 1024) / 1024 / 1024))
   const globalAnalytics = analytics.global || {}
   const shareAnalytics = analytics.share || {}
   const canManageRegistration = hasPermission(state, 'admin.registration.manage')
@@ -107,21 +109,21 @@ export function renderUserSystemSettingsPage (state) {
           </div>
           <form class="admin-form" data-admin-user-security-settings>
             <div class="admin-field-grid admin-field-grid-three">
-              <label><span>普通会话有效期（天）</span><input name="sessionTtlDays" type="number" min="1" max="30" step="1" value="${numberValue(session.ttlMs, DAY_MS)}" required></label>
-              <label><span>记住登录有效期（天）</span><input name="rememberTtlDays" type="number" min="1" max="90" step="1" value="${numberValue(session.rememberTtlMs, DAY_MS)}" required></label>
-              <label><span>高风险操作再验证窗口（分钟）</span><input name="reauthMinutes" type="number" min="1" max="60" step="1" value="${numberValue(session.reauthWindowMs, MINUTE_MS)}" required></label>
+              <label><span>普通会话有效期（天）</span><input name="sessionTtlDays" type="number" min="1" step="1" value="${numberValue(session.ttlMs, DAY_MS)}" required></label>
+              <label><span>记住登录有效期（天）</span><input name="rememberTtlDays" type="number" min="1" step="1" value="${numberValue(session.rememberTtlMs, DAY_MS)}" required></label>
+              <label><span>高风险操作再验证窗口（分钟）</span><input name="reauthMinutes" type="number" min="1" step="1" value="${numberValue(session.reauthWindowMs, MINUTE_MS)}" required></label>
             </div>
 
             <fieldset class="admin-permission-fieldset">
               <legend>默认 KML 配额</legend>
               <div class="admin-field-grid admin-field-grid-three">
-                <label><span>最多 KML 文件数</span><input name="maxKmlFiles" type="number" min="1" max="10000" value="${Number(quota.maxKmlFiles || 100)}" required></label>
-                <label><span>单个 KML 上限（MB）</span><input name="maxKmlFileMb" type="number" min="1" max="100" value="${numberValue(quota.maxKmlFileBytes, 1024 * 1024)}" required></label>
-                <label><span>单文件要素上限</span><input name="maxFeaturesPerKml" type="number" min="1" max="1000000" value="${Number(quota.maxFeaturesPerKml || 50000)}" required></label>
-                <label><span>用户总要素上限</span><input name="maxFeaturesPerUser" type="number" min="1" max="5000000" value="${Number(quota.maxFeaturesPerUser || 200000)}" required></label>
-                <label><span>回收站保留（天）</span><input name="trashRetentionDays" type="number" min="1" max="3650" value="${Number(quota.trashRetentionDays || 30)}" required></label>
+                <label><span>最多 KML 文件数</span><input name="maxKmlFiles" type="number" min="1" value="${Number(quota.maxKmlFiles || 100)}" required></label>
+                <label><span>单个 KML 上限（MB）</span><input name="maxKmlFileMb" type="number" min="1" max="${kmlImportTransportMaxMb}" value="${numberValue(quota.maxKmlFileBytes, 1024 * 1024)}" required></label>
+                <label><span>单文件要素上限</span><input name="maxFeaturesPerKml" type="number" min="1" value="${Number(quota.maxFeaturesPerKml || 50000)}" required></label>
+                <label><span>用户总要素上限</span><input name="maxFeaturesPerUser" type="number" min="1" value="${Number(quota.maxFeaturesPerUser || 200000)}" required></label>
+                <label><span>回收站保留（天）</span><input name="trashRetentionDays" type="number" min="1" value="${Number(quota.trashRetentionDays || 30)}" required></label>
               </div>
-              <p class="admin-field-help">当前单文件限制：${escapeHtml(formatBytes(quota.maxKmlFileBytes || 0))}</p>
+              <p class="admin-field-help">当前单文件限制：${escapeHtml(formatBytes(quota.maxKmlFileBytes || 0))}；服务运输层硬上限：${escapeHtml(formatBytes(technicalLimits.kmlImportTransportMaxBytes || 50 * 1024 * 1024))}。</p>
             </fieldset>
 
             <fieldset class="admin-permission-fieldset">
@@ -154,21 +156,21 @@ export function renderUserSystemSettingsPage (state) {
                     <option value="false" ${share.passwordlessSharingEnabled === true ? '' : 'selected'}>禁止</option>
                   </select>
                 </label>
-                <label><span>单个分享最多 KML 数</span><input name="maxFilesPerShare" type="number" min="1" max="20" value="${Number(share.maxFilesPerShare || 20)}" required></label>
+                <label><span>单个分享最多 KML 数</span><input name="maxFilesPerShare" type="number" min="1" value="${Number(share.maxFilesPerShare || 20)}" required></label>
                 <label><span>分享点位强制聚合</span><select name="kmlClusterForceEnabled"><option value="true" ${share.kmlClusterForceEnabled === true ? 'selected' : ''}>允许</option><option value="false" ${share.kmlClusterForceEnabled === true ? '' : 'selected'}>关闭</option></select></label>
                 <label><span>强制聚合结束级别</span><input name="kmlClusterMaxZoom" type="number" min="0" max="24" value="${Number(share.kmlClusterMaxZoom ?? 12)}" required></label>
-                <label><span>强制聚合最少点位数</span><input name="kmlClusterMinPoints" type="number" min="2" max="1000" value="${Number(share.kmlClusterMinPoints ?? 250)}" required></label>
-                <label><span>分享密码授权有效期（小时）</span><input name="shareAccessHours" type="number" min="1" max="168" value="${numberValue(share.accessTtlMs, HOUR_MS)}" required></label>
+                <label><span>强制聚合最少点位数</span><input name="kmlClusterMinPoints" type="number" min="2" value="${Number(share.kmlClusterMinPoints ?? 250)}" required></label>
+                <label><span>分享密码授权有效期（小时）</span><input name="shareAccessHours" type="number" min="1" value="${numberValue(share.accessTtlMs, HOUR_MS)}" required></label>
               </div>
             </fieldset>
             <fieldset class="admin-permission-fieldset">
               <legend>分享访问限流</legend>
               <div class="admin-field-grid admin-field-grid-three">
                 <label><span>启用限流</span><select name="shareRateLimitEnabled"><option value="true" ${rateLimit.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${rateLimit.enabled === false ? 'selected' : ''}>关闭</option></select></label>
-                <label><span>统计窗口（秒）</span><input name="shareRateLimitWindowSeconds" type="number" min="10" max="600" step="1" value="${Math.round(Number(rateLimit.windowMs || 60000) / 1000)}" required></label>
-                <label><span>每窗口瓦片请求</span><input name="shareTileMaxRequests" type="number" min="100" max="60000" value="${Number(rateLimit.tileMaxRequests || 3000)}" required></label>
-                <label><span>每窗口清单请求</span><input name="shareManifestMaxRequests" type="number" min="20" max="10000" value="${Number(rateLimit.manifestMaxRequests || 300)}" required></label>
-                <label><span>内存访客条目上限</span><input name="shareRateLimitMaxEntries" type="number" min="100" max="100000" value="${Number(rateLimit.maxEntries || 10000)}" required></label>
+                <label><span>统计窗口（秒）</span><input name="shareRateLimitWindowSeconds" type="number" min="1" step="1" value="${Math.round(Number(rateLimit.windowMs || 60000) / 1000)}" required></label>
+                <label><span>每窗口瓦片请求</span><input name="shareTileMaxRequests" type="number" min="1" value="${Number(rateLimit.tileMaxRequests || 3000)}" required></label>
+                <label><span>每窗口清单请求</span><input name="shareManifestMaxRequests" type="number" min="1" value="${Number(rateLimit.manifestMaxRequests || 300)}" required></label>
+                <label><span>内存访客条目上限</span><input name="shareRateLimitMaxEntries" type="number" min="1" value="${Number(rateLimit.maxEntries || 10000)}" required></label>
               </div>
               <p class="admin-field-help">仅统计通过图源和空间校验的请求，范围外透明瓦片不消耗配额。</p>
             </fieldset>
@@ -191,13 +193,13 @@ export function renderUserSystemSettingsPage (state) {
                 <legend>空间受限分享</legend>
                 <div class="admin-field-grid admin-field-grid-three">
                   <label><span>空间受限分享</span><select name="spatialAccessEnabled"><option value="true" ${share.spatialAccessEnabled !== false ? 'selected' : ''}>允许</option><option value="false" ${share.spatialAccessEnabled === false ? 'selected' : ''}>关闭</option></select></label>
-                  <label><span>边界余量（米）</span><input name="spatialPaddingMeters" type="number" min="50" max="10000" step="1" value="${Number(share.spatialPaddingMeters || 1000)}" required></label>
-                  <label><span>最大面积（km²）</span><input name="spatialMaxAreaKm2" type="number" min="1" max="500000" step="0.1" value="${Number(share.spatialMaxAreaKm2 || 10000)}" required></label>
-                  <label><span>最大对角线（km）</span><input name="spatialMaxDiagonalKm" type="number" min="1" max="5000" step="0.1" value="${Number(share.spatialMaxDiagonalKm || 300)}" required></label>
+                  <label><span>边界余量（米）</span><input name="spatialPaddingMeters" type="number" min="0" step="any" value="${Number(share.spatialPaddingMeters ?? 1000)}" required></label>
+                  <label><span>最大面积（km²）</span><input name="spatialMaxAreaKm2" type="number" min="0.000001" step="any" value="${Number(share.spatialMaxAreaKm2 || 10000)}" required></label>
+                  <label><span>最大对角线（km）</span><input name="spatialMaxDiagonalKm" type="number" min="0.000001" step="any" value="${Number(share.spatialMaxDiagonalKm || 300)}" required></label>
                   <label><span>范围外底图放宽最大级别</span><input name="spatialUnrestrictedTileMaxZoom" type="number" min="0" max="24" step="1" value="${Number(share.spatialUnrestrictedTileMaxZoom ?? 14)}" required></label>
                   <label><span>不限授权</span><select name="unlimitedAccessEnabled"><option value="true" ${share.unlimitedAccessEnabled === true ? 'selected' : ''}>允许</option><option value="false" ${share.unlimitedAccessEnabled !== true ? 'selected' : ''}>关闭</option></select></label>
-                  <label><span>不限授权最大面积（km²）</span><input name="unlimitedAccessMaxAreaKm2" type="number" min="1" max="${Number(share.spatialMaxAreaKm2 || 10000)}" step="0.1" value="${Number(share.unlimitedAccessMaxAreaKm2 || 2000)}" required></label>
-                  <label><span>不限授权最大对角线（km）</span><input name="unlimitedAccessMaxDiagonalKm" type="number" min="1" max="${Number(share.spatialMaxDiagonalKm || 300)}" step="0.1" value="${Number(share.unlimitedAccessMaxDiagonalKm || 100)}" required></label>
+                  <label><span>不限授权最大面积（km²）</span><input name="unlimitedAccessMaxAreaKm2" type="number" min="0.000001" max="${Number(share.spatialMaxAreaKm2 || 10000)}" step="any" value="${Number(share.unlimitedAccessMaxAreaKm2 || 2000)}" required></label>
+                  <label><span>不限授权最大对角线（km）</span><input name="unlimitedAccessMaxDiagonalKm" type="number" min="0.000001" max="${Number(share.spatialMaxDiagonalKm || 300)}" step="any" value="${Number(share.unlimitedAccessMaxDiagonalKm || 100)}" required></label>
                 </div>
                 <p class="admin-field-help">范围超过不限授权阈值时，分享仍保留空间限制并自动使用有限授权。</p>
               </fieldset>

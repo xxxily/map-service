@@ -1275,7 +1275,13 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 
 分享项还会返回 `visibleByDefault`、`directoryId`、`directoryName`、`featureCount` 等摘要。`visibleByDefault=false` 的文件在 manifest 中保留摘要但不含 `features`；分享页面首次加载不请求详情，用户显示、展开、导出或批量选择时才调用详情接口。详情接口为 `GET /api/v1/public/kml-shares/:publicId/files/:shareItemId`，并按分享授权校验；并发请求同一文件只产生一次上游加载。详情加载失败返回统一 `RESOURCE_NOT_FOUND` 或授权错误，文件保持隐藏且可重试。
 
-管理员公开配置字段：`share.kmlClusterForceEnabled`（默认 `false`）、`share.kmlClusterMaxZoom`（默认 `12`，范围 0～24）、`share.kmlClusterMinPoints`（默认 `250`，范围 2～1000）以及 `kml.batchDownloadEnabled`（默认 `false`）。强制聚合开启时，公开 manifest 将管理员策略与分享配置按更积极聚合合成：缩放范围取并集、网格大小取较大值、最少聚合点数取较小值，并返回 `forcedByPolicy=true`；分享配置不能通过收窄范围或提高阈值绕过策略。分享级 `viewConfig.kmlPointClustering` 仅聚合 Point；LineString/Polygon 始终完整返回和渲染。
+管理员公开配置字段：`share.kmlClusterForceEnabled`（默认 `false`）、`share.kmlClusterMaxZoom`（默认 `12`，范围 0～24）、`share.kmlClusterMinPoints`（默认 `250`，只要求为不小于 2 的安全整数）以及 `kml.batchDownloadEnabled`（默认 `false`）。强制聚合开启时，公开 manifest 将管理员策略与分享配置按更积极聚合合成：缩放范围取并集、网格大小取较大值、最少聚合点数取较小值，并返回 `forcedByPolicy=true`；分享配置不能通过收窄范围或提高阈值绕过策略。分享级 `viewConfig.kmlPointClustering` 仍保留自身算法参数边界，且仅聚合 Point；LineString/Polygon 始终完整返回和渲染。
+
+`GET /api/v1/auth/config` 还返回 `share.maxFilesPerShare` 和 `kml.importTransportMaxBytes`。账号端创建/编辑分享和导入 KML 必须使用公开配置，不得写死 20 个文件或 10 MiB。管理员设置、设置预览和用户管理列表响应返回 `technicalLimits.kmlImportTransportMaxBytes`、`technicalLimits.kmlJsonTransportMaxBytes`；它们是部署级请求体/内存保护，不是管理员业务最大值。
+
+KML multipart 文件超过运输层上限返回 `413 KML_IMPORT_TRANSPORT_LIMIT_EXCEEDED`。`/api/v1/kml/files/*`、`/api/v1/kml/sync`、`/api/v1/kml/migrations/local` 和浏览器助手导入的 JSON 请求使用独立 KML JSON 上限，超限返回 `413 KML_JSON_TRANSPORT_LIMIT_EXCEEDED`；普通 JSON API 继续使用全站较小限制并返回 `REQUEST_BODY_TOO_LARGE`。
+
+旧数据库中的系统/个人 KML 配额采用只读兼容归一化：只接受已知正安全整数字段，单文件大小收敛到当前 multipart 上限，总要素数小于单文件要素数时下调单文件值，未知字段忽略。读取本身不改写数据库；新配置提交仍严格拒绝运输层越界和字段关系冲突。
 
 ### `POST /api/v1/kml/sync`
 

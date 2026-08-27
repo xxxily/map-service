@@ -36,6 +36,19 @@ MAP_SERVICE_USER_DATABASE=/absolute/path/map-service.sqlite
 
 反向代理部署使用 `MAP_SERVICE_TRUST_PROXY` 显式声明可信跳数或网段；默认关闭。认证限流和 Secure Cookie 只使用 Express 经过该配置解析的 `req.ip` / `req.secure`，业务代码不得直接读取转发头决定信任边界。
 
+KML 文件导入与 JSON 编辑/同步使用独立的部署级运输层保护，避免管理员放宽业务配额时同步放大全站请求体攻击面：
+
+```bash
+MAP_SERVICE_KML_IMPORT_MAX_BYTES=52428800
+MAP_SERVICE_KML_JSON_MAX_BYTES=67108864
+```
+
+`MAP_SERVICE_KML_IMPORT_MAX_BYTES` 控制 multipart KML 文件大小，默认 `50 MiB`；
+`MAP_SERVICE_KML_JSON_MAX_BYTES` 控制 KML 新建、编辑、同步和迁移请求，默认取 `64 MiB`
+与 multipart 上限 `1.25` 倍中的较大值。两者必须是正安全整数；无效值回退默认值。
+管理员的单文件 KML 配额不得超过 multipart 上限，其他业务数量、时长和空间策略不使用任意固定最大值。
+旧数据库中的系统/个人配额在读取时会忽略未知或非法字段，并将文件大小、单文件/总要素关系收敛到当前技术边界；读取不会主动改写数据库，新提交配置仍严格校验。
+
 用户体系的初始化、备份和恢复流程见 [用户体系部署与运维](./user-system-deployment.md)；留言、审核、举报和 AI 审核的生产部署与客户端接入见 [交互功能部署与接入手册](./interaction-deployment-and-integration.md)。这些交互能力由内部 Interaction Service 独立提供，Artalk 只是 161 可选单向镜像，不是本地开发或生产部署依赖。
 
 常用脚本：

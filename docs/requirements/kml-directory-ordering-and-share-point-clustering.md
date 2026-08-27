@@ -71,6 +71,8 @@
 
 默认 `enabled=false`，保持现状。服务端限制：`minZoom`/`maxClusterZoom` 为 0～24 整数且 `minZoom <= maxClusterZoom`；`gridSize` 为 24～128 像素整数；`maxMembersPerCluster` 为 100～20000 整数。公开 manifest 仅在配置启用时返回归一化配置。
 
+管理员强制聚合策略中的 `share.kmlClusterMinPoints` 与分享级配置分开校验：管理员值只要求为不小于 `2` 的安全整数，不设置旧的 `1000` 固定最大值；分享所有者的 `viewConfig.kmlPointClustering` 仍保留本节面向单个分享算法参数的技术边界。
+
 ## 4. 用户流程
 
 ### 4.1 目录管理

@@ -25,6 +25,11 @@ import {
   normalizeAnalyticsSettings,
   publicAnalyticsConfig,
 } from './analytics.js'
+import {
+  kmlImportTransportMaxBytes,
+  normalizeStoredQuotaOverrides,
+  normalizeStoredQuotaSettings,
+} from './limits.js'
 
 const DEFAULT_SETTINGS = Object.freeze({
   registration: {
@@ -109,6 +114,13 @@ const PASSWORD_CHANGE_ALLOWED_PERMISSIONS = new Set([
 ])
 
 const SENSITIVE_AUDIT_KEY = /password|passwd|secret|token|cookie|csrf|authorization|credential|request.?headers?|session.*(?:hash|secret)/i
+const QUOTA_FIELD_LABELS = Object.freeze({
+  maxKmlFiles: 'KML 文件数',
+  maxKmlFileBytes: '单个 KML 文件大小',
+  maxFeaturesPerKml: '单文件要素数',
+  maxFeaturesPerUser: '用户总要素数',
+  trashRetentionDays: '回收站保留天数',
+})
 
 function parseJson (value, fallback) {
   try {
@@ -129,21 +141,91 @@ function clampInteger (value, fallback, min, max) {
   return Math.max(min, Math.min(max, parsed))
 }
 
+function normalizePositiveIntegerSetting (value, fallback, label, minimum = 1) {
+  if (value === undefined) return Number(fallback)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    throw createHttpError(`${label}需为不小于 ${minimum} 的整数`, 400, 'VALIDATION_FAILED')
+  }
+  return parsed
+}
+
+function normalizePositiveNumberSetting (value, fallback, label, minimum = 0) {
+  if (value === undefined) return Number(fallback)
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= minimum) {
+    throw createHttpError(`${label}需大于 ${minimum}`, 400, 'VALIDATION_FAILED')
+  }
+  return parsed
+}
+
+function normalizeNonNegativeNumberSetting (value, fallback, label) {
+  if (value === undefined) return Number(fallback)
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw createHttpError(`${label}需为不小于 0 的数字`, 400, 'VALIDATION_FAILED')
+  }
+  return parsed
+}
+
+function normalizeQuotaSettings (input, fallback = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw createHttpError('用户配额格式不正确', 400, 'VALIDATION_FAILED')
+  }
+  const next = { ...fallback }
+  Object.entries(QUOTA_FIELD_LABELS).forEach(([key, label]) => {
+    if (!Object.hasOwn(input, key)) return
+    next[key] = normalizePositiveIntegerSetting(input[key], fallback[key], label)
+  })
+  assertKmlTransportLimit(next)
+  assertQuotaRelationships(next)
+  return next
+}
+
+function assertKmlTransportLimit (quota) {
+  const transportMaximum = kmlImportTransportMaxBytes()
+  if (Number(quota.maxKmlFileBytes) > transportMaximum) {
+    throw createHttpError(
+      `单个 KML 文件大小不能超过服务运输层上限 ${transportMaximum} 字节`,
+      400,
+      'KML_IMPORT_TRANSPORT_LIMIT_EXCEEDED',
+    )
+  }
+}
+
+function assertQuotaRelationships (quota) {
+  if (Number(quota.maxFeaturesPerUser) < Number(quota.maxFeaturesPerKml)) {
+    throw createHttpError(
+      '用户总要素数不能小于单文件要素数',
+      400,
+      'VALIDATION_FAILED',
+    )
+  }
+}
+
+function normalizeQuotaOverrides (input, fallback = DEFAULT_SETTINGS.quota) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw createHttpError('用户配额格式不正确', 400, 'VALIDATION_FAILED')
+  }
+  const next = {}
+  Object.entries(input).forEach(([key, value]) => {
+    if (!Object.hasOwn(QUOTA_FIELD_LABELS, key)) {
+      throw createHttpError(`不支持的用户配额字段：${key}`, 400, 'VALIDATION_FAILED')
+    }
+    next[key] = normalizePositiveIntegerSetting(value, DEFAULT_SETTINGS.quota[key], `个人${QUOTA_FIELD_LABELS[key]}`)
+  })
+  const effective = { ...fallback, ...next }
+  assertKmlTransportLimit(effective)
+  assertQuotaRelationships(effective)
+  return next
+}
+
 function normalizeBooleanSetting (value, fallback, label) {
   if (value === undefined) return Boolean(fallback)
   if (typeof value !== 'boolean') {
     throw createHttpError(`${label}格式不正确`, 400, 'VALIDATION_FAILED')
   }
   return value
-}
-
-function normalizeNumberSetting (value, fallback, min, max, label) {
-  if (value === undefined) return Number(fallback)
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
-    throw createHttpError(`${label}需在 ${min}～${max} 之间`, 400, 'VALIDATION_FAILED')
-  }
-  return parsed
 }
 
 function normalizeIntegerSetting (value, fallback, min, max, label) {
@@ -467,10 +549,7 @@ export class UserSystemService {
         ...DEFAULT_SETTINGS.session,
         ...(saved.session || {}),
       },
-      quota: {
-        ...DEFAULT_SETTINGS.quota,
-        ...(saved.quota || {}),
-      },
+      quota: normalizeStoredQuotaSettings(saved.quota, DEFAULT_SETTINGS.quota),
       kml: {
         ...DEFAULT_SETTINGS.kml,
         ...(saved.kml || {}),
@@ -497,8 +576,10 @@ export class UserSystemService {
       passwordPolicy: PASSWORD_POLICY,
       kml: {
         batchDownloadEnabled: settings.kml.batchDownloadEnabled === true,
+        importTransportMaxBytes: kmlImportTransportMaxBytes(),
       },
       share: {
+        maxFilesPerShare: Number(settings.share.maxFilesPerShare),
         passwordlessSharingEnabled: settings.share.passwordlessSharingEnabled === true,
         spatialUnrestrictedTileMaxZoom: Number(settings.share.spatialUnrestrictedTileMaxZoom),
       },
@@ -567,18 +648,17 @@ export class UserSystemService {
 
     if (input.session !== undefined) {
       this.assertPermission(actor, 'admin.security.manage')
-      next.session.ttlMs = clampInteger(input.session.ttlMs, current.session.ttlMs, 1000 * 60 * 15, 1000 * 60 * 60 * 24 * 30)
-      next.session.rememberTtlMs = clampInteger(input.session.rememberTtlMs, current.session.rememberTtlMs, next.session.ttlMs, 1000 * 60 * 60 * 24 * 90)
-      next.session.reauthWindowMs = clampInteger(input.session.reauthWindowMs, current.session.reauthWindowMs, 1000 * 60, 1000 * 60 * 60)
+      next.session.ttlMs = normalizePositiveIntegerSetting(input.session.ttlMs, current.session.ttlMs, '普通会话有效期', 1000 * 60)
+      next.session.rememberTtlMs = normalizePositiveIntegerSetting(input.session.rememberTtlMs, current.session.rememberTtlMs, '记住登录有效期', next.session.ttlMs)
+      next.session.reauthWindowMs = normalizePositiveIntegerSetting(input.session.reauthWindowMs, current.session.reauthWindowMs, '高风险操作再验证窗口', 1000 * 60)
+      if (next.session.rememberTtlMs < next.session.ttlMs) {
+        throw createHttpError('记住登录有效期不能短于普通会话有效期', 400, 'VALIDATION_FAILED')
+      }
     }
 
     if (input.quota !== undefined) {
       this.assertPermission(actor, 'admin.security.manage')
-      next.quota.maxKmlFiles = clampInteger(input.quota.maxKmlFiles, current.quota.maxKmlFiles, 1, 10000)
-      next.quota.maxKmlFileBytes = clampInteger(input.quota.maxKmlFileBytes, current.quota.maxKmlFileBytes, 1024, 100 * 1024 * 1024)
-      next.quota.maxFeaturesPerKml = clampInteger(input.quota.maxFeaturesPerKml, current.quota.maxFeaturesPerKml, 1, 1000000)
-      next.quota.maxFeaturesPerUser = clampInteger(input.quota.maxFeaturesPerUser, current.quota.maxFeaturesPerUser, 1, 5000000)
-      next.quota.trashRetentionDays = clampInteger(input.quota.trashRetentionDays, current.quota.trashRetentionDays, 1, 3650)
+      next.quota = normalizeQuotaSettings(input.quota, current.quota)
     }
 
     if (input.kml !== undefined) {
@@ -603,8 +683,8 @@ export class UserSystemService {
         throw createHttpError('公开分享访问策略不正确', 400, 'VALIDATION_FAILED')
       }
       next.share.publicAccessPolicy = policy
-      next.share.maxFilesPerShare = clampInteger(input.share.maxFilesPerShare, current.share.maxFilesPerShare, 1, 20)
-      next.share.accessTtlMs = clampInteger(input.share.accessTtlMs, current.share.accessTtlMs, 1000 * 60 * 5, 1000 * 60 * 60 * 24 * 7)
+      next.share.maxFilesPerShare = normalizePositiveIntegerSetting(input.share.maxFilesPerShare, current.share.maxFilesPerShare, '单个分享 KML 数')
+      next.share.accessTtlMs = normalizePositiveIntegerSetting(input.share.accessTtlMs, current.share.accessTtlMs, '分享密码授权有效期', 1000 * 60)
       next.share.passwordlessSharingEnabled = normalizeBooleanSetting(
         input.share.passwordlessSharingEnabled,
         current.share.passwordlessSharingEnabled,
@@ -612,7 +692,7 @@ export class UserSystemService {
       )
       next.share.kmlClusterForceEnabled = normalizeBooleanSetting(input.share.kmlClusterForceEnabled, current.share.kmlClusterForceEnabled, '大规模点位强制聚合开关')
       next.share.kmlClusterMaxZoom = normalizeIntegerSetting(input.share.kmlClusterMaxZoom, current.share.kmlClusterMaxZoom, 0, 24, 'KML 聚合最大缩放级别')
-      next.share.kmlClusterMinPoints = normalizeIntegerSetting(input.share.kmlClusterMinPoints, current.share.kmlClusterMinPoints, 2, 1000, 'KML 聚合最少点位数')
+      next.share.kmlClusterMinPoints = normalizePositiveIntegerSetting(input.share.kmlClusterMinPoints, current.share.kmlClusterMinPoints, 'KML 聚合最少点位数', 2)
 
       if (input.share.rateLimit !== undefined) {
         if (!input.share.rateLimit || typeof input.share.rateLimit !== 'object' || Array.isArray(input.share.rateLimit)) {
@@ -621,10 +701,10 @@ export class UserSystemService {
         next.share.rateLimit = {
           ...current.share.rateLimit,
           enabled: normalizeBooleanSetting(input.share.rateLimit.enabled, current.share.rateLimit.enabled, '分享访问限流开关'),
-          windowMs: clampInteger(input.share.rateLimit.windowMs, current.share.rateLimit.windowMs, 10 * 1000, 10 * 60 * 1000),
-          tileMaxRequests: clampInteger(input.share.rateLimit.tileMaxRequests, current.share.rateLimit.tileMaxRequests, 100, 60000),
-          manifestMaxRequests: clampInteger(input.share.rateLimit.manifestMaxRequests, current.share.rateLimit.manifestMaxRequests, 20, 10000),
-          maxEntries: clampInteger(input.share.rateLimit.maxEntries, current.share.rateLimit.maxEntries, 100, 100000),
+          windowMs: normalizePositiveIntegerSetting(input.share.rateLimit.windowMs, current.share.rateLimit.windowMs, '分享限流统计窗口', 1000),
+          tileMaxRequests: normalizePositiveIntegerSetting(input.share.rateLimit.tileMaxRequests, current.share.rateLimit.tileMaxRequests, '每窗口瓦片请求数'),
+          manifestMaxRequests: normalizePositiveIntegerSetting(input.share.rateLimit.manifestMaxRequests, current.share.rateLimit.manifestMaxRequests, '每窗口清单请求数'),
+          maxEntries: normalizePositiveIntegerSetting(input.share.rateLimit.maxEntries, current.share.rateLimit.maxEntries, '内存访客条目数'),
         }
       }
 
@@ -635,25 +715,19 @@ export class UserSystemService {
         current.share.spatialAccessEnabled,
         '空间受限分享开关'
       )
-      next.share.spatialPaddingMeters = normalizeNumberSetting(
+      next.share.spatialPaddingMeters = normalizeNonNegativeNumberSetting(
         input.share.spatialPaddingMeters,
         current.share.spatialPaddingMeters,
-        50,
-        10000,
         '空间边界余量'
       )
-      next.share.spatialMaxAreaKm2 = normalizeNumberSetting(
+      next.share.spatialMaxAreaKm2 = normalizePositiveNumberSetting(
         input.share.spatialMaxAreaKm2,
         current.share.spatialMaxAreaKm2,
-        1,
-        500000,
         '空间限制最大面积'
       )
-      next.share.spatialMaxDiagonalKm = normalizeNumberSetting(
+      next.share.spatialMaxDiagonalKm = normalizePositiveNumberSetting(
         input.share.spatialMaxDiagonalKm,
         current.share.spatialMaxDiagonalKm,
-        1,
-        5000,
         '空间限制最大对角线'
       )
       next.share.spatialUnrestrictedTileMaxZoom = normalizeIntegerSetting(
@@ -668,18 +742,14 @@ export class UserSystemService {
         current.share.unlimitedAccessEnabled,
         '不限授权开关'
       )
-      next.share.unlimitedAccessMaxAreaKm2 = normalizeNumberSetting(
+      next.share.unlimitedAccessMaxAreaKm2 = normalizePositiveNumberSetting(
         input.share.unlimitedAccessMaxAreaKm2,
         current.share.unlimitedAccessMaxAreaKm2,
-        1,
-        next.share.spatialMaxAreaKm2,
         '不限授权最大面积'
       )
-      next.share.unlimitedAccessMaxDiagonalKm = normalizeNumberSetting(
+      next.share.unlimitedAccessMaxDiagonalKm = normalizePositiveNumberSetting(
         input.share.unlimitedAccessMaxDiagonalKm,
         current.share.unlimitedAccessMaxDiagonalKm,
-        1,
-        next.share.spatialMaxDiagonalKm,
         '不限授权最大对角线'
       )
       if (next.share.unlimitedAccessMaxAreaKm2 > next.share.spatialMaxAreaKm2 ||
@@ -791,7 +861,10 @@ export class UserSystemService {
       mustChangePassword: Boolean(row.must_change_password),
       roles,
       permissions,
-      quota: parseJson(row.quota_json, {}),
+      quota: normalizeStoredQuotaOverrides(
+        parseJson(row.quota_json, {}),
+        options.quotaSettings || this.getSettings().quota,
+      ),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       lastLoginAt: row.last_login_at || null,
@@ -1243,7 +1316,7 @@ export class UserSystemService {
           id, username_normalized, username_display, display_name, email,
           password_hash, status, must_change_password, quota_json, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)
-      `).run(userId, identity.normalized, identity.display, displayName, email, passwordHash, JSON.stringify(input.quota || {}), now, now)
+      `).run(userId, identity.normalized, identity.display, displayName, email, passwordHash, JSON.stringify(normalizeQuotaOverrides(input.quota || {}, this.getSettings().quota)), now, now)
       const assign = this.database.prepare('INSERT INTO user_roles(user_id, role_id, created_at) VALUES (?, ?, ?)')
       roles.forEach(role => assign.run(userId, role.id, now))
       this.insertAudit({
@@ -1294,9 +1367,10 @@ export class UserSystemService {
       ORDER BY u.created_at DESC
       LIMIT ? OFFSET ?
     `).all(...params, limit, (page - 1) * limit)
+    const quotaSettings = this.getSettings().quota
     return {
       items: rows.map(row => ({
-        ...this.userViewFromRow(row, { includePrivate: false }),
+        ...this.userViewFromRow(row, { includePrivate: false, quotaSettings }),
         usage: {
           kmlCount: Number(row.kml_count || 0),
           favoriteCount: Number(row.favorite_count || 0),
@@ -1357,10 +1431,10 @@ export class UserSystemService {
     if (targetIsSuperAdmin && row.status === 'active' && status !== 'active' && this.activeSuperAdminCount() <= 1) {
       throw createHttpError('系统必须保留至少一个有效超级管理员', 409, 'LAST_SUPER_ADMIN')
     }
-    const quota = input.quota === undefined ? parseJson(row.quota_json, {}) : input.quota
-    if (!quota || typeof quota !== 'object' || Array.isArray(quota)) {
-      throw createHttpError('用户配额格式不正确', 400, 'VALIDATION_FAILED')
-    }
+    const quotaSettings = this.getSettings().quota
+    const quota = input.quota === undefined
+      ? normalizeStoredQuotaOverrides(parseJson(row.quota_json, {}), quotaSettings)
+      : normalizeQuotaOverrides(input.quota, quotaSettings)
     const now = this.nowIso()
     this.database.transaction(() => {
       this.database.prepare(`

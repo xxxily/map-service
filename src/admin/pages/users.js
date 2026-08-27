@@ -46,6 +46,11 @@ export function renderUsersPage (state) {
   const users = collection.items || []
   const roles = state.roles || []
   const canManage = hasPermission(state, 'admin.user.manage')
+  const kmlImportTransportMaxMb = Math.max(1, Math.floor(Number(
+    state.adminUsers?.technicalLimits?.kmlImportTransportMaxBytes ||
+    state.userSystemSettings?.technicalLimits?.kmlImportTransportMaxBytes ||
+    50 * 1024 * 1024
+  ) / 1024 / 1024))
   const canManageRoles = hasPermission(state, 'admin.role.manage')
   const filters = state.adminUserFilters || {}
 
@@ -126,11 +131,11 @@ export function renderUsersPage (state) {
                           <label><span>新邮箱</span><input name="email" type="email" placeholder="当前：${escapeHtml(user.emailMasked || '未设置')}"></label>
                           <fieldset>
                             <legend>个人配额覆盖（留空则继承系统默认）</legend>
-                            <label><span>KML 文件数</span><input name="maxKmlFiles" type="number" min="1" max="10000" value="${quotaValue(user.quota, 'maxKmlFiles')}"></label>
-                            <label><span>单文件上限（MB）</span><input name="maxKmlFileMb" type="number" min="1" max="100" value="${quotaValue(user.quota, 'maxKmlFileBytes', 1024 * 1024)}"></label>
-                            <label><span>单文件要素数</span><input name="maxFeaturesPerKml" type="number" min="1" max="1000000" value="${quotaValue(user.quota, 'maxFeaturesPerKml')}"></label>
-                            <label><span>总要素数</span><input name="maxFeaturesPerUser" type="number" min="1" max="5000000" value="${quotaValue(user.quota, 'maxFeaturesPerUser')}"></label>
-                            <label><span>回收站天数</span><input name="trashRetentionDays" type="number" min="1" max="3650" value="${quotaValue(user.quota, 'trashRetentionDays')}"></label>
+                            <label><span>KML 文件数</span><input name="maxKmlFiles" type="number" min="1" value="${quotaValue(user.quota, 'maxKmlFiles')}"></label>
+                            <label><span>单文件上限（MB）</span><input name="maxKmlFileMb" type="number" min="1" max="${kmlImportTransportMaxMb}" value="${quotaValue(user.quota, 'maxKmlFileBytes', 1024 * 1024)}"></label>
+                            <label><span>单文件要素数</span><input name="maxFeaturesPerKml" type="number" min="1" value="${quotaValue(user.quota, 'maxFeaturesPerKml')}"></label>
+                            <label><span>总要素数</span><input name="maxFeaturesPerUser" type="number" min="1" value="${quotaValue(user.quota, 'maxFeaturesPerUser')}"></label>
+                            <label><span>回收站天数</span><input name="trashRetentionDays" type="number" min="1" value="${quotaValue(user.quota, 'trashRetentionDays')}"></label>
                           </fieldset>
                           <button type="submit">保存资料与配额</button>
                         </form>

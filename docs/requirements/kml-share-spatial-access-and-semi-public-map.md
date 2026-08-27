@@ -332,14 +332,14 @@
 | --- | ---: | ---: | --- |
 | `passwordlessSharingEnabled` | `false` | 布尔值 | 是否允许所有者创建、保存或移除密码后形成无密码分享 |
 | `spatialAccessEnabled` | `true` | 布尔值 | 是否允许所有者创建空间受限分享；不改变已有不受限分享 |
-| `spatialPaddingMeters` | `1000` | 50～10000 米 | KML 几何外侧统一边界余量，由服务端使用 |
-| `spatialMaxAreaKm2` | `10000` | 1～500000 平方公里 | 启用空间限制允许的最大面积 |
-| `spatialMaxDiagonalKm` | `300` | 1～5000 公里 | 启用空间限制允许的最大对角线距离 |
+| `spatialPaddingMeters` | `1000` | 不小于 0 的有限数 | KML 几何外侧统一边界余量，由服务端使用 |
+| `spatialMaxAreaKm2` | `10000` | 大于 0 的有限数 | 启用空间限制允许的最大面积，不设置固定业务最大值 |
+| `spatialMaxDiagonalKm` | `300` | 大于 0 的有限数 | 启用空间限制允许的最大对角线距离，不设置固定业务最大值 |
 | `spatialUnrestrictedTileMaxZoom` | `14` | 0～24 的整数 | 分享所有者可配置的范围外底图放宽最大级别；单个分享值不得超过此管理员上限，可高于该分享计算出的 `minZoom` |
 | `unlimitedAccessEnabled` | `false` | 布尔值 | 是否允许合规空间受限分享使用不限密码授权 |
 | `unlimitedAccessMaxAreaKm2` | `2000` | 1～`spatialMaxAreaKm2` | 不限授权允许的最大面积 |
 | `unlimitedAccessMaxDiagonalKm` | `100` | 1～`spatialMaxDiagonalKm` | 不限授权允许的最大对角线距离 |
-| `accessTtlMs` | 保持现有值 | 5 分钟～7 天 | 有限分享密码授权有效期 |
+| `accessTtlMs` | 保持现有值 | 不小于 1 分钟的安全整数 | 有限分享密码授权有效期，不设置固定业务最大值 |
 
 `unlimitedAccessMaxAreaKm2` 和 `unlimitedAccessMaxDiagonalKm` 不得大于对应的空间限制总体阈值。
 

@@ -22,6 +22,7 @@ test('KML point clustering configuration normalizes and rejects unsafe ranges', 
   })
   assert.throws(() => normalizeKmlPointClustering({ enabled: true, minZoom: 9, maxClusterZoom: 8 }), error => error.code === 'SHARE_CLUSTER_CONFIG_INVALID')
   assert.throws(() => normalizeKmlPointClustering({ enabled: true, gridSize: 8 }), error => error.code === 'SHARE_CLUSTER_CONFIG_INVALID')
+  assert.throws(() => normalizeKmlPointClustering({ enabled: true, minClusterPoints: 2500 }), error => error.code === 'SHARE_CLUSTER_CONFIG_INVALID')
 })
 
 function insertUser (database, id, username) {
@@ -374,6 +375,24 @@ test('directory share expansion deduplicates files and preserves directory metad
   }
 })
 
+test('管理员配置可允许单个分享包含超过旧 20 个上限的 KML', () => {
+  const harness = createHarness({ share: { maxFilesPerShare: 25 } })
+  try {
+    const documents = Array.from({ length: 22 }, (_, index) => harness.service.createKml(harness.one, {
+      name: `批量分享 ${index + 1}`,
+      features: [point(`share-${index + 1}`)],
+    }))
+    const share = harness.service.createShare(harness.one, {
+      title: '超过旧上限的分享',
+      items: documents.map(document => ({ kmlId: document.id })),
+    })
+    assert.equal(share.itemCount, 22)
+    assert.equal(share.items.length, 22)
+  } finally {
+    harness.close()
+  }
+})
+
 test('public share manifest preserves hidden items and combines forced clustering with share configuration', () => {
   const harness = createHarness({
     share: {
@@ -636,6 +655,37 @@ test('KML quotas reject oversized writes and sync batches roll back atomically',
       error => error.code === 'QUOTA_EXCEEDED'
     )
     assert.equal(harness.service.listKml(harness.one).total, before)
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML 内容服务对历史配额执行同样的运输层和关系收敛', () => {
+  const harness = createHarness({
+    quota: {
+      maxKmlFileBytes: 100 * 1024 * 1024,
+      maxFeaturesPerKml: 9000,
+      maxFeaturesPerUser: 1000,
+      unknownSetting: 123,
+    },
+  })
+  try {
+    harness.database.prepare('UPDATE users SET quota_json = ? WHERE id = ?').run(
+      JSON.stringify({
+        maxKmlFileBytes: 100 * 1024 * 1024,
+        maxFeaturesPerKml: 5000,
+        maxFeaturesPerUser: 1000,
+        unknownOverride: 'legacy',
+      }),
+      'usr_one',
+    )
+    assert.deepEqual(harness.service.quotaForUser('usr_one'), {
+      maxKmlFiles: 100,
+      maxKmlFileBytes: 50 * 1024 * 1024,
+      maxFeaturesPerKml: 1000,
+      maxFeaturesPerUser: 1000,
+      trashRetentionDays: 30,
+    })
   } finally {
     harness.close()
   }

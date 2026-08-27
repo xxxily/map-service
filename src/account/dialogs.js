@@ -334,6 +334,10 @@ export function showAccountShareDialog (options = {}) {
   const spatialTileZoomMax = Number.isSafeInteger(configuredSpatialTileZoomMax) && configuredSpatialTileZoomMax >= 0 && configuredSpatialTileZoomMax <= 24
     ? configuredSpatialTileZoomMax
     : 14
+  const configuredMaxFilesPerShare = Number(options.maxFilesPerShare)
+  const maxFilesPerShare = Number.isSafeInteger(configuredMaxFilesPerShare) && configuredMaxFilesPerShare > 0
+    ? configuredMaxFilesPerShare
+    : 20
   const analyticsModeOptions = analyticsPolicy.enabled === true
     ? `<option value="none" ${selectedAnalyticsMode === 'none' ? 'selected' : ''}>不启用</option><option value="provider" ${selectedAnalyticsMode === 'provider' ? 'selected' : ''}>托管服务</option>${analyticsPolicy.customScriptEnabled === true ? `<option value="custom" ${selectedAnalyticsMode === 'custom' ? 'selected' : ''}>自定义脚本</option>` : ''}`
     : selectedAnalyticsMode === 'none'
@@ -363,7 +367,7 @@ export function showAccountShareDialog (options = {}) {
             <h2 id="account-share-dialog-title">${mode === 'create' ? '创建分享' : '编辑分享'}</h2>
             <p>${mode === 'create' ? '选择内容和访问范围，生成只读分享链接。' : '调整内容和地图视图后，原分享链接保持不变。'}</p>
           </div>
-          <span data-account-share-count>${selectedItems.length} / 20 个 KML</span>
+          <span data-account-share-count>${selectedItems.length} / ${maxFilesPerShare} 个 KML</span>
         </div>
         <div class="account-share-dialog-body">
           <section class="account-share-dialog-section">
@@ -551,8 +555,13 @@ export function showAccountShareDialog (options = {}) {
     errorRoot.textContent = String(message || '')
     errorRoot.hidden = !message
   }
+  const showSelectionLimitError = () => {
+    if (selectedItems.length <= maxFilesPerShare) return false
+    showError(`当前已选 ${selectedItems.length} 个 KML，最多允许 ${maxFilesPerShare} 个，请先减少选择`)
+    return true
+  }
   const renderSelectedItems = () => {
-    countRoot.textContent = `${selectedItems.length} / 20 个 KML`
+    countRoot.textContent = `${selectedItems.length} / ${maxFilesPerShare} 个 KML`
     orderRoot.innerHTML = selectedItems.length ? selectedItems.map((item, index) => {
       const document = documentMap.get(item.kmlId) || {}
       return `
@@ -582,6 +591,7 @@ export function showAccountShareDialog (options = {}) {
     })
   }
   renderSelectedItems()
+  showSelectionLimitError()
   form.querySelector('input[name="title"]')?.focus()
 
   return new Promise(resolve => {
@@ -627,9 +637,9 @@ export function showAccountShareDialog (options = {}) {
       if (catalogToggle) {
         const kmlId = catalogToggle.dataset.accountShareKmlToggle
         if (catalogToggle.checked) {
-          if (selectedItems.length >= 20) {
+          if (selectedItems.length >= maxFilesPerShare) {
             catalogToggle.checked = false
-            showError('一个分享最多包含 20 个 KML')
+            showError(`一个分享最多包含 ${maxFilesPerShare} 个 KML`)
             return
           }
           if (!selectedItems.some(item => item.kmlId === kmlId)) {
@@ -649,9 +659,9 @@ export function showAccountShareDialog (options = {}) {
         const group = catalogGroups.find(item => String(item.id || '') === directoryId)
         const ids = (group?.items || []).map(item => String(item.id))
         const nextChecked = directoryToggle.checked
-        if (nextChecked && selectedItems.length + ids.filter(id => !selectedItems.some(item => item.kmlId === id)).length > 20) {
+        if (nextChecked && selectedItems.length + ids.filter(id => !selectedItems.some(item => item.kmlId === id)).length > maxFilesPerShare) {
           directoryToggle.checked = false
-          showError('一个分享最多包含 20 个 KML')
+          showError(`一个分享最多包含 ${maxFilesPerShare} 个 KML`)
           return
         }
         if (nextChecked) {
@@ -703,6 +713,7 @@ export function showAccountShareDialog (options = {}) {
         showError('分享至少需要包含一个活跃 KML')
         return
       }
+      if (showSelectionLimitError()) return
       const latitude = form.elements.centerLatitude.value.trim()
       const longitude = form.elements.centerLongitude.value.trim()
       if (Boolean(latitude) !== Boolean(longitude)) {

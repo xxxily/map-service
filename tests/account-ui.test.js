@@ -226,20 +226,30 @@ test('用户中心按自定义角色权限裁剪页签和 KML 写能力', () => 
   assert.deepEqual(getAvailableAccountTabs(shareUser), ['kml', 'shares', 'security'])
 })
 
-test('多 KML 分享只包含所选活跃文件且最多 20 个', () => {
+test('多 KML 分享构造保留全部所选活跃文件，由后台配置限制最终数量', () => {
   const documents = Array.from({ length: 23 }, (_, index) => ({
     id: `kml_${index}`,
     status: index === 1 ? 'trashed' : 'active',
     enabled: index !== 0,
   }))
   const items = buildShareItems(documents.map(item => item.id), documents)
-  assert.equal(items.length, 20)
+  assert.equal(items.length, 22)
   assert.equal(items.some(item => item.kmlId === 'kml_1'), false)
   assert.deepEqual(items[0], {
     kmlId: 'kml_0',
     position: 0,
     visibleByDefault: false,
   })
+})
+
+test('分享构造与编辑不会在客户端静默截断超过旧 20 个上限的文件', () => {
+  const documents = Array.from({ length: 25 }, (_, index) => ({ id: `kml_${index}`, status: 'active', enabled: true }))
+  assert.equal(buildShareItems(documents.map(item => item.id), documents).length, 25)
+  assert.equal(buildShareUpdateItems(documents.map(item => ({ kmlId: item.id }))).length, 25)
+
+  const dialogSource = fs.readFileSync(path.join(projectRoot, 'src/account/dialogs.js'), 'utf8')
+  assert.match(dialogSource, /maxFilesPerShare/)
+  assert.doesNotMatch(dialogSource, /一个分享最多包含 20 个 KML/)
 })
 
 test('新加入分享的 KML 继承源文件显隐状态', () => {
@@ -377,6 +387,9 @@ test('分享编辑会重排去重文件并校验完整地图视图', () => {
   })
   assert.throws(() => buildShareViewConfig({ mapMode: '2d', center: [91, 0] }), /有效的纬度和经度/)
   assert.throws(() => buildShareViewConfig({ mapMode: '2d', pitch: 90 }), /0～85/)
+  assert.throws(() => buildShareViewConfig({
+    kmlPointClustering: { enabled: true, minClusterPoints: 2500 },
+  }), /2～1000/)
 })
 
 test('分享目录勾选状态会随单文件选择保持全选和半选一致', () => {
@@ -499,7 +512,9 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.match(viewSource, /data-account-action="trash-selected-kml"/)
   assert.match(viewSource, /data-account-action="open-kml-trash"/)
   assert.match(viewSource, /data-account-action="back-kml-active"/)
+  assert.match(viewSource, /data-account-action="back-kml-active"[^>]*>返回<\/button>/)
   assert.match(viewSource, /account-kml-directory-title/)
+  assert.match(viewSource, /account-kml-directory-count/)
   assert.match(appSource, /state\.kml\.trashCount/)
   assert.match(appSource, /for \(const item of selection\.eligible\)/)
   assert.match(appSource, /passwordlessSharingEnabled: passwordlessSharingEnabled\(\)/)

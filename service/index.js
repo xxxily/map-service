@@ -20,6 +20,7 @@ import cronJob from './bin/cronJob/index.js'
 import visitRecorder from './bin/visitRecorder.js'
 import commonMethods from './bin/middleware/commonMethods/index.js'
 import { getSharePageCanonicalUrl, renderSharePageHtml } from '../shared/share-page-metadata.js'
+import { handleJsonPayloadTooLarge, kmlJsonTransportMaxBytes } from './bin/user/limits.js'
 
 const serviceConfig = baseConfig.staticService
 const app = express()
@@ -103,7 +104,18 @@ const index = {
     /* parse application/x-www-form-urlencoded */
     app.use(express.urlencoded({ extended: false, limit: '1mb' }))
 
-    /* parse application/json */
+    /*
+     * KML 编辑、迁移和同步可能携带完整要素数据，使用独立的部署级运输上限；
+     * 其他 JSON API 保持较小边界，避免为了 KML 放大全站请求体攻击面。
+     */
+    app.use([
+      '/api/v1/kml/files',
+      '/api/v1/kml/sync',
+      '/api/v1/kml/migrations/local',
+      '/api/v1/kml/import/2bulu/browser-helper',
+    ], express.json({ limit: kmlJsonTransportMaxBytes() }))
+
+    /* parse ordinary application/json */
     app.use(express.json({ limit: '12mb' }))
 
     /* 初始化静态资源的目录地址 */
@@ -189,6 +201,8 @@ const index = {
 
     /* 用于其他实例获取静态服务的配置信息 */
     simpleApi.routeController(app, simpleApi.configList, simpleApi.basePath)
+
+    app.use(handleJsonPayloadTooLarge)
 
     app.listen(serviceConfig.port, serviceConfig.host || '0.0.0.0', () => {
       console.log(`服务器已启动: ${simpleApi.localService}`)
