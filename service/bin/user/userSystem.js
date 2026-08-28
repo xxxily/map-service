@@ -13,6 +13,8 @@ import {
   validatePassword,
   validateUsername,
   verifyPassword,
+  validateAvatar,
+  validateGender,
 } from './security.js'
 import {
   BUILTIN_ROLES,
@@ -857,6 +859,8 @@ export class UserSystemService {
       id: row.id,
       username: row.username_display,
       displayName: row.display_name,
+      avatarPresent: Boolean(row.avatar),
+      gender: row.gender || '',
       status: row.status,
       mustChangePassword: Boolean(row.must_change_password),
       roles,
@@ -870,6 +874,7 @@ export class UserSystemService {
       lastLoginAt: row.last_login_at || null,
     }
     if (options.includePrivate) {
+      result.avatar = row.avatar || ''
       result.email = row.email || ''
     } else if (row.email) {
       result.emailMasked = maskEmail(row.email)
@@ -1276,10 +1281,13 @@ export class UserSystemService {
       ? row.display_name
       : validateDisplayName(input.displayName)
     const email = input.email === undefined ? row.email : normalizeOptionalEmail(input.email)
+    const avatar = input.avatar === undefined ? (row.avatar || '') : validateAvatar(input.avatar)
+    const gender = input.gender === undefined ? (row.gender || '') : validateGender(input.gender)
     const now = this.nowIso()
     this.database.prepare(`
-      UPDATE users SET display_name = ?, email = ?, updated_at = ? WHERE id = ?
-    `).run(displayName, email, now, row.id)
+      UPDATE users SET display_name = ?, email = ?, avatar = ?, gender = ?, updated_at = ? WHERE id = ?
+    `).run(displayName, email, avatar, gender, now, row.id)
+    if (session.user) Object.assign(session.user, { displayName, avatar, gender })
     this.insertAudit({
       actorUserId: row.id,
       action: 'user.profile.update',

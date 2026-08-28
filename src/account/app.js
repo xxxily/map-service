@@ -1,6 +1,6 @@
 import './account.css'
 import { accountApi, saveDownload } from './api.js'
-import { showAccountPasswordDialog, showAccountShareAccessEventsDialog, showAccountShareDialog } from './dialogs.js'
+import { showAccountPasswordDialog, showAccountShareAccessEventsDialog, showAccountShareDialog, showAccountShareUrlDialog } from './dialogs.js'
 import {
   buildShareItems,
   groupKmlDocumentsByDirectory,
@@ -422,6 +422,8 @@ async function handleProfileSubmit (form) {
   const result = await runAction(() => accountApi.updateProfile({
     displayName: form.elements.displayName.value,
     email: form.elements.email.value,
+    avatar: form.elements.avatar?.value || '',
+    gender: form.elements.gender?.value || '',
   }), { progress: '正在保存资料…', success: '个人资料已更新' })
   if (!result) return
   state.profile = result
@@ -745,14 +747,14 @@ async function createShareFromSelection () {
       storedStatus: 'active',
       allowDownload: true,
       items,
-      viewConfig: { mapMode: '2d' },
+      viewConfig: { mapMode: '2d', kmlPointClustering: { enabled: true, minClusterPoints: 5 } },
     },
     documents,
     directoryCatalog: state.kml.directories,
     analyticsPolicy: shareAnalyticsPolicy(),
     passwordlessSharingEnabled: passwordlessSharingEnabled(),
     maxFilesPerShare: maxFilesPerShare(),
-    spatialUnrestrictedTileMaxZoom: spatialTileZoomMax(),
+    spatialUnrestrictedTileMaxZoom: 12,
     onSpatialPreview: (previewItems, spatialOptions = {}) => accountApi.spatialPreview({
       items: previewItems,
       spatialAccess: { mode: 'kml_bounds', ...(spatialOptions.unrestrictedTileMaxZoom == null ? {} : { unrestrictedTileMaxZoom: spatialOptions.unrestrictedTileMaxZoom }) },
@@ -788,9 +790,7 @@ async function createShareFromSelection () {
   }), { progress: '正在创建分享链接…' })
   if (!result) return
   state.kml.selected.clear()
-  await showAlert(`分享已创建：${new URL(result.shareUrl || `/share/${result.publicId}`, window.location.origin).href}`, {
-    title: '分享链接已生成',
-  })
+  await showAccountShareUrlDialog(new URL(result.shareUrl || `/share/${result.publicId}`, window.location.origin).href, { title: '分享链接已生成' })
   writeActiveTab('shares')
   await loadActivePanel()
 }
@@ -913,7 +913,7 @@ async function copyTextValue (value, options = {}) {
     setMessage(options.success || '已复制', '')
     render()
   } catch {
-    await showAlert(text, { title: options.title || '复制内容' })
+    await showAccountShareUrlDialog(text, { title: options.title || '复制内容' })
   }
 }
 
@@ -995,6 +995,15 @@ async function handleClick (event) {
   } else if (action === 'dismiss-notice') {
     setMessage('', '')
     render()
+  } else if (action === 'clear-avatar') {
+    const form = target.closest('[data-account-form="profile"]')
+    if (form) {
+      form.elements.avatar.value = ''
+      form.elements.avatarFile.value = ''
+      if (state.profile) state.profile.avatar = ''
+      target.hidden = true
+      setMessage('头像已清除，提交资料后生效', '')
+    }
   } else if (action === 'logout') {
     const confirmed = await showConfirm('退出后，当前页面不再保留可操作的私有 KML、收藏和分享数据。', { title: '退出登录' })
     if (!confirmed) return
@@ -1149,6 +1158,48 @@ function handleChange (event) {
     const file = event.target.files?.[0]
     event.target.value = ''
     importKmlFile(file)
+    return
+  }
+  if (event.target.name === 'avatarFile' && event.target.closest('[data-account-form="profile"]')) {
+    const profileForm = event.target.closest('[data-account-form="profile"]')
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) {
+      setMessage('', '头像仅支持 PNG、JPEG 或 WebP 图片')
+      const errorNode = profileForm?.querySelector('[data-account-avatar-error]')
+      if (errorNode) errorNode.textContent = '头像仅支持 PNG、JPEG 或 WebP 图片'
+      event.target.value = ''
+      profileForm.elements.avatar.value = profileForm.dataset.avatarOriginal || ''
+      if (state.profile) state.profile.avatar = profileForm.dataset.avatarOriginal || ''
+      return
+    }
+    if (file.size > 140 * 1024) {
+      setMessage('', '头像文件不能超过 140 KB')
+      const errorNode = profileForm?.querySelector('[data-account-avatar-error]')
+      if (errorNode) errorNode.textContent = '头像文件不能超过 140 KB'
+      event.target.value = ''
+      profileForm.elements.avatar.value = profileForm.dataset.avatarOriginal || ''
+      if (state.profile) state.profile.avatar = profileForm.dataset.avatarOriginal || ''
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const form = profileForm
+      if (!form || typeof reader.result !== 'string') return
+      form.elements.avatar.value = reader.result
+      if (state.profile) state.profile.avatar = reader.result
+      setMessage('头像已载入，提交资料后生效', '')
+      const clearButton = form.querySelector('[data-account-action="clear-avatar"]')
+      if (clearButton) clearButton.hidden = false
+    }
+    reader.onerror = () => {
+      if (profileForm?.elements.avatar) profileForm.elements.avatar.value = profileForm.dataset.avatarOriginal || ''
+      if (state.profile) state.profile.avatar = profileForm?.dataset.avatarOriginal || ''
+      setMessage('', '头像读取失败，请重试')
+      const errorNode = profileForm?.querySelector('[data-account-avatar-error]')
+      if (errorNode) errorNode.textContent = '头像读取失败，请重试'
+    }
+    reader.readAsDataURL(file)
   }
 }
 

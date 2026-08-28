@@ -131,29 +131,49 @@ export class AiProviderRegistry {
   _resolveAdapter (provider) {
     const adapterId = String(provider.adapterId || provider.protocol || '').trim()
     const factory = this.adapters[adapterId]
-    if (!factory) return { adapterId, request: typeof provider.request === 'function' ? provider.request : null, healthCheck: typeof provider.healthCheck === 'function' ? provider.healthCheck : null }
+    if (!factory) return {
+      adapterId,
+      request: typeof provider.request === 'function' ? provider.request : null,
+      healthCheck: typeof provider.healthCheck === 'function' ? provider.healthCheck : null,
+    }
     const result = typeof factory.create === 'function' ? factory.create(provider) : typeof factory === 'function' ? factory(provider) : null
     return {
       adapterId,
       request: typeof result?.request === 'function' ? result.request : null,
       healthCheck: typeof result?.healthCheck === 'function' ? result.healthCheck : null,
+      secretAvailable: typeof result?.secretAvailable === 'function' ? result.secretAvailable : null,
     }
   }
 
   register (provider = {}) {
     const id = String(provider.id || '').trim()
     const secretRef = String(provider.secretRef || '').trim()
-    if (!id || id.length > 100 || !secretRef) throw providerValidationError('AI provider 配置不合法')
+    const apiKey = String(provider.apiKey || '').trim()
+    if (!id || id.length > 100 || (!secretRef && !apiKey)) throw providerValidationError('AI provider 配置不合法')
     const endpoint = endpointInfo(String(provider.endpoint || ''), provider.allowHosts || this.allowHosts)
     const adapter = this._resolveAdapter({ ...provider, endpoint: endpoint.endpoint })
-    const healthStatus = String(provider.healthStatus || provider.health_status || 'unknown')
+    const requestedHealthStatus = String(provider.healthStatus || provider.health_status || 'unknown')
+    const healthStatus = ['verified', 'failed', 'unknown'].includes(requestedHealthStatus)
+      ? requestedHealthStatus
+      : 'unknown'
     // Function injection is retained only for isolated in-process tests that
     // construct a registry without the production adapter catalog. The
     // service-owned registry always has a catalog and therefore cannot accept
     // a function from a JSON management request.
     const trustedFunction = typeof provider.request === 'function' && Object.keys(this.adapters).length === 0
     const lastVerifiedAt = String(provider.lastVerifiedAt || provider.last_verified_at || '')
-    const verified = trustedFunction || (healthStatus === 'verified' && isFreshVerification(lastVerifiedAt, this.now(), this.verificationTtlMs))
+    let secretAvailable
+    try { secretAvailable = adapter.secretAvailable?.() } catch { secretAvailable = false }
+    const verified = trustedFunction || (
+      healthStatus === 'verified' &&
+      isFreshVerification(lastVerifiedAt, this.now(), this.verificationTtlMs) &&
+      secretAvailable !== false
+    )
+    const effectiveHealthStatus = verified
+      ? 'verified'
+      : healthStatus === 'verified' && secretAvailable === false
+        ? 'unknown'
+        : healthStatus
     const requestedEnabled = provider.enabled !== false
     const entry = {
       ...provider,
@@ -161,6 +181,7 @@ export class AiProviderRegistry {
       endpoint: endpoint.endpoint,
       hostname: endpoint.hostname,
       secretRef,
+      apiKey,
       adapterId: adapter.adapterId,
       model: String(provider.model || ''),
       name: String(provider.name || id),
@@ -173,7 +194,7 @@ export class AiProviderRegistry {
       maxConcurrencyConfigured: provider.maxConcurrency !== undefined,
       request: adapter.request,
       healthCheck: adapter.healthCheck,
-      healthStatus: verified ? 'verified' : 'unknown',
+      healthStatus: effectiveHealthStatus,
       lastVerifiedAt: verified ? lastVerifiedAt : '',
       timeoutMs: positiveInteger(provider.timeoutMs, DEFAULT_TIMEOUT_MS, 120_000),
       maxAttempts: provider.maxAttempts === undefined ? undefined : positiveInteger(provider.maxAttempts, 2, 4),
@@ -181,6 +202,7 @@ export class AiProviderRegistry {
     }
     this.providers.set(id, entry)
     if (provider.isDefault === true && entry.enabled && entry.request) this.defaultProviderId = id
+    else if (this.defaultProviderId === id) this.defaultProviderId = ''
     return entry
   }
 
@@ -203,10 +225,14 @@ export class AiProviderRegistry {
       provider.state.maxConcurrency = Math.min(this.maxConcurrency, provider.state.configuredMaxConcurrency)
     }
   }
-  remove (id) {
+  remove (id, options = {}) {
     const key = String(id || '')
     const removed = this.providers.delete(key)
-    if (this.defaultProviderId === key) this.defaultProviderId = [...this.providers.values()].find(item => item.enabled)?.id || ''
+    if (this.defaultProviderId === key) {
+      this.defaultProviderId = options.promote === false
+        ? ''
+        : [...this.providers.values()].find(item => item.enabled && item.request && item.healthStatus === 'verified')?.id || ''
+    }
     return removed
   }
   get (id) { return this.providers.get(String(id || '')) || null }
@@ -246,6 +272,7 @@ export class AiProviderRegistry {
       endpoint: provider.endpoint,
       model: provider.model,
       adapterId: provider.adapterId,
+      hasApiKey: Boolean(provider.apiKey),
       configured: Boolean(provider.request && provider.healthStatus === 'verified'),
       enabled: provider.enabled,
       requestedEnabled: provider.requestedEnabled,

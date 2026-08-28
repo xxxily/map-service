@@ -34,6 +34,7 @@ import {
   renderRolesPage,
 } from './pages/roles.js'
 import {
+  handleUserSystemSettingsClick,
   handleUserSystemSettingsSubmit,
   renderUserSystemSettingsPage,
 } from './pages/userSystemSettings.js'
@@ -139,6 +140,7 @@ export const ADMIN_PAGES = [
     label: '用户体系设置',
     permissions: ['admin.registration.manage', 'admin.security.manage'],
     render: renderUserSystemSettingsPage,
+    handleClick: handleUserSystemSettingsClick,
     handleSubmit: handleUserSystemSettingsSubmit,
   },
   {

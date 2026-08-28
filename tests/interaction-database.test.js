@@ -80,7 +80,7 @@ function tableNames (database) {
   `).all().map(row => row.name)
 }
 
-test('interaction database creates schema v1 independently and is idempotent', () => {
+test('interaction database creates schema v2 independently and is idempotent', () => {
   const database = new InteractionDatabase({ filePath: ':memory:' })
   try {
     assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, INTERACTION_DATABASE_VERSION)
@@ -97,7 +97,13 @@ test('interaction database creates schema v1 independently and is idempotent', (
     assert.equal(database.prepare('PRAGMA user_version').get().user_version, 0)
     const commentColumns = database.prepare('PRAGMA table_info(comments)').all().map(row => row.name)
     const decisionColumns = database.prepare('PRAGMA table_info(comment_moderation_decisions)').all().map(row => row.name)
+    const providerColumns = database.prepare('PRAGMA table_info(ai_provider_configs)').all().map(row => row.name)
+    const promptColumns = database.prepare('PRAGMA table_info(ai_prompt_versions)').all().map(row => row.name)
     assert.equal(commentColumns.includes('consent_policy_version'), true)
+    assert.equal(commentColumns.includes('avatar_snapshot'), true)
+    assert.equal(commentColumns.includes('gender_snapshot'), true)
+    assert.equal(providerColumns.includes('api_key_ciphertext'), true)
+    assert.equal(promptColumns.includes('prompt_text'), true)
     assert.equal(decisionColumns.includes('raw_result_ciphertext'), true)
     assert.equal(decisionColumns.includes('raw_result_encrypted'), false)
     assert.equal(
@@ -111,7 +117,7 @@ test('interaction database creates schema v1 independently and is idempotent', (
       true
     )
     database.migrate()
-    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count, 1)
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count, 2)
   } finally {
     database.close()
   }
@@ -123,18 +129,20 @@ test('interaction database migration rolls back schema and version on failure', 
   assert.throws(() => new InteractionDatabase({
     filePath: ':memory:',
     database: rawDatabase,
-    migrationHook: (_version, database) => {
+    migrationHook: (version, database) => {
+      if (version !== 2) return
       tablesDuringHook = tableNames(database)
       throw new Error('migration failure')
     },
   }), /migration failure/)
   assert.equal(tablesDuringHook.includes('comments'), true)
+  assert.equal(rawDatabase.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'ai_provider_configs'").get().count, 0)
   assert.deepEqual(tableNames(rawDatabase), [])
   assert.equal(rawDatabase.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get().count, 0)
 
   const database = new InteractionDatabase({ filePath: ':memory:', database: rawDatabase })
   try {
-    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 1)
+    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 2)
   } finally {
     database.close()
   }
@@ -168,7 +176,26 @@ test('an existing v1 database receives the additive AI schema on reopen', () => 
     const columns = database.prepare('PRAGMA table_info(comment_moderation_decisions)').all().map(row => row.name)
     assert.equal(columns.includes('raw_result_ciphertext'), true)
     assert.equal(columns.includes('raw_result_expires_at'), true)
-    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 1)
+    assert.equal(database.prepare('PRAGMA table_info(comments)').all().map(row => row.name).includes('avatar_snapshot'), true)
+    assert.equal(database.prepare('PRAGMA table_info(comments)').all().map(row => row.name).includes('gender_snapshot'), true)
+    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 2)
+  } finally {
+    database.close()
+  }
+})
+
+test('v1 tables receive newly added provider, prompt and author columns in place', () => {
+  const rawDatabase = new DatabaseSync(':memory:')
+  rawDatabase.exec(SCHEMA_V1)
+  rawDatabase.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)')
+  rawDatabase.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)').run(TEST_NOW)
+  const database = new InteractionDatabase({ filePath: ':memory:', database: rawDatabase })
+  try {
+    assert.equal(database.prepare('PRAGMA table_info(ai_provider_configs)').all().map(row => row.name).includes('api_key_ciphertext'), true)
+    assert.equal(database.prepare('PRAGMA table_info(ai_prompt_versions)').all().map(row => row.name).includes('prompt_text'), true)
+    const commentColumns = database.prepare('PRAGMA table_info(comments)').all().map(row => row.name)
+    assert.equal(commentColumns.includes('avatar_snapshot'), true)
+    assert.equal(commentColumns.includes('gender_snapshot'), true)
   } finally {
     database.close()
   }

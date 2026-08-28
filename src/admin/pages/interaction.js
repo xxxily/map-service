@@ -1,6 +1,8 @@
-import { showAlert, showConfirm, showEditDialog } from '../../ui/dialog.js'
+import { showAlert, showChoiceDialog, showConfirm, showEditDialog } from '../../ui/dialog.js'
 import { escapeHtml, formatTime, renderPagination } from '../utils.js'
 import { MEDIA_DETAILS_GENERAL_DESCRIPTION_MAX_LENGTH } from '../../../shared/interaction-policy.js'
+import { isValidInteractionAvatar } from '../../../shared/interaction-contracts.js'
+import { DEFAULT_AI_PROMPT } from '../../../shared/interaction-ai.js'
 
 function collection (value) { return value || { items: [], total: 0, page: 1, limit: 20 } }
 function can (state, permission) {
@@ -28,21 +30,41 @@ function jsonText (value) {
   try { return JSON.stringify(value ?? {}, null, 2) } catch { return '{}' }
 }
 
+function renderCommentDetailHtml (detail = {}) {
+  const authorType = detail.authorType === 'registered' ? '注册用户' : (detail.authorType === 'anonymous' ? '匿名用户' : (detail.authorType || '未知'))
+  const registered = detail.authorRegistered ? '是' : '否'
+  const avatar = String(detail.avatar || '')
+  const safeAvatar = isValidInteractionAvatar(avatar) ? avatar : ''
+  const avatarHtml = safeAvatar
+    ? `<img src="${escapeHtml(safeAvatar)}" alt="" class="admin-comment-detail-avatar">`
+    : '<span class="admin-comment-detail-avatar admin-comment-detail-avatar-fallback" aria-hidden="true">◎</span>'
+  const field = (label, value) => `<div class="admin-comment-detail-field"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value || '-'))}</dd></div>`
+  return `<div class="admin-comment-detail" data-admin-comment-detail>
+    <div class="admin-comment-detail-author">${avatarHtml}<div><strong>${escapeHtml(detail.displayName || '访客')}</strong><div class="admin-cell-secondary">${escapeHtml(authorType)} · 已注册：${registered}${detail.gender ? ` · ${escapeHtml(detail.gender)}` : ''}</div></div></div>
+    <dl class="admin-comment-detail-grid">
+      ${field('审核状态', detail.moderationStatus)}${field('内容状态', detail.contentStatus)}${field('风险等级', detail.moderationLevel)}${field('提交时间', formatTime(detail.createdAt))}
+      ${field('分享 ID', detail.canonicalShareId || detail.sharePublicId)}${field('分享公开标识', detail.sharePublicId)}${field('KML', detail.kmlName ? `${detail.kmlName}${detail.shareItemId ? `（${detail.shareItemId}）` : ''}` : detail.shareItemId)}${field('点位/要素', detail.featureName ? `${detail.featureName}${detail.featureId ? `（${detail.featureId}）` : ''}` : detail.featureId)}
+      ${field('父留言 ID', detail.parentId)}${field('联系方式', detail.hasContact ? (detail.contactType || '已提供') : '未提供')}${field('法律保留', detail.legalHold ? '是' : '否')}${field('更新时间', formatTime(detail.updatedAt))}
+    </dl>
+    <section class="admin-comment-detail-body"><h3>留言内容</h3><p>${escapeHtml(detail.body || '-')}</p></section>
+  </div>`
+}
+
 function providerForm (provider = {}, canManage = false) {
   const isNew = !provider.id
   const buttonLabel = isNew ? '新增 provider' : '保存 provider'
   return `<form class="admin-form admin-ai-provider-form" data-interaction-ai-provider-form>
-    <div class="admin-panel-head"><div><h3>${isNew ? '新增 AI provider' : escapeHtml(provider.name || provider.id)}</h3><p class="admin-panel-description">仅保存声明式配置；密钥引用不会回显。</p></div>${provider.health ? `<span class="admin-state-pill">${escapeHtml(provider.health)}</span>` : ''}</div>
+    <div class="admin-panel-head"><div><h3>${isNew ? '新增 AI provider' : escapeHtml(provider.name || provider.id)}</h3><p class="admin-panel-description">直接填写 API Key；服务端只保存加密密文，列表不会回显。</p></div>${provider.health ? `<span class="admin-state-pill">${escapeHtml(provider.health)}</span>` : ''}</div>
     <div class="admin-field-grid admin-field-grid-three">
       <label><span>ID</span><input name="id" value="${escapeHtml(provider.id || '')}" maxlength="100" ${isNew ? 'required' : 'readonly'}></label>
       <label><span>名称</span><input name="name" value="${escapeHtml(provider.name || '')}" maxlength="120" required></label>
       <label><span>协议适配器</span><select name="adapterId"><option value="openai-compatible" ${provider.adapterId === 'openai-compatible' || !provider.adapterId ? 'selected' : ''}>openai-compatible</option></select></label>
       <label><span>HTTPS endpoint</span><input name="endpoint" type="url" value="${escapeHtml(provider.endpoint || '')}" placeholder="https://ai.example.com/v1/chat/completions" required></label>
       <label><span>模型</span><input name="model" value="${escapeHtml(provider.model || '')}" maxlength="160" required></label>
-      <label><span>密钥引用${isNew ? '' : '（留空保持不变）'}</span><input name="secretRef" type="password" value="" placeholder="env://MAP_SERVICE_AI_PROVIDER_KEY" ${isNew ? 'required' : ''} autocomplete="new-password"></label>
+      <label><span>API Key${isNew ? '' : '（留空保持不变）'}</span><input name="apiKey" type="password" value="" placeholder="输入 provider API Key" ${isNew ? 'required' : ''} autocomplete="new-password"></label>
       <label><span>超时（毫秒）</span><input name="timeoutMs" type="number" min="100" max="120000" value="${Number(provider.timeoutMs || 3000)}" required></label>
       <label><span>最大尝试次数</span><input name="maxAttempts" type="number" min="1" max="4" value="${Number(provider.maxAttempts || 2)}" required></label>
-      <label><span>每日预算（0=不限）</span><input name="dailyBudget" type="number" min="0" max="1000000" value="${Number(provider.dailyBudget || 0)}" required></label>
+      <label><span>每日预算（0=不限）</span><input name="dailyBudget" type="number" min="0" value="${Number(provider.dailyBudget || 0)}" required></label>
       <label><span>并发数</span><input name="maxConcurrency" type="number" min="1" max="128" value="${Number(provider.maxConcurrency || 2)}" required></label>
     </div>
     <label class="admin-check"><input type="checkbox" name="enabled" ${checked(provider.requestedEnabled !== false)}><span>请求启用（修改后需重新健康验证）</span></label>
@@ -61,7 +83,8 @@ function renderKeywordRulesEditor (state, canManage) {
 function renderPromptVersionsEditor (state, canManage) {
   const data = state.interactionAiPrompts || {}
   const versions = Array.isArray(data.versions) ? data.versions : []
-  return `<section class="admin-panel"><div class="admin-panel-head"><div><h2>提示词版本</h2><p class="admin-panel-description">只保存版本标识和 SHA-256 摘要；提示词正文不会写入数据库或审计日志。</p></div><span class="admin-badge">当前：${escapeHtml(data.activeVersion || '未登记')}</span></div>${canManage ? `<form class="admin-form admin-form-compact" data-interaction-ai-prompt-form><div class="admin-field-grid admin-field-grid-three"><label><span>版本标识</span><input name="version" maxlength="64" placeholder="interaction-moderation-v2" required></label><label><span>SHA-256 摘要</span><input name="promptHash" maxlength="71" placeholder="sha256:..." required></label></div><button type="submit">发布并设为当前版本</button></form>` : ''}<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>版本</th><th>摘要</th><th>状态</th><th>时间</th></tr></thead><tbody>${versions.map(item => `<tr><td>${escapeHtml(item.version)}</td><td><code>${escapeHtml(item.promptHash || '-')}</code></td><td>${item.active ? '当前' : '历史'}</td><td>${escapeHtml(formatTime(item.createdAt))}</td></tr>`).join('') || '<tr><td colspan="4" class="admin-empty">暂无已登记版本（运行时使用内置版本）</td></tr>'}</tbody></table></div></section>`
+  const active = versions.find(item => item.active) || versions[0] || {}
+  return `<section class="admin-panel"><div class="admin-panel-head"><div><h2>提示词</h2><p class="admin-panel-description">直接编辑审核规则；发布时服务端自动生成摘要和稳定版本号，并保留历史版本。</p></div><span class="admin-badge">当前：${escapeHtml(data.activeVersion || '未登记')}</span></div>${canManage ? `<form class="admin-form admin-form-compact" data-interaction-ai-prompt-form><label><span>提示词正文</span><textarea name="promptText" rows="14" maxlength="20000" required>${escapeHtml(active.promptText || DEFAULT_AI_PROMPT)}</textarea></label><button type="submit">发布并设为当前版本</button></form>` : ''}<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>版本</th><th>摘要</th><th>状态</th><th>时间</th></tr></thead><tbody>${versions.map(item => `<tr><td>${escapeHtml(item.version)}</td><td><code>${escapeHtml(item.promptHash || '-')}</code></td><td>${item.active ? '当前' : '历史'}</td><td>${escapeHtml(formatTime(item.createdAt))}</td></tr>`).join('') || '<tr><td colspan="4" class="admin-empty">暂无已登记版本（运行时使用内置版本）</td></tr>'}</tbody></table></div></section>`
 }
 
 function renderArtalkMirrorPanel (state, canManage) {
@@ -84,8 +107,20 @@ export function renderInteractionAiPage (state) {
   const canAi = hasPermission(state, 'admin.moderation.ai.manage')
   const canKeywords = hasPermission(state, 'admin.moderation.keyword.manage')
   const canArtalk = hasPermission(state, 'admin.comment.policy.manage')
-  return `<div class="admin-user-system-stack">
-    <section class="admin-panel"><div class="admin-panel-head"><div><h2>AI 审核运行配置</h2><p class="admin-panel-description">AI 只提供建议，人工审核仍是最终权威；unknown、超时和错误始终进入人工复核。</p></div><span class="admin-badge">${ai.enabled === true ? '已开启' : '已关闭'}</span></div>${canAi ? `<form class="admin-form" data-interaction-ai-settings-form>
+  const tabs = [
+    { id: 'runtime', label: '运行配置', visible: canAi },
+    { id: 'providers', label: 'Provider', visible: canAi },
+    { id: 'prompt', label: '提示词', visible: canAi },
+    { id: 'keywords', label: '关键词规则', visible: canKeywords },
+    { id: 'mirror', label: '外部镜像', visible: canArtalk || Boolean(state.artalkStatus) },
+  ].filter(tab => tab.visible)
+  const activeTab = tabs.some(tab => tab.id === state.interactionAiTab)
+    ? state.interactionAiTab
+    : (tabs[0]?.id || 'runtime')
+  state.interactionAiTab = activeTab
+  const tabButton = tab => `<button id="admin-interaction-ai-tab-${tab.id}" type="button" class="admin-settings-tab ${activeTab === tab.id ? 'is-active' : ''}" role="tab" aria-selected="${activeTab === tab.id}" aria-controls="admin-interaction-ai-panel-${tab.id}" tabindex="${activeTab === tab.id ? '0' : '-1'}" data-admin-interaction-tab="${tab.id}">${escapeHtml(tab.label)}</button>`
+  const tabPanel = (id, content) => `<div id="admin-interaction-ai-panel-${id}" class="admin-settings-tabpanel" role="tabpanel" aria-labelledby="admin-interaction-ai-tab-${id}" ${activeTab === id ? '' : 'hidden'}>${content}</div>`
+  const runtimePanel = `<section class="admin-panel"><div class="admin-panel-head"><div><h2>AI 审核运行配置</h2><p class="admin-panel-description">AI 只提供建议，人工审核仍是最终权威；unknown、超时和错误始终进入人工复核。</p></div><span class="admin-badge">${ai.enabled === true ? '已开启' : '已关闭'}</span></div>${canAi ? `<form class="admin-form" data-interaction-ai-settings-form>
       <label class="admin-check"><input type="checkbox" name="aiEnabled" ${checked(ai.enabled === true)}><span>启用异步 AI 审核</span></label>
       <div class="admin-field-grid admin-field-grid-three">
         <label><span>运行 provider</span><select name="providerId"><option value="">使用默认 provider</option>${providers.map(provider => `<option value="${escapeHtml(provider.id)}" ${String(ai.providerId || '') === String(provider.id) ? 'selected' : ''}>${escapeHtml(provider.name || provider.id)}</option>`).join('')}</select></label>
@@ -93,19 +128,16 @@ export function renderInteractionAiPage (state) {
         <label><span>策略版本标识</span><input name="policyVersion" value="${escapeHtml(ai.policyVersion || ai.promptVersion || 'interaction-moderation-v1')}" maxlength="64" required></label>
         <label><span>超时（毫秒）</span><input name="timeoutMs" type="number" min="100" max="120000" value="${Number(ai.timeoutMs || 3000)}" required></label>
         <label><span>最大尝试次数</span><input name="maxAttempts" type="number" min="1" max="4" value="${Number(ai.maxAttempts || 2)}" required></label>
-        <label><span>每日总预算（0=不限）</span><input name="dailyBudget" type="number" min="0" max="1000000" value="${Number(ai.dailyBudget || 0)}" required></label>
+        <label><span>每日总预算（0=不限）</span><input name="dailyBudget" type="number" min="0" value="${Number(ai.dailyBudget || 0)}" required></label>
         <label><span>最大并发数</span><input name="maxConcurrency" type="number" min="1" max="128" value="${Number(ai.maxConcurrency || 2)}" required></label>
       </div>
       <fieldset><legend>等级到动作</legend><div class="admin-checkbox-grid">${AI_LEVELS.map(level => `<label><span>${level}</span><select name="action_${level}">${AI_ACTIONS.map(action => `<option value="${action}" ${String(actions[level] || (level === 'normal' ? 'approve' : 'review')) === action ? 'selected' : ''}>${action}</option>`).join('')}</select></label>`).join('')}</div></fieldset>
       <fieldset><legend>允许自动放行的等级</legend><div class="admin-checkbox-grid">${AI_LEVELS.filter(level => level !== 'unknown').map(level => `<label class="admin-check"><input type="checkbox" name="autoApproveLevels" value="${level}" ${checked(Array.isArray(autoApproveLevels) && autoApproveLevels.includes(level))}><span>${level}</span></label>`).join('')}</div><p class="admin-panel-description">unknown、illegal_or_ip 不允许自动放行。</p></fieldset>
       <div class="admin-form-actions"><button type="submit">保存 AI 审核设置</button><button type="button" class="admin-button-secondary" data-admin-action="preview-interaction-ai-impact">查看影响预览</button><button type="button" class="admin-button-secondary" data-admin-action="replay-interaction-moderation-events">重新入队失败审核事件</button></div>
-    </form>` : '<p class="admin-empty">当前账号没有修改 AI 配置的权限。</p>'}</section>
-    <section class="admin-panel"><div class="admin-panel-head"><div><h2>AI provider</h2><p class="admin-panel-description">endpoint 必须是 HTTPS 且命中服务端 allowlist；健康验证只发送探针，不发送真实留言。</p></div><span class="admin-badge">默认：${escapeHtml(providersResponse.defaultProviderId || '未设置')}</span></div>${canAi ? `${providers.map(provider => providerForm(provider, true)).join('')}${providerForm({}, true)}` : '<p class="admin-empty">当前账号没有管理 provider 的权限。</p>'}</section>
-    ${renderPromptVersionsEditor(state, canAi)}
-    ${renderKeywordRulesEditor(state, canKeywords)}
-    ${canArtalk || state.artalkStatus ? renderArtalkMirrorPanel(state, canArtalk) : ''}
-    ${state.interactionAiImpact ? `<section class="admin-panel admin-preview-box"><h2>最近影响预览</h2><p>扫描 ${Number(state.interactionAiImpact.scannedComments || 0)} 条留言，待审 ${Number(state.interactionAiImpact.pendingReview || 0)} 条，预计动作变化 ${Number(state.interactionAiImpact.automaticActionChanges || 0)} 条，涉及分享 ${Number(state.interactionAiImpact.affectedShares || 0)} 个。</p><p>失败事件 ${Number(state.interactionAiImpact.outbox?.failed || 0)} 条；历史重扫需显式创建任务，系统不会自动重写历史状态。</p></section>` : ''}
-  </div>`
+    </form>` : '<p class="admin-empty">当前账号没有修改 AI 配置的权限。</p>'}</section>`
+  const providersPanel = `<section class="admin-panel"><div class="admin-panel-head"><div><h2>AI provider</h2><p class="admin-panel-description">endpoint 必须是 HTTPS 且命中服务端 allowlist；健康验证只发送探针，不发送真实留言。</p></div><span class="admin-badge">默认：${escapeHtml(providersResponse.defaultProviderId || '未设置')}</span></div>${canAi ? `${providers.map(provider => providerForm(provider, true)).join('')}${providerForm({}, true)}` : '<p class="admin-empty">当前账号没有管理 provider 的权限。</p>'}</section>`
+  const impactPanel = state.interactionAiImpact ? `<section class="admin-panel admin-preview-box"><h2>最近影响预览</h2><p>扫描 ${Number(state.interactionAiImpact.scannedComments || 0)} 条留言，待审 ${Number(state.interactionAiImpact.pendingReview || 0)} 条，预计动作变化 ${Number(state.interactionAiImpact.automaticActionChanges || 0)} 条，涉及分享 ${Number(state.interactionAiImpact.affectedShares || 0)} 个。</p><p>失败事件 ${Number(state.interactionAiImpact.outbox?.failed || 0)} 条；历史重扫需显式创建任务，系统不会自动重写历史状态。</p></section>` : ''
+  return `<div class="admin-user-system-stack"><div class="admin-settings-tabs" role="tablist" aria-label="AI 审核设置分类">${tabs.map(tabButton).join('')}</div>${tabPanel('runtime', `${runtimePanel}${impactPanel}`)}${tabPanel('providers', providersPanel)}${tabPanel('prompt', renderPromptVersionsEditor(state, canAi))}${tabPanel('keywords', renderKeywordRulesEditor(state, canKeywords))}${tabPanel('mirror', canArtalk || state.artalkStatus ? renderArtalkMirrorPanel(state, canArtalk) : '')}</div>`
 }
 
 export async function handleInteractionAiSubmit ({ api, event, renderDashboard, setNotice, state }) {
@@ -153,7 +185,7 @@ export async function handleInteractionAiSubmit ({ api, event, renderDashboard, 
     event.preventDefault()
     const values = Object.fromEntries(new FormData(providerFormNode).entries())
     const body = { ...values, enabled: providerFormNode.elements.enabled.checked, isDefault: providerFormNode.elements.isDefault.checked, timeoutMs: Number(values.timeoutMs), maxAttempts: Number(values.maxAttempts), dailyBudget: Number(values.dailyBudget), maxConcurrency: Number(values.maxConcurrency) }
-    if (!body.secretRef) delete body.secretRef
+    if (!body.apiKey) delete body.apiKey
     try {
       state.interactionAiProviders = await (values.id && providerFormNode.elements.id.readOnly ? api.updateInteractionAiProvider(body) : api.createInteractionAiProvider(body))
       setNotice('AI provider 配置已保存；如配置有变化请重新健康验证')
@@ -202,8 +234,7 @@ export async function handleInteractionAiSubmit ({ api, event, renderDashboard, 
     event.preventDefault()
     try {
       state.interactionAiPrompts = await api.createInteractionAiPrompt({
-        version: promptForm.elements.version.value,
-        promptHash: promptForm.elements.promptHash.value,
+        promptText: promptForm.elements.promptText.value,
       })
       setNotice('提示词版本已发布')
     } catch (error) { setNotice('', error.message) }
@@ -214,6 +245,12 @@ export async function handleInteractionAiSubmit ({ api, event, renderDashboard, 
 }
 
 export async function handleInteractionAiClick ({ api, event, renderDashboard, setNotice, state }) {
+  const tabTarget = event.target.closest('[data-admin-interaction-tab]')
+  if (tabTarget) {
+    state.interactionAiTab = String(tabTarget.dataset.adminInteractionTab || 'runtime')
+    renderDashboard()
+    return true
+  }
   const target = event.target.closest('[data-admin-action]')
   if (!target) return false
   const action = target.dataset.adminAction
@@ -361,7 +398,16 @@ export async function handleInteractionClick ({ api, event, renderDashboard, set
     if (action === 'interaction-comments-page') state.interactionComments = await api.listInteractionComments(queryFor(state, 'comments', target.dataset.page))
     if (action === 'interaction-reports-page') state.interactionReports = await api.listInteractionReports(queryFor(state, 'reports', target.dataset.page))
     if (action === 'reset-interaction-filter') { if (target.dataset.filterKind === 'reports') { state.interactionReportFilters = { status: '', reportType: '', priority: '', scope: '', canonicalShareId: '' }; state.interactionReports = await api.listInteractionReports(queryFor(state, 'reports')) } else { state.interactionCommentFilters = { moderationStatus: '', contentStatus: '', canonicalShareId: '', shareItemId: '', featureId: '' }; state.interactionComments = await api.listInteractionComments(queryFor(state, 'comments')) } }
-    if (action === 'view-interaction-comment') { const detail = await api.getInteractionComment(target.dataset.commentId); state.interactionCommentDetail = detail; await showAlert(`留言：${detail.body || '-'}\n\n资源：${detail.featureId || '-'}\n状态：${detail.moderationStatus || '-'} / ${detail.contentStatus || '-'}\n提交时间：${formatTime(detail.createdAt)}`, { title: '留言详情' }) }
+    if (action === 'view-interaction-comment') {
+      const detail = await api.getInteractionComment(target.dataset.commentId)
+      state.interactionCommentDetail = detail
+      await showChoiceDialog({
+        title: '留言详情',
+        trustedMessageHtml: renderCommentDetailHtml(detail),
+        choices: [{ text: '关闭', value: 'close', class: 'app-dialog-primary' }],
+        dismissible: true,
+      })
+    }
     if (action === 'review-interaction-comment') { await api.reviewInteractionComment(target.dataset.commentId, { moderationStatus: 'approved' }); state.interactionComments = await api.listInteractionComments(queryFor(state, 'comments')); setNotice('留言已通过') }
     if (action === 'reprocess-interaction-comment') { await api.reprocessInteractionComment(target.dataset.commentId); state.interactionComments = await api.listInteractionComments(queryFor(state, 'comments')); setNotice('留言已重新审核') }
     if (action === 'replay-interaction-ai') { await api.replayInteractionAiReview(target.dataset.commentId); state.interactionComments = await api.listInteractionComments(queryFor(state, 'comments')); setNotice('AI 审核已重放并追加决策记录') }

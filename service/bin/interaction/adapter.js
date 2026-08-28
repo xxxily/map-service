@@ -42,6 +42,16 @@ function notFound () {
   return interactionHttpError('资源不存在或不可评论', 'RESOURCE_NOT_FOUND')
 }
 
+// Labels are copied only from the server-owned published snapshot. Keep them
+// bounded and text-only because they are later shown in an admin projection.
+function snapshotLabel (value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .replace(/[\u0000-\u001f\u007f]/gu, '')
+    .trim()
+    .slice(0, 200)
+}
+
 export class InteractionAdapter {
   constructor (options = {}) {
     if (!options.userContent) throw new Error('InteractionAdapter 需要 userContent')
@@ -124,6 +134,16 @@ export class InteractionAdapter {
       mediaId: resolved.resourceRef.mediaId || '',
       scope: resolved.resourceRef.scope,
       feature: resolved.feature || null,
+      // These labels are derived from the verified published snapshot, never
+      // from the request body. They make the moderation detail actionable
+      // while the raw snapshot remains redacted from API responses.
+      kmlName: snapshotLabel(item.display_name || item.snapshot?.name),
+      featureName: snapshotLabel(resolved.feature?.name),
+      resourceSnapshot: {
+        ...resolved.resourceRef,
+        kmlName: snapshotLabel(item.display_name || item.snapshot?.name),
+        featureName: snapshotLabel(resolved.feature?.name),
+      },
     }
   }
 
@@ -161,7 +181,22 @@ export class InteractionAdapter {
       throw interactionHttpError(resolved.issues?.[0]?.message || '资源引用不合法', code || 'VALIDATION_FAILED')
     }
     if (!REPORT_SCOPES.includes(resolved.resourceRef.scope)) throw interactionHttpError('举报范围不合法', 'VALIDATION_FAILED')
-    return { ...thread, resourceRef: resolved.resourceRef, scope: resolved.resourceRef.scope, shareItemId: resolved.resourceRef.shareItemId, featureId: resolved.resourceRef.featureId, mediaId: resolved.resourceRef.mediaId || '', feature: resolved.feature || null }
+    return {
+      ...thread,
+      resourceRef: resolved.resourceRef,
+      scope: resolved.resourceRef.scope,
+      shareItemId: resolved.resourceRef.shareItemId,
+      featureId: resolved.resourceRef.featureId,
+      mediaId: resolved.resourceRef.mediaId || '',
+      feature: resolved.feature || null,
+      kmlName: snapshotLabel(item.display_name || item.snapshot?.name),
+      featureName: snapshotLabel(resolved.feature?.name),
+      resourceSnapshot: {
+        ...resolved.resourceRef,
+        kmlName: snapshotLabel(item.display_name || item.snapshot?.name),
+        featureName: snapshotLabel(resolved.feature?.name),
+      },
+    }
   }
 
   /** Stable per-visitor bucket key (never a raw IP). */

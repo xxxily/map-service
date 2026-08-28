@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import rootPath from '../rootPath.js'
 
-export const INTERACTION_DATABASE_VERSION = 1
+export const INTERACTION_DATABASE_VERSION = 2
 
 const CIPHERTEXT_PREFIX = 'aes-256-gcm$1$'
 const CIPHERTEXT_IV_LENGTH = 16
@@ -412,10 +412,9 @@ CREATE INDEX IF NOT EXISTS idx_report_events_report ON report_events(report_id, 
 CREATE INDEX IF NOT EXISTS idx_report_events_created ON report_events(created_at DESC);
 `
 
-// AI tables were introduced after the first interaction v1 rollout.  Keep the
-// public database version at 1, but make the AI portion an idempotent additive
-// migration so an existing v1 file is upgraded on open instead of silently
-// running without an audit trail.
+// AI credentials, editable prompts and author profile snapshots were added
+// after the first interaction v1 rollout. Keep their schema additive so a
+// legacy v1 file can be upgraded transactionally to v2.
 const AI_PROVIDER_SCHEMA = `
 CREATE TABLE IF NOT EXISTS ai_provider_configs (
   id TEXT PRIMARY KEY,
@@ -423,6 +422,7 @@ CREATE TABLE IF NOT EXISTS ai_provider_configs (
   endpoint TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT '',
   secret_ref TEXT NOT NULL DEFAULT '',
+  api_key_ciphertext TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
   timeout_ms INTEGER NOT NULL DEFAULT 3000,
@@ -445,6 +445,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_provider_default
 CREATE TABLE IF NOT EXISTS ai_prompt_versions (
   version TEXT PRIMARY KEY,
   prompt_hash TEXT NOT NULL DEFAULT '',
+  prompt_text TEXT NOT NULL DEFAULT '',
   active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT ''
@@ -527,6 +528,7 @@ const AI_PROVIDER_COLUMNS = Object.freeze([
   ['endpoint', "TEXT NOT NULL DEFAULT ''"],
   ['model', "TEXT NOT NULL DEFAULT ''"],
   ['secret_ref', "TEXT NOT NULL DEFAULT ''"],
+  ['api_key_ciphertext', "TEXT NOT NULL DEFAULT ''"],
   ['enabled', 'INTEGER NOT NULL DEFAULT 1'],
   ['is_default', 'INTEGER NOT NULL DEFAULT 0'],
   ['timeout_ms', 'INTEGER NOT NULL DEFAULT 3000'],
@@ -546,6 +548,7 @@ const AI_PROVIDER_COLUMNS = Object.freeze([
 
 const AI_PROMPT_COLUMNS = Object.freeze([
   ['prompt_hash', "TEXT NOT NULL DEFAULT ''"],
+  ['prompt_text', "TEXT NOT NULL DEFAULT ''"],
   ['active', 'INTEGER NOT NULL DEFAULT 0'],
   ['created_by', "TEXT NOT NULL DEFAULT ''"],
   ['created_at', "TEXT NOT NULL DEFAULT ''"],
@@ -573,6 +576,8 @@ const AI_DECISION_COLUMNS = Object.freeze([
 
 const COMMENT_COLUMNS = Object.freeze([
   ['contact_expires_at', 'TEXT'],
+  ['avatar_snapshot', "TEXT NOT NULL DEFAULT ''"],
+  ['gender_snapshot', "TEXT NOT NULL DEFAULT ''"],
 ])
 
 function tableColumns (database, tableName) {
@@ -680,7 +685,12 @@ export class InteractionDatabase {
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(1, new Date().toISOString())
       }
-      ensureAiSchema(this.database)
+      if (current < 2) {
+        ensureAiSchema(this.database)
+        this.migrationHook?.(2, this.database)
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(2, new Date().toISOString())
+      }
     })
     const finalVersion = Number(this.database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get()?.version || 0)
     if (finalVersion !== INTERACTION_DATABASE_VERSION) {

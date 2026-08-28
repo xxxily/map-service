@@ -16,6 +16,7 @@ export const adminState = {
   visitsError: '',
   settings: null,
   userSystemSettings: null,
+  userSystemSettingsTab: 'access',
   tasks: [],
   kmls: [],
   adminUsers: {
@@ -57,6 +58,7 @@ export const adminState = {
   interactionReportFilters: { status: '', reportType: '', priority: '', scope: '', canonicalShareId: '' },
   interactionPolicy: null,
   interactionAiSettings: null,
+  interactionAiTab: 'runtime',
   interactionAiImpact: null,
   interactionAiPrompts: null,
   interactionKeywords: null,

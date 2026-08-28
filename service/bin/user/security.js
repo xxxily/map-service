@@ -1,5 +1,8 @@
 import crypto from 'node:crypto'
 import { promisify } from 'node:util'
+import {
+  isValidInteractionAvatar,
+} from '../../../shared/interaction-contracts.js'
 
 const scryptAsync = promisify(crypto.scrypt)
 
@@ -33,6 +36,23 @@ export function createHttpError (message, statusCode = 400, code = 'VALIDATION_F
   err.statusCode = statusCode
   err.code = code
   return err
+}
+
+export const USER_GENDERS = Object.freeze(new Set(['', 'male', 'female', 'other', 'unknown']))
+
+export function validateAvatar (value) {
+  const avatar = String(value ?? '').trim()
+  if (!avatar) return ''
+  if (!isValidInteractionAvatar(avatar)) {
+    throw createHttpError('头像必须是受控的图片 Data URL', 400, 'VALIDATION_FAILED')
+  }
+  return avatar
+}
+
+export function validateGender (value) {
+  const gender = String(value ?? '').trim().toLowerCase()
+  if (!USER_GENDERS.has(gender)) throw createHttpError('性别选项不合法', 400, 'VALIDATION_FAILED')
+  return gender
 }
 
 export function randomToken (bytes = 32) {

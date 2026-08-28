@@ -765,6 +765,35 @@ test('temporary-password sessions are restricted until the user changes the pass
   assert.equal(created.user.id, refreshed.user.id)
 })
 
+test('public user projections expose only avatar presence while private profile keeps the image', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+  service.updateSettings(rootSession, { registration: { mode: 'open' } })
+  await service.register({
+    username: 'avatar.profile.user',
+    displayName: '头像用户',
+    password: 'avatar profile password 2026',
+  })
+  const { session } = await login(service, 'avatar.profile.user', 'avatar profile password 2026')
+  service.updateMyProfile(session, {
+    avatar: 'data:image/png;base64,iVBORw0KGgo=',
+    gender: 'female',
+  })
+  const row = service.getUserRowByUsername('avatar.profile.user')
+  const publicView = service.getUserById(row.id)
+  const privateView = service.getUserById(row.id, { includePrivate: true })
+  assert.equal(Object.hasOwn(publicView, 'avatar'), false)
+  assert.equal(publicView.avatarPresent, true)
+  assert.equal(privateView.avatar, 'data:image/png;base64,iVBORw0KGgo=')
+  assert.equal(service.getMyProfile(session).avatar, privateView.avatar)
+  const listed = service.listUsers(rootSession).items.find(item => item.id === row.id)
+  assert.equal(Object.hasOwn(listed, 'avatar'), false)
+  assert.equal(listed.avatarPresent, true)
+  const adminView = service.getAdminUser(rootSession, row.id)
+  assert.equal(Object.hasOwn(adminView, 'avatar'), false)
+  assert.equal(adminView.avatarPresent, true)
+})
+
 test('sessions store only token hashes, enforce CSRF, support revocation, and expire', async t => {
   const { database, service, advance } = createHarness(t)
   const { session: rootSession } = await login(service)

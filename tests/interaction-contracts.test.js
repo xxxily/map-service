@@ -166,6 +166,8 @@ test('public comment serializer removes PII and internal moderation fields', () 
   assert.deepEqual(serializePublicComment({
     id: 'cmt_demo',
     display_name_snapshot: '访客',
+    avatar_snapshot: 'data:image/png;base64,AAAA',
+    gender_snapshot: 'female',
     body_normalized: '公开内容',
     body_rendered: '<script>不可信渲染结果</script>',
     created_at: '2026-08-23T00:00:00.000Z',
@@ -179,6 +181,8 @@ test('public comment serializer removes PII and internal moderation fields', () 
   }), {
     id: 'cmt_demo',
     displayName: '访客',
+    avatar: 'data:image/png;base64,AAAA',
+    gender: 'female',
     body: '公开内容',
     createdAt: '2026-08-23T00:00:00.000Z',
     replies: [],
@@ -199,4 +203,16 @@ test('public comment serializer removes PII and internal moderation fields', () 
     content_status: 'active',
     moderation_status: 'approved',
   }), null)
+  const malformedProfile = serializePublicComment({
+    id: 'cmt_bad_profile',
+    display_name_snapshot: '访客',
+    avatar_snapshot: 'javascript:alert(1)',
+    gender_snapshot: 'not-a-gender',
+    body_normalized: '公开内容',
+    created_at: '2026-08-23T00:00:00.000Z',
+    content_status: 'active',
+    moderation_status: 'approved',
+  })
+  assert.equal(malformedProfile.avatar, '')
+  assert.equal(malformedProfile.gender, '')
 })

@@ -23,6 +23,8 @@ import ReportService from './reportService.js'
 import { AiProviderRegistry } from './providerRegistry.js'
 import { createServerProviderAdapters } from './providerAdapters.js'
 import AiModerationEngine from './aiModeration.js'
+import crypto from 'node:crypto'
+import { DEFAULT_AI_PROMPT } from '../../../shared/interaction-ai.js'
 import {
   InteractionPolicyStore,
   createMutableInteractionPolicy,
@@ -31,16 +33,41 @@ import {
   resolveInitialModerationState,
 } from './commentPolicy.js'
 import { createHttpError } from '../user/security.js'
-import { encryptInteractionSecret } from './security.js'
+import { encryptInteractionSecret, decryptInteractionSecret } from './security.js'
 import { AI_PROMPT_VERSION, emptyAiScores } from '../../../shared/interaction-ai.js'
 
 const MAX_KEYWORD_PREVIEW_TEXT_LENGTH = 10_000
 const MAX_KEYWORD_PREVIEW_RULES = 5_000
 const MAX_IMPACT_PREVIEW_COMMENTS = 10_000
+const MAX_AI_PROMPT_TEXT_LENGTH = 20_000
 const AI_REVIEW_LOCK_TTL_MS = 10 * 60 * 1000
+
+const PROVIDER_LOAD_ERROR_CODES = new Set([
+  'INTERACTION_CIPHERTEXT_INVALID',
+  'INTERACTION_DECRYPT_FAILED',
+  'INTERACTION_SECRET_REQUIRED',
+  'AI_PROVIDER_ALLOWLIST_REQUIRED',
+  'AI_PROVIDER_ADAPTER_REQUIRED',
+  'VALIDATION_FAILED',
+])
 
 function actorUserId (actor) {
   return actor?.user?.id || actor?.id || ''
+}
+
+function providerLoadErrorCode (error) {
+  const code = String(error?.code || '')
+  return PROVIDER_LOAD_ERROR_CODES.has(code) ? code : 'CONFIG_INVALID'
+}
+
+function normalizePromptText (value) {
+  if (typeof value !== 'string') throw interactionHttpError('提示词正文必须是字符串', 'VALIDATION_FAILED')
+  const normalized = value.normalize('NFKC').replace(/\r\n?/gu, '\n').trim()
+  if (!normalized) throw interactionHttpError('提示词正文不能为空', 'VALIDATION_FAILED')
+  if (Array.from(normalized).length > MAX_AI_PROMPT_TEXT_LENGTH) {
+    throw interactionHttpError(`提示词正文不能超过 ${MAX_AI_PROMPT_TEXT_LENGTH} 个字符`, 'CONTENT_TOO_LARGE')
+  }
+  return normalized
 }
 
 /**
@@ -114,6 +141,11 @@ export class InteractionService {
     this.aiTasks = new Set()
     this.aiReviewTasks = new Map()
     this.aiProviderConfigs = Array.isArray(this.config.ai?.providers) ? this.config.ai.providers : []
+    // Persisted provider rows are authoritative over bootstrap configuration.
+    // Keep invalid rows in a redacted management-only projection so an
+    // administrator can repair them without ever reactivating stale runtime
+    // closures or credentials.
+    this.persistedAiProviderFailures = new Map()
     this.aiClosing = false
     this.aiRawResultsDays = Math.max(1, Number(this.config.retention?.aiRawResultsDays) || 30)
     this.retention = {
@@ -239,6 +271,7 @@ export class InteractionService {
       timeoutMs: ai.timeoutMs,
       retries: Math.max(0, Number(ai.maxAttempts || 1) - 1),
       promptVersion: ai.promptVersion,
+      promptText: this.database?.prepare('SELECT prompt_text FROM ai_prompt_versions WHERE active = 1').get()?.prompt_text || DEFAULT_AI_PROMPT,
       policyVersion: ai.policyVersion || ai.promptVersion,
       runtimeOverrides: {
         timeoutMs: ai.timeoutMs,
@@ -251,6 +284,7 @@ export class InteractionService {
       this.aiEngine.timeoutMs = Math.max(100, Number(options.timeoutMs) || 3000)
       this.aiEngine.retries = Math.max(0, Math.min(3, Number(options.retries) || 0))
       this.aiEngine.promptVersion = String(options.promptVersion || this.aiEngine.promptVersion)
+      this.aiEngine.promptText = String(options.promptText || this.aiEngine.promptText || DEFAULT_AI_PROMPT)
       this.aiEngine.policyVersion = String(options.policyVersion || this.aiEngine.promptVersion)
       this.aiEngine.runtimeOverrides = { ...options.runtimeOverrides }
     }
@@ -621,23 +655,33 @@ export class InteractionService {
 
   loadPersistedAiProviders () {
     if (!this.database || !this.aiRegistry) return
+    this.persistedAiProviderFailures.clear()
     const rows = this.database.prepare(`
       SELECT id, name, endpoint, model, secret_ref, enabled, is_default,
              timeout_ms, max_attempts, daily_budget, max_concurrency,
-             prompt_version, redaction_json, adapter_id, health_status, last_verified_at,
+             prompt_version, redaction_json, adapter_id, api_key_ciphertext, health_status, last_verified_at,
              daily_budget_day, daily_budget_used,
              created_at, updated_at
       FROM ai_provider_configs ORDER BY id
     `).all()
     for (const row of rows) {
       try {
-        const runtime = this.aiRegistry.get(row.id)
+        const adapterId = String(row.adapter_id || 'openai-compatible').trim()
+        if (!adapterId || !this.providerAdapters?.[adapterId]) {
+          const error = new Error('AI provider 未绑定服务端 adapter')
+          error.code = 'AI_PROVIDER_ADAPTER_REQUIRED'
+          throw error
+        }
+        const apiKey = row.api_key_ciphertext
+          ? decryptInteractionSecret(row.api_key_ciphertext, this.secret, 'ai-provider-key')
+          : ''
         const provider = this.aiRegistry.register({
           id: row.id,
           name: row.name,
           endpoint: row.endpoint,
           model: row.model,
           secretRef: row.secret_ref,
+          apiKey,
           enabled: row.enabled === 1,
           isDefault: row.is_default === 1,
           timeoutMs: row.timeout_ms,
@@ -645,31 +689,119 @@ export class InteractionService {
           dailyBudget: row.daily_budget,
           maxConcurrency: row.max_concurrency,
           promptVersion: row.prompt_version,
-          request: runtime?.request || undefined,
-          healthCheck: runtime?.healthCheck || undefined,
-          adapterId: row.adapter_id || runtime?.adapterId || '',
+          // Never copy request/healthCheck closures from a bootstrap provider.
+          // The registry must construct both functions from its trusted
+          // server-side adapter catalog for this persisted record.
+          adapterId,
           healthStatus: row.health_status,
           lastVerifiedAt: row.last_verified_at,
           dailyBudgetDay: row.daily_budget_day,
           dailyBudgetUsed: row.daily_budget_used,
         })
+        const usable = provider.enabled === true &&
+          typeof provider.request === 'function' &&
+          provider.healthStatus === 'verified'
+        if (!usable && row.is_default === 1) {
+          // A persisted default is authoritative only while the loaded
+          // provider is actually usable.  Clear the durable pointer together
+          // with the in-memory pointer so a restart cannot resurrect it.
+          this.database.prepare('UPDATE ai_provider_configs SET is_default = 0, updated_at = ? WHERE id = ?')
+            .run(this.now(), row.id)
+          this.aiRegistry.defaultProviderId = ''
+        }
         if (row.health_status === 'verified' && provider.healthStatus !== 'verified') {
           this.database.prepare('UPDATE ai_provider_configs SET enabled = 0, is_default = 0, health_status = ?, last_verified_at = NULL, updated_at = ? WHERE id = ?')
             .run('unknown', this.now(), row.id)
         }
-      } catch {
-        // Persisted invalid configuration remains visible as unavailable only
-        // after an explicit repair; it must never become an outbound request.
+        this.persistedAiProviderFailures.delete(row.id)
+      } catch (error) {
+        const code = providerLoadErrorCode(error)
+        // A database row must win over an identically named environment
+        // provider even when it is corrupt. Removing first prevents a stale
+        // bootstrap closure/key from becoming an accidental fallback.
+        this.aiRegistry.remove(row.id, { promote: false })
+        if (row.is_default === 1) this.aiRegistry.defaultProviderId = ''
+        try {
+          this.database.transaction(() => {
+            this.database.prepare(`
+              UPDATE ai_provider_configs
+              SET enabled = 0, is_default = 0, health_status = 'failed',
+                  last_verified_at = NULL, updated_at = ?
+              WHERE id = ?
+            `).run(this.now(), row.id)
+          })
+        } catch {
+          // Keep the in-memory fail-closed state and management projection even
+          // if a transient database failure prevents persisting the marker.
+        }
+        const dailyBudget = Number(row.daily_budget)
+        this.persistedAiProviderFailures.set(row.id, {
+          id: row.id,
+          name: String(row.name || row.id || ''),
+          endpoint: String(row.endpoint || ''),
+          model: String(row.model || ''),
+          adapterId: String(row.adapter_id || 'openai-compatible'),
+          hasApiKey: Boolean(row.api_key_ciphertext),
+          configured: false,
+          enabled: false,
+          requestedEnabled: row.enabled === 1,
+          isDefault: false,
+          health: 'failed',
+          lastVerifiedAt: null,
+          timeoutMs: Number(row.timeout_ms) || 3000,
+          maxAttempts: Number(row.max_attempts) || 2,
+          dailyBudget: Number.isFinite(dailyBudget) && dailyBudget > 0 ? Math.floor(dailyBudget) : 0,
+          maxConcurrency: Number(row.max_concurrency) || 2,
+          promptVersion: String(row.prompt_version || ''),
+          budgetUnlimited: !(Number.isFinite(dailyBudget) && dailyBudget > 0),
+          loadErrorCode: code,
+        })
+        try {
+          this.adapter.insertAudit({
+            actorUserId: null,
+            action: 'moderation.provider.load_failed',
+            targetType: 'ai_provider',
+            targetId: String(row.id || ''),
+            metadata: { phase: 'startup', code, healthStatus: 'failed' },
+          })
+        } catch {
+          // Audit persistence must never make startup fall back to a secret.
+        }
+        console.warn('[interaction ai provider load failed]', { id: String(row.id || ''), code })
       }
     }
   }
 
   listAiProvidersForAdmin () {
     this.ensureReady()
-    const providers = this.aiRegistry.list().map((provider) => {
-      const { secretRef, ...publicProvider } = provider
-      return publicProvider
-    })
+    // Keep this projection explicit. The registry holds decrypted credentials
+    // for outbound requests; an accidental field added to `list()` must never
+    // turn into a management API leak.
+    const providers = this.aiRegistry.list().map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      endpoint: provider.endpoint,
+      model: provider.model,
+      adapterId: provider.adapterId,
+      hasApiKey: provider.hasApiKey === true,
+      configured: provider.configured === true,
+      enabled: provider.enabled === true,
+      requestedEnabled: provider.requestedEnabled !== false,
+      isDefault: provider.isDefault === true,
+      health: provider.health || 'unknown',
+      lastVerifiedAt: provider.lastVerifiedAt || null,
+      timeoutMs: provider.timeoutMs,
+      maxAttempts: provider.maxAttempts,
+      dailyBudget: provider.dailyBudget,
+      maxConcurrency: provider.maxConcurrency,
+      promptVersion: provider.promptVersion || '',
+      budgetUnlimited: provider.budgetUnlimited === true,
+    }))
+    const registeredIds = new Set(providers.map(provider => provider.id))
+    for (const failure of this.persistedAiProviderFailures.values()) {
+      if (!registeredIds.has(failure.id)) providers.push({ ...failure })
+    }
+    providers.sort((left, right) => String(left.id).localeCompare(String(right.id)))
     return { enabled: this.getEffectiveAiConfig().enabled === true, defaultProviderId: this.aiRegistry.defaultProviderId, providers }
   }
 
@@ -684,7 +816,20 @@ export class InteractionService {
       input.isDefault === undefined && (existing?.is_default === 1 || !persistedDefault)
     )
     const secretRef = String(input.secretRef || existing?.secret_ref || '').trim()
-    if (!secretRef) throw interactionHttpError('新增 AI provider 必须提供 secretRef', 'VALIDATION_FAILED')
+    const suppliedApiKey = String(input.apiKey || '').trim()
+    let existingApiKey = ''
+    if (!suppliedApiKey && existing?.api_key_ciphertext) {
+      try {
+        existingApiKey = decryptInteractionSecret(existing.api_key_ciphertext, this.secret, 'ai-provider-key')
+      } catch (error) {
+        const code = error?.code === 'INTERACTION_CIPHERTEXT_INVALID' || error?.code === 'INTERACTION_DECRYPT_FAILED'
+          ? error.code
+          : 'INTERACTION_DECRYPT_FAILED'
+        throw interactionHttpError('现有 API Key 密文无法解密，请重新填写 API Key', code)
+      }
+    }
+    const apiKey = suppliedApiKey || existingApiKey
+    if (!secretRef && !apiKey) throw interactionHttpError('新增 AI provider 必须提供 API Key 或 secretRef', 'VALIDATION_FAILED')
     const adapterId = String(input.adapterId || existing?.adapter_id || 'openai-compatible').trim()
     const aiConfig = this.getEffectiveAiConfig()
     const effectiveModel = String(input.model ?? existing?.model ?? '')
@@ -697,7 +842,7 @@ export class InteractionService {
     if (!effectivePromptVersion.trim() || effectivePromptVersion.trim().length > 64) throw interactionHttpError('AI provider 提示词版本必须是 1 到 64 个字符', 'VALIDATION_FAILED')
     if (!Number.isInteger(effectiveTimeoutMs) || effectiveTimeoutMs < 100 || effectiveTimeoutMs > 120000) throw interactionHttpError('AI provider 超时必须是 100 到 120000 的整数', 'VALIDATION_FAILED')
     if (!Number.isInteger(effectiveMaxAttempts) || effectiveMaxAttempts < 1 || effectiveMaxAttempts > 4) throw interactionHttpError('AI provider 最大尝试次数必须是 1 到 4 的整数', 'VALIDATION_FAILED')
-    if (!Number.isInteger(effectiveDailyBudget) || effectiveDailyBudget < 0 || effectiveDailyBudget > 1000000) throw interactionHttpError('AI provider 每日预算必须是 0 到 1000000 的整数', 'VALIDATION_FAILED')
+    if (!Number.isSafeInteger(effectiveDailyBudget) || effectiveDailyBudget < 0) throw interactionHttpError('AI provider 每日预算必须是不小于 0 的安全整数', 'VALIDATION_FAILED')
     if (!Number.isInteger(effectiveMaxConcurrency) || effectiveMaxConcurrency < 1 || effectiveMaxConcurrency > 128) throw interactionHttpError('AI provider 并发数必须是 1 到 128 的整数', 'VALIDATION_FAILED')
     const effectiveRedaction = JSON.stringify(input.redaction ?? (existing ? (() => {
       try { return JSON.parse(existing.redaction_json || '{}') } catch { return {} }
@@ -705,6 +850,7 @@ export class InteractionService {
     const canReuseVerification = Boolean(existing && existing.health_status === 'verified' && existing.last_verified_at &&
       existing.endpoint === String(input.endpoint || existing.endpoint) &&
       existing.secret_ref === secretRef &&
+      !suppliedApiKey &&
       String(existing.adapter_id || 'openai-compatible') === adapterId &&
       String(existing.model || '') === effectiveModel &&
       String(existing.prompt_version || '') === effectivePromptVersion &&
@@ -723,6 +869,7 @@ export class InteractionService {
       ...input,
       id,
       secretRef,
+      apiKey,
       adapterId,
       model: effectiveModel,
       promptVersion: effectivePromptVersion,
@@ -751,8 +898,8 @@ export class InteractionService {
           id, name, endpoint, model, secret_ref, enabled, is_default,
           timeout_ms, max_attempts, daily_budget, max_concurrency,
           prompt_version, redaction_json, health_status, last_verified_at,
-          adapter_id, daily_budget_day, daily_budget_used, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          adapter_id, api_key_ciphertext, daily_budget_day, daily_budget_used, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name, endpoint = excluded.endpoint, model = excluded.model,
           secret_ref = excluded.secret_ref, enabled = excluded.enabled,
@@ -760,6 +907,7 @@ export class InteractionService {
           max_attempts = excluded.max_attempts, daily_budget = excluded.daily_budget,
           max_concurrency = excluded.max_concurrency, prompt_version = excluded.prompt_version,
           redaction_json = excluded.redaction_json, adapter_id = excluded.adapter_id,
+          api_key_ciphertext = excluded.api_key_ciphertext,
           health_status = excluded.health_status, last_verified_at = excluded.last_verified_at,
           updated_at = excluded.updated_at
       `).run(
@@ -770,9 +918,10 @@ export class InteractionService {
         provider.state.maxConcurrency,
         effectivePromptVersion.trim(),
         effectiveRedaction, provider.healthStatus, provider.lastVerifiedAt || null, adapterId,
-        provider.state.budgetDay, provider.state.used, existing?.created_at || now, now
+        encryptInteractionSecret(apiKey, this.secret, 'ai-provider-key'), provider.state.budgetDay, provider.state.used, existing?.created_at || now, now
       )
     })
+    this.persistedAiProviderFailures.delete(provider.id)
     if (!effectiveDefault && this.aiRegistry.defaultProviderId === provider.id) this.aiRegistry.defaultProviderId = ''
     if (effectiveDefault) this.aiRegistry.setDefault(provider.id)
     if (this.aiEngine && this.aiEngine.providerId === provider.id && !provider.enabled) this.aiEngine.providerId = ''
@@ -1045,7 +1194,7 @@ export class InteractionService {
   listAiPromptVersionsForAdmin () {
     this.ensureReady()
     const rows = this.database.prepare(`
-      SELECT version, prompt_hash, active, created_by, created_at
+      SELECT version, prompt_hash, prompt_text, active, created_by, created_at
       FROM ai_prompt_versions
       ORDER BY active DESC, created_at DESC, version DESC
     `).all()
@@ -1055,6 +1204,9 @@ export class InteractionService {
         versions: [{
           version: AI_PROMPT_VERSION,
           promptHash: '',
+          promptText: DEFAULT_AI_PROMPT,
+          promptTextAvailable: true,
+          metadataOnly: false,
           active: true,
           createdAt: '',
           createdBy: '',
@@ -1067,6 +1219,9 @@ export class InteractionService {
       versions: rows.map(row => ({
         version: row.version,
         promptHash: row.prompt_hash,
+        promptText: row.prompt_text || '',
+        promptTextAvailable: Boolean(row.prompt_text),
+        metadataOnly: !row.prompt_text,
         active: row.active === 1,
         createdAt: row.created_at,
         createdBy: row.created_by || '',
@@ -1077,28 +1232,44 @@ export class InteractionService {
 
   publishAiPromptVersion (actor, input = {}, context = {}) {
     this.ensureReady()
-    const version = String(input.version || '').trim()
-    const promptHash = String(input.promptHash || '').trim()
+    const hasPromptText = Object.hasOwn(input, 'promptText')
+    const promptText = hasPromptText ? normalizePromptText(input.promptText) : ''
+    const suppliedPromptHash = String(input.promptHash || '').trim()
+    const promptHash = promptText
+      ? `sha256:${crypto.createHash('sha256').update(promptText, 'utf8').digest('hex')}`
+      : suppliedPromptHash
+    let version = String(input.version || '').trim()
+    if (!version && /^sha256:[a-f0-9]{64}$/iu.test(promptHash)) {
+      version = `prompt-${promptHash.slice(7, 63).toLowerCase()}`
+    }
     if (!version || version.length > 64 || !/^[A-Za-z0-9._:-]+$/.test(version)) {
       throw interactionHttpError('提示词版本必须是 1 到 64 位的字母、数字或 ._:-', 'VALIDATION_FAILED')
     }
     if (!/^sha256:[a-f0-9]{64}$/i.test(promptHash)) {
       throw interactionHttpError('提示词哈希必须使用 sha256:<64位十六进制>', 'VALIDATION_FAILED')
     }
+    if (promptText && suppliedPromptHash && suppliedPromptHash.toLowerCase() !== promptHash.toLowerCase()) {
+      throw interactionHttpError('提示词正文与哈希不一致', 'VALIDATION_FAILED')
+    }
     const actorId = actorUserId(actor)
     const now = this.now()
-    const existing = this.database.prepare('SELECT prompt_hash, active FROM ai_prompt_versions WHERE version = ?').get(version)
+    const existing = this.database.prepare('SELECT prompt_hash, prompt_text, active FROM ai_prompt_versions WHERE version = ?').get(version)
     if (existing && String(existing.prompt_hash).toLowerCase() !== promptHash.toLowerCase()) {
       throw interactionHttpError('同一提示词版本不能修改哈希；请使用新的版本标识', 'PROMPT_VERSION_IMMUTABLE')
     }
-    if (existing?.active === 1) return this.listAiPromptVersionsForAdmin()
+    if (existing?.active === 1 && (!promptText || existing.prompt_text)) return this.listAiPromptVersionsForAdmin()
     this.database.transaction(() => {
       this.database.prepare('UPDATE ai_prompt_versions SET active = 0 WHERE active = 1').run()
       this.database.prepare(`
-        INSERT INTO ai_prompt_versions(version, prompt_hash, active, created_by, created_at)
-        VALUES (?, ?, 1, ?, ?)
-        ON CONFLICT(version) DO UPDATE SET active = 1
-      `).run(version, promptHash.toLowerCase(), actorId, now)
+        INSERT INTO ai_prompt_versions(version, prompt_hash, prompt_text, active, created_by, created_at)
+        VALUES (?, ?, ?, 1, ?, ?)
+        ON CONFLICT(version) DO UPDATE SET
+          active = 1,
+          prompt_text = CASE
+            WHEN ai_prompt_versions.prompt_text = '' THEN excluded.prompt_text
+            ELSE ai_prompt_versions.prompt_text
+          END
+      `).run(version, promptHash.toLowerCase(), promptText, actorId, now)
     })
     this.syncAiRuntimePolicy()
     this.adapter.insertAudit({

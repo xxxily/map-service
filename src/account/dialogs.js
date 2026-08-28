@@ -188,14 +188,67 @@ function analyticsModeValue (share) {
   return ['provider', 'custom'].includes(mode) ? mode : 'none'
 }
 
-function normalizedClusteringConfig (value = {}) {
+export function showAccountShareUrlDialog (value, options = {}) {
+  const root = ensureAccountDialogRoot()
+  const previousFocus = document.activeElement
+  const url = String(value || '')
+  root.hidden = false
+  root.innerHTML = `
+    <div class="app-dialog-backdrop" data-account-share-url-action="close">
+      <section class="app-dialog account-share-url-dialog" role="dialog" aria-modal="true" aria-labelledby="account-share-url-title">
+        <h2 id="account-share-url-title">${escapeHtml(options.title || '分享链接')}</h2>
+        <label class="account-share-url-field"><span>完整地址</span><textarea readonly rows="4" data-account-share-url-value aria-label="分享链接">${escapeHtml(url)}</textarea></label>
+        <div class="app-dialog-actions">
+          <button type="button" class="app-dialog-secondary" data-account-share-url-action="close">关闭</button>
+          <button type="button" class="app-dialog-primary" data-account-share-url-action="copy">复制链接</button>
+        </div>
+        <p class="account-share-url-status" data-account-share-url-status role="status" aria-live="polite"></p>
+      </section>
+    </div>
+  `
+  const textarea = root.querySelector('[data-account-share-url-value]')
+  const status = root.querySelector('[data-account-share-url-status]')
+  textarea?.focus()
+  textarea?.select()
+  return new Promise(resolve => {
+    const onKeydown = event => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      close(false)
+    }
+    const cleanup = () => {
+      root.removeEventListener('click', onClick)
+      document.removeEventListener('keydown', onKeydown)
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
+    }
+    const close = result => { cleanup(); root.innerHTML = ''; root.hidden = true; resolve(result) }
+    const onClick = async event => {
+      const target = event.target.closest('[data-account-share-url-action]')
+      if (!target) return
+      if (target.classList.contains('app-dialog-backdrop') && target.querySelector('.account-share-url-dialog')?.contains(event.target)) return
+      if (target.dataset.accountShareUrlAction === 'close') { close(false); return }
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+        await navigator.clipboard.writeText(url)
+        status.textContent = options.success || '分享链接已复制'
+      } catch {
+        textarea?.focus(); textarea?.select()
+        status.textContent = '复制失败，请手动选择并复制'
+      }
+    }
+    root.addEventListener('click', onClick)
+    document.addEventListener('keydown', onKeydown)
+  })
+}
+
+function normalizedClusteringConfig (value = {}, creating = false) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
   return {
-    enabled: source.enabled === true,
+    enabled: creating && !Object.keys(source).length ? true : source.enabled === true,
     minZoom: Number.isSafeInteger(Number(source.minZoom)) ? Number(source.minZoom) : 0,
     maxClusterZoom: Number.isSafeInteger(Number(source.maxClusterZoom)) ? Number(source.maxClusterZoom) : 13,
     gridSize: Number.isSafeInteger(Number(source.gridSize)) ? Number(source.gridSize) : 64,
-    minClusterPoints: Number.isSafeInteger(Number(source.minClusterPoints)) ? Number(source.minClusterPoints) : 2,
+    minClusterPoints: Number.isSafeInteger(Number(source.minClusterPoints)) ? Number(source.minClusterPoints) : (creating ? 5 : 2),
     maxMembersPerCluster: Number.isSafeInteger(Number(source.maxMembersPerCluster)) ? Number(source.maxMembersPerCluster) : 5000,
   }
 }
@@ -324,9 +377,12 @@ export function showAccountShareDialog (options = {}) {
       visibleByDefault: item.visibleByDefault !== false,
       displayName: String(item.displayName || ''),
     }))
+  const mode = options.mode === 'create' ? 'create' : 'edit'
   const viewConfig = share.viewConfig || {}
-  const clustering = normalizedClusteringConfig(viewConfig.kmlPointClustering)
-  const spatialAccess = normalizeSpatialAccess(share)
+  const clustering = normalizedClusteringConfig(viewConfig.kmlPointClustering, mode === 'create')
+  const spatialAccess = mode === 'create' && !share.spatialAccess && !share.spatialAccessMode
+    ? { ...normalizeSpatialAccess({ spatialAccessMode: 'kml_bounds' }), unrestrictedTileMaxZoom: 12 }
+    : normalizeSpatialAccess(share)
   const analyticsPolicy = options.analyticsPolicy || {}
   const analytics = share.analytics || {}
   const selectedAnalyticsMode = analyticsModeValue(share)
@@ -344,7 +400,6 @@ export function showAccountShareDialog (options = {}) {
       ? '<option value="none" selected>不启用</option>'
       : '<option value="keep" selected>后台未开放，保持现状</option>'
   const passwordTtlMode = share.passwordAccess?.ttlMode || share.passwordAccessTtlMode || 'finite'
-  const mode = options.mode === 'create' ? 'create' : 'edit'
   const passwordlessSharingEnabled = options.passwordlessSharingEnabled === true
   const hasStoredPassword = share.passwordProtected === true
   const passwordActionOptions = mode === 'create'

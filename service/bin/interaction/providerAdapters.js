@@ -102,9 +102,22 @@ function extractOpenAiDecision (response) {
 
 function createOpenAiCompatibleAdapter ({ provider, resolveSecret }) {
   const getSecret = () => {
-    const secret = resolveSecret(provider.secretRef)
+    const secret = provider.apiKey || resolveSecret(provider.secretRef)
     if (secret && typeof secret.then === 'function') return secret.then(value => String(value || ''))
     return String(secret || '')
+  }
+  // A synchronous resolver (the normal env:// path) can be checked while a
+  // persisted provider is loaded.  Async secret stores intentionally defer to
+  // the health check, because registration must remain synchronous.
+  const secretAvailable = () => {
+    if (provider.apiKey) return true
+    try {
+      const secret = resolveSecret(provider.secretRef)
+      if (secret && typeof secret.then === 'function') return undefined
+      return Boolean(secret)
+    } catch {
+      return false
+    }
   }
   const request = async ({ payload, signal }) => {
     const secret = await getSecret()
@@ -134,7 +147,7 @@ function createOpenAiCompatibleAdapter ({ provider, resolveSecret }) {
     })
     return true
   }
-  return { request, healthCheck }
+  return { request, healthCheck, secretAvailable }
 }
 
 /**

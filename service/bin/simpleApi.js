@@ -2116,8 +2116,8 @@ const userApiRoutes = [
       noStore(res)
       const actor = requireInteractionAdmin(req, 'moderation.providers')
       const body = req.body && typeof req.body === 'object' ? req.body : {}
-      if (!String(body.id || '').trim() || !String(body.endpoint || '').trim() || !String(body.secretRef || '').trim()) {
-        const error = new Error('provider id、endpoint、secretRef 均不能为空')
+      if (!String(body.id || '').trim() || !String(body.endpoint || '').trim() || (!String(body.secretRef || '').trim() && !String(body.apiKey || '').trim())) {
+        const error = new Error('provider id、endpoint 以及 API Key 或 secretRef 至少一个不能为空')
         error.statusCode = 400
         error.code = 'VALIDATION_FAILED'
         throw error

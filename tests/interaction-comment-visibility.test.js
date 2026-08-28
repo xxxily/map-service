@@ -159,7 +159,7 @@ test('the public list exposes no sensitive fields', () => {
 
     const result = listPublicComments(database, RESOURCE)
     assert.equal(result.items.length, 2)
-    assert.deepEqual(Object.keys(result.items[0]).sort(), ['body', 'createdAt', 'displayName', 'id', 'replies'])
+    assert.deepEqual(Object.keys(result.items[0]).sort(), ['avatar', 'body', 'createdAt', 'displayName', 'gender', 'id', 'replies'])
     assert.deepEqual(findForbiddenResponseFields(result), [])
 
     const serialized = JSON.stringify(result)
@@ -254,6 +254,59 @@ test('public list pagination is keyset based and stable', () => {
     }
     // The page size is capped rather than trusted.
     assert.equal(listPublicComments(database, RESOURCE, { limit: 5000 }).items.length, 5)
+  } finally {
+    close()
+  }
+})
+
+test('public pages cap top-level rows while preserving large avatar projections and all replies', () => {
+  const { database, close } = setup()
+  try {
+    const avatar = `data:image/png;base64,${'A'.repeat(4_000)}`
+    for (let index = 1; index <= 25; index += 1) {
+      insertComment(database, {
+        id: `cmt_avatar_${index}`,
+        body: `头像留言 ${index}`,
+        approvedAtValue: approvedAt(index),
+        visibleAt: approvedAt(index),
+      })
+      database.prepare('UPDATE comments SET avatar_snapshot = ?, gender_snapshot = ? WHERE id = ?')
+        .run(avatar, 'female', `cmt_avatar_${index}`)
+    }
+
+    const first = listPublicComments(database, RESOURCE, { limit: 5000 })
+    assert.equal(first.items.length, 20)
+    assert.equal(first.hasMore, true)
+    assert.equal(first.items[0].avatar, avatar)
+    assert.equal(first.items[0].gender, 'female')
+    assert.ok(Buffer.byteLength(JSON.stringify(first), 'utf8') < 110_000)
+
+    const second = listPublicComments(database, RESOURCE, { cursor: first.nextCursor, limit: 20 })
+    assert.equal(second.items.length, 5)
+    assert.equal(second.hasMore, false)
+    assert.equal(second.count, 25)
+
+    insertComment(database, {
+      id: 'cmt_avatar_parent',
+      body: '带大量回复的留言',
+      approvedAtValue: approvedAt(30),
+      visibleAt: approvedAt(30),
+    })
+    for (let index = 1; index <= 30; index += 1) {
+      insertComment(database, {
+        id: `cmt_avatar_reply_${index}`,
+        parentId: 'cmt_avatar_parent',
+        threadDepth: 1,
+        body: `回复 ${index}`,
+        approvedAtValue: `2026-08-23T01:${String(index).padStart(2, '0')}:00.000Z`,
+        visibleAt: `2026-08-23T01:${String(index).padStart(2, '0')}:00.000Z`,
+      })
+    }
+    const replyPage = listPublicComments(database, RESOURCE, { cursor: first.nextCursor, limit: 20 })
+    const parent = replyPage.items.find(item => item.id === 'cmt_avatar_parent')
+    assert.ok(parent)
+    assert.equal(parent.replies.length, 30)
+    assert.equal(replyPage.count, 56)
   } finally {
     close()
   }

@@ -2,9 +2,9 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-20
-- Primary product surfaces: 2D/3D 地图、KML 数据管理面板、媒体预览器
-- Evidence reviewed: `src/map/kml.js`、`src/map3d/kml.js`、`src/ui/media-preview.js`、`src/styles.css`、`docs/requirements/kml-feature-organization-and-url-preservation.md`、`docs/requirements/kml-media-preview-and-3d-ui-polish.md`、`docs/requirements/kml-batch-management-and-media-window-layout.md`
+- Last refreshed: 2026-08-28
+- Primary product surfaces: 2D/3D 地图、KML 数据管理面板、个人空间、公开分享留言、管理后台、媒体预览器
+- Evidence reviewed: `src/account/`、`src/admin/pages/interaction.js`、`src/admin/pages/userSystemSettings.js`、`src/ui/interaction.js`、`src/ui/dialog.js`、`src/map/kml.js`、`src/map3d/kml.js`、`src/ui/media-preview.js`、`src/styles.css`、`docs/requirements/share-ai-profile-comment-experience-optimization.md`
 
 ## Brand
 - Personality: 克制、清晰、以地图内容为主
@@ -12,25 +12,28 @@
 - Avoid: 装饰性大卡片、重复说明、阻塞式原生弹窗、深色状态闪烁
 
 ## Product goals
-- Goals: 让 KML 整理适合批量工作，让媒体浏览充分利用大屏并保留个人布局偏好
-- Non-goals: 改变 KML 数据模型、权限模型或引入服务端实时协同
-- Success signals: 批量动作可预测且可撤销；窗口调整不干扰地图；再次打开恢复用户选择
+- Goals: 让 KML 整理适合批量工作，让分享、资料、留言和后台配置在长列表与移动端中仍清晰可达
+- Non-goals: 改变核心权限模型、引入服务端实时协同、增加任意外部头像代理或弱化 AI/分享安全边界
+- Success signals: 批量动作可预测且可撤销；长 URL 与操作反馈始终可见；管理员能低门槛完成 AI 配置；留言身份与资源上下文准确稳定
 
 ## Personas and jobs
-- Primary personas: 管理个人轨迹和素材的地图用户、在大屏上浏览媒体的桌面用户
-- User jobs: 迁移/复制/清理要素；同时对照地图与媒体内容；快速切换和恢复浏览布局
-- Key contexts of use: 大型 KML 文件、触摸设备、SidePanel/嵌入窗口、宽屏桌面
+- Primary personas: 管理个人轨迹和素材的地图用户、公开分享访问者、审核留言与配置站点的管理员
+- User jobs: 迁移/复制/清理要素；创建和复制分享；维护个人资料；留言和审核；快速定位并调整后台策略
+- Key contexts of use: 大型 KML 文件、长分享列表、移动触摸设备、SidePanel/嵌入窗口、宽屏桌面、后台密集表单
 
 ## Information architecture
-- Primary navigation: 地图 > KML 数据管理 > 文件 > 要素
-- Core routes/screens: 2D 地图、3D 地图、媒体预览浮层
-- Content hierarchy: 地图与媒体内容 > 文件/要素标题 > 操作控件 > 辅助状态
+- Primary navigation: 地图 ↔ 个人空间 ↔ 管理后台；地图 > KML 数据管理 > 文件 > 要素；公开分享 > 点位 > 留言
+- Core routes/screens: 2D 地图、3D 地图、个人空间、公开分享留言、管理后台、媒体预览浮层
+- Content hierarchy: 当前业务内容 > 名称与身份 > 主要操作 > 状态与稳定 ID；管理设置先按能力 Tab 分类再展示表单
 
 ## Design principles
 - Selection is explicit: 批量模式必须可见、可取消，并提供只针对当前可见要素的全选/反选，不会误触原有定位操作
 - Reversible actions: 批量修改一次提交、一次撤销；破坏性删除先确认
 - Content first: 宽屏和小窗优先给媒体内容，标题优先于类型/位置/集合信息；底部工具与状态压为单行，iframe 不因宿主 padding 或高状态栏挤占内容
 - Stable motion: 拖动/缩放只操作合成层和自身布局，不破坏地图/媒体连续过渡
+- Feedback stays visible: 短操作反馈固定在右下角，不随页面滚动丢失；长内容、输入和确认继续使用统一 Dialog
+- Identity is contextual: 登录留言只使用账号资料，匿名资料独立记忆；历史留言使用提交时快照，不随资料修改漂移
+- Secrets are write-only: API Key 可直接输入但永不回显；安全状态通过“已配置/已验证”表达
 
 ## Visual language
 - Color: 延续现有墨绿色强调色、浅色透明控件底、深色媒体内容面
@@ -42,27 +45,27 @@
 
 ## Components
 - Existing components to reuse: `src/ui/dialog.js`、KML 文件卡片/要素行、`transferKmlFeature`、`media-preview` 控件
-- New/changed components: 个人图层全局批量工具栏、批量操作纯函数、媒体布局偏好与小窗几何工具、搜索面板关闭入口
-- Variants and states: normal/selection/empty/processing/readonly；centered/wide/minimized
+- New/changed components: 分享 URL Dialog、固定 Toast、后台设置 Tab、用户资料头像输入、留言作者行、结构化留言详情 Dialog
+- Variants and states: normal/selection/empty/processing/readonly；success/error/loading Toast；configured/unverified/verified provider；anonymous/authenticated author
 - Token/component ownership: KML 管理由 `src/map/kml.js` 与 `src/map3d/kml.js`；媒体布局由 `src/ui/media-preview.js` 和 `src/ui/media-preview-layout.js`
 
 ## Accessibility
 - Target standard: WCAG 2.1 AA 基础要求
-- Keyboard/focus behavior: 复选框可 Tab 操作；批量动作和媒体按钮有明确焦点态；Escape 取消弹窗/小窗调整
+- Keyboard/focus behavior: 复选框与 Tab 可键盘操作；批量动作和媒体按钮有明确焦点态；Dialog 圈定焦点并可用 Escape 关闭；Toast 关闭按钮可聚焦
 - Contrast/readability: 状态文字和控件边框保持现有对比度；激活态不依赖底色变化
-- Screen-reader semantics: 选择数量、`aria-pressed`、`aria-label` 和调整手柄标签完整
+- Screen-reader semantics: 选择数量、`aria-pressed`、`aria-label`、`tablist/tab/tabpanel`、Toast `aria-live` 和调整手柄标签完整
 - Reduced motion and sensory considerations: 不依赖动画传达状态，拖动帧合并并尊重 reduced-motion
 
 ## Responsive behavior
 - Supported breakpoints/devices: 桌面宽屏、窄桌面、移动触摸、SidePanel iframe
-- Layout adaptations: 移动媒体继续全屏；桌面可宽屏/小窗；KML 批量选择在触摸和键盘均可用
+- Layout adaptations: 移动媒体继续全屏；桌面可宽屏/小窗；KML 批量选择在触摸和键盘均可用；长 URL 任意断行；Toast 使用安全边距；后台 Tab 可横向滚动但页面本身不溢出
 - Touch/hover differences: 小窗拖动和缩放只在非触摸桌面显示；移动端不显示手柄
 
 ## Interaction states
 - Loading: 批量执行按钮锁定并保留已选信息
 - Empty: 无选择时操作按钮禁用；无可写目标时给出短提示
 - Error: 原子失败，不部分写入，统一 Dialog 呈现
-- Success: 显示简短结果并退出选择模式
+- Success: 右下角显示简短 Toast；分享 URL 等需保留内容的结果使用 Dialog
 - Disabled: 只读/公共/分享文件隐藏批量入口和选择框
 - Offline/slow network, if applicable: 账号同步沿用现有草稿/冲突恢复，不在 UI 层伪造成功
 
@@ -72,11 +75,11 @@
 - Microcopy rules: 不枚举可扩展 provider 清单，不重复解释显而易见操作
 
 ## Implementation constraints
-- Framework/styling system: 原生 ES modules、Leaflet/Cesium、现有 CSS 与统一 Dialog
+- Framework/styling system: 原生 ES modules、Leaflet/Cesium、现有 CSS、统一 Dialog 与现有管理后台渲染模式
 - Design-token constraints: 复用现有 KML/媒体 CSS 变量，不新增依赖
 - Performance constraints: 批量 O(n) 处理；拖动/缩放只更新窗口自身；不裁剪媒体轨道
-- Compatibility constraints: 2D/3D、账号/本地、SidePanel、移动返回手势
-- Test/screenshot expectations: 纯函数单测 + source contract 测试 + `npm run check/test/build`
+- Compatibility constraints: 2D/3D、账号/匿名、SidePanel、移动返回手势、历史用户/留言/Provider/分享数据迁移
+- Test/screenshot expectations: 纯函数单测 + API/迁移测试 + source contract 测试 + 320/375/390px 与桌面验收 + `npm run check/test/build`
 
 ## Open questions
 - [ ] 后续批量重命名动作的字段和审计展示方式 / 产品 / 后续版本

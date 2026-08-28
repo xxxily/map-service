@@ -82,6 +82,7 @@ export function renderShell (state, content) {
         </div>
         <nav class="admin-actions" aria-label="管理后台操作">
           <span class="admin-current-user" title="当前登录用户">${escapeHtml(currentUser.displayName || currentUser.username || '')}</span>
+          <a class="admin-icon-link" href="/account#kml" aria-label="个人空间">个人空间</a>
           <a class="admin-icon-link" href="/" aria-label="返回地图">⌖</a>
           <button type="button" data-admin-action="refresh" aria-label="刷新">↻</button>
           <button type="button" data-admin-action="logout" aria-label="退出">⎋</button>

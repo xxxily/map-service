@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 
 import InteractionDatabase from '../service/bin/interaction/database.js'
 import CommentService from '../service/bin/interaction/commentService.js'
@@ -11,7 +12,7 @@ import InteractionAdapter from '../service/bin/interaction/adapter.js'
 import InteractionService from '../service/bin/interaction/interactionService.js'
 import { AiProviderRegistry } from '../service/bin/interaction/providerRegistry.js'
 import { InteractionPolicyStore } from '../service/bin/interaction/commentPolicy.js'
-import { decryptInteractionSecret, isInteractionCiphertext } from '../service/bin/interaction/security.js'
+import { decryptInteractionSecret, encryptInteractionSecret, isInteractionCiphertext } from '../service/bin/interaction/security.js'
 
 const TEST_SECRET = 'interaction-service-test-key'
 const TEST_NOW = '2026-08-23T00:00:00.000Z'
@@ -160,7 +161,7 @@ test('pending comments are invisible and uncounted until approved', () => {
     assert.equal(page.items[0].id, created.id)
     assert.equal(page.items[0].displayName, '访客甲')
     // The public projection must never expose contact or moderation internals.
-    assert.deepEqual(Object.keys(page.items[0]).sort(), ['body', 'createdAt', 'displayName', 'id', 'replies'])
+    assert.deepEqual(Object.keys(page.items[0]).sort(), ['avatar', 'body', 'createdAt', 'displayName', 'gender', 'id', 'replies'])
 
     // Hiding the comment removes it from public reads and counts again.
     harness.moderation.applyHumanDecision({
@@ -320,6 +321,9 @@ test('AI prompt versions and moderation impact previews are auditable and read-o
       promptHash: `sha256:${'a'.repeat(64)}`,
     })
     assert.equal(prompt.activeVersion, 'interaction-moderation-v2')
+    const promptRow = harness.database.prepare('SELECT prompt_text FROM ai_prompt_versions WHERE version = ?').get('interaction-moderation-v2')
+    assert.equal(promptRow.prompt_text, '')
+    assert.equal(prompt.versions[0].metadataOnly, true)
     const preview = interaction.previewModerationImpact({
       ai: { enabled: true, promptVersion: 'interaction-moderation-v2', policyVersion: 'policy-v2' },
     })
@@ -328,6 +332,34 @@ test('AI prompt versions and moderation impact previews are auditable and read-o
     assert.equal(preview.historyReprocessAutomatic, false)
     assert.equal(harness.database.prepare('SELECT COUNT(*) AS count FROM comments').get().count, 0)
     assert.ok(audits.some(entry => entry.action === 'moderation.ai.prompt.publish'))
+  } finally { harness.close() }
+})
+
+test('prompt publication normalizes正文, generates a stable server version and enforces the size limit', () => {
+  const harness = createHarness()
+  const interaction = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET },
+    database: harness.database,
+    policyStore: harness.policyStore,
+    moderation: harness.moderation,
+    comments: harness.comments,
+    reports: { submitReport: () => {} },
+    now: () => TEST_NOW,
+  })
+  try {
+    const text = '  审核规则\r\n请输出 JSON。  '
+    const result = interaction.publishAiPromptVersion({ user: { id: 'usr_prompt' } }, { promptText: text })
+    const normalized = '审核规则\n请输出 JSON。'
+    const hash = `sha256:${crypto.createHash('sha256').update(normalized, 'utf8').digest('hex')}`
+    assert.equal(result.activeVersion, `prompt-${hash.slice(7, 63)}`)
+    assert.equal(result.versions[0].promptText, normalized)
+    assert.equal(result.versions[0].promptTextAvailable, true)
+    assert.equal(result.versions[0].metadataOnly, false)
+    assert.throws(
+      () => interaction.publishAiPromptVersion({ user: { id: 'usr_prompt' } }, { promptText: 'x'.repeat(20_001) }),
+      error => error.code === 'CONTENT_TOO_LARGE' && error.statusCode === 413,
+    )
   } finally { harness.close() }
 })
 
@@ -697,7 +729,7 @@ test('prompt versions are immutable and impact preview evaluates draft rules aga
       body: submission({ body: '草案规则应该命中这条留言。', clientRequestId: 'req-impact-draft' }),
       clientKey: 'visitor-impact-draft',
     })
-    interaction.publishAiPromptVersion({ user: { id: 'usr_prompt' } }, { version: 'prompt-immutable', promptHash: `sha256:${'a'.repeat(64)}` })
+    interaction.publishAiPromptVersion({ user: { id: 'usr_prompt' } }, { version: 'prompt-immutable', promptText: '审核正文 v1' })
     assert.throws(
       () => interaction.publishAiPromptVersion({ user: { id: 'usr_prompt' } }, { version: 'prompt-immutable', promptHash: `sha256:${'b'.repeat(64)}` }),
       error => error.code === 'PROMPT_VERSION_IMMUTABLE' && error.statusCode === 409,
@@ -732,6 +764,8 @@ test('AI provider configuration persists across restart and PUT preserves an exi
     })
     assert.equal(created.defaultProviderId, '')
     assert.equal(Object.hasOwn(created.providers[0], 'secretRef'), false)
+    assert.equal(Object.hasOwn(created.providers[0], 'apiKey'), false)
+    assert.equal(Object.hasOwn(created.providers[0], 'api_key_ciphertext'), false)
     first.configureAiProviderForAdmin({ user: { id: 'usr_admin' } }, {
       id: 'provider-persisted', endpoint: 'https://ai.example.test/v2', model: 'model-v2',
     })
@@ -744,12 +778,190 @@ test('AI provider configuration persists across restart and PUT preserves an exi
     assert.equal(listed.defaultProviderId, '')
     assert.equal(listed.providers[0].id, 'provider-persisted')
     assert.equal(listed.providers[0].configured, false)
+    assert.equal(Object.hasOwn(listed.providers[0], 'apiKey'), false)
+    assert.equal(Object.hasOwn(listed.providers[0], 'secretRef'), false)
+    assert.equal(Object.hasOwn(listed.providers[0], 'api_key_ciphertext'), false)
     assert.equal(audits.length, 2)
     await restarted.close()
     databaseClosed = true
   } finally {
     if (!databaseClosed) database.close()
   }
+})
+
+test('AI provider daily budgets are not capped at the former one-million business limit', () => {
+  const database = new InteractionDatabase({ filePath: ':memory:' })
+  const service = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET, ai: { allowHosts: ['ai.example.test'] } },
+    database,
+    providerAdapters: {
+      test: { create: () => ({ request: async () => ({ ok: true }), healthCheck: async () => true }) },
+    },
+    now: () => TEST_NOW,
+  })
+  try {
+    const result = service.configureAiProviderForAdmin({ user: { id: 'usr_budget' } }, {
+      id: 'provider-large-budget',
+      name: 'Large budget',
+      endpoint: 'https://ai.example.test/v1',
+      adapterId: 'test',
+      apiKey: 'large-budget-key',
+      dailyBudget: 1_000_001,
+    })
+    assert.equal(result.providers[0].dailyBudget, 1_000_001)
+    assert.equal(
+      database.prepare('SELECT daily_budget FROM ai_provider_configs WHERE id = ?').get('provider-large-budget').daily_budget,
+      1_000_001,
+    )
+  } finally {
+    database.close()
+  }
+})
+
+test('persisted provider rows are authoritative and corrupt rows cannot fall back to bootstrap closures', async () => {
+  const database = new InteractionDatabase({ filePath: ':memory:' })
+  const audits = []
+  let bootstrapCalls = 0
+  const bootstrapRequest = async () => { bootstrapCalls += 1; return { source: 'bootstrap' } }
+  const persistedRequest = async () => ({ source: 'persisted' })
+  const providerAdapters = {
+    test: { create: () => ({ request: persistedRequest, healthCheck: async () => true }) },
+  }
+  const registry = new AiProviderRegistry({ allowHosts: ['ai.example.test'], adapters: providerAdapters })
+  registry.register({
+    id: 'provider-authoritative', endpoint: 'https://ai.example.test/v1',
+    secretRef: 'vault://bootstrap', adapterId: '', request: bootstrapRequest,
+  })
+  database.prepare(`
+    INSERT INTO ai_provider_configs(
+      id, name, endpoint, model, secret_ref, enabled, is_default,
+      timeout_ms, max_attempts, daily_budget, max_concurrency,
+      prompt_version, redaction_json, health_status, last_verified_at,
+      adapter_id, api_key_ciphertext, daily_budget_day, daily_budget_used,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 1, 1, 3000, 2, 0, 2, ?, '{}', 'unknown', NULL, ?, ?, '', 0, ?, ?)
+  `).run(
+    'provider-authoritative', 'Persisted', 'https://ai.example.test/v1', 'model', 'vault://persisted',
+    'interaction-moderation-v1', 'test', encryptInteractionSecret('persisted-key', TEST_SECRET, 'ai-provider-key'), TEST_NOW, TEST_NOW,
+  )
+  const service = new InteractionService({
+    userContent: { insertAudit: entry => audits.push(entry) },
+    config: { secretEncryptionKey: TEST_SECRET, ai: { allowHosts: ['ai.example.test'] } },
+    database,
+    aiRegistry: registry,
+    providerAdapters,
+    comments: {},
+    reports: {},
+    now: () => TEST_NOW,
+  })
+  try {
+    service.loadPersistedAiProviders()
+    const provider = registry.get('provider-authoritative')
+    assert.equal(provider.request, persistedRequest)
+    assert.equal(provider.secretRef, 'vault://persisted')
+    const response = await provider.request()
+    assert.equal(response.source, 'persisted')
+    assert.equal(bootstrapCalls, 0)
+    assert.equal(audits.length, 0)
+
+    database.prepare('UPDATE ai_provider_configs SET api_key_ciphertext = ? WHERE id = ?').run('broken-ciphertext', 'provider-authoritative')
+    service.loadPersistedAiProviders()
+    assert.equal(registry.get('provider-authoritative'), null)
+    const listed = service.listAiProvidersForAdmin()
+    assert.equal(listed.providers[0].health, 'failed')
+    assert.equal(listed.providers[0].loadErrorCode, 'INTERACTION_CIPHERTEXT_INVALID')
+    assert.deepEqual(
+      { ...database.prepare('SELECT enabled, is_default, health_status, last_verified_at FROM ai_provider_configs WHERE id = ?').get('provider-authoritative') },
+      { enabled: 0, is_default: 0, health_status: 'failed', last_verified_at: null },
+    )
+    assert.ok(audits.some(entry => entry.action === 'moderation.provider.load_failed'))
+  } finally { database.close() }
+})
+
+test('an unusable persisted default is cleared durably during provider loading', () => {
+  const database = new InteractionDatabase({ filePath: ':memory:' })
+  const providerAdapters = {
+    test: { create: () => ({ request: async () => ({ ok: true }), healthCheck: async () => true }) },
+  }
+  const registry = new AiProviderRegistry({ allowHosts: ['ai.example.test'], adapters: providerAdapters })
+  const service = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET, ai: { allowHosts: ['ai.example.test'] } },
+    database,
+    aiRegistry: registry,
+    providerAdapters,
+    now: () => TEST_NOW,
+  })
+  try {
+    database.prepare(`
+      INSERT INTO ai_provider_configs(
+        id, name, endpoint, model, secret_ref, enabled, is_default,
+        timeout_ms, max_attempts, daily_budget, max_concurrency,
+        prompt_version, redaction_json, health_status, last_verified_at,
+        adapter_id, api_key_ciphertext, daily_budget_day, daily_budget_used,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 1, 1, 3000, 2, 0, 2, ?, '{}', 'unknown', NULL, ?, ?, '', 0, ?, ?)
+    `).run(
+      'persisted-default-unknown', 'Persisted default', 'https://ai.example.test/v1', 'model', 'vault://persisted',
+      'interaction-moderation-v1', 'test', encryptInteractionSecret('persisted-key', TEST_SECRET, 'ai-provider-key'), TEST_NOW, TEST_NOW,
+    )
+    service.loadPersistedAiProviders()
+    assert.equal(registry.defaultProviderId, '')
+    assert.equal(database.prepare('SELECT is_default FROM ai_provider_configs WHERE id = ?').get('persisted-default-unknown').is_default, 0)
+  } finally { database.close() }
+})
+
+test('a new API key can replace a corrupted persisted ciphertext', () => {
+  const database = new InteractionDatabase({ filePath: ':memory:' })
+  const providerAdapters = {
+    test: { create: () => ({ request: async () => ({ ok: true }), healthCheck: async () => true }) },
+  }
+  const service = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET, ai: { allowHosts: ['ai.example.test'] } },
+    database,
+    providerAdapters,
+    now: () => TEST_NOW,
+  })
+  try {
+    service.configureAiProviderForAdmin({ user: { id: 'usr_admin' } }, {
+      id: 'provider-key-repair', endpoint: 'https://ai.example.test/v1', adapterId: 'test', apiKey: 'old-key',
+    })
+    database.prepare('UPDATE ai_provider_configs SET api_key_ciphertext = ? WHERE id = ?').run('corrupt', 'provider-key-repair')
+    service.configureAiProviderForAdmin({ user: { id: 'usr_admin' } }, {
+      id: 'provider-key-repair', endpoint: 'https://ai.example.test/v1', adapterId: 'test', apiKey: 'new-key',
+    })
+    const ciphertext = database.prepare('SELECT api_key_ciphertext FROM ai_provider_configs WHERE id = ?').get('provider-key-repair').api_key_ciphertext
+    assert.equal(decryptInteractionSecret(ciphertext, TEST_SECRET, 'ai-provider-key'), 'new-key')
+  } finally { database.close() }
+})
+
+test('a corrupted persisted API key reports a repairable client error when no replacement is supplied', () => {
+  const database = new InteractionDatabase({ filePath: ':memory:' })
+  const providerAdapters = {
+    test: { create: () => ({ request: async () => ({ ok: true }), healthCheck: async () => true }) },
+  }
+  const service = new InteractionService({
+    userContent: { insertAudit: () => {} },
+    config: { secretEncryptionKey: TEST_SECRET, ai: { allowHosts: ['ai.example.test'] } },
+    database,
+    providerAdapters,
+    now: () => TEST_NOW,
+  })
+  try {
+    service.configureAiProviderForAdmin({ user: { id: 'usr_admin' } }, {
+      id: 'provider-key-repair-required', endpoint: 'https://ai.example.test/v1', adapterId: 'test', apiKey: 'old-key',
+    })
+    database.prepare('UPDATE ai_provider_configs SET api_key_ciphertext = ? WHERE id = ?')
+      .run('corrupt', 'provider-key-repair-required')
+    assert.throws(
+      () => service.configureAiProviderForAdmin({ user: { id: 'usr_admin' } }, {
+        id: 'provider-key-repair-required', endpoint: 'https://ai.example.test/v1', adapterId: 'test',
+      }),
+      error => error.statusCode === 400 && error.code === 'INTERACTION_CIPHERTEXT_INVALID' && /重新填写 API Key/u.test(error.message),
+    )
+  } finally { database.close() }
 })
 
 test('AI provider requires server adapter verification before enablement and default selection', async () => {
@@ -1157,6 +1369,29 @@ test('admin projections never expose ciphertext or contact values', () => {
   }
 })
 
+test('admin comment projection preserves verified KML and feature labels without exposing the raw snapshot', () => {
+  const harness = createHarness()
+  try {
+    publishPolicy(harness)
+    const created = harness.comments.submitComment({
+      resource: {
+        ...RESOURCE,
+        resourceSnapshot: {
+          ...RESOURCE,
+          kmlName: '公开路线',
+          featureName: '北门入口',
+        },
+      },
+      body: submission({ body: '请核对入口位置。' }),
+      clientKey: 'visitor-labeled',
+    }).comment
+    const detail = harness.comments.getCommentForAdmin(created.id)
+    assert.equal(detail.kmlName, '公开路线')
+    assert.equal(detail.featureName, '北门入口')
+    assert.equal(Object.hasOwn(detail, 'resourceSnapshot'), false)
+  } finally { harness.close() }
+})
+
 test('contact correlation works on hashes without decrypting', () => {
   const harness = createHarness()
   try {
@@ -1295,6 +1530,9 @@ test('interaction adapter resolves canonical thread identity and fails closed on
   assert.equal(resolved.sharePublicId, 'shr_public_demo')
   assert.equal(resolved.featureId, 'feature_demo')
   assert.equal(resolved.scope, 'feature')
+  assert.equal(resolved.kmlName, '')
+  assert.equal(resolved.featureName, '示例地点')
+  assert.equal(resolved.resourceSnapshot.featureName, '示例地点')
   // Authorization went through the sharing domain's gating chain.
   assert.equal(calls.length, 1)
   assert.equal(calls[0].context.visitorId, 'vis_1')

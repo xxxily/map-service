@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { AI_PROMPT_VERSION, buildAiPayload, failClosedDecision, validateAiDecision } from '../../../shared/interaction-ai.js'
+import { AI_PROMPT_VERSION, DEFAULT_AI_PROMPT, buildAiPayload, failClosedDecision, validateAiDecision } from '../../../shared/interaction-ai.js'
 
 function jsonFromResponse (response) {
   if (typeof response === 'string') return JSON.parse(response)
@@ -33,6 +33,7 @@ export class AiModerationEngine {
     this.retries = Math.max(0, Math.min(3, Number.isFinite(Number(configuredRetries)) ? Number(configuredRetries) : 1))
     this.promptVersion = String(options.promptVersion || AI_PROMPT_VERSION)
     this.policyVersion = String(options.policyVersion || this.promptVersion)
+    this.promptText = String(options.promptText || DEFAULT_AI_PROMPT)
     this.runtimeOverrides = options.runtimeOverrides && typeof options.runtimeOverrides === 'object'
       ? { ...options.runtimeOverrides }
       : null
@@ -50,7 +51,7 @@ export class AiModerationEngine {
     if (!this.registry || !this.providerId) return fallback('AI_NOT_CONFIGURED')
     const configuredProvider = this.registry.get?.(this.providerId)
     const promptVersion = this.promptVersion
-    const payload = buildAiPayload({ ...input, promptVersion })
+    const payload = buildAiPayload({ ...input, promptVersion, prompt: this.promptText })
     const retries = this.runtimeOverrides?.maxAttempts !== undefined
       ? Math.max(0, Math.min(3, Number(this.runtimeOverrides.maxAttempts) - 1))
       : configuredProvider?.maxAttemptsConfigured

@@ -43,7 +43,7 @@ import {
 } from './security.js'
 
 const DEFAULT_PAGE_SIZE = 20
-const MAX_PAGE_SIZE = 100
+const MAX_PAGE_SIZE = 20
 
 /** Public-visibility predicate, shared by every read path and every count. */
 const PUBLIC_PREDICATE = "content_status = 'active' AND moderation_status = 'approved'"
@@ -188,14 +188,14 @@ export class CommentService {
             id, site_id, canonical_share_id, share_public_id_snapshot, share_item_id,
             feature_id, media_id, scope, content_revision, resource_snapshot_json,
             parent_id, thread_depth, author_type, author_user_id, author_key,
-            display_name_snapshot, body_raw_encrypted, body_normalized, body_rendered,
+            display_name_snapshot, avatar_snapshot, gender_snapshot, body_raw_encrypted, body_normalized, body_rendered,
             consent_policy_version, contact_ciphertext, contact_hash, contact_type,
             content_status, moderation_status, moderation_level, visible_at,
             retention_expires_at, contact_expires_at,
             created_at, updated_at, approved_at, client_request_id
           ) VALUES (
             ?, 'map-service', ?, ?, ?, ?, '', 'feature', 1, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             'active', ?, ?, ?, ?, ?, ?, ?, ?, ?
           )
         `).run(
@@ -204,13 +204,15 @@ export class CommentService {
           resource.sharePublicId,
           resource.shareItemId,
           resource.featureId,
-          JSON.stringify(normalized.resourceRef || {}),
+          JSON.stringify(resource.resourceSnapshot || normalized.resourceRef || {}),
           normalized.parentId || null,
           normalized.threadDepth,
           normalized.authorType,
           normalized.authorUserId,
           authorKey,
           normalized.displayName,
+          normalized.avatar || '',
+          normalized.gender || '',
           bodyCiphertext,
           normalized.body,
           normalized.body,
@@ -407,9 +409,9 @@ export class CommentService {
     ).get(...params)?.count || 0)
     const rows = this.database.prepare(`
       SELECT id, canonical_share_id, share_public_id_snapshot, share_item_id, feature_id,
-             parent_id, thread_depth, author_type, author_user_id, display_name_snapshot,
+             parent_id, thread_depth, author_type, author_user_id, display_name_snapshot, avatar_snapshot, gender_snapshot,
              body_normalized, content_status, moderation_status, moderation_level,
-             contact_type, created_at, updated_at, approved_at, deleted_at, legal_hold
+             contact_type, resource_snapshot_json, created_at, updated_at, approved_at, deleted_at, legal_hold
       FROM comments WHERE ${clause}
       ORDER BY created_at DESC, id DESC
       LIMIT ? OFFSET ?
@@ -434,11 +436,14 @@ export class CommentService {
       sharePublicId: row.share_public_id_snapshot,
       shareItemId: row.share_item_id,
       featureId: row.feature_id,
+      ...resourceLabels(row.resource_snapshot_json),
       parentId: row.parent_id || '',
       threadDepth: row.thread_depth,
       authorType: row.author_type,
       authorRegistered: Boolean(row.author_user_id),
       displayName: row.display_name_snapshot,
+      avatar: row.avatar_snapshot || '',
+      gender: row.gender_snapshot || '',
       body: row.body_normalized,
       contentStatus: row.content_status,
       moderationStatus: row.moderation_status,
@@ -456,9 +461,9 @@ export class CommentService {
   getCommentForAdmin (id) {
     const row = this.database.prepare(`
       SELECT id, canonical_share_id, share_public_id_snapshot, share_item_id, feature_id,
-             parent_id, thread_depth, author_type, author_user_id, display_name_snapshot,
+             parent_id, thread_depth, author_type, author_user_id, display_name_snapshot, avatar_snapshot, gender_snapshot,
              body_normalized, content_status, moderation_status, moderation_level,
-             contact_type, created_at, updated_at, approved_at, deleted_at, legal_hold
+             contact_type, resource_snapshot_json, created_at, updated_at, approved_at, deleted_at, legal_hold
       FROM comments WHERE id = ?
     `).get(String(id || ''))
     if (!row) throw interactionHttpError('留言不存在', 'RESOURCE_NOT_FOUND')
@@ -555,6 +560,23 @@ function parseJsonArray (value) {
     return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
+  }
+}
+
+function resourceLabels (value) {
+  let parsed
+  try { parsed = JSON.parse(value || '{}') } catch { parsed = {} }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { kmlName: '', featureName: '' }
+  }
+  const label = input => String(input ?? '')
+    .normalize('NFKC')
+    .replace(/[\u0000-\u001f\u007f]/gu, '')
+    .trim()
+    .slice(0, 200)
+  return {
+    kmlName: label(parsed.kmlName),
+    featureName: label(parsed.featureName),
   }
 }
 

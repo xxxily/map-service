@@ -22,14 +22,14 @@ import { interactionHttpError } from './commentPolicy.js'
 
 /** Columns a public reader is allowed to see. Deliberately minimal. */
 const PUBLIC_COLUMNS = `
-  id, parent_id, thread_depth, display_name_snapshot, body_normalized,
+  id, parent_id, thread_depth, display_name_snapshot, avatar_snapshot, gender_snapshot, body_normalized,
   content_status, moderation_status, approved_at, created_at
 `
 
 const PUBLIC_PREDICATE = `content_status = 'active' AND moderation_status = 'approved'`
 
 const DEFAULT_LIMIT = 20
-const MAX_LIMIT = 100
+const MAX_LIMIT = 20
 
 function requireResource (resource = {}) {
   const canonicalShareId = String(resource.canonicalShareId || '')

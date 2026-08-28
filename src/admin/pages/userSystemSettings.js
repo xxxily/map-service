@@ -55,6 +55,19 @@ export function renderUserSystemSettingsPage (state) {
   const canManageSpatialPolicy = isSuperAdmin(state)
   const roles = registrationRoles(state)
   const defaultRoles = new Set(registration.defaultRoleCodes || ['user'])
+  const tabs = [
+    { id: 'access', label: '注册与会话', visible: canManageRegistration || canManageSecurity },
+    { id: 'kml', label: 'KML 与配额', visible: canManageSecurity },
+    { id: 'share', label: '分享与空间', visible: canManageSecurity },
+    { id: 'traffic', label: '统计与限流', visible: canManageSecurity },
+  ].filter(tab => tab.visible)
+  const activeTab = tabs.some(tab => tab.id === state.userSystemSettingsTab)
+    ? state.userSystemSettingsTab
+    : (tabs[0]?.id || 'access')
+  state.userSystemSettingsTab = activeTab
+
+  const tabButton = tab => `<button id="admin-user-system-tab-${tab.id}" type="button" class="admin-settings-tab ${activeTab === tab.id ? 'is-active' : ''}" role="tab" aria-selected="${activeTab === tab.id}" aria-controls="admin-user-system-panel-${tab.id}" tabindex="${activeTab === tab.id ? '0' : '-1'}" data-admin-user-system-tab="${tab.id}">${escapeHtml(tab.label)}</button>`
+  const tabPanel = (id, content) => `<div id="admin-user-system-panel-${id}" class="admin-settings-tabpanel" role="tabpanel" aria-labelledby="admin-user-system-tab-${id}" ${activeTab === id ? '' : 'hidden'}>${content}</div>`
 
   return `
     <div class="admin-user-system-stack">
@@ -65,8 +78,12 @@ export function renderUserSystemSettingsPage (state) {
         </div>
       </section>
 
-      ${canManageRegistration ? `
-        <section class="admin-panel">
+      <div class="admin-settings-tabs" role="tablist" aria-label="用户体系设置分类">
+        ${tabs.map(tabButton).join('')}
+      </div>
+
+      ${tabPanel('access', `
+        ${canManageRegistration ? `<section class="admin-panel">
           <div class="admin-panel-head">
             <div>
               <h2>注册策略</h2>
@@ -96,24 +113,29 @@ export function renderUserSystemSettingsPage (state) {
             </fieldset>
             <button type="submit">保存注册策略</button>
           </form>
-        </section>
-      ` : ''}
-
-      ${canManageSecurity ? `
-        <section class="admin-panel">
+        </section>` : ''}
+        ${canManageSecurity ? `<section class="admin-panel">
           <div class="admin-panel-head">
             <div>
               <h2>会话与再验证</h2>
               <p class="admin-panel-description">缩短有效期可降低长期会话风险；角色变化会立即使旧会话失效。</p>
             </div>
           </div>
-          <form class="admin-form" data-admin-user-security-settings>
+          <form class="admin-form" data-admin-user-session-settings>
             <div class="admin-field-grid admin-field-grid-three">
               <label><span>普通会话有效期（天）</span><input name="sessionTtlDays" type="number" min="1" step="1" value="${numberValue(session.ttlMs, DAY_MS)}" required></label>
               <label><span>记住登录有效期（天）</span><input name="rememberTtlDays" type="number" min="1" step="1" value="${numberValue(session.rememberTtlMs, DAY_MS)}" required></label>
               <label><span>高风险操作再验证窗口（分钟）</span><input name="reauthMinutes" type="number" min="1" step="1" value="${numberValue(session.reauthWindowMs, MINUTE_MS)}" required></label>
             </div>
+            <button type="submit">保存会话策略</button>
+          </form>
+        </section>` : ''}
+      `)}
 
+      ${tabPanel('kml', canManageSecurity ? `
+        <section class="admin-panel">
+          <div class="admin-panel-head"><div><h2>KML 与默认配额</h2><p class="admin-panel-description">控制新用户的资源配额和 KML 管理能力；运输层硬上限仍由部署配置决定。</p></div></div>
+          <form class="admin-form" data-admin-user-kml-settings>
             <fieldset class="admin-permission-fieldset">
               <legend>默认 KML 配额</legend>
               <div class="admin-field-grid admin-field-grid-three">
@@ -138,7 +160,15 @@ export function renderUserSystemSettingsPage (state) {
                 </label>
               </div>
             </fieldset>
+            <button type="submit">保存 KML 与配额策略</button>
+          </form>
+        </section>
+      ` : '')}
 
+      ${tabPanel('share', canManageSecurity ? `
+        <section class="admin-panel">
+          <div class="admin-panel-head"><div><h2>公开分享与空间访问</h2><p class="admin-panel-description">控制分享访问、点位聚合和空间边界；收紧空间策略前会先展示影响预览。</p></div></div>
+          <form class="admin-form" data-admin-user-share-settings>
             <fieldset class="admin-permission-fieldset">
               <legend>公开分享策略</legend>
               <div class="admin-field-grid admin-field-grid-three">
@@ -163,6 +193,31 @@ export function renderUserSystemSettingsPage (state) {
                 <label><span>分享密码授权有效期（小时）</span><input name="shareAccessHours" type="number" min="1" value="${numberValue(share.accessTtlMs, HOUR_MS)}" required></label>
               </div>
             </fieldset>
+            ${canManageSpatialPolicy ? `
+              <fieldset class="admin-permission-fieldset">
+                <legend>空间受限分享</legend>
+                <div class="admin-field-grid admin-field-grid-three">
+                  <label><span>空间受限分享</span><select name="spatialAccessEnabled"><option value="true" ${share.spatialAccessEnabled !== false ? 'selected' : ''}>允许</option><option value="false" ${share.spatialAccessEnabled === false ? 'selected' : ''}>关闭</option></select></label>
+                  <label><span>边界余量（米）</span><input name="spatialPaddingMeters" type="number" min="0" step="any" value="${Number(share.spatialPaddingMeters ?? 1000)}" required></label>
+                  <label><span>最大面积（km²）</span><input name="spatialMaxAreaKm2" type="number" min="0.000001" step="any" value="${Number(share.spatialMaxAreaKm2 || 10000)}" required></label>
+                  <label><span>最大对角线（km）</span><input name="spatialMaxDiagonalKm" type="number" min="0.000001" step="any" value="${Number(share.spatialMaxDiagonalKm || 300)}" required></label>
+                  <label><span>范围外底图放宽最大级别</span><input name="spatialUnrestrictedTileMaxZoom" type="number" min="0" max="24" step="1" value="${Number(share.spatialUnrestrictedTileMaxZoom ?? 14)}" required></label>
+                  <label><span>不限授权</span><select name="unlimitedAccessEnabled"><option value="true" ${share.unlimitedAccessEnabled === true ? 'selected' : ''}>允许</option><option value="false" ${share.unlimitedAccessEnabled !== true ? 'selected' : ''}>关闭</option></select></label>
+                  <label><span>不限授权最大面积（km²）</span><input name="unlimitedAccessMaxAreaKm2" type="number" min="0.000001" max="${Number(share.spatialMaxAreaKm2 || 10000)}" step="any" value="${Number(share.unlimitedAccessMaxAreaKm2 || 2000)}" required></label>
+                  <label><span>不限授权最大对角线（km）</span><input name="unlimitedAccessMaxDiagonalKm" type="number" min="0.000001" max="${Number(share.spatialMaxDiagonalKm || 300)}" step="any" value="${Number(share.unlimitedAccessMaxDiagonalKm || 100)}" required></label>
+                </div>
+                <p class="admin-field-help">范围超过不限授权阈值时，分享仍保留空间限制并自动使用有限授权。</p>
+              </fieldset>
+            ` : ''}
+            <button type="submit">保存分享与空间策略</button>
+          </form>
+        </section>
+      ` : '')}
+
+      ${tabPanel('traffic', canManageSecurity ? `
+        <section class="admin-panel">
+          <div class="admin-panel-head"><div><h2>访问统计与限流</h2><p class="admin-panel-description">控制分享请求预算和受控统计脚本，不改变分享内容或访问范围。</p></div></div>
+          <form class="admin-form" data-admin-user-traffic-settings>
             <fieldset class="admin-permission-fieldset">
               <legend>分享访问限流</legend>
               <div class="admin-field-grid admin-field-grid-three">
@@ -188,28 +243,20 @@ export function renderUserSystemSettingsPage (state) {
               </div>
               <p class="admin-field-help">全站脚本必须是 HTTPS 外部脚本；分享默认只允许托管服务和网站 ID。</p>
             </fieldset>
-            ${canManageSpatialPolicy ? `
-              <fieldset class="admin-permission-fieldset">
-                <legend>空间受限分享</legend>
-                <div class="admin-field-grid admin-field-grid-three">
-                  <label><span>空间受限分享</span><select name="spatialAccessEnabled"><option value="true" ${share.spatialAccessEnabled !== false ? 'selected' : ''}>允许</option><option value="false" ${share.spatialAccessEnabled === false ? 'selected' : ''}>关闭</option></select></label>
-                  <label><span>边界余量（米）</span><input name="spatialPaddingMeters" type="number" min="0" step="any" value="${Number(share.spatialPaddingMeters ?? 1000)}" required></label>
-                  <label><span>最大面积（km²）</span><input name="spatialMaxAreaKm2" type="number" min="0.000001" step="any" value="${Number(share.spatialMaxAreaKm2 || 10000)}" required></label>
-                  <label><span>最大对角线（km）</span><input name="spatialMaxDiagonalKm" type="number" min="0.000001" step="any" value="${Number(share.spatialMaxDiagonalKm || 300)}" required></label>
-                  <label><span>范围外底图放宽最大级别</span><input name="spatialUnrestrictedTileMaxZoom" type="number" min="0" max="24" step="1" value="${Number(share.spatialUnrestrictedTileMaxZoom ?? 14)}" required></label>
-                  <label><span>不限授权</span><select name="unlimitedAccessEnabled"><option value="true" ${share.unlimitedAccessEnabled === true ? 'selected' : ''}>允许</option><option value="false" ${share.unlimitedAccessEnabled !== true ? 'selected' : ''}>关闭</option></select></label>
-                  <label><span>不限授权最大面积（km²）</span><input name="unlimitedAccessMaxAreaKm2" type="number" min="0.000001" max="${Number(share.spatialMaxAreaKm2 || 10000)}" step="any" value="${Number(share.unlimitedAccessMaxAreaKm2 || 2000)}" required></label>
-                  <label><span>不限授权最大对角线（km）</span><input name="unlimitedAccessMaxDiagonalKm" type="number" min="0.000001" max="${Number(share.spatialMaxDiagonalKm || 300)}" step="any" value="${Number(share.unlimitedAccessMaxDiagonalKm || 100)}" required></label>
-                </div>
-                <p class="admin-field-help">范围超过不限授权阈值时，分享仍保留空间限制并自动使用有限授权。</p>
-              </fieldset>
-            ` : ''}
-            <button type="submit">保存安全与配额策略</button>
+            <button type="submit">保存统计与限流设置</button>
           </form>
         </section>
-      ` : ''}
+      ` : '')}
     </div>
   `
+}
+
+export function handleUserSystemSettingsClick ({ event, renderDashboard, state }) {
+  const target = event.target.closest('[data-admin-user-system-tab]')
+  if (!target) return false
+  state.userSystemSettingsTab = String(target.dataset.adminUserSystemTab || 'access')
+  renderDashboard()
+  return true
 }
 
 function integerField (form, name) {
@@ -276,16 +323,33 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
     return true
   }
 
-  const securityForm = event.target.closest('[data-admin-user-security-settings]')
-  if (securityForm) {
+  const sessionForm = event.target.closest('[data-admin-user-session-settings]')
+  if (sessionForm) {
     event.preventDefault()
-    const data = new FormData(securityForm)
+    const data = new FormData(sessionForm)
     const body = {
       session: {
         ttlMs: integerField(data, 'sessionTtlDays') * DAY_MS,
         rememberTtlMs: integerField(data, 'rememberTtlDays') * DAY_MS,
         reauthWindowMs: integerField(data, 'reauthMinutes') * MINUTE_MS,
       },
+    }
+    try {
+      setNotice('正在保存会话策略...')
+      state.userSystemSettings = await withRecentReauth(api, () => api.updateUserSystemSettings(body))
+      setNotice('会话策略已更新')
+    } catch (err) {
+      setNotice('', err.code === 'ACTION_CANCELLED' ? '' : err.message)
+    }
+    renderDashboard()
+    return true
+  }
+
+  const kmlForm = event.target.closest('[data-admin-user-kml-settings]')
+  if (kmlForm) {
+    event.preventDefault()
+    const data = new FormData(kmlForm)
+    const body = {
       quota: {
         maxKmlFiles: integerField(data, 'maxKmlFiles'),
         maxKmlFileBytes: integerField(data, 'maxKmlFileMb') * 1024 * 1024,
@@ -296,6 +360,23 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
       kml: {
         batchDownloadEnabled: data.get('kmlBatchDownloadEnabled') === 'true',
       },
+    }
+    try {
+      setNotice('正在保存 KML 与配额策略...')
+      state.userSystemSettings = await withRecentReauth(api, () => api.updateUserSystemSettings(body))
+      setNotice('KML 与配额策略已更新')
+    } catch (err) {
+      setNotice('', err.code === 'ACTION_CANCELLED' ? '' : err.message)
+    }
+    renderDashboard()
+    return true
+  }
+
+  const shareForm = event.target.closest('[data-admin-user-share-settings]')
+  if (shareForm) {
+    event.preventDefault()
+    const data = new FormData(shareForm)
+    const body = {
       share: {
         publicAccessPolicy: String(data.get('publicAccessPolicy') || 'inherit_site_access'),
         passwordlessSharingEnabled: data.get('passwordlessSharingEnabled') === 'true',
@@ -304,25 +385,6 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
         kmlClusterMinPoints: integerField(data, 'kmlClusterMinPoints'),
         maxFilesPerShare: integerField(data, 'maxFilesPerShare'),
         accessTtlMs: integerField(data, 'shareAccessHours') * HOUR_MS,
-        rateLimit: {
-          enabled: data.get('shareRateLimitEnabled') === 'true',
-          windowMs: integerField(data, 'shareRateLimitWindowSeconds') * 1000,
-          tileMaxRequests: integerField(data, 'shareTileMaxRequests'),
-          manifestMaxRequests: integerField(data, 'shareManifestMaxRequests'),
-          maxEntries: integerField(data, 'shareRateLimitMaxEntries'),
-        },
-      },
-      analytics: {
-        global: {
-          enabled: data.get('globalAnalyticsEnabled') === 'true',
-          script: String(data.get('globalAnalyticsScript') || '').trim() || null,
-        },
-        share: {
-          enabled: data.get('shareAnalyticsEnabled') === 'true',
-          providerScriptUrl: String(data.get('shareAnalyticsProviderScriptUrl') || '').trim(),
-          providerWebsiteIdAttribute: String(data.get('shareAnalyticsProviderWebsiteIdAttribute') || '').trim(),
-          ...(isSuperAdmin(state) ? { customScriptEnabled: data.get('shareAnalyticsCustomScriptEnabled') === 'true' } : {}),
-        },
       },
     }
     if (isSuperAdmin(state)) {
@@ -385,6 +447,44 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
       setNotice(impact
         ? `用户体系策略已更新；影响 ${Number(impact.affectedShares || 0)} 个分享，降级 ${Number(impact.downgradedShares || 0)} 个，撤销长期授权 ${Number(impact.revokedUnlimitedSessions || 0)} 个`
         : '用户体系策略已更新')
+    } catch (err) {
+      setNotice('', err.code === 'ACTION_CANCELLED' ? '' : err.message)
+    }
+    renderDashboard()
+    return true
+  }
+
+  const trafficForm = event.target.closest('[data-admin-user-traffic-settings]')
+  if (trafficForm) {
+    event.preventDefault()
+    const data = new FormData(trafficForm)
+    const body = {
+      share: {
+        rateLimit: {
+          enabled: data.get('shareRateLimitEnabled') === 'true',
+          windowMs: integerField(data, 'shareRateLimitWindowSeconds') * 1000,
+          tileMaxRequests: integerField(data, 'shareTileMaxRequests'),
+          manifestMaxRequests: integerField(data, 'shareManifestMaxRequests'),
+          maxEntries: integerField(data, 'shareRateLimitMaxEntries'),
+        },
+      },
+      analytics: {
+        global: {
+          enabled: data.get('globalAnalyticsEnabled') === 'true',
+          script: String(data.get('globalAnalyticsScript') || '').trim() || null,
+        },
+        share: {
+          enabled: data.get('shareAnalyticsEnabled') === 'true',
+          providerScriptUrl: String(data.get('shareAnalyticsProviderScriptUrl') || '').trim(),
+          providerWebsiteIdAttribute: String(data.get('shareAnalyticsProviderWebsiteIdAttribute') || '').trim(),
+          ...(isSuperAdmin(state) ? { customScriptEnabled: data.get('shareAnalyticsCustomScriptEnabled') === 'true' } : {}),
+        },
+      },
+    }
+    try {
+      setNotice('正在保存统计与限流设置...')
+      state.userSystemSettings = await withRecentReauth(api, () => api.updateUserSystemSettings(body))
+      setNotice('统计与限流设置已更新')
     } catch (err) {
       setNotice('', err.code === 'ACTION_CANCELLED' ? '' : err.message)
     }

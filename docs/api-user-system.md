@@ -6,7 +6,7 @@
 
 本文记录统一用户认证、RBAC、个人 KML、位置收藏、多 KML 分享和后台治理接口。通用地图、图源、公共 KML和站点访问接口继续参见 [API 参考](./api.md)。交互能力的部署、初始化、接入和恢复步骤见 [交互功能部署与接入手册](./interaction-deployment-and-integration.md)。
 
-留言、审核和举报使用独立 `interaction.sqlite` 与 Interaction Adapter。留言/审核/策略/关键词、举报和来源信息服务及对应公开和管理路由已接入，AI provider 管理与异步审核也已纳入 Phase 3；详见 [API 参考中的交互契约](./api.md#交互领域契约-phase-1bc)。
+留言、审核和举报使用独立 `interaction.sqlite`（当前 schema v2）与 Interaction Adapter。留言/审核/策略/关键词、举报和来源信息服务及对应公开和管理路由已接入，AI provider 管理与异步审核也已纳入 Phase 3；v2 对旧 v1 数据执行事务迁移，补充 API Key 密文、提示词正文和留言身份快照。公开留言投影包含安全校验后的头像和性别，管理详情包含服务端已发布快照解析出的 KML/点位名称；详见 [API 参考中的交互契约](./api.md#交互领域契约-phase-1bc)。
 
 ## 1. 通用约定
 
@@ -148,7 +148,7 @@ system.super_admin
 | `DELETE` | `/auth/sessions/:id` | `session.self.manage` + CSRF | 注销指定个人会话 |
 | `POST` | `/auth/logout-all` | `session.self.manage` + CSRF | 注销全部或其他会话 |
 | `GET` | `/users/me` | `account.self.read` | 获取个人资料 |
-| `PUT` | `/users/me` | `account.self.update` + CSRF | 修改显示名和邮箱 |
+| `PUT` | `/users/me` | `account.self.update` + CSRF | 修改显示名、邮箱、头像和性别；头像仅允许 PNG/JPEG/WebP 受控图片 Data URL，客户端文件最大 140 KiB，服务端字符串最大 200000 字符 |
 
 注册请求：
 
@@ -156,6 +156,8 @@ system.super_admin
 {
   "username": "map-user",
   "displayName": "地图用户",
+  "avatar": "data:image/png;base64,...",
+  "gender": "unknown",
   "email": "user@example.com",
   "password": "a-long-unique-passphrase",
   "remember": true

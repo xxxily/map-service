@@ -1,6 +1,10 @@
 import { apiRequest } from '../auth/api.js'
 import { getAuthSnapshot, refreshAuthSession } from '../auth/session.js'
 import { showAlert, showCheckboxConfirm, showChoiceDialog, showEditDialog } from './dialog.js'
+import {
+  INTERACTION_AVATAR_DATA_URL_MAX_LENGTH,
+  INTERACTION_AVATAR_DATA_URL_PATTERN,
+} from '../../shared/interaction-contracts.js'
 
 const asText = value => String(value ?? '')
 const escapeInteractionHtml = value => asText(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character])
@@ -17,6 +21,37 @@ export function interactionResourceRef (item) {
 }
 
 let countController = null
+const ANONYMOUS_PROFILE_KEY = 'map_interaction_anonymous_profile'
+
+function readAnonymousProfile () {
+  try {
+    const value = JSON.parse(localStorage.getItem(ANONYMOUS_PROFILE_KEY) || '{}')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    const avatar = asText(value.avatar)
+    const gender = asText(value.gender).toLowerCase()
+    return {
+      displayName: asText(value.displayName).slice(0, 64),
+      email: asText(value.email).slice(0, 160),
+      phone: asText(value.phone).slice(0, 40),
+      gender: ['', 'male', 'female', 'other', 'unknown'].includes(gender) ? gender : '',
+      avatar: INTERACTION_AVATAR_DATA_URL_PATTERN.test(avatar) && avatar.length <= INTERACTION_AVATAR_DATA_URL_MAX_LENGTH
+        ? avatar
+        : '',
+    }
+  } catch { return {} }
+}
+
+function saveAnonymousProfile (profile) {
+  try {
+    localStorage.setItem(ANONYMOUS_PROFILE_KEY, JSON.stringify({
+      displayName: asText(profile.displayName).slice(0, 64),
+      email: asText(profile.email).slice(0, 160),
+      phone: asText(profile.phone).slice(0, 40),
+      gender: asText(profile.gender).slice(0, 16),
+      avatar: INTERACTION_AVATAR_DATA_URL_PATTERN.test(asText(profile.avatar)) ? asText(profile.avatar).slice(0, INTERACTION_AVATAR_DATA_URL_MAX_LENGTH) : '',
+    }))
+  } catch {}
+}
 
 export async function syncInteractionControls (root, item) {
   countController?.abort()
@@ -126,13 +161,23 @@ function renderComments (root, resource, state) {
     const article = document.createElement('article')
     article.className = 'map-interaction-comment'
     const header = document.createElement('header')
+    const authorWrap = document.createElement('div')
+    authorWrap.className = 'map-interaction-comment-author'
+    if (INTERACTION_AVATAR_DATA_URL_PATTERN.test(asText(item.avatar))) {
+      const avatar = document.createElement('img')
+      avatar.src = item.avatar
+      avatar.alt = ''
+      avatar.loading = 'lazy'
+      authorWrap.appendChild(avatar)
+    }
     const author = document.createElement('strong')
     author.textContent = item.displayName || '访客'
+    authorWrap.appendChild(author)
     const time = document.createElement('time')
     time.textContent = item.createdAt ? new Date(item.createdAt).toLocaleString('zh-CN') : ''
     const copy = document.createElement('p')
     copy.textContent = item.body || ''
-    header.append(author, time)
+    header.append(authorWrap, time)
     article.append(header, copy)
     list.appendChild(article)
   })
@@ -160,16 +205,44 @@ function renderComments (root, resource, state) {
   }
 
   const anonymousFields = !auth.authenticated && anonymous.enabled
-    ? `<div class="map-interaction-anonymous-fields">
-        <label><span>显示名</span><input name="displayName" minlength="2" maxlength="64" required placeholder="公开显示的名称"></label>
-        <label><span>邮箱${requiresEmail || requiresEitherContact ? '' : '（可选）'}</span><input type="email" name="email" ${requiresEmail ? 'required' : ''} autocomplete="email"></label>
-        <label><span>手机号${requiresPhone ? '' : '（可选）'}</span><input type="tel" name="phone" ${requiresPhone ? 'required' : ''} autocomplete="tel"></label>
+    ? (() => { const profile = readAnonymousProfile(); return `<div class="map-interaction-anonymous-fields" data-avatar-original="${escapeInteractionHtml(profile.avatar || '')}">
+        <label><span>显示名</span><input name="displayName" minlength="2" maxlength="64" required placeholder="公开显示的名称" value="${escapeInteractionHtml(profile.displayName || '')}"></label>
+        <label><span>性别</span><select name="gender"><option value="">不设置</option><option value="male" ${profile.gender === 'male' ? 'selected' : ''}>男</option><option value="female" ${profile.gender === 'female' ? 'selected' : ''}>女</option><option value="other" ${profile.gender === 'other' ? 'selected' : ''}>其他</option></select></label>
+        <label><span>头像</span><input type="file" name="avatarFile" accept="image/png,image/jpeg,image/webp"><input type="hidden" name="avatar" value="${escapeInteractionHtml(profile.avatar || '')}"></label>
+        <label><span>邮箱${requiresEmail || requiresEitherContact ? '' : '（可选）'}</span><input type="email" name="email" value="${escapeInteractionHtml(profile.email || '')}" ${requiresEmail ? 'required' : ''} autocomplete="email"></label>
+        <label><span>手机号${requiresPhone ? '' : '（可选）'}</span><input type="tel" name="phone" value="${escapeInteractionHtml(profile.phone || '')}" ${requiresPhone ? 'required' : ''} autocomplete="tel"></label>
       ${anonymous.requireConsent !== false ? '<label class="map-interaction-consent"><input type="checkbox" name="consent" required checked><span>我同意按留言说明和隐私政策处理本次留言</span></label>' : ''}
-      </div>`
+      </div>` })()
     : ''
   const form = document.createElement('form')
   form.className = 'map-interaction-comment-form'
   form.innerHTML = `${anonymousFields}<label><span>留言</span><textarea name="body" maxlength="${Math.max(1, Number(state.policy.maxLength) || 2000)}" required placeholder="分享你的观察…"></textarea></label><p data-interaction-form-error role="alert" hidden></p><button type="submit">提交留言</button>`
+  form.elements.avatarFile?.addEventListener('change', event => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const originalAvatar = form.querySelector('[data-avatar-original]')?.dataset.avatarOriginal || ''
+    if (!/^image\/(png|jpeg|webp)$/i.test(file.type) || file.size > 140 * 1024) {
+      event.target.value = ''
+      form.elements.avatar.value = originalAvatar
+      let message = '头像仅支持 PNG、JPEG 或 WebP 图片，且不能超过 140 KB'
+      if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) message = '头像仅支持 PNG、JPEG 或 WebP 图片'
+      else if (file.size > 140 * 1024) message = '头像文件不能超过 140 KB'
+      const errorNode = form.querySelector('[data-interaction-form-error]')
+      if (errorNode) { errorNode.textContent = message; errorNode.hidden = false }
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') form.elements.avatar.value = reader.result
+      else form.elements.avatar.value = ''
+    }
+    reader.onerror = () => {
+      form.elements.avatar.value = originalAvatar
+      const errorNode = form.querySelector('[data-interaction-form-error]')
+      if (errorNode) { errorNode.textContent = '头像读取失败，请重试'; errorNode.hidden = false }
+    }
+    reader.readAsDataURL(file)
+  })
   let clientRequestId = ''
   form.addEventListener('submit', async event => {
     event.preventDefault()
@@ -186,12 +259,21 @@ function renderComments (root, resource, state) {
         body: {
           body: form.elements.body.value,
           displayName: form.elements.displayName?.value || '',
+          gender: form.elements.gender?.value || '',
+          avatar: form.elements.avatar?.value || '',
           email: form.elements.email?.value || '',
           phone: form.elements.phone?.value || '',
           consent: form.elements.consent ? Boolean(form.elements.consent.checked) : true,
           clientRequestId: clientRequestId || (clientRequestId = globalThis.crypto?.randomUUID?.() || `cmt_${Date.now()}_${Math.random().toString(16).slice(2)}`),
           resourceRef: resource,
         },
+      })
+      if (!auth.authenticated) saveAnonymousProfile({
+        displayName: form.elements.displayName?.value,
+        email: form.elements.email?.value,
+        phone: form.elements.phone?.value,
+        gender: form.elements.gender?.value,
+        avatar: form.elements.avatar?.value,
       })
       form.reset()
       clientRequestId = ''

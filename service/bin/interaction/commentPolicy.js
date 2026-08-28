@@ -133,16 +133,17 @@ export function normalizeInteractionPolicyForPublish (input) {
   ai.providerId = boundedString(ai.providerId, 'AI provider ID', 100)
   ai.promptVersion = boundedString(ai.promptVersion, 'AI 提示词版本', 64, true)
   ai.policyVersion = boundedString(ai.policyVersion, 'AI 策略版本标识', 64, true)
-  const boundedInteger = (value, label, min, max) => {
+  const boundedInteger = (value, label, min, max = Number.MAX_SAFE_INTEGER) => {
     const number = Number(value)
     if (!Number.isInteger(number) || number < min || number > max) {
-      throw interactionHttpError(`${label}必须是 ${min} 到 ${max} 的整数`, 'VALIDATION_FAILED')
+      const range = max === Number.MAX_SAFE_INTEGER ? `不小于 ${min} 的安全整数` : `${min} 到 ${max} 的整数`
+      throw interactionHttpError(`${label}必须是${range}`, 'VALIDATION_FAILED')
     }
     return number
   }
   ai.timeoutMs = boundedInteger(ai.timeoutMs, 'AI 超时', 100, 120000)
   ai.maxAttempts = boundedInteger(ai.maxAttempts, 'AI 最大尝试次数', 1, 4)
-  ai.dailyBudget = boundedInteger(ai.dailyBudget, 'AI 每日预算', 0, 1000000)
+  ai.dailyBudget = boundedInteger(ai.dailyBudget, 'AI 每日预算', 0)
   ai.maxConcurrency = boundedInteger(ai.maxConcurrency, 'AI 最大并发数', 1, 128)
 
   const actions = moderation.actions || {}
@@ -369,6 +370,8 @@ export function normalizeCommentSubmission (options = {}) {
       ...body,
       // The client cannot pick its own author type or display name identity.
       displayName: author.authorType === 'anonymous' ? body.displayName : author.displayName,
+      avatar: author.authorType === 'anonymous' ? body.avatar : (options.session?.user?.avatar || ''),
+      gender: author.authorType === 'anonymous' ? body.gender : (options.session?.user?.gender || ''),
     }, {
       authorType: author.authorType,
       maxLength,

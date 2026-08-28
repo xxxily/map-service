@@ -15,7 +15,7 @@ import {
 import { renderUsersPage } from '../src/admin/pages/users.js'
 import { renderUserSystemSettingsPage } from '../src/admin/pages/userSystemSettings.js'
 import { renderShareModerationPage } from '../src/admin/pages/shareModeration.js'
-import { handleInteractionPolicySubmit, renderInteractionPolicyPage } from '../src/admin/pages/interaction.js'
+import { handleInteractionPolicySubmit, renderInteractionAiPage, renderInteractionPolicyPage } from '../src/admin/pages/interaction.js'
 import { ADMIN_PERMISSION_CATALOG } from '../src/admin/pages/roles.js'
 import { PERMISSIONS } from '../service/bin/user/permissions.js'
 
@@ -226,6 +226,22 @@ test('留言策略页提供匿名留言开关，并保留未展示策略字段',
   assert.deepEqual(payload.moderation, { ai: { enabled: true }, keywords: { enabled: true } })
   assert.deepEqual(payload.reports.types, ['privacy'])
   assert.equal(payload.mediaDetails.generalDescription, '新的统一详情说明')
+})
+
+test('AI 审核页按 Tab 渲染独立面板并提供 API Key 与提示词正文字段', () => {
+  const html = renderInteractionAiPage({
+    session: sessionWith('admin.moderation.ai.manage'),
+    interactionAiTab: 'runtime',
+    interactionAiSettings: { ai: { enabled: false, promptVersion: 'v1', policyVersion: 'v1' } },
+    interactionAiProviders: { providers: [{ id: 'p1', name: 'Provider 1', endpoint: 'https://example.test/v1', model: 'm1' }] },
+    interactionAiPrompts: { activeVersion: 'v1', versions: [{ version: 'v1', promptHash: 'sha256:test', promptText: '默认提示词', active: true }] },
+  })
+  assert.match(html, /role="tablist"/)
+  assert.match(html, /data-admin-interaction-tab="providers"/)
+  assert.match(html, /name="apiKey" type="password"/)
+  assert.match(html, /name="promptText"[^>]*required/)
+  assert.match(html, /id="admin-interaction-ai-panel-prompt"[^>]*hidden/)
+  assert.match(html, /id="admin-interaction-ai-panel-runtime"[^>]*role="tabpanel"/)
 })
 
 test('后台修改请求使用同源 Cookie 和 CSRF，不发送 Bearer Token', async () => {

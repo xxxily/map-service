@@ -60,7 +60,7 @@ InteractionService
   |-- ReportService           -> reports / report_events
   |-- AiModerationEngine      -> server-owned provider adapter
   v
-.db/interaction.sqlite (schema migration version 1 + additive AI tables)
+.db/interaction.sqlite (schema migration version 2; v1 -> v2 additive migration)
   |
   `-- comment outbox --(仅镜像开启时)--> Artalk sidecar（可选、非事实源）
 ~~~
@@ -508,14 +508,14 @@ AI 是可选的异步建议链路，不是公开留言主链路的前置依赖�
 
 1. 申请 provider 的 HTTPS endpoint 和模型名称。
 2. 将 endpoint 的精确 hostname 加入 MAP_SERVICE_AI_ALLOWED_HOSTS，例如 api.example-ai.com，不要填 URL、通配符或内网地址。
-3. 将 provider 密钥放入运行账号可读的秘密管理系统，并映射为环境变量，例如 MAP_SERVICE_AI_PROVIDER_KEY。
-4. 重启或 reload 进程使 allowlist 和密钥进入运行环境。
+3. 准备 provider API Key；管理后台可直接录入并由服务端 AES-GCM 加密保存，也可继续使用现有 `secretRef` 环境变量引用。
+4. 重启或 reload 进程使 allowlist 和其他部署配置进入运行环境。
 
 provider endpoint 必须是无用户名/密码的 HTTPS URL；服务端会拒绝 localhost、内网、环回、link-local、metadata、文档保留地址、DNS 重绑定地址和重定向。
 
 ### 9.2 注册、验证和设为默认
 
-先在运行环境中设置非敏感配置和 provider 密钥：
+如采用兼容的环境变量引用，先在运行环境中设置非敏感配置和 provider 密钥：
 
 ~~~bash
 export MAP_SERVICE_AI_ALLOWED_HOSTS='api.example-ai.com'
@@ -544,6 +544,8 @@ export MAP_SERVICE_AI_PROVIDER_ID='provider-main'
   "redaction": {}
 }
 ~~~
+
+也可以省略 `secretRef`，在管理后台或同一管理接口请求中提交 `apiKey`；服务端只保存认证加密后的密文，列表和日志只显示 `hasApiKey/configured/health` 摘要。新增 provider 必须提供 `apiKey` 或 `secretRef` 至少一个；编辑时省略 `apiKey` 会沿用已有密钥，提交新 `apiKey` 会替换旧密文并要求重新 verify。
 
 调用顺序必须是：
 
@@ -613,7 +615,9 @@ MAP_SERVICE_ARTALK_MIRROR_SECRET=<独立 HMAC 密钥>
 
 1Panel 模板位于 `/opt/1panel/resource/apps/local/artalk-161/`，包含顶层 `data.yml`、官方 PNG 图标及 `2.10.0/data.yml`/`docker-compose.yml`/`artalk.yml`；Compose 使用 `CONTAINER_NAME`、`PANEL_APP_BIND_IP`、`PANEL_APP_PORT_HTTP`、`PANEL_APP_SITE_URL`、`PANEL_APP_TRUSTED_DOMAINS` 和 `PANEL_APP_APP_KEY` 参数，并通过 `docker compose config -q` 验证。详细命令、备份路径和时间戳见 161 操作日志及 Outline 同步文档。
 
-verify 只发送 health-check 探针，不发送真实留言。新增或修改 endpoint、secretRef、adapter、model、prompt、timeout、重试、预算、并发或 redaction 后，provider 会自动失效并必须重新验证。验证默认 24 小时有效，过期后自动禁用并清除 default。
+verify 只发送 health-check 探针，不发送真实留言。新增或修改 endpoint、secretRef、apiKey、adapter、model、prompt、timeout、重试、预算、并发或 redaction 后，provider 会自动失效并必须重新验证。验证默认 24 小时有效，过期后自动禁用并清除 default。`dailyBudget` 仅要求非负安全整数，不设置 1,000,000 业务上限；0 表示不设每日上限。
+
+后台“提示词”页首次展示仓库内置默认正文。管理员直接编辑正文后提交即可，服务端统一 NFKC/换行规范化并限制 20,000 个 Unicode 字符，再按正文生成稳定版本和 SHA-256 摘要。只有历史 hash 没有正文的旧记录会标记为 `metadataOnly`，不能当作默认正文使用，重新发布正文即可修复。
 
 MAP_SERVICE_AI_ENABLED=true 只表示启用 AI 引擎；没有已验证且启用的 provider 时，留言仍可提交，但 AI 结果为 unknown + review。AI 原始 JSON 只有不超过 64KB 时才会以交互密文保存，默认 30 天后由保留任务擦除。
 
@@ -783,7 +787,7 @@ cd /path/to/map-service
 6. 使用 pm2 restart pm2.config.cjs --update-env，不要在 SQLite 迁移期间启动第二个写进程。
 7. 完成第 12.3 节验收清单后再删除或缩短升级前备份保留期。
 
-当前交互 public schema 版本仍为 1；AI 表采用幂等 additive migration。版本升级失败时应停止进程、保留错误日志和数据库副本，并使用升级前代码/备份恢复，不要手工修改版本号强行启动。
+当前交互 schema 版本为 2；v1 文件首次打开时以事务执行幂等 additive migration，补充 API Key 密文、提示词正文和留言身份快照字段。版本升级失败时应停止进程、保留错误日志和数据库副本，并使用升级前代码/备份恢复，不要手工修改版本号强行启动。启动恢复时数据库 provider 记录优先于环境 bootstrap；密文损坏、适配器缺失或配置校验失败的记录会 fail-closed、禁用并标记 `health=failed`，管理员修复后需重新 verify。
 
 ### 12.2 回滚
 

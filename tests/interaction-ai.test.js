@@ -92,6 +92,43 @@ test('zero daily budget is unlimited and provider verification expires', async (
   assert.equal(registry.get('unlimited').enabled, false)
 })
 
+test('re-registering a default provider with an unusable persisted state clears the default pointer', () => {
+  const registry = new AiProviderRegistry({
+    allowHosts: ['example.test'],
+    adapters: { test: { create: () => ({ request: async () => ({ ok: true }) }) } },
+    now: () => Date.parse('2026-08-24T00:00:00.000Z'),
+  })
+  registry.register({
+    id: 'default-provider', endpoint: 'https://example.test', secretRef: 'vault://key',
+    adapterId: 'test', enabled: true, isDefault: true,
+    healthStatus: 'verified', lastVerifiedAt: '2026-08-24T00:00:00.000Z',
+  })
+  assert.equal(registry.defaultProviderId, 'default-provider')
+  registry.register({
+    id: 'default-provider', endpoint: 'https://example.test', secretRef: 'vault://key',
+    adapterId: 'test', enabled: true, isDefault: false, healthStatus: 'unknown',
+  })
+  assert.equal(registry.defaultProviderId, '')
+  assert.equal(registry.get('default-provider').enabled, false)
+})
+
+test('removing a corrupt provider can suppress implicit default promotion', () => {
+  const registry = new AiProviderRegistry({
+    allowHosts: ['example.test'],
+    adapters: { test: { create: () => ({ request: async () => ({ ok: true }) }) } },
+    now: () => Date.parse('2026-08-24T00:00:00.000Z'),
+  })
+  for (const id of ['bad-provider', 'other-provider']) {
+    registry.register({
+      id, endpoint: 'https://example.test', secretRef: 'vault://key', adapterId: 'test',
+      enabled: true, isDefault: id === 'bad-provider', healthStatus: 'verified',
+      lastVerifiedAt: '2026-08-24T00:00:00.000Z',
+    })
+  }
+  registry.remove('bad-provider', { promote: false })
+  assert.equal(registry.defaultProviderId, '')
+})
+
 test('server provider adapters expose only controlled request and health-check functions', () => {
   const adapters = createServerProviderAdapters({ secretResolver: () => 'test-secret' })
   const adapter = adapters['openai-compatible'].create({
@@ -102,6 +139,16 @@ test('server provider adapters expose only controlled request and health-check f
   })
   assert.equal(typeof adapter.request, 'function')
   assert.equal(typeof adapter.healthCheck, 'function')
+})
+
+test('server provider adapter exposes synchronous secret availability for env references', () => {
+  const adapters = createServerProviderAdapters({ secretResolver: () => '' })
+  const adapter = adapters['openai-compatible'].create({
+    endpoint: 'https://example.test/v1/chat/completions',
+    model: 'model',
+    secretRef: 'env://MISSING_KEY',
+  })
+  assert.equal(adapter.secretAvailable(), false)
 })
 
 test('provider registry enforces HTTPS, concurrency budget and circuit breaker', async () => {

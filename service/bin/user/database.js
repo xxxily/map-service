@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 9
+export const USER_DATABASE_VERSION = 10
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -600,6 +600,15 @@ export class UserDatabase {
         }
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(9, now)
+      })
+    }
+
+    if (current < 10) {
+      this.transaction(() => {
+        const columns = this.database.prepare('PRAGMA table_info(users)').all().map(column => column.name)
+        if (!columns.includes('avatar')) this.database.exec("ALTER TABLE users ADD COLUMN avatar TEXT NOT NULL DEFAULT ''")
+        if (!columns.includes('gender')) this.database.exec("ALTER TABLE users ADD COLUMN gender TEXT NOT NULL DEFAULT ''")
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString())
       })
     }
 

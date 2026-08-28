@@ -53,6 +53,131 @@
   gap: 14px;
 }
 
+.admin-settings-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px;
+  border-bottom: 1px solid rgba(22, 61, 61, 0.12);
+  scrollbar-width: thin;
+}
+
+.admin-settings-tab {
+  flex: 0 0 auto;
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  padding: 0 12px;
+  background: transparent;
+  color: #526c70;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.admin-settings-tab:hover,
+.admin-settings-tab:focus-visible,
+.admin-settings-tab.is-active {
+  border-bottom-color: #0f766e;
+  outline: none;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.admin-settings-tab:focus-visible {
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}
+
+.admin-settings-tabpanel[hidden] {
+  display: none;
+}
+
+.admin-settings-tabpanel {
+  min-width: 0;
+}
+
+.admin-comment-detail {
+  max-width: min(760px, 82vw);
+  max-height: min(68vh, 620px);
+  overflow: auto;
+  color: #102528;
+  text-align: left;
+}
+
+.admin-comment-detail-author {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.admin-comment-detail-avatar {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #dff5f1;
+  color: #0f766e;
+  font-size: 22px;
+  line-height: 42px;
+  text-align: center;
+}
+
+.admin-comment-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.admin-comment-detail-field {
+  min-width: 0;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(22, 61, 61, 0.1);
+}
+
+.admin-comment-detail-field dt {
+  color: #64777a;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.admin-comment-detail-field dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  color: #163d3d;
+  font-size: 13px;
+}
+
+.admin-comment-detail-body {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f5faf9;
+}
+
+.admin-comment-detail-body h3 {
+  margin: 0 0 6px;
+  color: #526c70;
+  font-size: 12px;
+}
+
+.admin-comment-detail-body p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+@media (max-width: 560px) {
+  .admin-comment-detail { max-width: 88vw; }
+  .admin-comment-detail-grid { grid-template-columns: 1fr; }
+}
+
 .admin-filter-form {
   display: grid;
   grid-template-columns: minmax(180px, 2fr) repeat(2, minmax(120px, 1fr)) auto;

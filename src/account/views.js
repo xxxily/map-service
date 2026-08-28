@@ -110,14 +110,16 @@ function renderProfile (state) {
         <div><p class="account-eyebrow">账号</p><h2>个人资料</h2><p>更新对外显示的名称和私有联系信息。</p></div>
       </div>
       <div class="account-grid account-profile-grid">
-        <form class="account-card account-form" data-account-form="profile">
+        <form class="account-card account-form" data-account-form="profile" data-avatar-original="${escapeHtml(profile.avatar || '')}">
           <label><span>用户名</span><input value="${escapeHtml(profile.username || '')}" disabled><small>用户名是稳定登录标识，创建后不可修改。</small></label>
           <label><span>展示名</span><input name="displayName" value="${escapeHtml(profile.displayName || '')}" maxlength="50" ${capabilities.canUpdateProfile ? 'required' : 'disabled'}></label>
           <label><span>邮箱 <small>私有</small></span><input name="email" type="email" value="${escapeHtml(profile.email || '')}" ${capabilities.canUpdateProfile ? '' : 'disabled'}></label>
+          <label><span>性别</span><select name="gender" ${capabilities.canUpdateProfile ? '' : 'disabled'}><option value="">不设置</option><option value="male" ${profile.gender === 'male' ? 'selected' : ''}>男</option><option value="female" ${profile.gender === 'female' ? 'selected' : ''}>女</option><option value="other" ${profile.gender === 'other' ? 'selected' : ''}>其他</option></select></label>
+          <label><span>头像</span><input name="avatarFile" type="file" accept="image/png,image/jpeg,image/webp" ${capabilities.canUpdateProfile ? '' : 'disabled'}><input name="avatar" type="hidden" value="${escapeHtml(profile.avatar || '')}"><button type="button" class="account-link-button account-avatar-clear" data-account-action="clear-avatar" ${profile.avatar ? '' : 'hidden'}>清除头像</button><small>支持 PNG、JPEG、WebP，选择后可预览。</small><small class="account-field-error" data-account-avatar-error role="alert"></small></label>
           ${capabilities.canUpdateProfile ? '<div class="account-form-actions"><button class="account-primary-button" type="submit">保存资料</button></div>' : '<p class="account-usage">当前角色只能查看个人资料。</p>'}
         </form>
         <aside class="account-card account-summary-card">
-          <span class="account-avatar">${escapeHtml((profile.displayName || profile.username || '用').slice(0, 1).toUpperCase())}</span>
+          ${profile.avatar ? `<img class="account-avatar account-avatar-image" src="${escapeHtml(profile.avatar)}" alt="${escapeHtml(profile.displayName || profile.username || '用户')}" loading="lazy">` : `<span class="account-avatar">${escapeHtml((profile.displayName || profile.username || '用').slice(0, 1).toUpperCase())}</span>`}
           <h3>${escapeHtml(profile.displayName || profile.username || '地图用户')}</h3>
           <p>@${escapeHtml(profile.username || '')}</p>
           <dl>
@@ -370,7 +372,7 @@ export function renderAccountShell (state) {
       </header>
       <div class="account-layout">
         <aside class="account-sidebar">
-          <div class="account-user-summary"><span class="account-avatar">${escapeHtml((user.displayName || user.username || '用').slice(0, 1).toUpperCase())}</span><div><strong>${escapeHtml(user.displayName || user.username || '地图用户')}</strong><small>@${escapeHtml(user.username || '')}</small></div></div>
+          <div class="account-user-summary">${user.avatar ? `<img class="account-avatar account-avatar-image" src="${escapeHtml(user.avatar)}" alt="${escapeHtml(user.displayName || user.username || '用户')}" loading="lazy">` : `<span class="account-avatar">${escapeHtml((user.displayName || user.username || '用').slice(0, 1).toUpperCase())}</span>`}<div><strong>${escapeHtml(user.displayName || user.username || '地图用户')}</strong><small>@${escapeHtml(user.username || '')}</small></div></div>
           <nav aria-label="用户中心导航">${TAB_ITEMS.filter(([id]) => visibleTabs.has(id)).map(([id, label]) => `<a href="#${id}" data-account-tab="${id}" class="${state.activeTab === id ? 'is-active' : ''}">${label}${id === 'security' && user.mustChangePassword ? '<span class="account-nav-dot" title="需要修改密码"></span>' : ''}</a>`).join('')}</nav>
           <p class="account-privacy-note"><strong>隐私默认值</strong><span>KML 和位置收藏默认仅你可见。</span></p>
         </aside>

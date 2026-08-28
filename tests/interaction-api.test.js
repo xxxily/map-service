@@ -284,8 +284,8 @@ test('AI provider management routes enforce permission/CSRF and redact secrets',
         throw error
       }
     },
-    listInteractionAiProvidersForAdmin: () => ({ enabled: true, defaultProviderId: 'p1', providers: [{ id: 'p1', endpoint: 'https://ai.example.test/v1', configured: false, enabled: true, isDefault: true }] }),
-    configureInteractionAiProvider: (actor, body) => { calls.push([actor, body]); return { enabled: true, defaultProviderId: body.id, providers: [{ id: body.id, endpoint: body.endpoint, configured: false, enabled: body.enabled !== false, isDefault: true }] } },
+    listInteractionAiProvidersForAdmin: () => ({ enabled: true, defaultProviderId: 'p1', providers: [{ id: 'p1', endpoint: 'https://ai.example.test/v1', configured: false, hasApiKey: true, enabled: true, isDefault: true }] }),
+    configureInteractionAiProvider: (actor, body) => { calls.push([actor, body]); return { enabled: true, defaultProviderId: body.id, providers: [{ id: body.id, endpoint: body.endpoint, configured: false, hasApiKey: Boolean(body.apiKey), enabled: body.enabled !== false, isDefault: true }] } },
   })
   const { server, baseUrl } = await listen(createApp())
   try {
@@ -294,7 +294,10 @@ test('AI provider management routes enforce permission/CSRF and redact secrets',
     const listed = await json(baseUrl, '/api/v1/admin/moderation/providers', { headers: { Cookie: 'map_user_session=provider-admin' } })
     assert.equal(listed.response.status, 200)
     assert.equal(listed.payload.result.providers[0].configured, false)
+    assert.equal(listed.payload.result.providers[0].hasApiKey, true)
     assert.equal(Object.hasOwn(listed.payload.result.providers[0], 'secretRef'), false)
+    assert.equal(Object.hasOwn(listed.payload.result.providers[0], 'apiKey'), false)
+    assert.equal(Object.hasOwn(listed.payload.result.providers[0], 'api_key_ciphertext'), false)
     const missingSecret = await json(baseUrl, '/api/v1/admin/moderation/providers', {
       method: 'POST',
       headers: { Cookie: 'map_user_session=provider-admin', 'X-CSRF-Token': 'provider-csrf' },
@@ -310,14 +313,21 @@ test('AI provider management routes enforce permission/CSRF and redact secrets',
     assert.equal(created.response.status, 201)
     assert.equal(calls.length, 1)
     assert.equal(calls[0][1].secretRef, 'vault://ai/p2')
+    const apiKeyCreated = await json(baseUrl, '/api/v1/admin/moderation/providers', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=provider-admin', 'X-CSRF-Token': 'provider-csrf' },
+      body: JSON.stringify({ id: 'p-api-key', endpoint: 'https://ai.example.test/v1', apiKey: 'sk-test-direct' }),
+    })
+    assert.equal(apiKeyCreated.response.status, 201)
+    assert.equal(calls[1][1].apiKey, 'sk-test-direct')
     const updated = await json(baseUrl, '/api/v1/admin/moderation/providers', {
       method: 'PUT',
       headers: { Cookie: 'map_user_session=provider-admin', 'X-CSRF-Token': 'provider-csrf' },
       body: JSON.stringify({ id: 'p2', endpoint: 'https://ai.example.test/v1' }),
     })
     assert.equal(updated.response.status, 200)
-    assert.equal(calls.length, 2)
-    assert.equal(calls[1][1].secretRef, undefined)
+    assert.equal(calls.length, 3)
+    assert.equal(calls[2][1].secretRef, undefined)
   } finally {
     await new Promise(resolve => server.close(resolve))
     restore()

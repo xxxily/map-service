@@ -20,6 +20,18 @@ export const INTERACTION_TEXT_LIMITS = Object.freeze({
   idempotencyKey: 128,
 })
 
+export const INTERACTION_AVATAR_DATA_URL_MAX_LENGTH = 200000
+export const INTERACTION_AVATAR_DATA_URL_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/iu
+
+export function isValidInteractionAvatar (value) {
+  const avatar = typeof value === 'string' ? value.trim() : ''
+  if (!avatar || avatar.length > INTERACTION_AVATAR_DATA_URL_MAX_LENGTH || !INTERACTION_AVATAR_DATA_URL_PATTERN.test(avatar)) return false
+  const encoded = avatar.slice(avatar.indexOf(',') + 1)
+  if (!encoded || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(encoded)) return false
+  const paddingIndex = encoded.indexOf('=')
+  return paddingIndex < 0 || paddingIndex >= encoded.length - 2
+}
+
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u
 const HTML_OR_SCRIPT = /<\/?(?:script|style|iframe|object|embed|form|svg)(?:\s|>|\/)/iu
 const HTML_TAG = /<\/?[A-Za-z][^>\n]*>/u
@@ -32,6 +44,7 @@ const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u
 const IDEMPOTENCY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u
 const COMMENT_ID_PATTERN = /^cmt_[A-Za-z0-9_-]{1,128}$/u
 const COMMENT_AUTHOR_TYPES = new Set(['user', 'anonymous', 'admin'])
+const PUBLIC_GENDERS = new Set(['', 'male', 'female', 'other', 'unknown'])
 
 function invalid (message, code = 'VALIDATION_FAILED') {
   const error = new Error(message)
@@ -165,6 +178,10 @@ export function normalizeCommentInput (input = {}, options = {}) {
     ? ''
     : normalizeDisplayName(source.displayName, { allowEmpty: true, minLength: 2 })
   if (authorType === 'anonymous' && !displayName) throw invalid('匿名留言必须填写显示名', 'DISPLAY_NAME_REQUIRED')
+  const avatar = source.avatar == null ? '' : String(source.avatar).trim()
+  const gender = source.gender == null ? '' : String(source.gender).trim().toLowerCase()
+  if (avatar && !isValidInteractionAvatar(avatar)) throw invalid('头像格式不合法', 'VALIDATION_FAILED')
+  if (!['', 'male', 'female', 'other', 'unknown'].includes(gender)) throw invalid('性别选项不合法', 'VALIDATION_FAILED')
   const contact = normalizeContact(source, {
     requirement: authorType === 'anonymous'
       ? (options.contactRequirement || 'email_or_phone')
@@ -179,7 +196,7 @@ export function normalizeCommentInput (input = {}, options = {}) {
     ? ''
     : asString(source.parentId, '父留言 ID').normalize('NFKC').trim()
   if (parentId && !COMMENT_ID_PATTERN.test(parentId)) throw invalid('父留言 ID 格式不合法', 'PARENT_ID_INVALID')
-  return { body, displayName, ...contact, clientRequestId, resourceRef: resource.resourceRef, parentId, consentPolicyVersion }
+  return { body, displayName, avatar, gender, ...contact, clientRequestId, resourceRef: resource.resourceRef, parentId, consentPolicyVersion }
 }
 
 export function normalizeReportInput (input = {}, options = {}) {
@@ -230,6 +247,16 @@ function normalizePolicyVersion (value) {
   return version
 }
 
+function normalizePublicAvatar (value) {
+  const avatar = typeof value === 'string' ? value.trim() : ''
+  return isValidInteractionAvatar(avatar) ? avatar.trim() : ''
+}
+
+function normalizePublicGender (value) {
+  const gender = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return PUBLIC_GENDERS.has(gender) ? gender : ''
+}
+
 function publicCommentFields (row) {
   if (!row || !isPublicComment({ contentStatus: row.content_status, moderationStatus: row.moderation_status })) return null
   let displayName
@@ -246,6 +273,8 @@ function publicCommentFields (row) {
   return {
     id: row.id,
     displayName,
+    avatar: normalizePublicAvatar(row.avatar_snapshot),
+    gender: normalizePublicGender(row.gender_snapshot),
     body,
     createdAt: row.created_at,
     replies: [],
