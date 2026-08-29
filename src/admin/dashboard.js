@@ -130,11 +130,18 @@ async function loadDashboardStats (options = {}) {
   renderDashboardIfActive('overview', 'cache')
 
   if (canLoadCache) {
-    adminApi.cache()
-      .then((cache) => {
+    Promise.all([
+      adminApi.cache(),
+      adminApi.cacheCleanupJobs({
+        page: adminState.cacheCleanupJobs?.page || 1,
+        limit: adminState.cacheCleanupJobs?.limit || 20,
+      }),
+    ])
+      .then(([cache, jobs]) => {
         adminState.cache = cache
+        adminState.cacheCleanupJobs = jobs
         adminState.cacheError = ''
-        if (cache.refreshing) {
+        if (cache.refreshing || cache.index?.refreshing || cache.activeJob) {
           window.setTimeout(() => loadDashboardStats({ cacheOnly: true }), 1500)
         }
       })
@@ -168,6 +175,11 @@ function addAuthorizedLoaders (loaders) {
 
   if (can('admin.overview.read')) {
     loaders.push(['system', () => adminApi.system()])
+  }
+  if (can('admin.cache.manage')) {
+    loaders.push(['cachePolicy', () => adminApi.cachePolicy()])
+    loaders.push(['cacheKeyPolicies', () => adminApi.cacheKeyPolicies()])
+    loaders.push(['cacheCleanupJobs', () => adminApi.cacheCleanupJobs({ page: 1, limit: 20 })])
   }
   if (can('admin.security.manage')) {
     loaders.push(['settings', () => adminApi.settings()])

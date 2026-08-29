@@ -4,7 +4,7 @@
 - Status: Active
 - Last refreshed: 2026-08-29
 - Primary product surfaces: 2D/3D 地图、KML 数据管理面板、个人空间、公开分享留言、管理后台、媒体预览器
-- Evidence reviewed: `src/account/`、`src/admin/layout.js`、`src/admin/pages/users.js`、`src/admin/pages/interaction.js`、`src/admin/pages/userSystemSettings.js`、`src/ui/interaction.js`、`src/ui/dialog.js`、`src/map/kml.js`、`src/map3d/kml.js`、`src/ui/media-preview.js`、`src/styles.css`、`docs/requirements/admin-users-and-account-kml-toolbar-ui-polish.md`
+- Evidence reviewed: `src/account/`、`src/admin/layout.js`、`src/admin/pages/users.js`、`src/admin/pages/cache.js`、`src/admin/pages/interaction.js`、`src/admin/pages/userSystemSettings.js`、`src/ui/interaction.js`、`src/ui/dialog.js`、`src/map/kml.js`、`src/map3d/kml.js`、`src/ui/media-preview.js`、`src/styles.css`、`docs/requirements/admin-users-and-account-kml-toolbar-ui-polish.md`、`docs/requirements/cache-governance-and-url-key-policy.md`
 
 ## Brand
 - Personality: 克制、清晰、以地图内容为主
@@ -14,7 +14,7 @@
 ## Product goals
 - Goals: 让 KML 整理适合批量工作，让分享、资料、留言和后台配置在长列表与移动端中仍清晰可达
 - Non-goals: 改变核心权限模型、引入服务端实时协同、增加任意外部头像代理或弱化 AI/分享安全边界
-- Success signals: 批量动作可预测且可撤销；长 URL 与操作反馈始终可见；管理员能低门槛完成 AI 配置；留言身份与资源上下文准确稳定
+- Success signals: 批量动作可预测且可撤销；长 URL 与操作反馈始终可见；管理员能低门槛完成 AI 配置；留言身份与资源上下文准确稳定；缓存治理先分析和预演、再分批执行，页面刷新不制造高 I/O
 
 ## Personas and jobs
 - Primary personas: 管理个人轨迹和素材的地图用户、公开分享访问者、审核留言与配置站点的管理员
@@ -24,7 +24,7 @@
 ## Information architecture
 - Primary navigation: 地图 ↔ 个人空间 ↔ 管理后台；地图 > KML 数据管理 > 文件 > 要素；公开分享 > 点位 > 留言
 - Core routes/screens: 2D 地图、3D 地图、个人空间、公开分享留言、管理后台、媒体预览浮层
-- Content hierarchy: 当前业务内容 > 名称与身份 > 主要操作 > 状态与稳定 ID；管理设置和长列表旁的创建表单先按能力 Tab 分类；密集工具栏按筛选、文件操作、批量操作分层
+- Content hierarchy: 当前业务内容 > 名称与身份 > 主要操作 > 状态与稳定 ID；管理设置和长列表旁的创建表单先按能力 Tab 分类；密集工具栏按筛选、文件操作、批量操作分层；缓存治理按概览、策略、URL 分析、执行记录分层，危险操作不占据默认主位
 
 ## Design principles
 - Selection is explicit: 批量模式必须可见、可取消，并提供只针对当前可见要素的全选/反选，不会误触原有定位操作
@@ -35,6 +35,8 @@
 - Identity is contextual: 登录留言只使用账号资料，匿名资料独立记忆；历史留言使用提交时快照，不随资料修改漂移
 - Secrets are write-only: API Key 可直接输入但永不回显；安全状态通过“已配置/已验证”表达
 - Dense tools need hierarchy: 搜索和排序占据主行，文件级命令与批量命令分区；低频同类命令进入菜单，不能依靠无序换行承载响应式布局
+- Evidence before mutation: 缓存删除和 URL 键规则启用必须先展示范围、冲突和索引完整度；建议值不能伪装成管理员不可突破的产品上限
+- Quiet background work: 缓存页轮询只读取索引和小型快照；目录校准、URL 分析和批量删除必须显式呈现运行状态，且同类重任务只运行一个
 
 ## Visual language
 - Color: 延续现有墨绿色强调色、浅色透明控件底、深色媒体内容面
@@ -46,8 +48,8 @@
 
 ## Components
 - Existing components to reuse: `src/ui/dialog.js`、KML 文件卡片/要素行、`transferKmlFeature`、`media-preview` 控件
-- New/changed components: 分享 URL Dialog、固定 Toast、后台设置/用户管理 Tab、用户资料头像输入、留言作者行、结构化留言详情 Dialog、分层 KML 工具栏与导入菜单
-- Variants and states: normal/selection/empty/processing/readonly；success/error/loading Toast；configured/unverified/verified provider；anonymous/authenticated author
+- New/changed components: 分享 URL Dialog、固定 Toast、后台设置/用户管理 Tab、用户资料头像输入、留言作者行、结构化留言详情 Dialog、分层 KML 工具栏与导入菜单、缓存治理子 Tab、清理预演摘要、URL 规则分析表和治理任务记录
+- Variants and states: normal/selection/empty/processing/readonly；success/error/loading Toast；configured/unverified/verified provider；anonymous/authenticated author；cache-index ready/reconciling/stale；cleanup preview/running/cancelled/completed/interrupted；URL policy raw/analyzed/conflicted/enabled
 - Token/component ownership: KML 管理由 `src/map/kml.js` 与 `src/map3d/kml.js`；媒体布局由 `src/ui/media-preview.js` 和 `src/ui/media-preview-layout.js`
 
 ## Accessibility
@@ -78,7 +80,7 @@
 ## Implementation constraints
 - Framework/styling system: 原生 ES modules、Leaflet/Cesium、现有 CSS、统一 Dialog 与现有管理后台渲染模式
 - Design-token constraints: 复用现有 KML/媒体 CSS 变量，不新增依赖
-- Performance constraints: 批量 O(n) 处理；拖动/缩放只更新窗口自身；不裁剪媒体轨道
+- Performance constraints: 批量 O(n) 处理；拖动/缩放只更新窗口自身；不裁剪媒体轨道；缓存管理读取派生索引，禁止因页面刷新重复全目录扫描，扫描和删除按批次让出事件循环
 - Compatibility constraints: 2D/3D、账号/匿名、SidePanel、移动返回手势、历史用户/留言/Provider/分享数据迁移
 - Test/screenshot expectations: 纯函数单测 + API/迁移测试 + source contract 测试 + 320/375/390px 与桌面验收 + `npm run check/test/build`
 

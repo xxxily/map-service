@@ -449,24 +449,133 @@ If-Range: <etag-or-date>
 
 ### `GET /api/v1/admin/cache`
 
-返回缓存统计和最近缓存项。
+返回缓存统计、索引状态、当前治理任务和最近缓存项。该接口读取持久化统计快照和派生索引，不因普通页面刷新重复触发全目录扫描。
 
 关键字段：
 
-- `files` / `bytes`：缓存文件数和体积。
+- `files` / `bytes` / `sidecarBytes` / `physicalBytes`：缓存文件数、正文体积、Sidecar 体积和估算物理占用。
 - `fresh` / `stale` / `expired`：缓存新鲜度数量。
 - `providers`：历史 provider 维度统计。
 - `bySource`：按 `sourceId` 聚合。
 - `byLayer`：按 `layerId` 聚合。
 - `byPublish`：按 `publishId` 聚合。
 - `byResourceType`：按矢量资源类型聚合，例如 `raster`、`style`、`tilejson`、`mvt`、`glyph`、`sprite-json`、`sprite-png`、`pmtiles-range`。
-- `entries`：最多 100 条最近缓存项，包含 `key`、`url`、`sourceId`、`layerId`、`publishId`、`state`、`size`、`updatedAt`、`expiresAt`。
+- `entries`：最多 100 条最近缓存项，包含 `key`、结构化脱敏 `url`、`sourceId`、`layerId`、`publishId`、`state`、`size`、`updatedAt`、`expiresAt`。`url` 只保留协议、主机、路径和参数名，不返回查询参数值。
+- `index`：派生索引状态，包含 `status`、`entries`、`coverage`、`lastReconciledAt`、`refreshing` 和错误摘要。
+- `activeJob`：当前清理或索引校准任务摘要；没有任务时为 `null`。
 
-缓存元数据中的 `url` 会对常见密钥参数脱敏。PMTiles 或其它 Range 请求会把 `Range` 作为缓存键的一部分，避免不同字节段复用同一个缓存文件。
+缓存元数据中的 `url` 在磁盘 Sidecar 写入时按常见密钥参数和图源额外敏感参数脱敏，管理接口再次移除全部查询参数值。PMTiles 或其它 Range 请求会把完整 `Range` 作为缓存键的一部分，避免不同字节段复用同一个缓存文件。
+
+### `GET /api/v1/admin/cache/policy`
+
+返回容量、保留和批处理策略。`softLimitBytes`、`hardLimitBytes`、`minFreeBytes` 为非负安全整数或 `null`；`null` 表示不限制，容量上限不按具体服务器写死。软/硬水位按正文与 Sidecar 的估算物理占用计算。
+
+### `PUT /api/v1/admin/cache/policy`
+
+更新缓存治理策略。
+
+```json
+{
+  "softLimitBytes": 10737418240,
+  "hardLimitBytes": 12884901888,
+  "minFreeBytes": 2147483648,
+  "autoCleanupEnabled": true,
+  "autoCleanupIntervalMinutes": 360,
+  "expiredRetentionDays": 30,
+  "batchMaxFiles": 500,
+  "batchMaxBytes": 268435456
+}
+```
+
+后端只施加安全整数、字段关系和单批执行保护，不设置面向 66 或其它单台服务器的业务容量上限。启用硬水位或最低可用空间后，回源写入先预留在途容量，落盘前按实际大小复核；缺少 `Content-Length` 时保守返回 `x-cache: BYPASS_LIMIT` 且不持久化。最低磁盘空间快照最多每 5 分钟刷新一次，快照间按写入和删除增量修正，不对每个请求执行目录扫描。
+
+### `POST /api/v1/admin/cache/index/reconcile`
+
+启动低优先级派生索引校准。目录使用流式遍历和 SQLite 批量事务；同一时间只有一个校准任务，重复调用返回当前任务。损坏或缺失的 Sidecar 不会被删除，对应正文作为无归属缓存计入索引，任务摘要通过 `invalidMetadataEntries` 返回异常数量。普通冷却由策略控制，`force=true` 仍受 5 分钟硬冷却。
+
+### `POST /api/v1/admin/cache/cleanup/preview`
+
+根据索引生成清理预演，不删除文件。
+
+```json
+{
+  "sourceIds": ["amap-street"],
+  "states": ["expired"],
+  "expiredBeforeDays": 30,
+  "resourceTypes": ["raster"],
+  "orphanedOnly": false,
+  "maxFiles": 50000,
+  "maxBytes": 5368709120
+}
+```
+
+响应包含 `previewId`、`selectionCutoff`、`filterHash`、`files`、`bytes`、`bodyBytes`、`sidecarBytes`、状态分布、索引覆盖率、`exact` 和最多 100 条结构化脱敏样本。`bytes` 表示预计释放的物理字节数。索引未完成时 `exact=false`。
+
+### `POST /api/v1/admin/cache/cleanup/jobs`
+
+基于预演创建异步分批清理任务。
+
+```json
+{
+  "previewId": "cache-preview-id"
+}
+```
+
+索引不完整、预演过期、筛选摘要不匹配时返回 `409`，错误码分别为 `INDEX_NOT_READY`、`PREVIEW_EXPIRED` 或 `PREVIEW_MISMATCH`。任务不会绕过单批字节上限强制删除超大文件；删除前会按路径锁和 Sidecar 版本再次确认，预演后已更新的缓存记入 `skippedFiles`。
+
+### `GET /api/v1/admin/cache/cleanup/jobs`
+
+返回最近治理任务和分页信息。任务状态为 `queued`、`running`、`completed`、`cancelled`、`failed` 或 `interrupted`。
+
+### `POST /api/v1/admin/cache/cleanup/jobs/:id/cancel`
+
+请求取消排队或运行中的任务。已经开始的当前批次允许完成，后续批次不再执行。
+
+### `POST /api/v1/admin/cache/key-analysis`
+
+对某个图源和候选 URL 规则执行索引分析。分析是显式操作，不由页面加载自动触发。
+
+```json
+{
+  "sourceId": "amap-street",
+  "rule": {
+    "canonicalHost": "webrd01.is.autonavi.com",
+    "equivalentHosts": ["webrd01.is.autonavi.com", "webrd02.is.autonavi.com"],
+    "sortQueryParams": true,
+    "ignoredQueryParams": ["key"],
+    "sensitiveQueryParams": ["key"]
+  },
+  "sampleLimit": 5000
+}
+```
+
+响应包含原始键数、归一键数、预计可合并文件/字节、主机和参数分布、冲突数量、`malformedCount`、结构化脱敏样本以及 `analysisId`。同一归一键下的文件大小、ETag、Content-Type 或摘要不一致会被标记为冲突；缺少或无法解析 URL 时禁止启用归一键。分析结果和冲突样本不返回任何查询参数值。
+
+### `GET /api/v1/admin/cache/key-policies`
+
+返回全部图源 URL 缓存键规则和最近分析摘要。默认模式为 `full_url`。
+
+### `PUT /api/v1/admin/cache/key-policies/:sourceId`
+
+保存图源 URL 缓存键规则。启用 `normalized_v2` 时必须提交与规则摘要一致、未过期且无冲突的 `analysisId`。
+
+```json
+{
+  "mode": "normalized_v2",
+  "analysisId": "cache-analysis-id",
+  "canonicalHost": "webrd01.is.autonavi.com",
+  "equivalentHosts": ["webrd01.is.autonavi.com", "webrd02.is.autonavi.com"],
+  "sortQueryParams": true,
+  "ignoredQueryParams": ["key"],
+  "sensitiveQueryParams": ["key"]
+}
+```
+
+未声明的查询参数会保留。新规则只影响该图源，缓存查找兼容旧完整 URL 键；不会一次性清空或迁移全部旧文件。
 
 ### `DELETE /api/v1/admin/cache`
 
-清空全部瓦片缓存。
+兼容接口。精确 URL 删除仍同步执行；全部或按图源清理应使用预演和异步任务，避免大目录同步删除阻塞服务。
 
 ### `DELETE /api/v1/admin/cache?url=<encoded-url>`
 

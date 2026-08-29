@@ -1,5 +1,6 @@
 import fs from 'fs-extra'
 import path from 'path'
+import { open as openFile } from 'node:fs/promises'
 import { pipeline } from 'stream/promises'
 import rootPath from '../../rootPath.js'
 import utils from '../../utils/index.js'
@@ -87,11 +88,15 @@ function isLikelyCacheableContent (contentType, allowedContentTypes) {
   return allowedContentTypes.some((item) => contentType.toLowerCase().startsWith(item.toLowerCase()))
 }
 
-function maskSensitiveUrl (url) {
+function maskSensitiveUrl (url, additionalKeys = []) {
   try {
     const parsed = new URL(url)
+    const sensitiveKeys = new Set([
+      ...SENSITIVE_QUERY_KEYS,
+      ...(Array.isArray(additionalKeys) ? additionalKeys : []),
+    ].map(key => String(key).toLowerCase()))
     ;[...parsed.searchParams.keys()].forEach((key) => {
-      if (SENSITIVE_QUERY_KEYS.includes(key.toLowerCase())) {
+      if (sensitiveKeys.has(key.toLowerCase())) {
         parsed.searchParams.set(key, '****')
       }
     })
@@ -105,6 +110,10 @@ function cacheKeyInput (url, options = {}) {
   if (options.cacheKey) return String(options.cacheKey)
   const range = options.headers?.Range || options.headers?.range
   return range ? `${url}|range:${range}` : url
+}
+
+function jsonFileBytes (value) {
+  return Buffer.byteLength(`${JSON.stringify(value, null, 2)}\n`)
 }
 
 // Keep the administrative preview bounded while the complete cache directory
@@ -151,6 +160,58 @@ class FetchRelay {
     this.statsRefreshPromise = null
     this.statsRefreshTimer = null
     this.lastStatsRefreshAt = 0
+    this.cacheObserver = null
+    this.cachePathLocks = new Map()
+    this.activeCacheWrites = new Set()
+    this.cacheClearGate = null
+  }
+
+  setCacheObserver (observer) {
+    this.cacheObserver = observer || null
+  }
+
+  async withCachePathLock (cachePath, task) {
+    const lockKey = path.resolve(String(cachePath || ''))
+    const previous = this.cachePathLocks.get(lockKey) || Promise.resolve()
+    let release
+    const current = new Promise(resolve => { release = resolve })
+    const queued = previous.catch(() => {}).then(() => current)
+    this.cachePathLocks.set(lockKey, queued)
+    await previous.catch(() => {})
+    try {
+      return await task()
+    } finally {
+      release()
+      if (this.cachePathLocks.get(lockKey) === queued) this.cachePathLocks.delete(lockKey)
+    }
+  }
+
+  async withCacheWrite (task) {
+    while (this.cacheClearGate) await this.cacheClearGate
+    let release
+    const activeWrite = new Promise(resolve => { release = resolve })
+    this.activeCacheWrites.add(activeWrite)
+    try {
+      return await task()
+    } finally {
+      this.activeCacheWrites.delete(activeWrite)
+      release()
+    }
+  }
+
+  async withExclusiveCacheClear (task) {
+    while (this.cacheClearGate) await this.cacheClearGate
+    let release
+    const clearGate = new Promise(resolve => { release = resolve })
+    this.cacheClearGate = clearGate
+    const activeWrites = [...this.activeCacheWrites]
+    try {
+      await Promise.all(activeWrites)
+      return await task()
+    } finally {
+      if (this.cacheClearGate === clearGate) this.cacheClearGate = null
+      release()
+    }
   }
 
   resolveTarget (url, options = {}) {
@@ -164,7 +225,10 @@ class FetchRelay {
 
   getCachePaths (url, options = {}) {
     const urlInfo = new URL(url)
-    const hostPath = urlInfo.port ? `${urlInfo.hostname}-${urlInfo.port}` : urlInfo.hostname
+    const rawHostPath = urlInfo.port ? `${urlInfo.hostname}-${urlInfo.port}` : urlInfo.hostname
+    const hostPath = options.cacheNamespace
+      ? String(options.cacheNamespace).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 120) || rawHostPath
+      : rawHostPath
     const keyInput = cacheKeyInput(url, options)
     const urlHash = utils.md5(keyInput)
     const ext = path.extname(urlInfo.pathname).replace(/[^a-zA-Z0-9.]/g, '')
@@ -184,8 +248,7 @@ class FetchRelay {
       return await fs.readJson(metaPath)
     } catch (err) {
       if (err.code === 'ENOENT') return null
-      console.warn(`[fetchRelay] invalid meta file removed: ${metaPath}`, err.message)
-      await fs.remove(metaPath)
+      console.warn(`[fetchRelay] invalid meta file ignored: ${metaPath}`, err.message)
       return null
     }
   }
@@ -199,7 +262,36 @@ class FetchRelay {
   }
 
   async getCachedEntry (url, options = {}) {
-    const paths = this.getCachePaths(url, options)
+    const primaryEntry = await this.getCachedEntryAtPaths(this.getCachePaths(url, options))
+    if (primaryEntry.exists) return primaryEntry
+
+    if (options.legacyCacheKeyFallback && (options.cacheKey || options.cacheNamespace)) {
+      const legacyOptions = { ...options }
+      delete legacyOptions.cacheKey
+      delete legacyOptions.cacheNamespace
+      delete legacyOptions.legacyCacheKeyFallback
+      const legacyEntry = await this.getCachedEntryAtPaths(this.getCachePaths(url, legacyOptions))
+      if (legacyEntry.exists) return { ...legacyEntry, legacy: true }
+
+      const aliasPaths = await this.cacheObserver?.findLegacyEntry?.({
+        url,
+        options,
+        paths: primaryEntry,
+      })
+      if (aliasPaths) {
+        const aliasEntry = await this.getCachedEntryAtPaths(aliasPaths)
+        if (aliasEntry.exists) return { ...aliasEntry, legacy: true, legacyAlias: true }
+      }
+    }
+
+    return primaryEntry
+  }
+
+  async getCachedEntryAtPaths (paths) {
+    return this.withCachePathLock(paths.cachePath, () => this.getCachedEntryAtPathsUnlocked(paths))
+  }
+
+  async getCachedEntryAtPathsUnlocked (paths) {
 
     if (!await fs.pathExists(paths.cachePath)) {
       return {
@@ -213,15 +305,24 @@ class FetchRelay {
       this.readMeta(paths.metaPath),
     ])
 
-    if (!stat.isFile() || stat.size < this.config.minCacheBytes || !meta) {
+    if (!stat.isFile() || stat.size < this.config.minCacheBytes) {
       await Promise.all([
         fs.remove(paths.cachePath),
         fs.remove(paths.metaPath),
       ])
+      await this.cacheObserver?.onDelete?.({ paths })
 
       return {
         ...paths,
         exists: false,
+      }
+    }
+
+    if (!meta) {
+      return {
+        ...paths,
+        exists: false,
+        orphaned: true,
       }
     }
 
@@ -235,14 +336,19 @@ class FetchRelay {
     }
   }
 
-  createCachedResponse (entry, cacheStatus) {
-    const stream = fs.createReadStream(entry.cachePath)
+  async createCachedResponse (entry, cacheStatus) {
+    return this.withCacheWrite(() => this.createCachedResponseUnlocked(entry, cacheStatus))
+  }
+
+  async createCachedResponseUnlocked (entry, cacheStatus) {
     const headers = {
       ...entry.meta.headers,
       'x-cache': cacheStatus,
       'x-cache-key': entry.meta.key,
       'x-cache-updated-at': String(entry.meta.updatedAt),
     }
+    const file = await openFile(entry.cachePath, 'r')
+    const stream = file.createReadStream()
 
     return {
       stream,
@@ -299,15 +405,34 @@ class FetchRelay {
   }
 
   async updateMetaFromNotModified (entry, options = {}) {
+    return this.withCacheWrite(() => this.updateMetaFromNotModifiedUnlocked(entry, options))
+  }
+
+  async updateMetaFromNotModifiedUnlocked (entry, options = {}) {
     const updatedAt = now()
     const meta = {
       ...entry.meta,
+      sourceId: options.cacheMeta?.sourceId || entry.meta.sourceId || null,
+      layerId: options.cacheMeta?.layerId || entry.meta.layerId || null,
+      publishId: options.cacheMeta?.publishId || entry.meta.publishId || null,
+      resourceType: options.cacheMeta?.resourceType || entry.meta.resourceType || null,
       updatedAt,
       expiresAt: updatedAt + Number(options.cacheTtlMs ?? this.config.ttl),
       staleExpiresAt: updatedAt + Number(options.staleCacheTtlMs ?? this.config.staleTtl),
     }
 
-    await fs.writeJson(entry.metaPath, meta, { spaces: 2 })
+    const previousMetaSize = jsonFileBytes(entry.meta || {})
+    const metaSize = jsonFileBytes(meta)
+    await this.withCachePathLock(entry.cachePath, async () => {
+      await fs.writeJson(entry.metaPath, meta, { spaces: 2 })
+      await this.cacheObserver?.onUpsert?.({
+        paths: entry,
+        meta,
+        metaSize,
+        previousSize: Number(entry.size || entry.meta?.size || 0),
+        previousMetaSize,
+      })
+    })
     await this.invalidateStatsSnapshot()
     return {
       ...entry,
@@ -315,7 +440,37 @@ class FetchRelay {
     }
   }
 
-  async writeResponseToCache (url, response, paths, options = {}) {
+  async createTemporaryBypassResponse (tempPath, statusCode, headers, onCleanup) {
+    const file = await openFile(tempPath, 'r')
+    const stream = file.createReadStream()
+    let removed = false
+    const cleanup = () => {
+      if (removed) return
+      removed = true
+      fs.remove(tempPath).catch(err => {
+        console.warn(`[fetchRelay] failed to remove bypass temp file: ${tempPath}`, err.message)
+      }).finally(() => Promise.resolve(onCleanup?.()).catch(err => {
+        console.warn('[fetchRelay] failed to release bypass reservation:', err.message)
+      }))
+    }
+    stream.once('close', cleanup)
+    stream.once('error', cleanup)
+    return {
+      stream,
+      statusCode,
+      headers: { ...headers, 'x-cache': 'BYPASS_LIMIT' },
+      cacheStatus: 'BYPASS_LIMIT',
+      cachePath: null,
+      meta: null,
+      bypass: true,
+    }
+  }
+
+  async writeResponseToCache (url, response, paths, options = {}, persist = {}) {
+    return this.withCacheWrite(() => this.writeResponseToCacheUnlocked(url, response, paths, options, persist))
+  }
+
+  async writeResponseToCacheUnlocked (url, response, paths, options = {}, persist = {}) {
     const statusCode = response.status
     const headers = pickHeaders(response.headers)
     const contentType = headers['content-type'] || ''
@@ -335,7 +490,12 @@ class FetchRelay {
     await fs.ensureDir(path.dirname(paths.cachePath))
 
     const tempPath = `${paths.cachePath}.tmp-${process.pid}-${Date.now()}`
-    await pipeline(response.data, fs.createWriteStream(tempPath))
+    try {
+      await pipeline(response.data, fs.createWriteStream(tempPath))
+    } catch (err) {
+      await fs.remove(tempPath)
+      throw err
+    }
 
     const stat = await fs.stat(tempPath)
     if (stat.size < this.config.minCacheBytes) {
@@ -346,12 +506,14 @@ class FetchRelay {
     const updatedAt = now()
     const meta = {
       key: utils.md5(cacheKeyInput(url, options)),
-      url: maskSensitiveUrl(url),
+      url: maskSensitiveUrl(url, options.sensitiveQueryParams),
       sourceId: options.cacheMeta?.sourceId || null,
       layerId: options.cacheMeta?.layerId || null,
       publishId: options.cacheMeta?.publishId || null,
       resourceType: options.cacheMeta?.resourceType || null,
       range: options.headers?.Range || options.headers?.range || null,
+      keyVersion: options.cacheKeyVersion || 'v1',
+      policyRevision: Number(options.cachePolicyRevision || 0),
       statusCode,
       headers,
       size: stat.size,
@@ -361,18 +523,61 @@ class FetchRelay {
       staleExpiresAt: updatedAt + Number(options.staleCacheTtlMs ?? this.config.staleTtl),
     }
 
-    await fs.move(tempPath, paths.cachePath, { overwrite: true })
-    await fs.writeJson(paths.metaPath, meta, { spaces: 2 })
-    await this.invalidateStatsSnapshot()
-
-    return {
-      ...paths,
-      exists: true,
-      size: stat.size,
-      meta,
-      fresh: true,
-      staleUsable: true,
+    const metaSize = jsonFileBytes(meta)
+    let result
+    try {
+      await this.withCachePathLock(paths.cachePath, async () => {
+        let previousSize = 0
+        let previousMetaSize = 0
+        try {
+          previousSize = Number((await fs.stat(paths.cachePath)).size || 0)
+        } catch (err) {
+          if (err.code !== 'ENOENT') throw err
+        }
+        try {
+          previousMetaSize = Number((await fs.stat(paths.metaPath)).size || 0)
+        } catch (err) {
+          if (err.code !== 'ENOENT') throw err
+        }
+        if (persist.reservation && this.cacheObserver?.confirmPersist) {
+          const confirmed = await this.cacheObserver.confirmPersist({
+            reservation: persist.reservation,
+            relativePath: persist.relativePath,
+            bodyBytes: stat.size,
+            sidecarBytes: metaSize,
+            previousBodyBytes: previousSize,
+            previousSidecarBytes: previousMetaSize,
+          })
+          if (!confirmed) {
+            result = await this.createTemporaryBypassResponse(tempPath, statusCode, headers, persist.onBypassCleanup)
+            return
+          }
+        }
+        await fs.move(tempPath, paths.cachePath, { overwrite: true })
+        await fs.writeJson(paths.metaPath, meta, { spaces: 2 })
+        await this.cacheObserver?.onUpsert?.({
+          paths,
+          meta,
+          metaSize,
+          previousSize,
+          previousMetaSize,
+        })
+        result = {
+          ...paths,
+          exists: true,
+          size: stat.size,
+          meta,
+          fresh: true,
+          staleUsable: true,
+        }
+      })
+    } catch (err) {
+      await fs.remove(tempPath)
+      throw err
     }
+    if (result?.bypass) return result
+    await this.invalidateStatsSnapshot()
+    return result
   }
 
   async fetchUpstream (url, options = {}, entry) {
@@ -384,12 +589,81 @@ class FetchRelay {
     }, entry))
 
     if (response.status === 304 && entry && entry.exists) {
-      const refreshedEntry = await this.updateMetaFromNotModified(entry, options)
-      return this.createCachedResponse(refreshedEntry, 'REVALIDATED')
+      response.data.destroy?.()
+      const refreshedResponse = await this.withCacheWrite(async () => {
+        const currentEntry = await this.getCachedEntry(url, options)
+        if (!currentEntry.exists) return null
+        const refreshedEntry = await this.updateMetaFromNotModifiedUnlocked(currentEntry, options)
+        return this.createCachedResponseUnlocked(refreshedEntry, 'REVALIDATED')
+      })
+      if (refreshedResponse) return refreshedResponse
+      return this.fetchUpstream(url, { ...options, refresh: true }, null)
     }
 
-    const cachedEntry = await this.writeResponseToCache(url, response, paths, options)
-    return this.createCachedResponse(cachedEntry, 'MISS')
+    const headers = pickHeaders(response.headers)
+    const contentType = headers['content-type'] || ''
+    if (response.status < CACHEABLE_STATUS_MIN || response.status > CACHEABLE_STATUS_MAX) {
+      response.data.destroy()
+      const err = new Error(`upstream responded with non-cacheable status ${response.status}`)
+      err.statusCode = response.status
+      throw err
+    }
+    if (!isLikelyCacheableContent(contentType, this.config.allowedContentTypes)) {
+      response.data.destroy()
+      throw new Error(`upstream content type is not cacheable: ${contentType || 'unknown'}`)
+    }
+
+    const estimatedSize = Number(response.headers?.['content-length'] || 0)
+    const relativePath = path.relative(this.config.cacheDir, paths.cachePath)
+    const sameEntryPath = entry?.cachePath && path.resolve(entry.cachePath) === path.resolve(paths.cachePath)
+    const previousSize = sameEntryPath ? Number(entry.size || entry.meta?.size || 0) : 0
+    const previousMetaSize = sameEntryPath ? jsonFileBytes(entry.meta || {}) : 0
+    const persistPayload = {
+      url,
+      options,
+      estimatedSize,
+      estimatedMetaSize: Math.max(512, Buffer.byteLength(String(url || '')) + 512),
+      relativePath,
+      previousSize,
+      previousMetaSize,
+    }
+    let reservation = null
+    let allowed = true
+    if (this.cacheObserver?.reservePersist) {
+      reservation = await this.cacheObserver.reservePersist(persistPayload)
+      allowed = Boolean(reservation?.allowed)
+    } else if (this.cacheObserver?.shouldPersist) {
+      allowed = this.cacheObserver.shouldPersist(persistPayload)
+    }
+    if (!allowed) {
+      return {
+        stream: response.data,
+        statusCode: response.status,
+        headers: { ...headers, 'x-cache': 'BYPASS_LIMIT' },
+        cacheStatus: 'BYPASS_LIMIT',
+        cachePath: null,
+        meta: null,
+      }
+    }
+
+    let releaseReservation = true
+    try {
+      const cachedResponse = await this.withCacheWrite(async () => {
+        const cachedEntry = await this.writeResponseToCacheUnlocked(url, response, paths, options, {
+          reservation,
+          relativePath,
+          previousSize,
+          previousMetaSize,
+          onBypassCleanup: () => this.cacheObserver?.releasePersist?.({ reservation }),
+        })
+        if (cachedEntry.bypass) return cachedEntry
+        return this.createCachedResponseUnlocked(cachedEntry, 'MISS')
+      })
+      if (cachedResponse.bypass) releaseReservation = false
+      return cachedResponse
+    } finally {
+      if (releaseReservation) await this.cacheObserver?.releasePersist?.({ reservation })
+    }
   }
 
   async fetch (url, options = {}) {
@@ -431,18 +705,35 @@ class FetchRelay {
       }
     }
 
-    const entry = await this.getCachedEntry(url, normalizedOptions)
-
-    if (entry.exists && entry.fresh && !normalizedOptions.refresh) {
-      return this.createCachedResponse(entry, 'HIT')
-    }
+    const cached = await this.withCacheWrite(async () => {
+      const entry = await this.getCachedEntry(url, normalizedOptions)
+      if (entry.exists && entry.fresh && !normalizedOptions.refresh) {
+        return {
+          entry,
+          response: await this.createCachedResponseUnlocked(entry, 'HIT'),
+        }
+      }
+      return { entry, response: null }
+    })
+    if (cached.response) return cached.response
+    const entry = cached.entry
 
     try {
       return await this.fetchUpstream(url, normalizedOptions, entry.exists ? entry : null)
     } catch (err) {
       if (entry.exists && entry.staleUsable && !normalizedOptions.refresh) {
-        console.warn(`[fetchRelay] upstream refresh failed, serving stale cache: ${url}`, err.message)
-        return this.createCachedResponse(entry, 'STALE')
+        const staleResponse = await this.withCacheWrite(async () => {
+          const currentEntry = await this.getCachedEntry(url, normalizedOptions)
+          if (!currentEntry.exists || !currentEntry.staleUsable) return null
+          return this.createCachedResponseUnlocked(currentEntry, 'STALE')
+        })
+        if (staleResponse) {
+          console.warn(
+            `[fetchRelay] upstream refresh failed, serving stale cache: ${maskSensitiveUrl(url, normalizedOptions.sensitiveQueryParams)}`,
+            err.message
+          )
+          return staleResponse
+        }
       }
 
       throw err
@@ -727,6 +1018,7 @@ class FetchRelay {
   async clear (targetUrl, sourceId) {
     if (sourceId) {
       await fs.ensureDir(this.config.cacheDir)
+      let scanned = 0
       const walk = async (dir) => {
         let directory
         try {
@@ -745,7 +1037,12 @@ class FetchRelay {
             if (meta && meta.sourceId === sourceId) {
               await fs.remove(itemPath)
               await fs.remove(metaPath)
+              await this.cacheObserver?.onDelete?.({
+                paths: { cachePath: itemPath, metaPath },
+              })
             }
+            scanned += 1
+            if (scanned % 128 === 0) await new Promise(resolve => setImmediate(resolve))
           }
         }
       }
@@ -763,6 +1060,7 @@ class FetchRelay {
         fs.remove(paths.cachePath),
         fs.remove(paths.metaPath),
       ])
+      await this.cacheObserver?.onDelete?.({ paths })
       await this.invalidateStatsSnapshot({ force: true })
 
       return {
@@ -771,20 +1069,23 @@ class FetchRelay {
       }
     }
 
-    await fs.remove(this.config.cacheDir)
-    await fs.ensureDir(this.config.cacheDir)
-    await this.ensureStatsStateLoaded()
-    this.statsInvalidationGeneration += 1
-    this.clearStatsRefreshTimer()
-    this.statsDirty = false
-    this.statsSnapshot = this.createEmptyStats()
-    this.lastStatsRefreshAt = now()
-    await this.writeStatsState()
+    return this.withExclusiveCacheClear(async () => {
+      await fs.remove(this.config.cacheDir)
+      await fs.ensureDir(this.config.cacheDir)
+      await this.ensureStatsStateLoaded()
+      this.statsInvalidationGeneration += 1
+      this.clearStatsRefreshTimer()
+      this.statsDirty = false
+      this.statsSnapshot = this.createEmptyStats()
+      this.lastStatsRefreshAt = now()
+      await this.writeStatsState()
+      await this.cacheObserver?.onClear?.({ type: 'all' })
 
-    return {
-      removed: 'all',
-      target: null,
-    }
+      return {
+        removed: 'all',
+        target: null,
+      }
+    })
   }
 
   async clearMany (targetUrls = []) {
@@ -798,12 +1099,13 @@ class FetchRelay {
       }
     }
 
-    await Promise.all(urls.map((targetUrl) => {
+    await Promise.all(urls.map(async (targetUrl) => {
       const paths = this.getCachePaths(targetUrl)
-      return Promise.all([
+      await Promise.all([
         fs.remove(paths.cachePath),
         fs.remove(paths.metaPath),
       ])
+      await this.cacheObserver?.onDelete?.({ paths })
     }))
     await this.invalidateStatsSnapshot({ force: true })
 

@@ -1,5 +1,10 @@
 import { renderOverviewPage } from './pages/overview.js'
-import { handleCacheClick, renderCachePage } from './pages/cache.js'
+import {
+  handleCacheChange,
+  handleCacheClick,
+  handleCacheSubmit,
+  renderCachePage,
+} from './pages/cache.js'
 import { initPrecacheMap, renderPrecachePage } from './pages/precache.js'
 import { handleSettingsSubmit, renderSettingsPage } from './pages/settings.js'
 import {
@@ -69,6 +74,8 @@ export const ADMIN_PAGES = [
     permission: 'admin.cache.manage',
     render: renderCachePage,
     handleClick: handleCacheClick,
+    handleSubmit: handleCacheSubmit,
+    handleChange: handleCacheChange,
   },
   {
     id: 'kml',

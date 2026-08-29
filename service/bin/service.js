@@ -12,6 +12,7 @@ import FetchRelay from './middleware/fetchRelay/index.js'
 import AdminStore from './admin/store.js'
 import createAdminAuth from './admin/auth.js'
 import AdminSettings from './admin/settings.js'
+import CacheGovernanceService from './admin/cacheGovernance.js'
 import PrecacheManager from './admin/precache.js'
 import getVisitStats from './admin/visitStats.js'
 import SharedKmlManager from './admin/sharedKml.js'
@@ -62,6 +63,13 @@ const userSystem = new UserSystemService({
 })
 const tileCatalogManager = new TileCatalogManager({
   store: adminStore,
+})
+const cacheGovernance = new CacheGovernanceService({
+  store: adminStore,
+  fetchRelay,
+  tileCatalogManager,
+  userSystem,
+  indexPath: adminConfig.cacheGovernance?.indexPath,
 })
 const precacheManager = new PrecacheManager({
   store: adminStore,
@@ -801,8 +809,20 @@ const service = {
   },
 
   async fetchRelay (url, options = {}) {
+    const headers = options.headers && typeof options.headers === 'object' ? options.headers : {}
+    const sourceId = options.cacheMeta?.sourceId || options.providerId || ''
+    const runtimeCacheOptions = sourceId
+      ? await cacheGovernance.getRuntimeCacheOptions(
+          sourceId,
+          url,
+          options.cacheMeta?.resourceType || 'raster',
+          headers,
+          options.cacheMeta
+        )
+      : {}
     return fetchRelay.fetch(url, {
       ...options,
+      ...runtimeCacheOptions,
       proxy: Object.hasOwn(options, 'proxy') ? options.proxy : null,
     })
   },
@@ -1055,11 +1075,56 @@ const service = {
   },
 
   getFetchRelayCacheStats () {
-    return fetchRelay.getStats()
+    return cacheGovernance.getOverview()
   },
 
-  clearFetchRelayCache (targetUrl, sourceId) {
-    return fetchRelay.clear(targetUrl, sourceId)
+  async clearFetchRelayCache (targetUrl, sourceId, actor, context) {
+    if (targetUrl) return fetchRelay.clear(targetUrl)
+    const preview = await cacheGovernance.previewCleanup({
+      sourceIds: sourceId ? [sourceId] : [],
+      states: ['fresh', 'stale', 'expired'],
+    })
+    return cacheGovernance.createCleanupJob(actor, { previewId: preview.previewId }, context)
+  },
+
+  getCacheGovernancePolicy () {
+    return cacheGovernance.getPolicy()
+  },
+
+  updateCacheGovernancePolicy (actor, input, context) {
+    return cacheGovernance.updatePolicy(actor, input, context)
+  },
+
+  reconcileCacheIndex (actor, input, context) {
+    return cacheGovernance.reconcileIndex(actor, input, context)
+  },
+
+  previewCacheCleanup (input) {
+    return cacheGovernance.previewCleanup(input)
+  },
+
+  createCacheCleanupJob (actor, input, context) {
+    return cacheGovernance.createCleanupJob(actor, input, context)
+  },
+
+  listCacheCleanupJobs (input) {
+    return cacheGovernance.listCleanupJobs(input)
+  },
+
+  cancelCacheCleanupJob (actor, id, context) {
+    return cacheGovernance.cancelCleanupJob(actor, id, context)
+  },
+
+  analyzeCacheKeyPolicy (actor, input, context) {
+    return cacheGovernance.analyzeKeyPolicy(actor, input, context)
+  },
+
+  listCacheKeyPolicies () {
+    return cacheGovernance.listKeyPolicies()
+  },
+
+  updateCacheKeyPolicy (actor, sourceId, input, context) {
+    return cacheGovernance.updateKeyPolicy(actor, sourceId, input, context)
   },
 
   async loginAdmin (credentials) {

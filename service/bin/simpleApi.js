@@ -2377,8 +2377,126 @@ const simpleApi = {
       describe: '获取管理后台缓存状态',
       tags: ['admin'],
       handler: async (req, res) => {
-        requireAdmin(req)
+        noStore(res)
+        requireAdmin(req, 'admin.cache.manage')
         res.jsonSuc(await service.getFetchRelayCacheStats())
+      },
+    },
+    {
+      path: '/admin/cache/policy',
+      method: 'get',
+      describe: '获取缓存治理策略',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.getCacheGovernancePolicy())
+      },
+    },
+    {
+      path: '/admin/cache/policy',
+      method: 'put',
+      describe: '更新缓存治理策略',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        const actor = requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.updateCacheGovernancePolicy(actor, req.body || {}, requestContext(req)))
+      },
+    },
+    {
+      path: '/admin/cache/index/reconcile',
+      method: 'post',
+      describe: '校准缓存派生索引',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        const actor = requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.reconcileCacheIndex(actor, {
+          force: req.body?.force === true,
+        }, requestContext(req)))
+      },
+    },
+    {
+      path: '/admin/cache/cleanup/preview',
+      method: 'post',
+      describe: '预演缓存清理范围',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.previewCacheCleanup(req.body || {}))
+      },
+    },
+    {
+      path: '/admin/cache/cleanup/jobs',
+      method: 'post',
+      describe: '创建缓存清理任务',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        const actor = requireAdmin(req, 'admin.cache.manage')
+        res.status(202).jsonSuc(await service.createCacheCleanupJob(actor, req.body || {}, requestContext(req)))
+      },
+    },
+    {
+      path: '/admin/cache/cleanup/jobs',
+      method: 'get',
+      describe: '获取缓存清理任务记录',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.listCacheCleanupJobs(req.query || {}))
+      },
+    },
+    {
+      path: '/admin/cache/cleanup/jobs/:id/cancel',
+      method: 'post',
+      describe: '取消缓存清理任务',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        const actor = requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.cancelCacheCleanupJob(actor, req.params.id, requestContext(req)))
+      },
+    },
+    {
+      path: '/admin/cache/key-analysis',
+      method: 'post',
+      describe: '分析图源 URL 缓存键规则',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        const actor = requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.analyzeCacheKeyPolicy(actor, req.body || {}, requestContext(req)))
+      },
+    },
+    {
+      path: '/admin/cache/key-policies',
+      method: 'get',
+      describe: '获取图源 URL 缓存键规则',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.listCacheKeyPolicies())
+      },
+    },
+    {
+      path: '/admin/cache/key-policies/:sourceId',
+      method: 'put',
+      describe: '更新图源 URL 缓存键规则',
+      tags: ['admin'],
+      handler: async (req, res) => {
+        noStore(res)
+        const actor = requireAdmin(req, 'admin.cache.manage')
+        res.jsonSuc(await service.updateCacheKeyPolicy(
+          actor,
+          req.params.sourceId,
+          req.body || {},
+          requestContext(req)
+        ))
       },
     },
     {
@@ -2387,14 +2505,15 @@ const simpleApi = {
       describe: '清理管理后台瓦片缓存',
       tags: ['admin'],
       handler: async (req, res) => {
-        requireAdmin(req)
+        noStore(res)
+        const actor = requireAdmin(req, 'admin.cache.manage')
         const targetUrl = req.query.url ? decodeURIComponent(req.query.url) : ''
         const sourceId = req.query.sourceId || ''
         if (targetUrl && !whitelist.isAllowed(targetUrl)) {
           jsonError(res, '请求的 URL 不在白名单内，不允许清理', 403)
           return
         }
-        res.jsonSuc(await service.clearFetchRelayCache(targetUrl, sourceId))
+        res.jsonSuc(await service.clearFetchRelayCache(targetUrl, sourceId, actor, requestContext(req)))
       },
     },
     {

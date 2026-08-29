@@ -1,6 +1,6 @@
 export function formatBytes (bytes = 0) {
   if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
   let value = bytes
   let unit = 0
   while (value >= 1024 && unit < units.length - 1) {

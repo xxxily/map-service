@@ -2182,6 +2182,9 @@ export class TileCatalogManager {
         resourceType: 'raster',
         keyPoolId: selectedKey?.poolId || null,
         keyId: selectedKey?.keyId || null,
+        secretQueryParams: selectedKey?.placement === 'query'
+          ? [selectedKey.paramName || source.secrets?.paramName || 'key']
+          : [],
       },
     }
   }
@@ -2228,6 +2231,9 @@ export class TileCatalogManager {
         resourceType,
         keyPoolId: selectedKey?.poolId || null,
         keyId: selectedKey?.keyId || null,
+        secretQueryParams: selectedKey?.placement === 'query'
+          ? [selectedKey.paramName || source.secrets?.paramName || 'key']
+          : [],
       },
     }
   }
