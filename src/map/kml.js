@@ -428,6 +428,7 @@ async function exitEditingPublicKml (map) {
 const kmlLayerGroups = new Map()
 const featureLayers = new Map()
 let shareClusterLayerGroup = null
+let personalClusterLayerGroup = null
 const expandedKmlIds = new Set()
 const expandedKmlActionIds = new Set()
 const kmlBatchSelection = createKmlBatchSelectionModel()
@@ -1494,6 +1495,17 @@ function removeShareClusterLayers (map) {
   }
 }
 
+function removePersonalClusterLayers (map) {
+  if (!personalClusterLayerGroup) return
+  personalClusterLayerGroup.eachLayer?.(layer => {
+    const featureId = String(layer?._mapServiceKmlFeatureId || '')
+    const kmlId = String(layer?._mapServiceKmlFileId || '')
+    if (featureId && kmlId) featureLayers.delete(getFeatureLayerKey(kmlId, featureId))
+  })
+  map.removeLayer(personalClusterLayerGroup)
+  personalClusterLayerGroup = null
+}
+
 function getSharePointClusterFeature (cluster) {
   const members = Array.isArray(cluster?.members) ? cluster.members : []
   return members.length === 1 ? members[0] : null
@@ -1566,6 +1578,81 @@ function renderShareClusterLayers (map) {
   return true
 }
 
+function getGlobalPointClusteringConfig2d () {
+  if (getActiveShare()) return null
+  const raw = getAuthSnapshot().config?.kml?.pointClustering
+  return raw?.enabled === true ? normalizeKmlPointClusteringConfig(raw) : null
+}
+
+function renderPersonalClusterLayers (map, config) {
+  if (!config?.enabled) return false
+  removePersonalClusterLayers(map)
+  kmlList.forEach(kmlFile => removeKmlLayers(map, kmlFile))
+  const group = L.featureGroup()
+  const records = []
+  const viewportOptions = getViewportOptions2d(map)
+  const bufferedBounds = viewportOptions.viewportBounds
+    ? expandKmlViewportBounds(viewportOptions.viewportBounds)
+    : null
+
+  kmlList.filter(kmlFile => (
+    isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError
+  )).forEach(kmlFile => {
+    const { features } = getRenderableKmlFeatures(map, kmlFile)
+    features.forEach(feature => {
+      if (feature.type !== 'Point') {
+        const layer = renderFeature(map, kmlFile, feature)
+        if (layer) group.addLayer(layer)
+        return
+      }
+      const point = getMapPoint(kmlFile, feature)
+      if (bufferedBounds && !isKmlPointInsideBounds(getMapCoordinates(kmlFile, feature), bufferedBounds)) return
+      records.push({
+        id: `${kmlFile.id}:${feature.id}`,
+        latLng: { lat: point[0], lng: point[1] },
+        kmlFile,
+        feature,
+      })
+    })
+  })
+
+  const projected = clusterKmlPoints(
+    records,
+    viewportOptions.zoom ?? map.getZoom?.() ?? 0,
+    config,
+    (latLng, zoom) => map.project([latLng.lat, latLng.lng], zoom),
+  )
+  const recordById = new Map(records.map(record => [record.id, record]))
+  projected.forEach(item => {
+    if (item.type === 'point') {
+      const record = recordById.get(item.id)
+      const layer = record && renderFeature(map, record.kmlFile, record.feature)
+      if (layer) group.addLayer(layer)
+      return
+    }
+    const marker = L.marker([item.center.lat, item.center.lng], {
+      icon: getLeafletClusterIcon(item.count),
+      keyboard: true,
+      title: `${item.count} 个点位，点击放大`,
+      zIndexOffset: 1000,
+    })
+    marker._mapServiceKmlCluster = true
+    marker.on('click', event => {
+      event.originalEvent?.stopPropagation?.()
+      const nextZoom = Math.min(
+        Number(map.getMaxZoom?.() ?? 24),
+        Number(map.getZoom?.() ?? 0) + 1,
+      )
+      map.setView([item.center.lat, item.center.lng], nextZoom, { animate: true })
+    })
+    marker.bindTooltip(`${item.count} 个点位`, { direction: 'top', offset: [0, -16] })
+    group.addLayer(marker)
+  })
+  group.addTo(map)
+  personalClusterLayerGroup = group
+  return true
+}
+
 function escapeHtml (str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -1617,6 +1704,11 @@ function syncKmlLayers (map, kmlFile, displayFeatures) {
 }
 
 function renderKmlLayers (map, kmlFile, options = {}) {
+  if (!kmlFile?.isPublic && !kmlFile?.isShare &&
+      getGlobalPointClusteringConfig2d()?.enabled && options.individualPersonalRender !== true) {
+    renderAllKmls(map)
+    return
+  }
   if (options.incremental && isKmlEnabled(kmlFile)) {
     const { features, viewportOptions } = getRenderableKmlFeatures(map, kmlFile, options)
     syncKmlLayers(map, kmlFile, features)
@@ -1651,18 +1743,22 @@ function renderAllKmls (map) {
   kmlLayerGroups.clear()
   featureLayers.clear()
   removeShareClusterLayers(map)
+  removePersonalClusterLayers(map)
 
   if (getActiveShare() && sharePointClusteringConfig?.enabled) {
     renderShareClusterLayers(map)
     return
   }
-  
-  kmlList.forEach(kmlFile => {
-    renderKmlLayers(map, kmlFile)
-  })
+
+  const globalClusteringConfig = getGlobalPointClusteringConfig2d()
+  if (!renderPersonalClusterLayers(map, globalClusteringConfig)) {
+    kmlList.forEach(kmlFile => {
+      renderKmlLayers(map, kmlFile, { individualPersonalRender: true })
+    })
+  }
 
   publicKmlList.forEach(kmlFile => {
-    renderKmlLayers(map, kmlFile)
+    renderKmlLayers(map, kmlFile, { individualPersonalRender: true })
   })
 }
 
@@ -2612,6 +2708,13 @@ function scheduleKmlViewportRerender (map) {
   kmlViewportRerenderTimer = setTimeout(() => {
     kmlViewportRerenderTimer = null
     if (getActiveShare() && sharePointClusteringConfig?.enabled) {
+      kmlViewportRenderTask = setTimeout(() => {
+        kmlViewportRenderTask = null
+        renderAllKmls(map)
+      }, 0)
+      return
+    }
+    if (getGlobalPointClusteringConfig2d()?.enabled) {
       kmlViewportRenderTask = setTimeout(() => {
         kmlViewportRenderTask = null
         renderAllKmls(map)

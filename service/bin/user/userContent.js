@@ -102,6 +102,21 @@ const DEFAULT_KML_POINT_CLUSTERING = Object.freeze({
   maxMembersPerCluster: 5000,
 })
 
+const KML_SYNC_ERROR_SUGGESTIONS = Object.freeze({
+  VALIDATION_FAILED: '请检查文件名、目录、位置和 KML 内容格式后重试。',
+  RESOURCE_NOT_FOUND: '请刷新 KML 列表，确认该文件仍存在后重试。',
+  PERMISSION_DENIED: '请确认当前账号仍有 KML 管理权限。',
+  KML_MOVE_INVALID: '请重新加载 KML 后再保存；若仍失败，请检查文件所在目录的顺序。',
+  KML_REVISION_CONFLICT: '请刷新 KML 列表，确认最新内容后再保存。',
+  KML_DIRECTORY_NOT_FOUND: '请刷新目录列表，并重新选择有效目录。',
+  KML_NOT_ACTIVE: '请先恢复该 KML，再进行编辑或移动。',
+  DEFAULT_KML_PROTECTED: '请先将另一个 KML 设为默认文件后重试。',
+  KML_CREATE_REPLAY_DELETED: '请刷新 KML 列表；若要重新创建副本，请使用新的本地同步标识。',
+  KML_DELETE_CONFIRMATION_REQUIRED: '请在确认删除后重试，未确认的文件不会移入回收站。',
+  QUOTA_EXCEEDED: '请减少文件或要素数量，或联系管理员调整配额。',
+  FILE_TOO_LARGE: '请压缩或拆分 KML 文件后再保存。',
+})
+
 function parseJson (value, fallback) {
   try {
     const parsed = JSON.parse(String(value || ''))
@@ -221,6 +236,14 @@ function normalizeIntegerField (value, options = {}) {
     throw createHttpError(options.message || '整数参数格式不正确', 400, options.code || 'VALIDATION_FAILED')
   }
   return number
+}
+
+function sanitizeSyncDetailText (value, maxLength = 500) {
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
 }
 
 export function normalizeKmlPointClustering (value, fallback = DEFAULT_KML_POINT_CLUSTERING) {
@@ -1602,15 +1625,28 @@ export class UserContentService {
       throw createHttpError('资源不存在', 404, 'RESOURCE_NOT_FOUND')
     }
     const usage = this.database.prepare(`
-      SELECT COUNT(*) AS file_count,
-             COALESCE(SUM(feature_count), 0) AS feature_count,
-             COALESCE(SUM(byte_size), 0) AS byte_size
+      SELECT
+        COUNT(*) AS total_file_count,
+        COALESCE(SUM(feature_count), 0) AS total_feature_count,
+        COALESCE(SUM(byte_size), 0) AS total_byte_size,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS file_count,
+        COALESCE(SUM(CASE WHEN status = 'active' THEN feature_count ELSE 0 END), 0) AS feature_count,
+        COALESCE(SUM(CASE WHEN status = 'active' THEN byte_size ELSE 0 END), 0) AS byte_size,
+        SUM(CASE WHEN status = 'trashed' THEN 1 ELSE 0 END) AS trash_count,
+        COALESCE(SUM(CASE WHEN status = 'trashed' THEN feature_count ELSE 0 END), 0) AS trash_feature_count,
+        COALESCE(SUM(CASE WHEN status = 'trashed' THEN byte_size ELSE 0 END), 0) AS trash_byte_size
       FROM kml_documents WHERE owner_id = ?
     `).get(ownerId)
     return {
       fileCount: Number(usage.file_count || 0),
       featureCount: Number(usage.feature_count || 0),
       byteSize: Number(usage.byte_size || 0),
+      trashCount: Number(usage.trash_count || 0),
+      trashFeatureCount: Number(usage.trash_feature_count || 0),
+      trashByteSize: Number(usage.trash_byte_size || 0),
+      totalFileCount: Number(usage.total_file_count || 0),
+      totalFeatureCount: Number(usage.total_feature_count || 0),
+      totalByteSize: Number(usage.total_byte_size || 0),
       quota: this.quotaForUser(ownerId),
     }
   }
@@ -1618,11 +1654,15 @@ export class UserContentService {
   assertKmlQuota (ownerId, document, existing = null, sourceByteSize = 0) {
     const quota = this.quotaForUser(ownerId)
     const usage = this.database.prepare(`
-      SELECT COUNT(*) AS file_count, COALESCE(SUM(feature_count), 0) AS feature_count
+      SELECT SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS file_count,
+             COALESCE(SUM(CASE WHEN status = 'active' THEN feature_count ELSE 0 END), 0) AS feature_count
       FROM kml_documents WHERE owner_id = ?
     `).get(ownerId)
+    const existingIsActive = existing?.status === 'active'
     const nextFileCount = Number(usage.file_count || 0) + (existing ? 0 : 1)
-    const nextFeatureCount = Number(usage.feature_count || 0) - Number(existing?.feature_count || 0) + document.featureCount
+    const nextFeatureCount = Number(usage.feature_count || 0) -
+      (existingIsActive ? Number(existing.feature_count || 0) : 0) +
+      (existing ? (existingIsActive ? document.featureCount : 0) : document.featureCount)
     const measuredBytes = Math.max(document.byteSize, Number(sourceByteSize || 0))
     if (measuredBytes > quota.maxKmlFileBytes) {
       throw createHttpError('KML 文件超过单文件大小限制', 413, 'FILE_TOO_LARGE')
@@ -1778,31 +1818,50 @@ export class UserContentService {
   deleteKmlDirectory (actor, directoryId) {
     this.assertPermission(actor, 'kml.own.write')
     const row = this.requireOwnedKmlDirectory(actor, directoryId)
-    const targetStart = Number(this.database.prepare(`
-      SELECT COALESCE(MAX(position), -1) + 1 AS position
-      FROM kml_documents WHERE owner_id = ? AND directory_id IS NULL AND status = 'active'
-    `).get(row.owner_id)?.position || 0)
-    const files = this.database.prepare(`
-      SELECT id FROM kml_documents WHERE owner_id = ? AND directory_id = ?
-      ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, position, id
-    `).all(row.owner_id, row.id)
     const now = this.nowIso()
-    this.database.transaction(() => {
+    const files = this.database.transaction(() => {
+      // Repair both sides before moving rows. Only active files participate in
+      // the user-visible order; trashed files retain no meaningful position.
+      this.reindexKmlDirectoryOrder(row.owner_id, null, { now, touchRevision: false })
+      this.reindexKmlDirectoryOrder(row.owner_id, row.id, { now, touchRevision: false })
+      const targetStart = Number(this.database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM kml_documents
+        WHERE owner_id = ? AND directory_id IS NULL AND status = 'active'
+      `).get(row.owner_id)?.count || 0)
+      const activeFiles = this.database.prepare(`
+        SELECT id FROM kml_documents
+        WHERE owner_id = ? AND directory_id = ? AND status = 'active'
+        ORDER BY position, id
+      `).all(row.owner_id, row.id)
+      const trashedFiles = this.database.prepare(`
+        SELECT id FROM kml_documents
+        WHERE owner_id = ? AND directory_id = ? AND status = 'trashed'
+        ORDER BY deleted_at, position, id
+      `).all(row.owner_id, row.id)
       const move = this.database.prepare(`
         UPDATE kml_documents
         SET directory_id = NULL, position = ?, revision = revision + 1, updated_at = ?
         WHERE id = ?
       `)
-      files.forEach((file, index) => move.run(targetStart + index, now, file.id))
+      activeFiles.forEach((file, index) => move.run(targetStart + index, now, file.id))
+      const clearTrashed = this.database.prepare(`
+        UPDATE kml_documents
+        SET directory_id = NULL, position = 0, revision = revision + 1, updated_at = ?
+        WHERE id = ?
+      `)
+      trashedFiles.forEach(file => clearTrashed.run(now, file.id))
       this.database.prepare('DELETE FROM kml_directories WHERE id = ?').run(row.id)
+      this.reindexKmlDirectoryOrder(row.owner_id, null, { now, touchRevision: false })
       this.reindexKmlDirectories(row.owner_id)
       this.insertAudit({
         actorUserId: row.owner_id,
         action: 'kml.directory.delete',
         targetType: 'kml-directory',
         targetId: row.id,
-        metadata: { movedFileCount: files.length },
+        metadata: { movedFileCount: activeFiles.length + trashedFiles.length },
       })
+      return [...activeFiles, ...trashedFiles]
     })
     return {
       id: row.id,
@@ -1820,6 +1879,32 @@ export class UserContentService {
     `).all(ownerId)
     const update = this.database.prepare('UPDATE kml_directories SET position = ? WHERE id = ?')
     rows.forEach((row, index) => update.run(index, row.id))
+  }
+
+  reindexKmlDirectoryOrder (ownerId, directoryId, options = {}) {
+    const normalizedDirectoryId = directoryId || null
+    const rows = this.database.prepare(`
+      SELECT id, position
+      FROM kml_documents
+      WHERE owner_id = ? AND directory_id IS ? AND status = 'active'
+      ORDER BY position, id
+    `).all(ownerId, normalizedDirectoryId)
+    const now = options.now || this.nowIso()
+    const touchRevision = options.touchRevision === true
+    const update = this.database.prepare(`
+      UPDATE kml_documents
+      SET position = ?,
+          updated_at = ?,
+          revision = revision + ?
+      WHERE id = ? AND owner_id = ? AND status = 'active'
+    `)
+    const changedIds = []
+    rows.forEach((row, index) => {
+      if (Number(row.position) === index) return
+      update.run(index, now, touchRevision ? 1 : 0, row.id, ownerId)
+      changedIds.push(row.id)
+    })
+    return changedIds
   }
 
   reorderKmlDirectories (actor, input = {}) {
@@ -2087,16 +2172,20 @@ export class UserContentService {
     `).get(directoryId, ownerId)) {
       throw createHttpError('KML 目录不存在', 404, 'KML_DIRECTORY_NOT_FOUND')
     }
-    const position = Number(this.database.prepare(`
-      SELECT COALESCE(MAX(position), -1) + 1 AS position
-      FROM kml_documents WHERE owner_id = ? AND directory_id IS ?
-    `).get(ownerId, directoryId)?.position || 0)
-    this.assertKmlQuota(ownerId, normalized, null, options.sourceByteSize)
     const sourceType = normalizeEnum(input.sourceType, KML_SOURCE_TYPES, options.sourceType || 'created', 'KML 来源类型不正确')
     const isDefault = Boolean(input.isDefault)
     const now = this.nowIso()
     const id = randomId('kml')
     this.database.transaction(() => {
+      this.assertKmlQuota(ownerId, normalized, null, options.sourceByteSize)
+      // Positions are scoped to active files. Recycle-bin rows must never
+      // consume an insertion slot or leave gaps in the visible order.
+      const position = Number(this.database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM kml_documents
+        WHERE owner_id = ? AND directory_id IS ? AND status = 'active'
+      `).get(ownerId, directoryId)?.count || 0)
+      this.reindexKmlDirectoryOrder(ownerId, directoryId, { now, touchRevision: false })
       if (isDefault) {
         this.database.prepare(`UPDATE kml_documents SET is_default = 0 WHERE owner_id = ?`).run(ownerId)
       }
@@ -2257,21 +2346,44 @@ export class UserContentService {
       throw createHttpError('KML 目录不存在', 404, 'KML_DIRECTORY_NOT_FOUND')
     }
     const normalized = normalizeKmlInput(input, current)
+    const sourceDirectoryId = row.directory_id || null
+    let repairedPosition = null
     let directoryMove = null
-    if (input.directoryId !== undefined || input.position !== undefined) {
-      const sourceDirectoryId = row.directory_id || null
-      const sourceIds = this.kmlIdsInDirectory(row.owner_id, sourceDirectoryId).filter(id => id !== row.id)
-      const ids = this.kmlIdsInDirectory(row.owner_id, requestedDirectoryId).filter(id => id !== row.id)
-      const position = input.position === undefined
-        ? ids.length
-        : normalizeIntegerField(input.position, {
-            minimum: 0,
-            maximum: ids.length,
-            code: 'KML_MOVE_INVALID',
-            message: 'KML 文件位置不正确',
-          })
-      ids.splice(position, 0, row.id)
-      directoryMove = { sourceDirectoryId, sourceIds, ids, requestedDirectoryId }
+    if (row.status === 'active') {
+      const sourceAllIds = this.kmlIdsInDirectory(row.owner_id, sourceDirectoryId)
+      const canonicalPosition = sourceAllIds.indexOf(row.id)
+      const storedPosition = Number(row.position)
+      repairedPosition = canonicalPosition >= 0 && storedPosition !== canonicalPosition
+        ? canonicalPosition
+        : null
+      const hasDirectoryInput = input.directoryId !== undefined
+      const hasPositionInput = input.position !== undefined
+      const sameDirectory = requestedDirectoryId === sourceDirectoryId
+      const rawPosition = hasPositionInput ? Number(input.position) : null
+      // Older clients echo the stored position on every content update. If
+      // that value is already stale, treat it as an organization no-op and
+      // repair the server-side dense order instead of rejecting the edit.
+      const stalePositionEcho = sameDirectory && hasPositionInput &&
+        Number.isSafeInteger(rawPosition) && rawPosition === storedPosition &&
+        canonicalPosition >= 0 && rawPosition !== canonicalPosition
+      const shouldMove = (hasDirectoryInput && !sameDirectory) ||
+        (hasPositionInput && !stalePositionEcho && rawPosition !== canonicalPosition)
+      if (shouldMove) {
+        const sourceIds = sourceAllIds.filter(id => id !== row.id)
+        const ids = sameDirectory
+          ? sourceIds.slice()
+          : this.kmlIdsInDirectory(row.owner_id, requestedDirectoryId).filter(id => id !== row.id)
+        const position = hasPositionInput
+          ? normalizeIntegerField(input.position, {
+              minimum: 0,
+              maximum: ids.length,
+              code: 'KML_MOVE_INVALID',
+              message: 'KML 文件位置不正确',
+            })
+          : ids.length
+        ids.splice(position, 0, row.id)
+        directoryMove = { sourceDirectoryId, sourceIds, ids, requestedDirectoryId }
+      }
     }
     const makeDefault = input.isDefault === true
     if (makeDefault && row.status !== 'active') {
@@ -2286,13 +2398,8 @@ export class UserContentService {
       if (makeDefault && row.status === 'active') {
         this.database.prepare(`UPDATE kml_documents SET is_default = 0 WHERE owner_id = ?`).run(row.owner_id)
       }
-      const result = this.database.prepare(`
-        UPDATE kml_documents SET
-          name = ?, description = ?, is_default = ?, coord_correction = ?, theme = ?,
-          color = ?, lock_drag = ?, enabled = ?, is_live_track = ?, features_json = ?,
-          feature_count = ?, byte_size = ?, revision = revision + 1, updated_at = ?
-        WHERE id = ? AND revision = ?
-      `).run(
+      const positionClause = directoryMove || repairedPosition === null ? '' : ', position = ?'
+      const updateParams = [
         normalized.name,
         normalized.description,
         makeDefault ? 1 : Number(row.is_default),
@@ -2305,9 +2412,18 @@ export class UserContentService {
         JSON.stringify(normalized.features),
         normalized.featureCount,
         normalized.byteSize,
-        now,
-        row.id,
-        revision
+      ]
+      updateParams.push(now)
+      if (positionClause) updateParams.push(repairedPosition)
+      updateParams.push(row.id, revision)
+      const result = this.database.prepare(`
+        UPDATE kml_documents SET
+          name = ?, description = ?, is_default = ?, coord_correction = ?, theme = ?,
+          color = ?, lock_drag = ?, enabled = ?, is_live_track = ?, features_json = ?,
+          feature_count = ?, byte_size = ?, revision = revision + 1, updated_at = ?${positionClause}
+        WHERE id = ? AND revision = ?
+      `).run(
+        ...updateParams
       )
       if (Number(result.changes) !== 1) {
         throw createHttpError('KML 已被其他客户端更新，请重新加载', 409, 'KML_REVISION_CONFLICT')
@@ -2354,10 +2470,14 @@ export class UserContentService {
     this.database.transaction(() => {
       this.database.prepare(`
         UPDATE kml_documents
-        SET status = 'trashed', is_default = 0, revision = revision + 1,
+        SET status = 'trashed', is_default = 0, position = 0, revision = revision + 1,
             updated_at = ?, deleted_at = ?
         WHERE id = ?
       `).run(now, now, row.id)
+      this.reindexKmlDirectoryOrder(row.owner_id, row.directory_id || null, {
+        now,
+        touchRevision: true,
+      })
       this.insertAudit({
         actorUserId: this.actorUser(actor).id,
         action: 'kml.trash',
@@ -2398,17 +2518,30 @@ export class UserContentService {
   restoreKml (actor, kmlId) {
     const row = this.requireKmlAccess(actor, kmlId, 'write')
     if (row.status === 'active') return this.kmlViewFromRow(row, { includeFeatures: true })
+    this.assertKmlQuota(row.owner_id, {
+      featureCount: Number(row.feature_count || 0),
+      byteSize: Number(row.byte_size || 0),
+    })
     const now = this.nowIso()
     this.database.transaction(() => {
+      const position = Number(this.database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM kml_documents
+        WHERE owner_id = ? AND directory_id IS ? AND status = 'active'
+      `).get(row.owner_id, row.directory_id || null)?.count || 0)
       const result = this.database.prepare(`
         UPDATE kml_documents
-        SET status = 'active', is_default = 0, revision = revision + 1,
+        SET status = 'active', is_default = 0, position = ?, revision = revision + 1,
             updated_at = ?, deleted_at = NULL
         WHERE id = ? AND owner_id = ? AND status = 'trashed'
-      `).run(now, row.id, row.owner_id)
+      `).run(position, now, row.id, row.owner_id)
       if (Number(result.changes) !== 1) {
         throw createHttpError('KML 状态已被其他客户端更新，请重新加载', 409, 'KML_REVISION_CONFLICT')
       }
+      this.reindexKmlDirectoryOrder(row.owner_id, row.directory_id || null, {
+        now,
+        touchRevision: true,
+      })
       this.insertAudit({
         actorUserId: this.actorUser(actor).id,
         action: 'kml.restore',
@@ -2478,6 +2611,107 @@ export class UserContentService {
     return { id: row.id, status: 'deleted' }
   }
 
+  purgeExpiredKmlTrash (options = {}) {
+    const limit = Number.isSafeInteger(Number(options.limit)) && Number(options.limit) > 0
+      ? Math.min(Number(options.limit), 2000)
+      : 500
+    const scanBatchSize = Number.isSafeInteger(Number(options.scanBatchSize)) && Number(options.scanBatchSize) > 0
+      ? Math.min(Number(options.scanBatchSize), 2000)
+      : Math.min(500, Math.max(100, limit))
+    const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : this.clock()
+    const now = new Date(nowMs).toISOString()
+    const scan = this.database.prepare(`
+      SELECT k.id, k.owner_id, k.name, k.feature_count, k.byte_size,
+             COALESCE(k.deleted_at, k.updated_at, k.created_at) AS trashed_at,
+             EXISTS(SELECT 1 FROM kml_share_items i WHERE i.kml_id = k.id) AS has_share
+      FROM kml_documents k
+      WHERE k.status = 'trashed'
+      ORDER BY trashed_at ASC, k.id ASC
+      LIMIT ? OFFSET ?
+    `)
+    const eligible = []
+    const retentionDaysByOwner = new Map()
+    let scannedCount = 0
+    let skippedByRetention = 0
+    let skippedByShare = 0
+    let offset = 0
+    while (eligible.length < limit) {
+      const rows = scan.all(scanBatchSize, offset)
+      if (rows.length === 0) break
+      for (const row of rows) {
+        scannedCount += 1
+        if (!retentionDaysByOwner.has(row.owner_id)) {
+          retentionDaysByOwner.set(
+            row.owner_id,
+            Number(this.quotaForUser(row.owner_id).trashRetentionDays || 30),
+          )
+        }
+        const retentionDays = retentionDaysByOwner.get(row.owner_id)
+        const trashedAt = Date.parse(row.trashed_at || '')
+        if (!Number.isFinite(trashedAt) || trashedAt > nowMs - retentionDays * 86_400_000) {
+          skippedByRetention += 1
+          continue
+        }
+        if (Number(row.has_share) === 1) {
+          skippedByShare += 1
+          continue
+        }
+        eligible.push(row)
+        if (eligible.length >= limit) break
+      }
+      if (eligible.length >= limit || rows.length < scanBatchSize) break
+      offset += rows.length
+    }
+    const summary = {
+      scannedCount,
+      eligibleCount: eligible.length,
+      skippedByRetention,
+      skippedByShare,
+      deletedCount: 0,
+      deletedFeatureCount: 0,
+      deletedByteSize: 0,
+      dryRun: options.dryRun === true,
+    }
+    if (options.dryRun === true || eligible.length === 0) return summary
+
+    this.database.transaction(() => {
+      const markSyncKey = this.database.prepare(`
+        UPDATE kml_sync_create_keys SET deleted_at = ? WHERE kml_id = ?
+      `)
+      const remove = this.database.prepare(`
+        DELETE FROM kml_documents
+        WHERE id = ? AND status = 'trashed'
+          AND NOT EXISTS (SELECT 1 FROM kml_share_items i WHERE i.kml_id = kml_documents.id)
+      `)
+      eligible.forEach(row => {
+        const result = remove.run(row.id)
+        if (Number(result.changes) !== 1) return
+        markSyncKey.run(now, row.id)
+        summary.deletedCount += 1
+        summary.deletedFeatureCount += Number(row.feature_count || 0)
+        summary.deletedByteSize += Number(row.byte_size || 0)
+        this.insertAudit({
+          actorUserId: null,
+          action: 'kml.trash-expire',
+          targetType: 'kml',
+          targetId: row.id,
+          metadata: {
+            ownerId: row.owner_id,
+            name: sanitizeSyncDetailText(row.name, 200),
+            featureCount: Number(row.feature_count || 0),
+            byteSize: Number(row.byte_size || 0),
+            retentionCutoff: new Date(nowMs - retentionDaysByOwner.get(row.owner_id) * 86_400_000).toISOString(),
+          },
+        })
+      })
+    })
+    return summary
+  }
+
+  cleanupExpiredKmlTrash (options = {}) {
+    return this.purgeExpiredKmlTrash(options)
+  }
+
   deleteKmlPermanently (actor, kmlId) {
     return this.permanentDeleteKml(actor, kmlId)
   }
@@ -2519,6 +2753,51 @@ export class UserContentService {
     }
   }
 
+  syncOperationFileName (ownerId, operation = {}) {
+    const kmlId = String(operation.kmlId || operation.id || '').slice(0, 160)
+    if (kmlId) {
+      const row = this.database.prepare(`
+        SELECT name FROM kml_documents WHERE id = ? AND owner_id = ?
+      `).get(kmlId, ownerId)
+      if (row?.name) return sanitizeSyncDetailText(row.name, 200)
+    }
+    const clientId = String(operation.clientId || '').slice(0, 160)
+    if (clientId) {
+      const row = this.database.prepare(`
+        SELECT d.name
+        FROM kml_sync_create_keys k
+        LEFT JOIN kml_documents d ON d.id = k.kml_id AND d.owner_id = k.owner_id
+        WHERE k.owner_id = ? AND k.client_id = ?
+      `).get(ownerId, clientId)
+      if (row?.name) return sanitizeSyncDetailText(row.name, 200)
+    }
+    const data = operation.data || operation.file || operation
+    return sanitizeSyncDetailText(data?.name, 200)
+  }
+
+  attachSyncOperationError (ownerId, operation, operationIndex, error) {
+    if (!error || typeof error !== 'object') return error
+    const action = sanitizeSyncDetailText(operation?.action || operation?.operation, 40)
+    const kmlId = String(operation?.kmlId || operation?.id || '').slice(0, 160)
+    const clientId = String(operation?.clientId || '').slice(0, 160)
+    const errorCode = sanitizeSyncDetailText(error.code || 'SYNC_FAILED', 80)
+    if (!Object.prototype.hasOwnProperty.call(KML_SYNC_ERROR_SUGGESTIONS, errorCode)) return error
+    const reason = sanitizeSyncDetailText(error.message || '同步操作失败', 500)
+    const details = {
+      operationIndex: Number(operationIndex),
+      action,
+      kmlId: kmlId || null,
+      clientId: clientId || null,
+      fileName: this.syncOperationFileName(ownerId, operation),
+      errorCode,
+      reason,
+      suggestion: KML_SYNC_ERROR_SUGGESTIONS[errorCode],
+    }
+    error.details = details
+    error.exposeDetails = true
+    return error
+  }
+
   syncKml (actor, input = {}) {
     this.assertPermission(actor, 'kml.own.write')
     requireObject(input)
@@ -2541,60 +2820,58 @@ export class UserContentService {
     }
     return this.database.transaction(() => {
       this.ensureDefaultKmlForOwner(this.actorUser(actor).id)
+      const ownerId = this.actorUser(actor).id
       const results = operations.map((rawOperation, index) => {
-        const operation = requireObject(rawOperation, `第 ${index + 1} 条同步操作格式不正确`)
-        const action = String(operation.action || operation.operation || '')
-        if (action === 'create') {
-          const clientId = normalizeSyncClientId(operation.clientId)
-          let document
-          try {
-            document = this.createKml(actor, operation.data || operation.file || {}, {
+        const operation = rawOperation && typeof rawOperation === 'object' ? rawOperation : {}
+        try {
+          const normalizedOperation = requireObject(rawOperation, `第 ${index + 1} 条同步操作格式不正确`)
+          const action = String(normalizedOperation.action || normalizedOperation.operation || '')
+          if (action === 'create') {
+            const clientId = normalizeSyncClientId(normalizedOperation.clientId)
+            const document = this.createKml(actor, normalizedOperation.data || normalizedOperation.file || {}, {
               skipEnsureDefault: true,
               syncClientId: clientId,
             })
-          } catch (error) {
-            if (error?.code === 'KML_CREATE_REPLAY_DELETED') {
-              error.details = { ...(error.details || {}), clientId }
-              error.exposeDetails = true
+            return { action, clientId, document }
+          }
+          const kmlId = String(normalizedOperation.kmlId || normalizedOperation.id || '')
+          if (action === 'update') return { action, document: this.updateKml(actor, kmlId, normalizedOperation.data || normalizedOperation.file || normalizedOperation) }
+          if (action === 'trash') {
+            if (kmlId) return { action, document: this.trashKml(actor, kmlId) }
+            const clientId = normalizeSyncClientId(normalizedOperation.clientId)
+            const document = this.trashKmlBySyncClientId(actor, clientId)
+            return {
+              action,
+              clientId,
+              ...(document ? { document } : { result: { status: 'absent' } }),
             }
-            throw error
           }
-          return { action, clientId, document }
-        }
-        const kmlId = String(operation.kmlId || operation.id || '')
-        if (action === 'update') return { action, document: this.updateKml(actor, kmlId, operation.data || operation.file || operation) }
-        if (action === 'trash') {
-          if (kmlId) return { action, document: this.trashKml(actor, kmlId) }
-          const clientId = normalizeSyncClientId(operation.clientId)
-          const document = this.trashKmlBySyncClientId(actor, clientId)
-          return {
-            action,
-            clientId,
-            ...(document ? { document } : { result: { status: 'absent' } }),
+          if (action === 'restore') {
+            if (kmlId) return { action, document: this.restoreKml(actor, kmlId) }
+            const clientId = normalizeSyncClientId(normalizedOperation.clientId)
+            const document = this.restoreKmlBySyncClientId(actor, clientId)
+            return {
+              action,
+              clientId,
+              ...(document ? { document } : { result: { status: 'absent' } }),
+            }
           }
-        }
-        if (action === 'restore') {
-          if (kmlId) return { action, document: this.restoreKml(actor, kmlId) }
-          const clientId = normalizeSyncClientId(operation.clientId)
-          const document = this.restoreKmlBySyncClientId(actor, clientId)
-          return {
-            action,
-            clientId,
-            ...(document ? { document } : { result: { status: 'absent' } }),
+          // Permanent deletion is intentionally not part of the incremental sync
+          // protocol. It requires an explicit password re-authentication through
+          // DELETE /kml/files/:id/permanent; accepting it here would let any
+          // authenticated writer bypass that second factor.
+          if (action === 'deletePermanent') {
+            throw createHttpError(
+              '永久删除必须通过密码二次验证接口执行',
+              409,
+              'REAUTH_REQUIRED'
+            )
           }
+          throw createHttpError('同步操作类型不正确', 400, 'VALIDATION_FAILED')
+        } catch (error) {
+          this.attachSyncOperationError(ownerId, operation, index, error)
+          throw error
         }
-        // Permanent deletion is intentionally not part of the incremental sync
-        // protocol. It requires an explicit password re-authentication through
-        // DELETE /kml/files/:id/permanent; accepting it here would let any
-        // authenticated writer bypass that second factor.
-        if (action === 'deletePermanent') {
-          throw createHttpError(
-            '永久删除必须通过密码二次验证接口执行',
-            409,
-            'REAUTH_REQUIRED'
-          )
-        }
-        throw createHttpError('同步操作类型不正确', 400, 'VALIDATION_FAILED')
       })
       return { results, syncedAt: this.nowIso() }
     })

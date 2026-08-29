@@ -329,6 +329,58 @@ test('KML 目录批量下载默认关闭且管理员设置严格校验布尔值'
   assert.equal(service.getPublicConfig().kml.batchDownloadEnabled, false)
 })
 
+test('全局 KML 点位聚合默认开启并只公开渲染所需的归一化字段', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+
+  const expectedDefaults = {
+    enabled: true,
+    minZoom: 0,
+    maxClusterZoom: 13,
+    gridSize: 64,
+    minClusterPoints: 10,
+    maxMembersPerCluster: 5000,
+  }
+  assert.deepEqual(service.getSettings().kml.pointClustering, expectedDefaults)
+  assert.deepEqual(service.getPublicConfig().kml.pointClustering, expectedDefaults)
+
+  const updated = service.updateSettings(rootSession, {
+    kml: {
+      pointClustering: {
+        enabled: true,
+        minZoom: 3,
+        maxClusterZoom: 15,
+        gridSize: 80,
+        minClusterPoints: 25,
+        maxMembersPerCluster: 1200,
+      },
+    },
+  })
+  assert.deepEqual(updated.kml.pointClustering, {
+    enabled: true,
+    minZoom: 3,
+    maxClusterZoom: 15,
+    gridSize: 80,
+    minClusterPoints: 25,
+    maxMembersPerCluster: 1200,
+  })
+  assert.deepEqual(service.getPublicConfig().kml.pointClustering, updated.kml.pointClustering)
+
+  for (const pointClustering of [
+    { enabled: 'true' },
+    { enabled: true, minZoom: -1 },
+    { enabled: true, minZoom: 16, maxClusterZoom: 15 },
+    { enabled: true, gridSize: 23 },
+    { enabled: true, minClusterPoints: 1 },
+    { enabled: true, maxMembersPerCluster: 20001 },
+  ]) {
+    assert.throws(
+      () => service.updateSettings(rootSession, { kml: { pointClustering } }),
+      matchesError('VALIDATION_FAILED', 400)
+    )
+  }
+})
+
 test('分享点位强制聚合默认关闭且管理员阈值严格校验', async t => {
   const { service } = createHarness(t)
   const { session: rootSession } = await login(service)

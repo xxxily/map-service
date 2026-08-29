@@ -269,7 +269,7 @@ system.super_admin
 | `POST` | `/kml/files/reorder` | `kml.own.write` | `{directoryId,ids}`，提交目标目录完整文件顺序 |
 | `POST` | `/kml/files/:id/move` | `kml.own.write` | `{directoryId,beforeId?}` 移动并排序 |
 
-目录相关错误码包括 `KML_DIRECTORY_NOT_FOUND`、`KML_DIRECTORY_NAME_CONFLICT`、`KML_DIRECTORY_LIMIT_EXCEEDED`、`KML_REORDER_INVALID` 和 `KML_MOVE_INVALID`。`/auth/config` 的 `kml.batchDownloadEnabled` 控制目录批量下载入口，默认 `false`；当前前端按所选文件逐个使用导出接口，不存在绕过文件权限的目录打包接口。
+目录相关错误码包括 `KML_DIRECTORY_NOT_FOUND`、`KML_DIRECTORY_NAME_CONFLICT`、`KML_DIRECTORY_LIMIT_EXCEEDED`、`KML_REORDER_INVALID` 和 `KML_MOVE_INVALID`。`/auth/config` 的 `kml.batchDownloadEnabled` 控制目录批量下载入口，默认 `false`；`kml.pointClustering` 控制个人地图 2D/3D 跨文件 Point 聚合，默认开启且 `minClusterPoints=10`。进入分享页后分享级配置优先，全局配置不覆盖分享显式关闭。
 
 回收站通过 `GET /kml/files?status=trashed` 进入；列表只返回摘要，用户可调用 `GET /kml/files/:id` 获取详情。恢复使用 `POST /kml/files/:id/restore`。永久删除必须携带当前登录密码：
 
@@ -282,6 +282,8 @@ X-CSRF-Token: <csrf>
 ```
 
 缺少密码返回 `400 REAUTH_REQUIRED`；密码错误返回 `401 INVALID_CREDENTIALS`；二次验证限流返回 `429`。校验失败不会修改 KML 或审计记录。默认 KML 受保护，不能移入回收站或永久删除；永久删除成功后写入一次 `kml.delete-permanent` 审计。
+
+列表响应的 `usage` 将活动配额和回收站物理占用分开：`fileCount`、`featureCount`、`byteSize` 只统计 active；`trashCount`、`trashFeatureCount`、`trashByteSize` 只统计 trashed；`totalFileCount`、`totalFeatureCount`、`totalByteSize` 为物理总量。回收站不占活动文件数和总要素配额，恢复时重新校验配额。`trashRetentionDays` 由每日异步清理任务执行；仍被分享项引用的记录不会自动删除。
 
 列表参数：
 
@@ -403,6 +405,8 @@ KML 写入模型：
 ```
 
 整个批次在事务中执行；任一步失败都会回滚。`create` 缺少有效 `clientId` 返回 `400 VALIDATION_FAILED`；更新 revision 过期返回 `409 KML_REVISION_CONFLICT`。客户端应使用响应中的 `document.id` 和 `revision` 更新快照。
+
+失败响应可附带安全的 `error.details`：`operationIndex`、`action`、`kmlId`、`clientId`、`fileName`、`errorCode`、`reason`、`suggestion`。地图 KML 面板必须在“保存失败”旁显示详情标识，悬停给出文件/原因摘要，点击使用统一 Dialog 展示详情。服务端不得把密码、Token、代理认证、敏感请求头或内部异常堆栈放入该对象。数据库 schema v11 会按用户和目录重排历史 active 位置；旧客户端回传同一条历史越界位置时，服务端按当前顺序修复。
 
 地图端移动或复制要素继续复用此同步接口，不新增独立路由：同文件排序产生一个 `update`；跨文件移动产生源文件和目标文件两个 `update`；跨文件复制只更新目标文件。移动保留要素 ID，复制生成新 ID。多文件操作在同一 `operations` 批次提交，因此任一文件 revision 冲突时整个批次回滚并进入既有 KML 草稿恢复流程。
 
@@ -939,6 +943,17 @@ Content-Type: application/json
     "maxFeaturesPerUser": 200000,
     "trashRetentionDays": 30
   },
+  "kml": {
+    "batchDownloadEnabled": false,
+    "pointClustering": {
+      "enabled": true,
+      "minZoom": 0,
+      "maxClusterZoom": 13,
+      "gridSize": 64,
+      "minClusterPoints": 10,
+      "maxMembersPerCluster": 5000
+    }
+  },
   "share": {
     "publicAccessPolicy": "inherit_site_access",
     "maxFilesPerShare": 20,
@@ -983,6 +998,8 @@ Content-Type: application/json
 除 `technicalLimits`、缩放级别和字段关系外，用户体系设置中的业务数值不设置任意固定最大值。会话、文件数、要素数、回收站天数、分享文件数、授权时长、聚合最少点位数、限流和空间范围只校验正数/非负数/安全整数。关系约束为：记住登录有效期不得短于普通会话；用户总要素数不得小于单文件要素数；不限授权面积和对角线不得大于空间限制总体阈值。
 
 `technicalLimits` 是部署级运输层保护，不是管理员业务配额。默认 multipart KML 上限为 50 MiB；JSON KML 编辑/同步上限取 64 MiB 与 multipart 上限 `1.25` 倍中的较大值。部署可通过 `MAP_SERVICE_KML_IMPORT_MAX_BYTES`、`MAP_SERVICE_KML_JSON_MAX_BYTES` 调整。管理员设置的 `quota.maxKmlFileBytes` 和个人覆盖均不得超过 multipart 运输层上限。
+
+`kml.pointClustering` 的 `enabled` 为布尔值；`minZoom`/`maxClusterZoom` 为 0～24 整数且前者不得大于后者；`gridSize` 为 24～128；`minClusterPoints` 为 2～1000；`maxMembersPerCluster` 为 100～20000。公开 `/auth/config` 只返回这六个渲染字段。该配置只用于个人地图，分享页继续使用分享 `viewConfig.kmlPointClustering` 与 `share.kmlCluster*` 强制策略。
 
 为兼容旧版本持久化数据，读取系统配额和个人配额覆盖时只保留已知的正安全整数字段：超过当前 multipart 上限的 `maxKmlFileBytes` 会在响应和执行路径中收敛到当前上限；`maxFeaturesPerUser < maxFeaturesPerKml` 时会下调单文件要素数；未知字段和非法值忽略。该兼容读取不主动改写数据库，管理员新提交配额时仍按当前契约严格校验，因此仅编辑用户显示名称等普通资料不会被历史配额阻断。
 
@@ -1083,7 +1100,7 @@ Content-Type: application/json
 - 登录、注册和分享密码限流为单进程内存状态；多实例部署需接入共享限流存储。
 - SQLite 适用于当前单机部署；多写实例需要独立评估数据库和会话架构。
 - KML 导入不支持 KMZ、MultiGeometry 和完整样式体系。
-- 回收站保留天数已进入设置和数据模型，但超期异步清理任务尚未实现。
+- 回收站超期清理由每日异步任务执行；被分享引用的记录会跳过，运维仍需监控长期保留数量和 SQLite 物理空间。
 - 超级管理员跨用户 KML 归属转移尚未提供管理接口。
 - 分享页底图 catalog 当前只开放受控公开栅格图源。
 - 空间受限分享首期仅允许完全包含瓦片回源，边界和范围外瓦片返回透明占位；3D 分享强制回退 2D。

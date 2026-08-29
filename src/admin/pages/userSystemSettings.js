@@ -43,6 +43,15 @@ export function renderUserSystemSettingsPage (state) {
   const session = settings.session || {}
   const quota = settings.quota || {}
   const kml = settings.kml || {}
+  const pointClustering = {
+    enabled: true,
+    minZoom: 0,
+    maxClusterZoom: 13,
+    gridSize: 64,
+    minClusterPoints: 10,
+    maxMembersPerCluster: 5000,
+    ...(kml.pointClustering || {}),
+  }
   const share = settings.share || {}
   const rateLimit = share.rateLimit || {}
   const analytics = settings.analytics || {}
@@ -158,6 +167,18 @@ export function renderUserSystemSettingsPage (state) {
                     <option value="true" ${kml.batchDownloadEnabled === true ? 'selected' : ''}>允许</option>
                   </select>
                 </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="admin-permission-fieldset">
+              <legend>全局点位聚合</legend>
+              <div class="admin-field-grid admin-field-grid-three">
+                <label><span>点位聚合</span><select name="kmlPointClusteringEnabled"><option value="true" ${pointClustering.enabled !== false ? 'selected' : ''}>开启</option><option value="false" ${pointClustering.enabled === false ? 'selected' : ''}>关闭</option></select></label>
+                <label><span>起始缩放级别</span><input name="kmlPointClusteringMinZoom" type="number" min="0" max="24" step="1" value="${Number(pointClustering.minZoom)}" required></label>
+                <label><span>结束缩放级别</span><input name="kmlPointClusteringMaxClusterZoom" type="number" min="0" max="24" step="1" value="${Number(pointClustering.maxClusterZoom)}" required></label>
+                <label><span>网格大小（像素）</span><input name="kmlPointClusteringGridSize" type="number" min="24" max="128" step="1" value="${Number(pointClustering.gridSize)}" required></label>
+                <label><span>最少聚合点位数</span><input name="kmlPointClusteringMinClusterPoints" type="number" min="2" max="1000" step="1" value="${Number(pointClustering.minClusterPoints)}" required></label>
+                <label><span>单组成员上限</span><input name="kmlPointClusteringMaxMembersPerCluster" type="number" min="100" max="20000" step="1" value="${Number(pointClustering.maxMembersPerCluster)}" required></label>
               </div>
             </fieldset>
             <button type="submit">保存 KML 与配额策略</button>
@@ -359,6 +380,14 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
       },
       kml: {
         batchDownloadEnabled: data.get('kmlBatchDownloadEnabled') === 'true',
+        pointClustering: {
+          enabled: data.get('kmlPointClusteringEnabled') === 'true',
+          minZoom: integerField(data, 'kmlPointClusteringMinZoom'),
+          maxClusterZoom: integerField(data, 'kmlPointClusteringMaxClusterZoom'),
+          gridSize: integerField(data, 'kmlPointClusteringGridSize'),
+          minClusterPoints: integerField(data, 'kmlPointClusteringMinClusterPoints'),
+          maxMembersPerCluster: integerField(data, 'kmlPointClusteringMaxMembersPerCluster'),
+        },
       },
     }
     try {

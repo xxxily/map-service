@@ -1384,13 +1384,17 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 
 分享项还会返回 `visibleByDefault`、`directoryId`、`directoryName`、`featureCount` 等摘要。`visibleByDefault=false` 的文件在 manifest 中保留摘要但不含 `features`；分享页面首次加载不请求详情，用户显示、展开、导出或批量选择时才调用详情接口。详情接口为 `GET /api/v1/public/kml-shares/:publicId/files/:shareItemId`，并按分享授权校验；并发请求同一文件只产生一次上游加载。详情加载失败返回统一 `RESOURCE_NOT_FOUND` 或授权错误，文件保持隐藏且可重试。
 
-管理员公开配置字段：`share.kmlClusterForceEnabled`（默认 `false`）、`share.kmlClusterMaxZoom`（默认 `12`，范围 0～24）、`share.kmlClusterMinPoints`（默认 `250`，只要求为不小于 2 的安全整数）以及 `kml.batchDownloadEnabled`（默认 `false`）。强制聚合开启时，公开 manifest 将管理员策略与分享配置按更积极聚合合成：缩放范围取并集、网格大小取较大值、最少聚合点数取较小值，并返回 `forcedByPolicy=true`；分享配置不能通过收窄范围或提高阈值绕过策略。分享级 `viewConfig.kmlPointClustering` 仍保留自身算法参数边界，且仅聚合 Point；LineString/Polygon 始终完整返回和渲染。
+管理员设置新增个人地图全局聚合 `kml.pointClustering`，默认 `{enabled:true,minZoom:0,maxClusterZoom:13,gridSize:64,minClusterPoints:10,maxMembersPerCluster:5000}`，同时保留 `kml.batchDownloadEnabled`（默认 `false`）。该全局配置用于 2D/3D 个人 KML 跨文件 Point 聚合；LineString/Polygon 始终完整渲染。进入分享页后不读取全局配置，分享显式 `enabled:false` 仍保持关闭，分享级 `viewConfig.kmlPointClustering` 优先。
 
-`GET /api/v1/auth/config` 还返回 `share.maxFilesPerShare` 和 `kml.importTransportMaxBytes`。账号端创建/编辑分享和导入 KML 必须使用公开配置，不得写死 20 个文件或 10 MiB。管理员设置、设置预览和用户管理列表响应返回 `technicalLimits.kmlImportTransportMaxBytes`、`technicalLimits.kmlJsonTransportMaxBytes`；它们是部署级请求体/内存保护，不是管理员业务最大值。
+分享强制策略继续使用 `share.kmlClusterForceEnabled`（默认 `false`）、`share.kmlClusterMaxZoom`（默认 `12`，范围 0～24）和 `share.kmlClusterMinPoints`（默认 `250`，只要求为不小于 2 的安全整数）。强制聚合开启时，公开 manifest 将管理员策略与分享配置按更积极聚合合成，并返回 `forcedByPolicy=true`；它不改变个人地图全局配置。
+
+`GET /api/v1/auth/config` 还返回 `share.maxFilesPerShare`、`kml.pointClustering` 和 `kml.importTransportMaxBytes`。账号端创建/编辑分享、个人地图渲染和导入 KML 必须使用公开配置。管理员设置、设置预览和用户管理列表响应返回 `technicalLimits.kmlImportTransportMaxBytes`、`technicalLimits.kmlJsonTransportMaxBytes`；它们是部署级请求体/内存保护，不是管理员业务最大值。
 
 KML multipart 文件超过运输层上限返回 `413 KML_IMPORT_TRANSPORT_LIMIT_EXCEEDED`。`/api/v1/kml/files/*`、`/api/v1/kml/sync`、`/api/v1/kml/migrations/local` 和浏览器助手导入的 JSON 请求使用独立 KML JSON 上限，超限返回 `413 KML_JSON_TRANSPORT_LIMIT_EXCEEDED`；普通 JSON API 继续使用全站较小限制并返回 `REQUEST_BODY_TOO_LARGE`。
 
 旧数据库中的系统/个人 KML 配额采用只读兼容归一化：只接受已知正安全整数字段，单文件大小收敛到当前 multipart 上限，总要素数小于单文件要素数时下调单文件值，未知字段忽略。读取本身不改写数据库；新配置提交仍严格拒绝运输层越界和字段关系冲突。
+
+`GET /api/v1/kml/files` 的 `usage.fileCount`、`featureCount`、`byteSize` 只统计 `active` 文件，用于可用配额判断；`trashCount`、`trashFeatureCount`、`trashByteSize` 独立报告回收站物理占用，`total*` 字段报告两者总和。回收站文件不占活动文件数/总要素配额，但恢复时会重新校验配额，超限返回 `422 QUOTA_EXCEEDED`。超过用户 `trashRetentionDays` 的回收记录由每日异步任务分批永久清理；仍被已发布分享引用的源记录保留并写审计。
 
 ### `POST /api/v1/kml/sync`
 
@@ -1409,7 +1413,32 @@ KML multipart 文件超过运输层上限返回 `413 KML_IMPORT_TRANSPORT_LIMIT_
 }
 ```
 
-恢复接口只对仍处于 `trashed` 状态的文件执行一次条件状态转换；成功恢复会递增 `revision` 并写入 `kml.restore` 审计记录。请求开始时已为 active 的文件会幂等返回且不重复审计；若初次读取后状态被并发请求改变，接口返回 `409 KML_REVISION_CONFLICT`，不会产生额外恢复审计。
+恢复接口只对仍处于 `trashed` 状态的文件执行一次条件状态转换；成功恢复会递增 `revision` 并写入 `kml.restore` 审计记录。请求开始时已为 active 的文件会幂等返回且不重复审计；若初次读取后状态被并发请求改变，接口返回 `409 KML_REVISION_CONFLICT`，不会产生额外恢复审计。恢复前重新校验活动文件和要素配额，不能通过“移入回收站后新建，再恢复”的方式绕过配额。
+
+同步操作失败时，错误响应可附带经过服务端筛选的 `error.details`，供 2D/3D KML 面板的“保存失败”详情按钮展示：
+
+```json
+{
+  "code": -1,
+  "result": null,
+  "error": {
+    "code": "KML_MOVE_INVALID",
+    "message": "KML 文件位置不正确",
+    "details": {
+      "operationIndex": 0,
+      "action": "update",
+      "kmlId": "kml_xxx",
+      "clientId": null,
+      "fileName": "2026-07-12 云开九峰",
+      "errorCode": "KML_MOVE_INVALID",
+      "reason": "KML 文件位置不正确",
+      "suggestion": "请重新加载 KML 后再保存；若仍失败，请检查文件所在目录的顺序。"
+    }
+  }
+}
+```
+
+详情只包含操作索引、操作类型、稳定文件标识、文件名、错误码、原因和建议，不返回密码、Token、代理认证或敏感请求头。数据库 schema v11 会按 `owner_id + directory_id` 重排历史 active 文件位置；普通更新遇到旧客户端回传的同一条历史越界位置时，也会按服务端当前顺序修复而不是持续返回 `KML_MOVE_INVALID`。
 
 ### `GET /api/v1/kml/media?url=<encoded-url>`
 

@@ -489,6 +489,10 @@ const service = {
     return userContent.deleteKmlPermanently(actor, id, context)
   },
 
+  cleanupExpiredUserKmlTrash (options = {}) {
+    return userContent.purgeExpiredKmlTrash(options)
+  },
+
   importUserKml (actor, input, context) {
     return userContent.importKml(actor, input, context)
   },

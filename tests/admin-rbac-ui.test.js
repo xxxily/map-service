@@ -96,7 +96,7 @@ test('空间分享策略只对超级管理员呈现', () => {
   assert.equal(typeof adminApi.previewUserSystemSettings, 'function')
 })
 
-test('用户体系设置展示 KML 批量下载与强制聚合开关且默认关闭', () => {
+test('用户体系设置展示全局 KML 聚合、批量下载与分享强制聚合策略', () => {
   const html = renderUserSystemSettingsPage({
     userSystemSettings: {},
     roles: [],
@@ -105,6 +105,12 @@ test('用户体系设置展示 KML 批量下载与强制聚合开关且默认关
 
   assert.match(html, /name="kmlBatchDownloadEnabled"/)
   assert.match(html, /value="false" selected>禁止/)
+  assert.match(html, /name="kmlPointClusteringEnabled"[\s\S]*value="true" selected>开启/)
+  assert.match(html, /name="kmlPointClusteringMinZoom"[^>]*value="0"/)
+  assert.match(html, /name="kmlPointClusteringMaxClusterZoom"[^>]*value="13"/)
+  assert.match(html, /name="kmlPointClusteringGridSize"[^>]*value="64"/)
+  assert.match(html, /name="kmlPointClusteringMinClusterPoints"[^>]*value="10"/)
+  assert.match(html, /name="kmlPointClusteringMaxMembersPerCluster"[^>]*value="5000"/)
   assert.match(html, /name="kmlClusterForceEnabled"/)
   assert.match(html, /name="kmlClusterForceEnabled"[\s\S]*value="false" selected>关闭/)
 })
@@ -123,6 +129,11 @@ test('用户体系业务数值配置不渲染固定最大值，仅保留缩放�
   }
   assert.match(html, /name="maxKmlFileMb"[^>]*max="50"/)
   assert.match(html, /name="spatialPaddingMeters"[^>]*min="0"[^>]*step="any"/)
+  assert.match(html, /name="kmlPointClusteringMinZoom"[^>]*max="24"/)
+  assert.match(html, /name="kmlPointClusteringMaxClusterZoom"[^>]*max="24"/)
+  assert.match(html, /name="kmlPointClusteringGridSize"[^>]*min="24"[^>]*max="128"/)
+  assert.match(html, /name="kmlPointClusteringMinClusterPoints"[^>]*min="2"[^>]*max="1000"/)
+  assert.match(html, /name="kmlPointClusteringMaxMembersPerCluster"[^>]*min="100"[^>]*max="20000"/)
   assert.match(html, /name="kmlClusterMaxZoom"[^>]*max="24"/)
   assert.match(html, /name="spatialUnrestrictedTileMaxZoom"[^>]*max="24"/)
   assert.match(html, /name="unlimitedAccessMaxAreaKm2"[^>]*max="10000"/)

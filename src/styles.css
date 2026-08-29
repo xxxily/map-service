@@ -2427,6 +2427,7 @@ body.admin-view #footer-bar {
   appearance: none;
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   min-height: 20px;
   padding: 2px 7px;
   border: 1px solid rgba(100, 116, 139, 0.22);
@@ -2439,12 +2440,31 @@ body.admin-view #footer-bar {
   white-space: nowrap;
 }
 
+.kml-sync-status-detail-icon {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-family: Georgia, serif;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .kml-sync-status:disabled {
   cursor: default;
 }
 
 .kml-sync-status[data-actionable="true"] {
   cursor: pointer;
+}
+
+.kml-sync-status[data-actionable="true"]:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 .kml-sync-status[hidden] {

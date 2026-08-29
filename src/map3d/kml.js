@@ -737,7 +737,7 @@ export function projectKmlPoint3d (latLng, zoom) {
   }
 }
 
-function renderShareCluster (cluster) {
+function renderKmlCluster3d (cluster, collectionId) {
   if (!viewerRef || !cluster || cluster.type !== 'cluster') return null
   const color = Color.fromCssColorString('#0f766e')
   const entity = viewerRef.entities.add({
@@ -766,8 +766,16 @@ function renderShareCluster (cluster) {
     count: cluster.count,
     center: cluster.center,
   }
-  addRenderedEntity('__share-clusters__', entity)
+  addRenderedEntity(collectionId, entity)
   return entity
+}
+
+function renderShareCluster (cluster) {
+  return renderKmlCluster3d(cluster, '__share-clusters__')
+}
+
+function renderPersonalCluster (cluster) {
+  return renderKmlCluster3d(cluster, '__personal-clusters__')
 }
 
 function getSharePointClusteringConfig3d () {
@@ -775,14 +783,24 @@ function getSharePointClusteringConfig3d () {
   return raw?.enabled ? normalizeKmlPointClusteringConfig(raw) : null
 }
 
+function getGlobalPointClusteringConfig3d () {
+  if (getActiveShare()) return null
+  const raw = getAuthSnapshot().config?.kml?.pointClustering
+  return raw?.enabled === true ? normalizeKmlPointClusteringConfig(raw) : null
+}
+
 export function getKmlVisibilityRenderMode3d (options = {}) {
-  return options.activeShare === true && options.clusteringEnabled === true ? 'all' : 'files'
+  const activeClustering = options.activeShare === true
+    ? options.clusteringEnabled === true
+    : options.globalClusteringEnabled === true
+  return activeClustering ? 'all' : 'files'
 }
 
 function renderVisibilityChangedKmlFiles3d (files) {
   const mode = getKmlVisibilityRenderMode3d({
     activeShare: Boolean(getActiveShare()),
     clusteringEnabled: Boolean(getSharePointClusteringConfig3d()),
+    globalClusteringEnabled: Boolean(getGlobalPointClusteringConfig3d()),
   })
   if (mode === 'all') {
     renderAllKmls()
@@ -811,6 +829,34 @@ function renderShareClusterLayers3d (config) {
   clusterKmlPoints(records, zoom, config, projectKmlPoint3d).forEach(item => {
     if (item.type === 'cluster') {
       renderShareCluster(item)
+      return
+    }
+    const record = recordById.get(item.id)
+    if (record) renderFeature(record.kmlFile, record.feature)
+  })
+}
+
+function renderPersonalClusterLayers3d (config) {
+  const records = []
+  const viewportOptions = getViewportOptions3d()
+  const zoom = viewportOptions.zoom ?? 0
+  kmlList.filter(kmlFile => (
+    isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError
+  )).forEach(kmlFile => {
+    const features = getTrackDisplayFeatures(kmlFile, viewportOptions)
+    features.forEach(feature => {
+      if (feature.type !== 'Point') {
+        renderFeature(kmlFile, feature)
+        return
+      }
+      const point = getPointLatLng(kmlFile, feature)
+      records.push({ id: `${kmlFile.id}:${feature.id}`, latLng: point, kmlFile, feature })
+    })
+  })
+  const recordById = new Map(records.map(record => [record.id, record]))
+  clusterKmlPoints(records, zoom, config, projectKmlPoint3d).forEach(item => {
+    if (item.type === 'cluster') {
+      renderPersonalCluster(item)
       return
     }
     const record = recordById.get(item.id)
@@ -1252,6 +1298,11 @@ function renderKmlLayers (kmlFile, options = {}) {
     renderAllKmls()
     return
   }
+  if (!kmlFile?.isPublic && !kmlFile?.isShare &&
+      getGlobalPointClusteringConfig3d() && options.individualPersonalRender !== true) {
+    renderAllKmls()
+    return
+  }
   removeKmlLayers(kmlFile)
   if (!isKmlEnabled(kmlFile)) return
   const viewportOptions = getViewportOptions3d()
@@ -1280,11 +1331,14 @@ function renderAllKmls () {
   renderedKmlEntities.clear()
   featureEntities.clear()
 
-  kmlList.forEach(kmlFile => renderKmlLayers(kmlFile, { individualShareRender: true }))
+  const globalClusteringConfig = getGlobalPointClusteringConfig3d()
+  const individualRenderOptions = { individualPersonalRender: true, individualShareRender: true }
+  if (globalClusteringConfig) renderPersonalClusterLayers3d(globalClusteringConfig)
+  else kmlList.forEach(kmlFile => renderKmlLayers(kmlFile, individualRenderOptions))
   const shareClusteringConfig = getSharePointClusteringConfig3d()
-  publicKmlList.filter(kmlFile => !kmlFile.isShare).forEach(kmlFile => renderKmlLayers(kmlFile, { individualShareRender: true }))
+  publicKmlList.filter(kmlFile => !kmlFile.isShare).forEach(kmlFile => renderKmlLayers(kmlFile, individualRenderOptions))
   if (shareClusteringConfig) renderShareClusterLayers3d(shareClusteringConfig)
-  else publicKmlList.filter(kmlFile => kmlFile.isShare).forEach(kmlFile => renderKmlLayers(kmlFile, { individualShareRender: true }))
+  else publicKmlList.filter(kmlFile => kmlFile.isShare).forEach(kmlFile => renderKmlLayers(kmlFile, individualRenderOptions))
 }
 
 function bindAccountSessionExpiry3d () {
@@ -3367,17 +3421,18 @@ function scheduleKmlViewportRerender3d () {
   kmlViewportRerenderTimer3d = setTimeout(() => {
     kmlViewportRerenderTimer3d = null
     if (!viewerRef) return
-    const hasShareClustering = Boolean(getActiveShare()?.manifest?.viewConfig?.kmlPointClustering?.enabled)
+    const hasShareClustering = Boolean(getSharePointClusteringConfig3d())
+    const hasPersonalClustering = Boolean(getGlobalPointClusteringConfig3d())
     const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
                          publicKmlList.some(k => k.isLiveTrack && !k.isShare && k.enabled)
-    if (!hasLiveTrack && !hasShareClustering) return
+    if (!hasLiveTrack && !hasShareClustering && !hasPersonalClustering) return
 
     // 聚合依赖当前相机投影；只有纯实时轨迹重渲染可以使用视口缓存跳过。
-    if (!hasShareClustering && isCameraWithinCache3d()) return
+    if (!hasShareClustering && !hasPersonalClustering && isCameraWithinCache3d()) return
 
     // 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先绘制再渲染
     setTimeout(() => {
-      if (hasShareClustering) {
+      if (hasShareClustering || hasPersonalClustering) {
         renderAllKmls()
         return
       }

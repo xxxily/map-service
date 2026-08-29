@@ -30,11 +30,14 @@ test('3D 分享聚合仅合并 Point，且放大到最大聚合级别后展开',
   assert.deepEqual(expanded.map(item => item.type), ['point', 'point'])
 })
 
-test('3D 分享渲染保留非 Point 要素，并接入聚合与 moveEnd 重渲染', () => {
+test('3D 分享和个人全局聚合保留非 Point 要素，并接入 moveEnd 重渲染', () => {
   const source = fs.readFileSync(new URL('../src/map3d/kml.js', import.meta.url), 'utf8')
   assert.match(source, /renderShareClusterLayers3d/)
+  assert.match(source, /renderPersonalClusterLayers3d/)
+  assert.match(source, /getAuthSnapshot\(\)\.config\?\.kml\?\.pointClustering/)
   assert.match(source, /feature\.type !== 'Point'/)
   assert.match(source, /hasShareClustering/)
+  assert.match(source, /hasPersonalClustering/)
   assert.match(source, /camera\.moveEnd\.addEventListener\(scheduleKmlViewportRerender3d\)/)
   assert.match(source, /_map3dKmlCluster/)
 })
@@ -43,6 +46,12 @@ test('3D 分享显隐在聚合开启时选择一次全量重绘', () => {
   assert.equal(getKmlVisibilityRenderMode3d({ activeShare: true, clusteringEnabled: true }), 'all')
   assert.equal(getKmlVisibilityRenderMode3d({ activeShare: true, clusteringEnabled: false }), 'files')
   assert.equal(getKmlVisibilityRenderMode3d({ activeShare: false, clusteringEnabled: true }), 'files')
+  assert.equal(getKmlVisibilityRenderMode3d({ activeShare: false, globalClusteringEnabled: true }), 'all')
+  assert.equal(getKmlVisibilityRenderMode3d({
+    activeShare: true,
+    clusteringEnabled: false,
+    globalClusteringEnabled: true,
+  }), 'files')
 })
 
 test('3D 分享首屏定位包含聚合实体', () => {

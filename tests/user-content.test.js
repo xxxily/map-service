@@ -584,6 +584,329 @@ test('invalid KML position does not partially update document content', () => {
   }
 })
 
+test('KML active positions stay dense when files move through the recycle bin', () => {
+  const harness = createHarness()
+  try {
+    harness.service.ensureDefaultKml(harness.one)
+    const first = harness.service.createKml(harness.one, { name: '顺序一' })
+    const second = harness.service.createKml(harness.one, { name: '顺序二' })
+    const third = harness.service.createKml(harness.one, { name: '顺序三' })
+
+    harness.service.trashKml(harness.one, second.id)
+    const appended = harness.service.createKml(harness.one, { name: '回收后新建' })
+    let active = harness.service.listKmlFiles(harness.one, { sort: 'position', order: 'asc' }).items
+    assert.deepEqual(active.map(item => [item.name, item.position]), [
+      ['默认标注', 0],
+      [first.name, 1],
+      [third.name, 2],
+      [appended.name, 3],
+    ])
+
+    const restored = harness.service.restoreKml(harness.one, second.id)
+    assert.equal(restored.position, 4)
+    active = harness.service.listKmlFiles(harness.one, { sort: 'position', order: 'asc' }).items
+    assert.deepEqual(active.map(item => item.position), [0, 1, 2, 3, 4])
+  } finally {
+    harness.close()
+  }
+})
+
+test('a stale out-of-range position is repaired during an ordinary KML update', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '位置损坏文件' })
+    harness.database.prepare('UPDATE kml_documents SET position = ? WHERE id = ?').run(117, document.id)
+    const updated = harness.service.updateKml(harness.one, document.id, {
+      revision: document.revision,
+      name: '位置已修复',
+      position: 117,
+    })
+    assert.equal(updated.name, '位置已修复')
+    assert.equal(updated.position, 1)
+  } finally {
+    harness.close()
+  }
+})
+
+test('an ordinary KML content update does not rewrite an already valid position', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '位置保持文件' })
+    harness.database.exec(`
+      CREATE TRIGGER reject_noop_kml_position_update
+      BEFORE UPDATE OF position ON kml_documents
+      WHEN NEW.position = OLD.position
+      BEGIN
+        SELECT RAISE(ABORT, 'unexpected position rewrite');
+      END;
+    `)
+    const updated = harness.service.updateKml(harness.one, document.id, {
+      revision: document.revision,
+      name: '仅更新内容',
+    })
+    assert.equal(updated.name, '仅更新内容')
+    assert.equal(updated.position, document.position)
+  } finally {
+    harness.close()
+  }
+})
+
+test('a concurrent KML move invalidates an older content update', () => {
+  const harness = createHarness()
+  try {
+    const directory = harness.service.createKmlDirectory(harness.one, { name: '并发移动目录' })
+    const document = harness.service.createKml(harness.one, { name: '并发移动文件' })
+    const originalTransaction = harness.database.transaction.bind(harness.database)
+    let moved = null
+    let injected = false
+    harness.database.transaction = callback => {
+      if (!injected) {
+        injected = true
+        moved = harness.service.moveKmlFile(harness.one, document.id, { directoryId: directory.id })
+      }
+      return originalTransaction(callback)
+    }
+    try {
+      assert.throws(
+        () => harness.service.updateKml(harness.one, document.id, {
+          revision: document.revision,
+          name: '不应覆盖移动',
+        }),
+        error => error.code === 'KML_REVISION_CONFLICT',
+      )
+    } finally {
+      harness.database.transaction = originalTransaction
+    }
+    const current = harness.service.getKml(harness.one, document.id)
+    assert.equal(current.directoryId, directory.id)
+    assert.equal(current.revision, moved.revision)
+    assert.equal(current.name, document.name)
+  } finally {
+    harness.close()
+  }
+})
+
+test('deleting a directory reindexes active files without mixing trashed rows', () => {
+  const harness = createHarness()
+  try {
+    const directory = harness.service.createKmlDirectory(harness.one, { name: '混合目录' })
+    const activeOne = harness.service.createKml(harness.one, { name: '目录活动一', directoryId: directory.id })
+    const activeTwo = harness.service.createKml(harness.one, { name: '目录活动二', directoryId: directory.id })
+    const trashed = harness.service.createKml(harness.one, { name: '目录回收', directoryId: directory.id })
+    harness.service.trashKml(harness.one, trashed.id)
+    harness.service.deleteKmlDirectory(harness.one, directory.id)
+
+    const active = harness.database.prepare(`
+      SELECT position FROM kml_documents
+      WHERE owner_id = ? AND directory_id IS NULL AND status = 'active'
+      ORDER BY position, id
+    `).all(harness.one.user.id)
+    assert.deepEqual(active.map(row => row.position), active.map((row, index) => index))
+    assert.equal(harness.database.prepare('SELECT directory_id, position FROM kml_documents WHERE id = ?').get(trashed.id).directory_id, null)
+    assert.equal(harness.database.prepare('SELECT position FROM kml_documents WHERE id = ?').get(trashed.id).position, 0)
+    assert.equal(harness.service.getKml(harness.one, activeOne.id).directoryId, null)
+    assert.equal(harness.service.getKml(harness.one, activeTwo.id).directoryId, null)
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML usage counts active files while reporting recycle-bin storage separately', () => {
+  const harness = createHarness({
+    quota: { maxKmlFiles: 3, maxFeaturesPerUser: 10 },
+  })
+  try {
+    const first = harness.service.createKml(harness.one, { name: '配额活动', features: [point('active')] })
+    const second = harness.service.createKml(harness.one, { name: '配额回收', features: [point('trash')] })
+    harness.service.trashKml(harness.one, second.id)
+    const usage = harness.service.getKmlUsage(harness.one)
+    assert.equal(usage.fileCount, 2)
+    assert.equal(usage.featureCount, 1)
+    assert.equal(usage.trashCount, 1)
+    assert.equal(usage.trashFeatureCount, 1)
+    assert.equal(usage.trashByteSize, second.byteSize)
+    assert.equal(harness.service.createKml(harness.one, { name: '回收不占名额' }).status, 'active')
+    assert.throws(
+      () => harness.service.restoreKml(harness.one, second.id),
+      error => error.code === 'QUOTA_EXCEEDED',
+    )
+    assert.equal(harness.service.getKml(harness.one, first.id).status, 'active')
+  } finally {
+    harness.close()
+  }
+})
+
+test('expired KML recycle-bin rows are cleaned asynchronously and referenced rows are retained', () => {
+  const harness = createHarness({ quota: { trashRetentionDays: 2 } })
+  try {
+    const expired = harness.service.createKml(harness.one, { name: '应清理回收文件' })
+    const referenced = harness.service.createKml(harness.one, { name: '分享引用回收文件' })
+    const share = harness.service.createShare(harness.one, {
+      title: '保留引用',
+      items: [{ kmlId: referenced.id }],
+    })
+    assert.ok(share.id)
+    harness.service.trashKml(harness.one, expired.id)
+    harness.service.trashKml(harness.one, referenced.id)
+    harness.advance(3 * 86_400_000)
+    const result = harness.service.purgeExpiredKmlTrash()
+    assert.equal(result.deletedCount, 1)
+    assert.equal(harness.database.prepare('SELECT 1 FROM kml_documents WHERE id = ?').get(expired.id), undefined)
+    assert.equal(harness.service.getKml(harness.one, referenced.id).status, 'trashed')
+    assert.equal(result.skippedByShare, 1)
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML recycle-bin cleanup scans past retained rows until the deletion limit is filled', () => {
+  const harness = createHarness({ quota: { trashRetentionDays: 2 } })
+  try {
+    const referenced = harness.service.createKml(harness.one, { name: '最旧但需保留' })
+    harness.service.createShare(harness.one, {
+      title: '清理阻塞验证',
+      items: [{ kmlId: referenced.id }],
+    })
+    harness.service.trashKml(harness.one, referenced.id)
+    harness.advance(1)
+    const expired = harness.service.createKml(harness.one, { name: '稍新但应清理' })
+    harness.service.trashKml(harness.one, expired.id)
+    harness.advance(3 * 86_400_000)
+
+    const result = harness.service.purgeExpiredKmlTrash({ limit: 1, scanBatchSize: 1 })
+    assert.equal(result.deletedCount, 1)
+    assert.equal(result.skippedByShare, 1)
+    assert.equal(result.scannedCount, 2)
+    assert.equal(harness.service.getKml(harness.one, referenced.id).status, 'trashed')
+    assert.equal(harness.database.prepare('SELECT 1 FROM kml_documents WHERE id = ?').get(expired.id), undefined)
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML recycle-bin cleanup leaves the sync key intact when deletion loses a share-reference race', () => {
+  const harness = createHarness({ quota: { trashRetentionDays: 2 } })
+  try {
+    const expired = harness.service.createKml(
+      harness.one,
+      { name: '并发保留回收文件' },
+      { syncClientId: 'cleanup-race-client' },
+    )
+    const shareSource = harness.service.createKml(harness.one, { name: '分享占位文件' })
+    const share = harness.service.createShare(harness.one, {
+      title: '并发引用验证',
+      items: [{ kmlId: shareSource.id }],
+    })
+    harness.service.trashKml(harness.one, expired.id)
+    harness.advance(3 * 86_400_000)
+
+    const originalPrepare = harness.database.prepare.bind(harness.database)
+    let injected = false
+    harness.database.prepare = sql => {
+      const statement = originalPrepare(sql)
+      if (!String(sql).includes('COALESCE(k.deleted_at, k.updated_at, k.created_at) AS trashed_at')) {
+        return statement
+      }
+      return {
+        all: (...params) => {
+          const rows = statement.all(...params)
+          if (!injected && rows.some(row => row.id === expired.id)) {
+            injected = true
+            originalPrepare(`
+              INSERT INTO kml_share_items(id, share_id, kml_id)
+              VALUES (?, ?, ?)
+            `).run('shi_cleanup_race', share.id, expired.id)
+          }
+          return rows
+        },
+      }
+    }
+    let result
+    try {
+      result = harness.service.purgeExpiredKmlTrash()
+    } finally {
+      harness.database.prepare = originalPrepare
+    }
+
+    assert.equal(result.eligibleCount, 1)
+    assert.equal(result.deletedCount, 0)
+    assert.equal(harness.service.getKml(harness.one, expired.id).status, 'trashed')
+    assert.equal(harness.database.prepare(`
+      SELECT deleted_at FROM kml_sync_create_keys
+      WHERE owner_id = ? AND client_id = ?
+    `).get(harness.one.user.id, 'cleanup-race-client').deleted_at, null)
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML sync failures expose safe operation details for diagnosis', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '失败详情文件' })
+    assert.throws(
+      () => harness.service.syncKmlFiles(harness.one, {
+        operations: [{
+          action: 'update',
+          kmlId: document.id,
+          data: { revision: document.revision, name: '不应保存', position: 999 },
+        }],
+      }),
+      error => {
+        assert.equal(error.code, 'KML_MOVE_INVALID')
+        assert.equal(error.exposeDetails, true)
+        assert.deepEqual(error.details, {
+          operationIndex: 0,
+          action: 'update',
+          kmlId: document.id,
+          clientId: null,
+          fileName: document.name,
+          errorCode: 'KML_MOVE_INVALID',
+          reason: 'KML 文件位置不正确',
+          suggestion: '请重新加载 KML 后再保存；若仍失败，请检查文件所在目录的顺序。',
+        })
+        return true
+      },
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('KML sync failures do not expose unknown internal error details', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '内部错误脱敏文件' })
+    const originalUpdateKml = harness.service.updateKml.bind(harness.service)
+    harness.service.updateKml = () => {
+      const error = new Error('SQLITE_ERROR: no such table: private_internal_table')
+      error.code = 'SQLITE_ERROR'
+      throw error
+    }
+    try {
+      assert.throws(
+        () => harness.service.syncKmlFiles(harness.one, {
+          operations: [{
+            action: 'update',
+            kmlId: document.id,
+            data: { revision: document.revision, name: '不应保存' },
+          }],
+        }),
+        error => {
+          assert.equal(error.code, 'SQLITE_ERROR')
+          assert.equal(error.exposeDetails, undefined)
+          assert.equal(error.details, undefined)
+          return true
+        },
+      )
+    } finally {
+      harness.service.updateKml = originalUpdateKml
+    }
+  } finally {
+    harness.close()
+  }
+})
+
 test('KML sync restores a future default before promoting it in the next batch', () => {
   const harness = createHarness()
   try {

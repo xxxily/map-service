@@ -470,3 +470,57 @@ test('UserDatabase v9 adds KML directories and organization snapshot fields to a
     database.close()
   }
 })
+
+test('UserDatabase v11 repairs active KML positions per owner and directory', () => {
+  const rawDatabase = new DatabaseSync(':memory:')
+  rawDatabase.exec(`
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations(version, applied_at) VALUES (10, '2026-08-28T00:00:00.000Z');
+    CREATE TABLE kml_documents (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      directory_id TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      revision INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO kml_documents(id, owner_id, directory_id, position, status, revision, updated_at) VALUES
+      ('one-null-late', 'usr_one', NULL, 9, 'active', 10, '2026-08-28T00:00:00.000Z'),
+      ('one-null-first', 'usr_one', NULL, 2, 'active', 20, '2026-08-28T00:00:00.000Z'),
+      ('one-dir-late', 'usr_one', 'dir_a', 7, 'active', 30, '2026-08-28T00:00:00.000Z'),
+      ('one-dir-first', 'usr_one', 'dir_a', 1, 'active', 40, '2026-08-28T00:00:00.000Z'),
+      ('one-trash', 'usr_one', 'dir_a', 117, 'trashed', 50, '2026-08-28T00:00:00.000Z'),
+      ('two-null', 'usr_two', NULL, 5, 'active', 60, '2026-08-28T00:00:00.000Z'),
+      ('two-stable', 'usr_two', 'dir_b', 0, 'active', 70, '2026-08-28T00:00:00.000Z');
+  `)
+
+  const database = new UserDatabase({ filePath: ':memory:', database: rawDatabase })
+  try {
+    assert.deepEqual(database.prepare(`
+      SELECT id, owner_id, directory_id, position, status, revision
+      FROM kml_documents
+      ORDER BY owner_id, directory_id, status, position, id
+    `).all().map(row => ({ ...row })), [
+      { id: 'one-null-first', owner_id: 'usr_one', directory_id: null, position: 0, status: 'active', revision: 21 },
+      { id: 'one-null-late', owner_id: 'usr_one', directory_id: null, position: 1, status: 'active', revision: 11 },
+      { id: 'one-dir-first', owner_id: 'usr_one', directory_id: 'dir_a', position: 0, status: 'active', revision: 41 },
+      { id: 'one-dir-late', owner_id: 'usr_one', directory_id: 'dir_a', position: 1, status: 'active', revision: 31 },
+      { id: 'one-trash', owner_id: 'usr_one', directory_id: 'dir_a', position: 0, status: 'trashed', revision: 51 },
+      { id: 'two-null', owner_id: 'usr_two', directory_id: null, position: 0, status: 'active', revision: 61 },
+      { id: 'two-stable', owner_id: 'usr_two', directory_id: 'dir_b', position: 0, status: 'active', revision: 70 },
+    ])
+    assert.equal(
+      database.prepare("SELECT updated_at FROM kml_documents WHERE id = 'two-stable'").get().updated_at,
+      '2026-08-28T00:00:00.000Z',
+    )
+    assert.notEqual(
+      database.prepare("SELECT updated_at FROM kml_documents WHERE id = 'one-null-first'").get().updated_at,
+      '2026-08-28T00:00:00.000Z',
+    )
+    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 11)
+    assert.doesNotThrow(() => database.migrate())
+  } finally {
+    database.close()
+  }
+})

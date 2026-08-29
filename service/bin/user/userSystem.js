@@ -52,6 +52,14 @@ const DEFAULT_SETTINGS = Object.freeze({
   },
   kml: {
     batchDownloadEnabled: false,
+    pointClustering: {
+      enabled: true,
+      minZoom: 0,
+      maxClusterZoom: 13,
+      gridSize: 64,
+      minClusterPoints: 10,
+      maxMembersPerCluster: 5000,
+    },
   },
   share: {
     publicAccessPolicy: 'inherit_site_access',
@@ -237,6 +245,37 @@ function normalizeIntegerSetting (value, fallback, min, max, label) {
     throw createHttpError(`${label}需为 ${min}～${max} 的整数`, 400, 'VALIDATION_FAILED')
   }
   return parsed
+}
+
+function normalizeKmlPointClusteringSettings (input, fallback = DEFAULT_SETTINGS.kml.pointClustering) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw createHttpError('KML 点位聚合设置格式不正确', 400, 'VALIDATION_FAILED')
+  }
+  const next = {
+    ...DEFAULT_SETTINGS.kml.pointClustering,
+    ...(fallback || {}),
+  }
+  next.enabled = normalizeBooleanSetting(input.enabled, next.enabled, 'KML 点位聚合开关')
+  next.minZoom = normalizeIntegerSetting(input.minZoom, next.minZoom, 0, 24, 'KML 点位聚合起始缩放级别')
+  next.maxClusterZoom = normalizeIntegerSetting(input.maxClusterZoom, next.maxClusterZoom, 0, 24, 'KML 点位聚合结束缩放级别')
+  if (next.minZoom > next.maxClusterZoom) {
+    throw createHttpError('KML 点位聚合起始缩放级别不能高于结束级别', 400, 'VALIDATION_FAILED')
+  }
+  next.gridSize = normalizeIntegerSetting(input.gridSize, next.gridSize, 24, 128, 'KML 点位聚合网格大小')
+  next.minClusterPoints = normalizeIntegerSetting(input.minClusterPoints, next.minClusterPoints, 2, 1000, 'KML 点位聚合最少点位数')
+  next.maxMembersPerCluster = normalizeIntegerSetting(input.maxMembersPerCluster, next.maxMembersPerCluster, 100, 20000, '单个 KML 点位聚合成员上限')
+  return next
+}
+
+function normalizeStoredKmlPointClusteringSettings (input) {
+  try {
+    return normalizeKmlPointClusteringSettings(
+      input && typeof input === 'object' && !Array.isArray(input) ? input : {},
+      DEFAULT_SETTINGS.kml.pointClustering,
+    )
+  } catch (err) {
+    return clone(DEFAULT_SETTINGS.kml.pointClustering)
+  }
 }
 
 function normalizePage (input = {}) {
@@ -555,6 +594,7 @@ export class UserSystemService {
       kml: {
         ...DEFAULT_SETTINGS.kml,
         ...(saved.kml || {}),
+        pointClustering: normalizeStoredKmlPointClusteringSettings(saved.kml?.pointClustering),
       },
       share: {
         ...DEFAULT_SETTINGS.share,
@@ -578,6 +618,14 @@ export class UserSystemService {
       passwordPolicy: PASSWORD_POLICY,
       kml: {
         batchDownloadEnabled: settings.kml.batchDownloadEnabled === true,
+        pointClustering: {
+          enabled: settings.kml.pointClustering.enabled === true,
+          minZoom: Number(settings.kml.pointClustering.minZoom),
+          maxClusterZoom: Number(settings.kml.pointClustering.maxClusterZoom),
+          gridSize: Number(settings.kml.pointClustering.gridSize),
+          minClusterPoints: Number(settings.kml.pointClustering.minClusterPoints),
+          maxMembersPerCluster: Number(settings.kml.pointClustering.maxMembersPerCluster),
+        },
         importTransportMaxBytes: kmlImportTransportMaxBytes(),
       },
       share: {
@@ -673,6 +721,12 @@ export class UserSystemService {
         current.kml.batchDownloadEnabled,
         'KML 目录批量下载开关'
       )
+      if (Object.hasOwn(input.kml, 'pointClustering')) {
+        next.kml.pointClustering = normalizeKmlPointClusteringSettings(
+          input.kml.pointClustering,
+          current.kml.pointClustering,
+        )
+      }
     }
 
     if (input.share !== undefined) {

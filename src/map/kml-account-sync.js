@@ -1,6 +1,7 @@
 import { apiRequest } from '../auth/api.js'
 import { isEmbeddedDocument } from '../auth/embed-context.js'
 import { hasPermission, refreshAuthSession } from '../auth/session.js'
+import { showAlert } from '../ui/dialog.js'
 import {
   applyKmlMergeChoices,
   mergeKmlDocument,
@@ -157,14 +158,70 @@ export function getKmlSyncStatusView (state, detail = {}) {
   return views[state] || { visible: false, label: '', tone: 'guest', title: '' }
 }
 
+const KML_SYNC_ACTION_LABELS = Object.freeze({
+  create: '新建文件',
+  update: '保存文件',
+  trash: '移入回收站',
+  restore: '从回收站恢复',
+})
+
+function syncErrorDetailSource (detail = {}) {
+  return detail.details && typeof detail.details === 'object' && !Array.isArray(detail.details)
+    ? detail.details
+    : {}
+}
+
+export function formatKmlSyncErrorDetails (detail = {}) {
+  const source = syncErrorDetailSource(detail)
+  const phase = detail.phase === 'load' ? '加载' : '保存'
+  const action = String(source.action || '')
+  const actionLabel = KML_SYNC_ACTION_LABELS[action] || action
+  const fileName = String(source.fileName || '')
+  const fileId = String(source.kmlId || source.clientId || '')
+  const errorCode = String(source.errorCode || detail.code || '')
+  const reason = String(source.reason || detail.message || `${phase} KML 失败`)
+  const suggestion = String(source.suggestion || '请刷新 KML 列表后重试；若问题持续，请联系管理员并提供错误码。')
+  const lines = []
+  if (fileName) lines.push(`文件：${fileName}`)
+  else if (fileId) lines.push(`文件标识：${fileId}`)
+  if (actionLabel) lines.push(`操作：${actionLabel}`)
+  if (Number.isInteger(Number(source.operationIndex)) && Number(source.operationIndex) >= 0) {
+    lines.push(`同步批次：第 ${Number(source.operationIndex) + 1} 项`)
+  }
+  if (errorCode) lines.push(`错误码：${errorCode}`)
+  lines.push(`原因：${reason}`)
+  if (suggestion) lines.push(`处理建议：${suggestion}`)
+
+  const subject = fileName || fileId
+  return {
+    title: `KML ${phase}失败详情`,
+    message: lines.join('\n'),
+    tooltip: [subject, reason].filter(Boolean).join('：'),
+  }
+}
+
 function renderSyncStatusElement (element, syncState = latestSyncState) {
   const view = getKmlSyncStatusView(syncState.state, syncState.detail)
   element.hidden = !view.visible
-  element.textContent = view.label
+  element.replaceChildren()
+  const label = document.createElement('span')
+  label.className = 'kml-sync-status-label'
+  label.textContent = view.label
+  element.appendChild(label)
+  const isError = syncState.state === 'error'
+  if (isError) {
+    const icon = document.createElement('span')
+    icon.className = 'kml-sync-status-detail-icon'
+    icon.setAttribute('aria-hidden', 'true')
+    icon.textContent = 'i'
+    element.appendChild(icon)
+  }
   element.dataset.state = view.tone
-  const actionable = syncState.state === 'conflict' || syncState.state === 'share-pending' || syncState.state === 'auth-required'
+  const actionable = isError || syncState.state === 'conflict' || syncState.state === 'share-pending' || syncState.state === 'auth-required'
   element.dataset.actionable = actionable ? 'true' : 'false'
-  element.title = view.title
+  const errorDetails = isError ? formatKmlSyncErrorDetails(syncState.detail) : null
+  element.title = errorDetails?.tooltip || view.title
+  element.setAttribute('aria-label', isError ? `${view.label}，查看详情` : view.label)
   if ('disabled' in element) element.disabled = !actionable
 }
 
@@ -187,6 +244,10 @@ export function bindKmlAccountSyncStatus (elementId = 'kml-sync-status') {
     })
   }
   const onActivate = () => {
+    if (latestSyncState.state === 'error') {
+      const details = formatKmlSyncErrorDetails(latestSyncState.detail)
+      showAlert(details.message, { title: details.title })
+    }
     if (latestSyncState.state === 'conflict') dispatchResolutionRequest('status')
     if (latestSyncState.state === 'share-pending') window.location.assign('/account/#shares')
     if (latestSyncState.state === 'auth-required') {
@@ -2054,6 +2115,7 @@ async function flushSync (options = {}) {
       dispatchSyncState('error', {
         code: error.code,
         message: error.message,
+        details: error.details,
       })
     }
   } finally {

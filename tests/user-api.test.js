@@ -354,6 +354,59 @@ test('SidePanel stale partitioned session cookies are cleared without affecting 
   }
 })
 
+test('KML 同步业务错误只透传可操作的安全详情', async () => {
+  const session = testSession()
+  const details = {
+    operationIndex: 0,
+    action: 'update',
+    kmlId: 'kml_cloud_peak',
+    clientId: '',
+    fileName: '2026-07-12 云开九峰',
+    errorCode: 'KML_MOVE_INVALID',
+    reason: 'KML 文件位置不正确',
+    suggestion: '刷新 KML 列表后重新保存。',
+  }
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? session : null,
+    verifyUserCsrf: (current, token) => {
+      assert.equal(current, session)
+      assert.equal(token, 'csrf-token')
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'kml.own.write')
+    },
+    syncUserKmlFiles: () => {
+      throw Object.assign(new Error('KML 文件位置不正确'), {
+        statusCode: 409,
+        code: 'KML_MOVE_INVALID',
+        exposeDetails: true,
+        details,
+      })
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const result = await requestJson(baseUrl, '/api/v1/kml/sync', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token', 'X-CSRF-Token': 'csrf-token' },
+      body: JSON.stringify({
+        operations: [{ action: 'update', kmlId: details.kmlId, data: { name: details.fileName } }],
+      }),
+    })
+    assert.equal(result.response.status, 409)
+    assert.equal(result.payload.error.code, 'KML_MOVE_INVALID')
+    assert.equal(result.payload.error.message, 'KML 文件位置不正确')
+    assert.deepEqual(result.payload.error.details, details)
+    assert.equal(JSON.stringify(result.payload).includes('token'), false)
+    assert.equal(JSON.stringify(result.payload).includes('password'), false)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('browser login and registration reject cross-site credential requests', async () => {
   let loginCalls = 0
   let registerCalls = 0

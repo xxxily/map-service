@@ -6,6 +6,7 @@ import {
   buildKmlRecoveryResolution,
   buildKmlSyncOperations,
   getKmlSyncStatusView,
+  formatKmlSyncErrorDetails,
   getPendingShareReferenceCount,
   kmlFingerprint,
   mergeKmlAccountOrganizationDocument,
@@ -441,6 +442,33 @@ test('KML account sync exposes visible save, failure and conflict states', () =>
   assert.match(getKmlSyncStatusView('share-pending', { pendingShareReferenceCount: 2 }).title, /2 个分享引用/)
   assert.equal(getKmlSyncStatusView('auth-required').label, '请先登录')
   assert.equal(getKmlSyncStatusView('guest').visible, false)
+})
+
+test('KML 同步失败详情包含文件、操作、原因和处理建议', () => {
+  assert.deepEqual(formatKmlSyncErrorDetails({
+    code: 'KML_MOVE_INVALID',
+    message: 'KML 文件位置不正确',
+    details: {
+      operationIndex: 2,
+      action: 'update',
+      kmlId: 'kml-117',
+      fileName: '2026-07-12 云开九峰',
+      errorCode: 'KML_MOVE_INVALID',
+      reason: 'KML 文件位置不正确',
+      suggestion: '刷新列表后重新保存。',
+    },
+  }), {
+    title: 'KML 保存失败详情',
+    message: [
+      '文件：2026-07-12 云开九峰',
+      '操作：保存文件',
+      '同步批次：第 3 项',
+      '错误码：KML_MOVE_INVALID',
+      '原因：KML 文件位置不正确',
+      '处理建议：刷新列表后重新保存。',
+    ].join('\n'),
+    tooltip: '2026-07-12 云开九峰：KML 文件位置不正确',
+  })
 })
 
 test('KML sync absorbs server canonical fields when no newer local edit exists', () => {
@@ -1955,4 +1983,8 @@ test('2D and 3D KML panels bind session expiry before account recovery and expos
   assert.match(styles, /\.kml-sync-status\[data-state="conflict"\]/)
   assert.match(styles, /\.kml-sync-status\[data-state="share-pending"\]/)
   assert.match(styles, /\.kml-sync-status\[data-state="auth-required"\]/)
+  assert.match(styles, /\.kml-sync-status-detail-icon/)
+  const syncSource = await fs.readFile(new URL('../src/map/kml-account-sync.js', import.meta.url), 'utf8')
+  assert.match(syncSource, /icon\.className = 'kml-sync-status-detail-icon'/)
+  assert.match(syncSource, /showAlert\(details\.message, \{ title: details\.title \}\)/)
 })

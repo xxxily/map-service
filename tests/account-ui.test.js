@@ -629,6 +629,49 @@ test('KML 回收站条目显示删除时间和原目录', () => {
   assert.match(html, /data-account-action="delete-kml"/)
 })
 
+test('KML 配额只显示使用中占用并单列回收站物理存储', () => {
+  const html = renderAccountShell({
+    auth: {
+      user: {
+        username: 'quota-owner',
+        displayName: '配额用户',
+        permissions: ['account.self.read', 'kml.own.write'],
+      },
+      config: {},
+    },
+    activeTab: 'kml',
+    loading: false,
+    busy: false,
+    notice: '',
+    error: '',
+    kml: {
+      status: 'active',
+      search: '',
+      sort: 'position',
+      order: 'asc',
+      selected: new Set(),
+      trashCount: 107,
+      usage: {
+        fileCount: 21,
+        featureCount: 7000,
+        trashCount: 107,
+        trashFeatureCount: 855,
+        trashByteSize: 2048,
+        quota: { maxKmlFiles: 20000 },
+      },
+      directories: { items: [], uncategorized: { name: '未分类' } },
+      items: [],
+    },
+    favorites: { items: [], search: '' },
+    shares: { items: [], search: '', status: '' },
+    sessions: [],
+  })
+
+  assert.match(html, /使用中已占用 21 \/ 20000 个文件，7,000 个要素/)
+  assert.match(html, /回收站另有 107 个文件，855 个要素，2\.0 KB；不计入可用配额，清理前仍占存储/)
+  assert.doesNotMatch(html, /使用中已占用 128/)
+})
+
 test('我的 KML 工具栏按筛选、文件操作和批量操作分区并使用短分享文案', () => {
   const html = renderAccountShell({
     auth: {

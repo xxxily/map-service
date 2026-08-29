@@ -137,6 +137,20 @@ test('2D KML viewport work is lifecycle-bound and cancelled when the map unloads
   assert.doesNotMatch(source, /map\.on\('moveend zoomend', \(\) => scheduleKmlViewportRerender\(map\)\)/)
 })
 
+test('2D 个人 KML 全局聚合跨文件处理 Point 并让分享配置优先', () => {
+  const source = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
+  const globalConfig = source.match(/function getGlobalPointClusteringConfig2d \(\)[\s\S]*?\n}/)?.[0] || ''
+  const personalClustering = source.match(/function renderPersonalClusterLayers \(map, config\)[\s\S]*?\n}/)?.[0] || ''
+
+  assert.match(globalConfig, /if \(getActiveShare\(\)\) return null/)
+  assert.match(globalConfig, /getAuthSnapshot\(\)\.config\?\.kml\?\.pointClustering/)
+  assert.match(personalClustering, /kmlList\.filter/)
+  assert.match(personalClustering, /feature\.type !== 'Point'/)
+  assert.match(personalClustering, /clusterKmlPoints/)
+  assert.match(source, /if \(getGlobalPointClusteringConfig2d\(\)\?\.enabled\)/)
+  assert.match(source, /map\.setView\([^)]*[\s\S]*\{ animate: true \}\)/)
+})
+
 test('collapsed KML cards skip overview work and 3D feature filtering', () => {
   const map2d = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
   const map3d = readFileSync(new URL('../src/map3d/kml.js', import.meta.url), 'utf8')

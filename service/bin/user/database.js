@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 10
+export const USER_DATABASE_VERSION = 11
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -609,6 +609,52 @@ export class UserDatabase {
         if (!columns.includes('avatar')) this.database.exec("ALTER TABLE users ADD COLUMN avatar TEXT NOT NULL DEFAULT ''")
         if (!columns.includes('gender')) this.database.exec("ALTER TABLE users ADD COLUMN gender TEXT NOT NULL DEFAULT ''")
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString())
+      })
+    }
+
+    if (current < 11) {
+      this.transaction(() => {
+        const now = new Date().toISOString()
+        // v9 initialized positions across all rows. Recycle-bin rows and
+        // directory boundaries must be excluded from the active order, so
+        // rebuild every owner/directory sequence deterministically.
+        const tableExists = Boolean(this.database.prepare(`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kml_documents'
+        `).get())
+        const columns = tableExists
+          ? this.database.prepare('PRAGMA table_info(kml_documents)').all().map(column => column.name)
+          : []
+        if (tableExists && ['owner_id', 'directory_id', 'position', 'status', 'revision', 'updated_at'].every(column => columns.includes(column))) {
+          const groups = this.database.prepare(`
+            SELECT DISTINCT owner_id, directory_id
+            FROM kml_documents
+            WHERE status = 'active'
+          `).all()
+          const update = this.database.prepare(`
+            UPDATE kml_documents
+            SET position = ?, revision = revision + 1, updated_at = ?
+            WHERE id = ? AND status = 'active' AND position <> ?
+          `)
+          groups.forEach(group => {
+            const rows = this.database.prepare(`
+              SELECT id FROM kml_documents
+              WHERE owner_id = ? AND directory_id IS ? AND status = 'active'
+              ORDER BY position, id
+            `).all(group.owner_id, group.directory_id)
+            rows.forEach((row, index) => update.run(index, now, row.id, index))
+          })
+          this.database.prepare(`
+            UPDATE kml_documents
+            SET position = 0, revision = revision + 1, updated_at = ?
+            WHERE status = 'trashed' AND (position IS NULL OR position <> 0)
+          `).run(now)
+          this.database.exec(`
+            CREATE INDEX IF NOT EXISTS idx_kml_owner_directory_status_position
+              ON kml_documents(owner_id, directory_id, status, position, id)
+          `)
+        }
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(11, now)
       })
     }
 

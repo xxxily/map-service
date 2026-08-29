@@ -259,7 +259,8 @@ function renderKml (state) {
           </div>` : ''}
         </div>
       </div>
-      ${quota.maxKmlFiles ? `<p class="account-usage">已使用 ${Number(usage.fileCount || 0)} / ${Number(quota.maxKmlFiles)} 个文件，${Number(usage.featureCount || 0).toLocaleString()} 个要素</p>` : ''}
+      ${quota.maxKmlFiles ? `<p class="account-usage">使用中已占用 ${Number(usage.fileCount || 0)} / ${Number(quota.maxKmlFiles)} 个文件，${Number(usage.featureCount || 0).toLocaleString()} 个要素</p>` : ''}
+      ${Number(usage.trashCount || 0) > 0 ? `<p class="account-usage">回收站另有 ${Number(usage.trashCount)} 个文件，${Number(usage.trashFeatureCount || 0).toLocaleString()} 个要素，${formatBytes(usage.trashByteSize)}；不计入可用配额，清理前仍占存储。</p>` : ''}
       ${renderKmlRows(state)}
     </section>
   `
