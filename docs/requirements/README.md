@@ -40,6 +40,7 @@
 - [KML 性能优化与资源集合点位](./kml-performance-and-resource-collections.md)（已实现）
 - [账号 KML 同步数据丢失防护](./kml-account-sync-data-loss-prevention.md)（1.5.47 已实现；覆盖误删、冲突、恢复草稿和保存失败）
 - [管理后台数值配置自由裁量与 KML 移动端布局修订](./admin-user-system-configurable-limits-and-kml-mobile-layout.md)（1.5.50 已实现）
+- [用户管理与个人空间 KML 工具栏界面优化需求](./admin-users-and-account-kml-toolbar-ui-polish.md)（v1.5.52 已实现，待发布验收）
 - [KML 分享发布控制与地图交互性能](./kml-share-publishing-and-map-interaction.md)（开发中；分享生命周期与删除增强已于 v1.5.37 实施）
 - [2D macOS 触摸板缩放方向稳定性](./2d-trackpad-zoom-direction-stability.md)（v1.5.23 已实现）
 - [66 服务器资源安全与应用运行防护](./server-resource-safety.md)（v1.5.24 第一阶段已实现）

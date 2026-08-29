@@ -2,9 +2,9 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-28
+- Last refreshed: 2026-08-29
 - Primary product surfaces: 2D/3D 地图、KML 数据管理面板、个人空间、公开分享留言、管理后台、媒体预览器
-- Evidence reviewed: `src/account/`、`src/admin/pages/interaction.js`、`src/admin/pages/userSystemSettings.js`、`src/ui/interaction.js`、`src/ui/dialog.js`、`src/map/kml.js`、`src/map3d/kml.js`、`src/ui/media-preview.js`、`src/styles.css`、`docs/requirements/share-ai-profile-comment-experience-optimization.md`
+- Evidence reviewed: `src/account/`、`src/admin/layout.js`、`src/admin/pages/users.js`、`src/admin/pages/interaction.js`、`src/admin/pages/userSystemSettings.js`、`src/ui/interaction.js`、`src/ui/dialog.js`、`src/map/kml.js`、`src/map3d/kml.js`、`src/ui/media-preview.js`、`src/styles.css`、`docs/requirements/admin-users-and-account-kml-toolbar-ui-polish.md`
 
 ## Brand
 - Personality: 克制、清晰、以地图内容为主
@@ -24,7 +24,7 @@
 ## Information architecture
 - Primary navigation: 地图 ↔ 个人空间 ↔ 管理后台；地图 > KML 数据管理 > 文件 > 要素；公开分享 > 点位 > 留言
 - Core routes/screens: 2D 地图、3D 地图、个人空间、公开分享留言、管理后台、媒体预览浮层
-- Content hierarchy: 当前业务内容 > 名称与身份 > 主要操作 > 状态与稳定 ID；管理设置先按能力 Tab 分类再展示表单
+- Content hierarchy: 当前业务内容 > 名称与身份 > 主要操作 > 状态与稳定 ID；管理设置和长列表旁的创建表单先按能力 Tab 分类；密集工具栏按筛选、文件操作、批量操作分层
 
 ## Design principles
 - Selection is explicit: 批量模式必须可见、可取消，并提供只针对当前可见要素的全选/反选，不会误触原有定位操作
@@ -34,6 +34,7 @@
 - Feedback stays visible: 短操作反馈固定在右下角，不随页面滚动丢失；长内容、输入和确认继续使用统一 Dialog
 - Identity is contextual: 登录留言只使用账号资料，匿名资料独立记忆；历史留言使用提交时快照，不随资料修改漂移
 - Secrets are write-only: API Key 可直接输入但永不回显；安全状态通过“已配置/已验证”表达
+- Dense tools need hierarchy: 搜索和排序占据主行，文件级命令与批量命令分区；低频同类命令进入菜单，不能依靠无序换行承载响应式布局
 
 ## Visual language
 - Color: 延续现有墨绿色强调色、浅色透明控件底、深色媒体内容面
@@ -45,7 +46,7 @@
 
 ## Components
 - Existing components to reuse: `src/ui/dialog.js`、KML 文件卡片/要素行、`transferKmlFeature`、`media-preview` 控件
-- New/changed components: 分享 URL Dialog、固定 Toast、后台设置 Tab、用户资料头像输入、留言作者行、结构化留言详情 Dialog
+- New/changed components: 分享 URL Dialog、固定 Toast、后台设置/用户管理 Tab、用户资料头像输入、留言作者行、结构化留言详情 Dialog、分层 KML 工具栏与导入菜单
 - Variants and states: normal/selection/empty/processing/readonly；success/error/loading Toast；configured/unverified/verified provider；anonymous/authenticated author
 - Token/component ownership: KML 管理由 `src/map/kml.js` 与 `src/map3d/kml.js`；媒体布局由 `src/ui/media-preview.js` 和 `src/ui/media-preview-layout.js`
 
@@ -53,12 +54,12 @@
 - Target standard: WCAG 2.1 AA 基础要求
 - Keyboard/focus behavior: 复选框与 Tab 可键盘操作；批量动作和媒体按钮有明确焦点态；Dialog 圈定焦点并可用 Escape 关闭；Toast 关闭按钮可聚焦
 - Contrast/readability: 状态文字和控件边框保持现有对比度；激活态不依赖底色变化
-- Screen-reader semantics: 选择数量、`aria-pressed`、`aria-label`、`tablist/tab/tabpanel`、Toast `aria-live` 和调整手柄标签完整
+- Screen-reader semantics: 选择数量、`aria-pressed`、图标按钮 `aria-label/title`、`tablist/tab/tabpanel`、Toast `aria-live` 和调整手柄标签完整
 - Reduced motion and sensory considerations: 不依赖动画传达状态，拖动帧合并并尊重 reduced-motion
 
 ## Responsive behavior
 - Supported breakpoints/devices: 桌面宽屏、窄桌面、移动触摸、SidePanel iframe
-- Layout adaptations: 移动媒体继续全屏；桌面可宽屏/小窗；KML 批量选择在触摸和键盘均可用；长 URL 任意断行；Toast 使用安全边距；后台 Tab 可横向滚动但页面本身不溢出
+- Layout adaptations: 移动媒体继续全屏；桌面可宽屏/小窗；KML 批量选择在触摸和键盘均可用；长 URL 任意断行；Toast 使用安全边距；后台 Tab 可横向滚动；账号 KML 工具栏在窄屏按筛选、文件操作、批量操作纵向排列且页面本身不溢出
 - Touch/hover differences: 小窗拖动和缩放只在非触摸桌面显示；移动端不显示手柄
 
 ## Interaction states

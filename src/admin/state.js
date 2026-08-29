@@ -30,6 +30,7 @@ export const adminState = {
     status: '',
     role: '',
   },
+  adminUsersTab: 'list',
   roles: [],
   moderatedShares: {
     items: [],

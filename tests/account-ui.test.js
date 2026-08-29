@@ -629,6 +629,54 @@ test('KML 回收站条目显示删除时间和原目录', () => {
   assert.match(html, /data-account-action="delete-kml"/)
 })
 
+test('我的 KML 工具栏按筛选、文件操作和批量操作分区并使用短分享文案', () => {
+  const html = renderAccountShell({
+    auth: {
+      user: {
+        username: 'toolbar-owner',
+        displayName: '工具栏用户',
+        permissions: ['account.self.read', 'kml.own.write', 'share.own.manage'],
+      },
+      config: {},
+    },
+    activeTab: 'kml',
+    loading: false,
+    notice: '',
+    error: '',
+    twoBuluHelper: { available: true },
+    kml: {
+      status: 'active',
+      search: '',
+      sort: 'position',
+      order: 'asc',
+      selected: new Set(),
+      trashCount: 3,
+      usage: {},
+      directories: { items: [], uncategorized: { name: '未分类' } },
+      items: [{
+        id: 'kml-toolbar',
+        name: '工具栏测试',
+        status: 'active',
+        enabled: true,
+        updatedAt: '2026-08-29T00:00:00.000Z',
+        featureCount: 1,
+        byteSize: 128,
+      }],
+    },
+  })
+
+  assert.match(html, /class="account-toolbar-query"/)
+  assert.match(html, /class="account-toolbar-file-actions"/)
+  assert.match(html, /class="account-toolbar-selection"/)
+  assert.match(html, /class="account-import-menu"/)
+  assert.match(html, /<summary>导入<\/summary>/)
+  assert.match(html, /data-account-action="import-kml"/)
+  assert.match(html, /data-account-action="import-2bulu"/)
+  assert.match(html, /data-account-action="migrate-local"/)
+  assert.match(html, /data-account-action="create-share"[^>]*>分享<\/button>/)
+  assert.doesNotMatch(html, /创建多 KML 分享/)
+})
+
 test('分享密码生成器支持长度和特殊字符选项，并排除 URL 查询分隔符', () => {
   assert.deepEqual(SHARE_PASSWORD_LENGTH_OPTIONS, [8, 12, 16, 20, 24, 32])
   const password = generateStrongSharePassword(32)

@@ -697,15 +697,142 @@ button:disabled {
 }
 
 .account-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  display: grid;
+  gap: 10px;
   margin-bottom: 14px;
   border: 1px solid rgba(19, 62, 61, 0.1);
   border-radius: 11px;
-  padding: 10px;
+  padding: 12px;
   background: rgba(255, 255, 255, 0.78);
+}
+
+.account-toolbar-query,
+.account-toolbar-command-row,
+.account-toolbar-file-actions,
+.account-toolbar-selection {
+  min-width: 0;
+}
+
+.account-toolbar-query .account-search-form {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) repeat(3, minmax(108px, auto)) auto;
+  width: 100%;
+}
+
+.account-toolbar-query .account-search-form input,
+.account-toolbar-query .account-search-form select {
+  min-width: 0;
+  width: 100%;
+}
+
+.account-toolbar-command-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(19, 62, 61, 0.08);
+}
+
+.account-toolbar-file-actions,
+.account-toolbar-selection,
+.account-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.account-toolbar-selection {
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.account-selection-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 38px;
+  align-items: center;
+  color: #6f8183;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.account-import-menu {
+  position: relative;
+}
+
+.account-import-menu summary {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 7px;
+  box-sizing: border-box;
+  border: 1px solid rgba(22, 72, 69, 0.15);
+  border-radius: 9px;
+  padding: 0 14px;
+  background: #fff;
+  color: #244849;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.account-import-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.account-import-menu summary::after {
+  content: '▾';
+  color: #748688;
+  font-size: 10px;
+}
+
+.account-import-menu[open] summary,
+.account-import-menu summary:hover,
+.account-import-menu summary:focus-visible {
+  border-color: #0f766e;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.account-import-menu-panel {
+  display: grid;
+  position: absolute;
+  z-index: 12;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 178px;
+  gap: 2px;
+  box-sizing: border-box;
+  border: 1px solid rgba(19, 62, 61, 0.13);
+  border-radius: 8px;
+  padding: 6px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(19, 54, 54, 0.14);
+}
+
+.account-import-menu-panel button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: #294b4d;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.account-import-menu-panel button:hover,
+.account-import-menu-panel button:focus-visible {
+  outline: none;
+  background: #eff8f6;
+  color: #0f766e;
 }
 
 .account-search-form {
@@ -727,20 +854,29 @@ button:disabled {
   min-width: 62px;
 }
 
-.account-selection-actions {
-  color: #6f8183;
-  font-size: 12px;
-}
-
 .account-selection-actions > button:not(.account-primary-button) {
+  min-height: 38px;
   border: 0;
+  border-radius: 7px;
+  padding: 0 9px;
   background: transparent;
   color: #0f766e;
   font-size: 12px;
 }
 
+.account-selection-actions > button:not(.account-primary-button):hover:not(:disabled),
+.account-selection-actions > button:not(.account-primary-button):focus-visible {
+  outline: none;
+  background: #eff8f6;
+}
+
 .account-selection-actions > button.is-danger {
   color: #b34640;
+}
+
+.account-selection-actions > button.is-danger:hover:not(:disabled),
+.account-selection-actions > button.is-danger:focus-visible {
+  background: #fff1f0;
 }
 
 .account-usage {
@@ -1708,7 +1844,43 @@ body.account-view .app-dialog:not(.account-share-dialog) {
 
   .account-toolbar {
     align-items: stretch;
+  }
+
+  .account-toolbar-query .account-search-form {
+    grid-template-columns: minmax(180px, 1fr) repeat(2, minmax(108px, auto)) auto;
+  }
+
+  .account-toolbar-query .account-search-form select[name="status"] {
+    grid-column: 2;
+  }
+
+  .account-toolbar-query .account-search-form select[name="sort"] {
+    grid-column: 3;
+  }
+
+  .account-toolbar-query .account-search-form select[name="order"] {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .account-toolbar-query .account-search-form button {
+    grid-column: 3 / 5;
+    grid-row: 2;
+  }
+
+  .account-toolbar-query .account-search-form input {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .account-toolbar-command-row {
+    align-items: stretch;
     flex-direction: column;
+  }
+
+  .account-toolbar-selection {
+    justify-content: space-between;
+    margin-left: 0;
   }
 
   .account-selection-actions {
@@ -1868,6 +2040,45 @@ body.account-view .app-dialog:not(.account-share-dialog) {
     flex-wrap: wrap;
   }
 
+  .account-toolbar-query .account-search-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .account-toolbar-query .account-search-form input {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+
+  .account-toolbar-query .account-search-form select[name="status"],
+  .account-toolbar-query .account-search-form select[name="sort"],
+  .account-toolbar-query .account-search-form select[name="order"],
+  .account-toolbar-query .account-search-form button {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .account-toolbar-file-actions,
+  .account-toolbar-selection {
+    align-items: stretch;
+  }
+
+  .account-toolbar-file-actions > button,
+  .account-toolbar-file-actions > .account-import-menu {
+    flex: 1 1 132px;
+  }
+
+  .account-import-menu summary {
+    justify-content: center;
+  }
+
+  .account-toolbar-selection {
+    flex-direction: column;
+  }
+
+  .account-selection-actions {
+    width: 100%;
+  }
+
   .account-search-form input {
     width: 100%;
     flex: 1 0 100%;
@@ -1936,6 +2147,40 @@ body.account-view .app-dialog:not(.account-share-dialog) {
 
   .account-selection-actions .account-primary-button {
     width: 100%;
+  }
+
+  .account-toolbar-file-actions,
+  .account-selection-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .account-toolbar-file-actions > button,
+  .account-toolbar-file-actions > .account-import-menu,
+  .account-selection-actions > button {
+    min-width: 0;
+    width: 100%;
+    flex: none;
+  }
+
+  .account-import-menu summary {
+    width: 100%;
+  }
+
+  .account-selection-actions > button:not(.account-primary-button, .is-danger) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .account-selection-actions .account-primary-button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .account-selection-actions > button.is-danger {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .account-share-dialog-columns,

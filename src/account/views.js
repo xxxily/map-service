@@ -219,31 +219,45 @@ function renderKml (state) {
     <section class="account-panel-section">
       <div class="account-section-heading">
         <div><p class="account-eyebrow">个人数据</p><h2>我的 KML</h2><p>所有文件默认私有，只有加入分享包后才可通过链接读取。</p></div>
-        ${capabilities.canWriteKml ? `<div class="account-heading-actions">
-          <button type="button" class="account-secondary-button" data-account-action="create-kml-directory">新建目录</button>
-          <input type="file" id="account-kml-import" accept=".kml,application/vnd.google-earth.kml+xml" hidden>
-          <button type="button" class="account-secondary-button" data-account-action="import-kml">导入 KML</button>
-          ${canImportTwoBulu ? '<button type="button" class="account-secondary-button" data-account-action="import-2bulu">从两步路导入</button>' : ''}
-          <button type="button" class="account-secondary-button" data-account-action="migrate-local">迁移本地数据</button>
-          <button type="button" class="account-primary-button" data-account-action="create-kml">新建 KML</button>
-          <button type="button" class="account-secondary-button" data-account-action="open-kml-trash">回收站${state.kml.trashCount ? ` (${state.kml.trashCount})` : ''}</button>
-        </div>` : '<span class="account-badge is-muted">只读 KML</span>'}
+        ${capabilities.canWriteKml ? '' : '<span class="account-badge is-muted">只读 KML</span>'}
       </div>
       <div class="account-toolbar">
-        ${state.kml.status === 'trashed' ? '<button type="button" class="account-link-button" data-account-action="back-kml-active" title="返回使用中的 KML">返回</button>' : ''}
-        <form data-account-form="kml-filter" class="account-search-form">
-          <input name="search" value="${escapeHtml(state.kml.search)}" placeholder="搜索名称或描述">
-          <select name="status"><option value="active" ${state.kml.status === 'active' ? 'selected' : ''}>使用中</option><option value="trashed" ${state.kml.status === 'trashed' ? 'selected' : ''}>回收站</option><option value="all" ${state.kml.status === 'all' ? 'selected' : ''}>全部</option></select>
-          <select name="sort" aria-label="排序字段"><option value="position" ${state.kml.sort === 'position' ? 'selected' : ''}>目录顺序</option><option value="updatedAt" ${state.kml.sort === 'updatedAt' ? 'selected' : ''}>更新时间</option><option value="createdAt" ${state.kml.sort === 'createdAt' ? 'selected' : ''}>创建时间</option><option value="name" ${state.kml.sort === 'name' ? 'selected' : ''}>名称</option><option value="featureCount" ${state.kml.sort === 'featureCount' ? 'selected' : ''}>要素数量</option></select>
-          <select name="order" aria-label="排序方向"><option value="desc" ${state.kml.order === 'desc' ? 'selected' : ''}>降序</option><option value="asc" ${state.kml.order === 'asc' ? 'selected' : ''}>升序</option></select>
-          <button type="submit">查询</button>
-        </form>
-        ${selectable ? `<div class="account-selection-actions">
-          <span>已选 ${selectedCount} 个</span>
-          <button type="button" data-account-action="select-all-kml">全选本页</button>
-          ${capabilities.canWriteKml ? `<button type="button" class="is-danger" data-account-action="trash-selected-kml" ${selectedCount ? '' : 'disabled'}>批量移入回收站</button>` : ''}
-          ${capabilities.canManageShares ? `<button type="button" class="account-primary-button" data-account-action="create-share" ${state.kml.items.some(item => item.status === 'active') ? '' : 'disabled'}>创建多 KML 分享</button>` : ''}
-        </div>` : ''}
+        <div class="account-toolbar-query">
+          <form data-account-form="kml-filter" class="account-search-form">
+            <input name="search" value="${escapeHtml(state.kml.search)}" placeholder="搜索名称或描述">
+            <select name="status"><option value="active" ${state.kml.status === 'active' ? 'selected' : ''}>使用中</option><option value="trashed" ${state.kml.status === 'trashed' ? 'selected' : ''}>回收站</option><option value="all" ${state.kml.status === 'all' ? 'selected' : ''}>全部</option></select>
+            <select name="sort" aria-label="排序字段"><option value="position" ${state.kml.sort === 'position' ? 'selected' : ''}>目录顺序</option><option value="updatedAt" ${state.kml.sort === 'updatedAt' ? 'selected' : ''}>更新时间</option><option value="createdAt" ${state.kml.sort === 'createdAt' ? 'selected' : ''}>创建时间</option><option value="name" ${state.kml.sort === 'name' ? 'selected' : ''}>名称</option><option value="featureCount" ${state.kml.sort === 'featureCount' ? 'selected' : ''}>要素数量</option></select>
+            <select name="order" aria-label="排序方向"><option value="desc" ${state.kml.order === 'desc' ? 'selected' : ''}>降序</option><option value="asc" ${state.kml.order === 'asc' ? 'selected' : ''}>升序</option></select>
+            <button type="submit">查询</button>
+          </form>
+        </div>
+        <div class="account-toolbar-command-row">
+          ${(state.kml.status === 'trashed' || capabilities.canWriteKml) ? `<div class="account-toolbar-file-actions">
+            ${state.kml.status === 'trashed' ? '<button type="button" class="account-link-button" data-account-action="back-kml-active" title="返回使用中的 KML">返回</button>' : ''}
+            ${capabilities.canWriteKml && state.kml.status !== 'trashed' ? `
+              <button type="button" class="account-primary-button" data-account-action="create-kml">新建 KML</button>
+              <button type="button" class="account-secondary-button" data-account-action="create-kml-directory">新建目录</button>
+              <input type="file" id="account-kml-import" accept=".kml,application/vnd.google-earth.kml+xml" hidden>
+              <details class="account-import-menu">
+                <summary>导入</summary>
+                <div class="account-import-menu-panel">
+                  <button type="button" data-account-action="import-kml">导入 KML</button>
+                  ${canImportTwoBulu ? '<button type="button" data-account-action="import-2bulu">从两步路导入</button>' : ''}
+                  <button type="button" data-account-action="migrate-local">迁移本地数据</button>
+                </div>
+              </details>
+              <button type="button" class="account-secondary-button" data-account-action="open-kml-trash">回收站${state.kml.trashCount ? ` (${state.kml.trashCount})` : ''}</button>
+            ` : ''}
+          </div>` : ''}
+          ${selectable && state.kml.status !== 'trashed' ? `<div class="account-toolbar-selection">
+            <span class="account-selection-status" aria-live="polite">已选 ${selectedCount} 个</span>
+            <div class="account-selection-actions">
+              <button type="button" data-account-action="select-all-kml">全选本页</button>
+              ${capabilities.canWriteKml ? `<button type="button" class="is-danger" data-account-action="trash-selected-kml" ${selectedCount ? '' : 'disabled'}>批量移入回收站</button>` : ''}
+              ${capabilities.canManageShares ? `<button type="button" class="account-primary-button" data-account-action="create-share" ${state.kml.items.some(item => item.status === 'active') ? '' : 'disabled'}>分享</button>` : ''}
+            </div>
+          </div>` : ''}
+        </div>
       </div>
       ${quota.maxKmlFiles ? `<p class="account-usage">已使用 ${Number(usage.fileCount || 0)} / ${Number(quota.maxKmlFiles)} 个文件，${Number(usage.featureCount || 0).toLocaleString()} 个要素</p>` : ''}
       ${renderKmlRows(state)}

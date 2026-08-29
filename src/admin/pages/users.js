@@ -53,10 +53,22 @@ export function renderUsersPage (state) {
   ) / 1024 / 1024))
   const canManageRoles = hasPermission(state, 'admin.role.manage')
   const filters = state.adminUserFilters || {}
+  const tabs = [
+    { id: 'list', label: '用户管理' },
+    ...(canManage ? [{ id: 'create', label: '添加用户' }] : []),
+  ]
+  const activeTab = tabs.some(tab => tab.id === state.adminUsersTab) ? state.adminUsersTab : 'list'
+  state.adminUsersTab = activeTab
+  const tabButton = tab => `<button id="admin-users-tab-${tab.id}" type="button" class="admin-settings-tab ${activeTab === tab.id ? 'is-active' : ''}" role="tab" aria-selected="${activeTab === tab.id}" aria-controls="admin-users-panel-${tab.id}" tabindex="${activeTab === tab.id ? '0' : '-1'}" data-admin-users-tab="${tab.id}">${escapeHtml(tab.label)}</button>`
 
   return `
     <div class="admin-user-system-stack">
-      <section class="admin-panel">
+      <div class="admin-settings-tabs" role="tablist" aria-label="用户管理分类">
+        ${tabs.map(tabButton).join('')}
+      </div>
+
+      <div id="admin-users-panel-list" class="admin-settings-tabpanel" role="tabpanel" aria-labelledby="admin-users-tab-list" ${activeTab === 'list' ? '' : 'hidden'}>
+        <section class="admin-panel">
         <div class="admin-panel-head">
           <div>
             <h2>用户管理</h2>
@@ -157,32 +169,35 @@ export function renderUsersPage (state) {
           </table>
         </div>
         ${renderPagination(collection, 'users')}
-      </section>
+        </section>
+      </div>
 
       ${canManage ? `
-        <section class="admin-panel">
-          <div class="admin-panel-head">
-            <div>
-              <h2>后台添加用户</h2>
-              <p class="admin-panel-description">未填写密码时由系统生成高强度临时密码；新用户首次登录必须修改密码。</p>
+        <div id="admin-users-panel-create" class="admin-settings-tabpanel" role="tabpanel" aria-labelledby="admin-users-tab-create" ${activeTab === 'create' ? '' : 'hidden'}>
+          <section class="admin-panel">
+            <div class="admin-panel-head">
+              <div>
+                <h2>添加用户</h2>
+                <p class="admin-panel-description">未填写密码时由系统生成高强度临时密码；新用户首次登录必须修改密码。</p>
+              </div>
             </div>
-          </div>
-          <form class="admin-form admin-user-create-form" data-admin-user-create autocomplete="off">
-            <div class="admin-field-grid admin-field-grid-three">
-              <label><span>用户名</span><input name="username" autocomplete="off" minlength="3" maxlength="32" required></label>
-              <label><span>显示名称</span><input name="displayName" maxlength="80" required></label>
-              <label><span>邮箱（可选）</span><input name="email" type="email" autocomplete="off"></label>
-            </div>
-            <label><span>指定临时密码（可选）</span><input name="password" type="password" autocomplete="new-password" minlength="12" placeholder="留空则由系统生成"></label>
-            ${canManageRoles ? `
-              <fieldset class="admin-permission-fieldset">
-                <legend>初始角色</legend>
-                <div class="admin-checkbox-grid">${renderRoleChecks(roles, ['user'])}</div>
-              </fieldset>
-            ` : ''}
-            <button type="submit">创建用户</button>
-          </form>
-        </section>
+            <form class="admin-form admin-user-create-form" data-admin-user-create autocomplete="off">
+              <div class="admin-field-grid admin-field-grid-three">
+                <label><span>用户名</span><input name="username" autocomplete="off" minlength="3" maxlength="32" required></label>
+                <label><span>显示名称</span><input name="displayName" maxlength="80" required></label>
+                <label><span>邮箱（可选）</span><input name="email" type="email" autocomplete="off"></label>
+              </div>
+              <label><span>指定临时密码（可选）</span><input name="password" type="password" autocomplete="new-password" minlength="12" placeholder="留空则由系统生成"></label>
+              ${canManageRoles ? `
+                <fieldset class="admin-permission-fieldset">
+                  <legend>初始角色</legend>
+                  <div class="admin-checkbox-grid">${renderRoleChecks(roles, ['user'])}</div>
+                </fieldset>
+              ` : ''}
+              <button type="submit">创建用户</button>
+            </form>
+          </section>
+        </div>
       ` : ''}
     </div>
   `
@@ -309,6 +324,12 @@ export async function handleUsersSubmit ({ api, event, renderDashboard, setNotic
 }
 
 export async function handleUsersClick ({ api, event, renderDashboard, setNotice, showConfirm, state }) {
+  const tabTarget = event.target.closest('[data-admin-users-tab]')
+  if (tabTarget) {
+    state.adminUsersTab = String(tabTarget.dataset.adminUsersTab || 'list')
+    renderDashboard()
+    return true
+  }
   const target = event.target.closest('[data-admin-action]')
   if (!target) return false
   const action = target.dataset.adminAction

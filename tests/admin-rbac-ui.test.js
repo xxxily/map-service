@@ -142,6 +142,45 @@ test('个人配额覆盖不渲染固定最大值', () => {
   assert.match(html, /name="maxKmlFileMb"[^>]*max="80"/)
 })
 
+test('用户管理与添加用户使用页首 Tab 分区且只读权限不显示添加入口', () => {
+  const baseState = {
+    roles: [],
+    adminUserFilters: {},
+    adminUsers: { items: [], page: 1, limit: 20, total: 0 },
+  }
+  const manageState = {
+    ...baseState,
+    session: sessionWith('admin.user.manage'),
+  }
+  const listHtml = renderUsersPage(manageState)
+
+  assert.match(listHtml, /role="tablist"[^>]*aria-label="用户管理分类"/)
+  assert.match(listHtml, /data-admin-users-tab="list"[^>]*>用户管理<\/button>/)
+  assert.match(listHtml, /data-admin-users-tab="create"[^>]*>添加用户<\/button>/)
+  assert.match(listHtml, /id="admin-users-panel-list"[^>]*role="tabpanel"/)
+  assert.match(listHtml, /id="admin-users-panel-create"[^>]*role="tabpanel"[^>]*hidden/)
+  assert.doesNotMatch(listHtml, /后台添加用户/)
+
+  manageState.adminUsersTab = 'create'
+  const createHtml = renderUsersPage(manageState)
+  assert.match(createHtml, /id="admin-users-panel-list"[^>]*role="tabpanel"[^>]*hidden/)
+  assert.match(createHtml, /id="admin-users-panel-create"[^>]*role="tabpanel"/)
+  assert.match(createHtml, /<h2>添加用户<\/h2>/)
+
+  const readOnlyHtml = renderUsersPage({
+    ...baseState,
+    session: sessionWith('admin.user.read'),
+  })
+  assert.doesNotMatch(readOnlyHtml, /data-admin-users-tab="create"/)
+  assert.doesNotMatch(readOnlyHtml, /data-admin-user-create/)
+})
+
+test('管理后台个人空间入口使用与其他操作一致的图标按钮', async () => {
+  const source = await fs.readFile(path.resolve('src/admin/layout.js'), 'utf8')
+  assert.match(source, /class="admin-icon-link" href="\/account#kml" aria-label="个人空间" title="个人空间">⌂<\/a>/)
+  assert.doesNotMatch(source, /aria-label="个人空间">个人空间<\/a>/)
+})
+
 test('分享治理页展示空间范围、授权模式和安全摘要', () => {
   const html = renderShareModerationPage({
     shareFilters: {},
