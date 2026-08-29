@@ -16,6 +16,18 @@ function tempDir (name) {
   return path.join(tmpdir(), `map-service-${name}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 }
 
+async function safeRemove (target) {
+  try {
+    await fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  } catch {}
+}
+
+function safeRemoveSync (target) {
+  try {
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  } catch {}
+}
+
 function cacheMeta (overrides = {}) {
   const updatedAt = overrides.updatedAt || Date.now() - 10 * 24 * 60 * 60 * 1000
   return {
@@ -190,7 +202,7 @@ test('cache cleanup requires a complete index and deletes only the previewed ent
     assert.equal(await fs.pathExists(freshPath), true)
   } finally {
     governance.index.close()
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -246,7 +258,7 @@ test('cache key analysis enables a source-scoped v2 key after a conflict-free re
     assert.equal(legacyAlias.legacyAlias, true)
   } finally {
     governance.index.close()
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -283,7 +295,7 @@ test('fetch relay can read a legacy full-URL entry after normalized v2 is enable
     assert.equal(calls, 1)
     assert.equal(second.cachePath.includes('tiles.example.com'), true)
   } finally {
-    await fs.remove(cacheDir)
+    await safeRemove(cacheDir)
   }
 })
 
@@ -308,7 +320,7 @@ test('fetch relay returns upstream data without persisting when the hard limit r
     assert.equal(bytes, 256)
     assert.equal(await fs.pathExists(relay.getCachePaths('https://tiles.example.com/limit.png').cachePath), false)
   } finally {
-    await fs.remove(cacheDir)
+    await safeRemove(cacheDir)
   }
 })
 
@@ -339,8 +351,8 @@ test('concurrent cache misses reserve physical capacity before either response i
     assert.ok(status.estimatedPhysicalBytes <= 1700)
   } finally {
     governance.index.close()
-    await fs.remove(cacheDir)
-    await fs.remove(rootDir)
+    await safeRemove(cacheDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -364,7 +376,7 @@ test('cache persistence rechecks actual response size before commit', async () =
     assert.equal(governance.usage.physicalBytes, 0)
   } finally {
     governance.index.close()
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -384,7 +396,7 @@ test('hard capacity uses a conservative bypass when upstream size is unknown', a
     assert.equal(reservation.reason, 'unknown-size')
   } finally {
     governance.index.close()
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -423,7 +435,7 @@ test('an interrupted incremental index batch remains dirty after restart', async
     assert.equal(status.ready, false)
     reopened.close()
   } finally {
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -455,7 +467,7 @@ test('an incremental index batch recovers to ready after a transient SQLite fail
     assert.equal(status.entries, 1)
   } finally {
     governance.index.close()
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -481,7 +493,7 @@ test('clearing cache invalidates an already scheduled index flush', async () => 
     assert.equal(governance.pendingIndexUpserts.size, 0)
   } finally {
     governance.index.close()
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -530,7 +542,7 @@ test('full cache clear waits for an in-flight cache write before removing files'
     assert.equal(await fs.pathExists(paths.cachePath), false)
     assert.equal(await fs.pathExists(paths.metaPath), false)
   } finally {
-    await fs.remove(cacheDir)
+    await safeRemove(cacheDir)
   }
 })
 
@@ -560,7 +572,7 @@ test('cache responses keep an open file descriptor when full clear removes their
       await relay.clear()
       assert.equal(await consume(response), 256)
     } finally {
-      await fs.remove(cacheDir)
+      await safeRemove(cacheDir)
     }
   }
 })
@@ -590,7 +602,7 @@ test('index reconciliation preserves invalid sidecars and accounts for their fil
     assert.equal(orphaned.files, 1)
   } finally {
     governance.index.close()
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -604,7 +616,7 @@ test('read-only metadata inspection never deletes an invalid sidecar', async () 
     assert.equal(await relay.readMeta(metaPath), null)
     assert.equal(await fs.pathExists(metaPath), true)
   } finally {
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -628,7 +640,7 @@ test('cache fetch preserves the body and malformed sidecar when upstream refresh
     assert.equal(await fs.pathExists(paths.cachePath), true)
     assert.equal(await fs.pathExists(paths.metaPath), true)
   } finally {
-    await fs.remove(cacheDir)
+    await safeRemove(cacheDir)
   }
 })
 
@@ -653,7 +665,7 @@ test('cleanup skips a cache path that was replaced after the selection cutoff', 
     assert.equal(await fs.pathExists(path.join(cacheDir, relativePath)), true)
   } finally {
     governance.index.close()
-    await fs.remove(rootDir)
+    await safeRemove(rootDir)
   }
 })
 
@@ -680,7 +692,7 @@ test('URL analysis blocks malformed metadata and never returns query values', ()
     assert.match(analysis.collisions[0].canonicalUrl, /\?style&token$/)
   } finally {
     governance.index.close()
-    fs.removeSync(rootDir)
+    safeRemoveSync(rootDir)
   }
 })
 
