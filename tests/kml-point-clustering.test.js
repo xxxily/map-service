@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   clusterKmlPoints,
   normalizeKmlPointClusteringConfig,
+  resolveGlobalKmlPointClusteringConfig,
 } from '../src/map/kml-point-clustering.js'
 
 const project = latLng => ({ x: latLng.lng, y: latLng.lat })
@@ -12,6 +13,30 @@ test('聚合算法默认关闭，只有显式开启后才合并点位', () => {
   const points = [point('a', 1, 1), point('b', 2, 2)]
   assert.deepEqual(clusterKmlPoints(points, 8, {}, project).map(item => item.type), ['point', 'point'])
   assert.equal(clusterKmlPoints(points, 8, { enabled: true }, project)[0].type, 'cluster')
+})
+
+test('个人地图全局聚合在公开配置缺失时使用性能保护默认值，显式关闭仍生效', () => {
+  assert.deepEqual(resolveGlobalKmlPointClusteringConfig(), {
+    enabled: true,
+    minZoom: 0,
+    maxClusterZoom: 13,
+    gridSize: 64,
+    minClusterPoints: 10,
+    maxMembersPerCluster: 5000,
+  })
+  assert.equal(resolveGlobalKmlPointClusteringConfig({ enabled: false }), null)
+  assert.equal(resolveGlobalKmlPointClusteringConfig({ enabled: 'false' }), null)
+  assert.deepEqual(resolveGlobalKmlPointClusteringConfig({
+    enabled: true,
+    minClusterPoints: 20,
+  }), {
+    enabled: true,
+    minZoom: 0,
+    maxClusterZoom: 13,
+    gridSize: 64,
+    minClusterPoints: 20,
+    maxMembersPerCluster: 5000,
+  })
 })
 
 test('同一像素网格内聚合，并计算准确中心、边界和完整成员 ID', () => {

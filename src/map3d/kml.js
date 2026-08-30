@@ -60,7 +60,7 @@ import { renderCustomSelect, renderCustomColorPicker, initCustomControlsListener
 import { flyToLngLat } from './location.js'
 import { apiRequest } from '../auth/api.js'
 import { accountApi, saveDownload } from '../account/api.js'
-import { getAuthSnapshot, hasPermission } from '../auth/session.js'
+import { ensureAuthConfig, getAuthSnapshot, hasPermission } from '../auth/session.js'
 import {
   bindKmlAccountSyncStatus,
   initializeKmlAccountMode,
@@ -83,7 +83,11 @@ import {
   getEditableKmlDescription,
 } from '../integrations/kml-share-links.js'
 import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
-import { clusterKmlPoints, normalizeKmlPointClusteringConfig } from '../map/kml-point-clustering.js'
+import {
+  clusterKmlPoints,
+  normalizeKmlPointClusteringConfig,
+  resolveGlobalKmlPointClusteringConfig,
+} from '../map/kml-point-clustering.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_DIRECTORIES_STORAGE_KEY = 'map_kml_directories'
@@ -786,7 +790,7 @@ function getSharePointClusteringConfig3d () {
 function getGlobalPointClusteringConfig3d () {
   if (getActiveShare()) return null
   const raw = getAuthSnapshot().config?.kml?.pointClustering
-  return raw?.enabled === true ? normalizeKmlPointClusteringConfig(raw) : null
+  return resolveGlobalKmlPointClusteringConfig(raw)
 }
 
 export function getKmlVisibilityRenderMode3d (options = {}) {
@@ -3508,7 +3512,12 @@ export async function initKmlSupport3d (viewer, options = {}) {
     return kmlList
   })
   bindAccountSessionExpiry3d()
-  await loadInitialKmlFiles()
+  await Promise.all([
+    loadInitialKmlFiles(),
+    ensureAuthConfig().catch(error => {
+      console.warn('KML 全局点位聚合配置加载失败，将使用默认配置', error)
+    }),
+  ])
   await loadKmlDirectories()
   renderAllKmls()
   updateKmlPanelUI()

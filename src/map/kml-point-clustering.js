@@ -7,6 +7,15 @@ export const DEFAULT_KML_POINT_CLUSTERING_CONFIG = Object.freeze({
   maxMembersPerCluster: null,
 })
 
+export const DEFAULT_GLOBAL_KML_POINT_CLUSTERING_CONFIG = Object.freeze({
+  enabled: true,
+  minZoom: 0,
+  maxClusterZoom: 13,
+  gridSize: 64,
+  minClusterPoints: 10,
+  maxMembersPerCluster: 5000,
+})
+
 function finiteNumber (value, name) {
   const number = Number(value)
   if (!Number.isFinite(number)) throw new TypeError(`${name} 必须是有限数值`)
@@ -49,6 +58,20 @@ export function normalizeKmlPointClusteringConfig (config = {}) {
     maxMembersPerCluster: maxMembers == null
       ? null
       : Math.max(0, Math.floor(finiteNumber(maxMembers, 'maxMembersPerCluster'))),
+  }
+}
+
+export function resolveGlobalKmlPointClusteringConfig (config) {
+  const raw = config && typeof config === 'object' && !Array.isArray(config) ? config : null
+  if (raw && Object.hasOwn(raw, 'enabled') && raw.enabled !== true) return null
+  try {
+    return normalizeKmlPointClusteringConfig({
+      ...DEFAULT_GLOBAL_KML_POINT_CLUSTERING_CONFIG,
+      ...(raw || {}),
+      enabled: true,
+    })
+  } catch {
+    return normalizeKmlPointClusteringConfig(DEFAULT_GLOBAL_KML_POINT_CLUSTERING_CONFIG)
   }
 }
 

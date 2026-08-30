@@ -29,7 +29,7 @@ import {
 } from './location-track.js'
 import { apiRequest } from '../auth/api.js'
 import { accountApi, saveDownload } from '../account/api.js'
-import { getAuthSnapshot, hasPermission } from '../auth/session.js'
+import { ensureAuthConfig, getAuthSnapshot, hasPermission } from '../auth/session.js'
 import {
   clearTwoBuluImportRequest,
   showTwoBuluImportDialog,
@@ -87,7 +87,10 @@ import {
   isKmlResourceCollectionFeature,
   showKmlResourceCollectionEditor,
 } from './kml-resource-collection.js'
-import { clusterKmlPoints } from './kml-point-clustering.js'
+import {
+  clusterKmlPoints,
+  resolveGlobalKmlPointClusteringConfig,
+} from './kml-point-clustering.js'
 
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
@@ -1581,7 +1584,7 @@ function renderShareClusterLayers (map) {
 function getGlobalPointClusteringConfig2d () {
   if (getActiveShare()) return null
   const raw = getAuthSnapshot().config?.kml?.pointClustering
-  return raw?.enabled === true ? normalizeKmlPointClusteringConfig(raw) : null
+  return resolveGlobalKmlPointClusteringConfig(raw)
 }
 
 function renderPersonalClusterLayers (map, config) {
@@ -3511,7 +3514,12 @@ export async function initKmlSupport (map, options = {}) {
     return kmlList
   })
   bindAccountSessionExpiry(map)
-  await loadInitialKmlFiles()
+  await Promise.all([
+    loadInitialKmlFiles(),
+    ensureAuthConfig().catch(error => {
+      console.warn('KML 全局点位聚合配置加载失败，将使用默认配置', error)
+    }),
+  ])
   initCustomControlsListeners()
 
   loadPublicKmls(map).then(() => {

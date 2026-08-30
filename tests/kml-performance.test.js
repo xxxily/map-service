@@ -133,7 +133,7 @@ test('2D KML viewport work is lifecycle-bound and cancelled when the map unloads
   assert.equal(source.match(/bindKmlViewportRerender\(map\)/g)?.length, 1)
   const initSource = source.slice(source.indexOf('export async function initKmlSupport'))
   assert.ok(initSource.indexOf('bindKmlViewportRerender(map)') < initSource.indexOf('if (getActiveShare())'))
-  assert.ok(initSource.indexOf('bindKmlViewportRerender(map)') < initSource.indexOf('await loadInitialKmlFiles()'))
+  assert.ok(initSource.indexOf('bindKmlViewportRerender(map)') < initSource.indexOf('loadInitialKmlFiles()'))
   assert.doesNotMatch(source, /map\.on\('moveend zoomend', \(\) => scheduleKmlViewportRerender\(map\)\)/)
 })
 
@@ -141,14 +141,19 @@ test('2D 个人 KML 全局聚合跨文件处理 Point 并让分享配置优先',
   const source = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
   const globalConfig = source.match(/function getGlobalPointClusteringConfig2d \(\)[\s\S]*?\n}/)?.[0] || ''
   const personalClustering = source.match(/function renderPersonalClusterLayers \(map, config\)[\s\S]*?\n}/)?.[0] || ''
+  const initSource = source.slice(source.indexOf('export async function initKmlSupport'))
 
   assert.match(globalConfig, /if \(getActiveShare\(\)\) return null/)
   assert.match(globalConfig, /getAuthSnapshot\(\)\.config\?\.kml\?\.pointClustering/)
+  assert.match(globalConfig, /resolveGlobalKmlPointClusteringConfig/)
   assert.match(personalClustering, /kmlList\.filter/)
+  assert.doesNotMatch(personalClustering, /isAccountKmlMode/)
   assert.match(personalClustering, /feature\.type !== 'Point'/)
   assert.match(personalClustering, /clusterKmlPoints/)
   assert.match(source, /if \(getGlobalPointClusteringConfig2d\(\)\?\.enabled\)/)
   assert.match(source, /map\.setView\([^)]*[\s\S]*\{ animate: true \}\)/)
+  assert.match(initSource, /ensureAuthConfig/)
+  assert.ok(initSource.indexOf('ensureAuthConfig') < initSource.indexOf('loadPublicKmls(map)'))
 })
 
 test('collapsed KML cards skip overview work and 3D feature filtering', () => {

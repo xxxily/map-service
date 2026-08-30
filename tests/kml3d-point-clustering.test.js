@@ -32,14 +32,21 @@ test('3D 分享聚合仅合并 Point，且放大到最大聚合级别后展开',
 
 test('3D 分享和个人全局聚合保留非 Point 要素，并接入 moveEnd 重渲染', () => {
   const source = fs.readFileSync(new URL('../src/map3d/kml.js', import.meta.url), 'utf8')
+  const globalConfig = source.match(/function getGlobalPointClusteringConfig3d \(\)[\s\S]*?\n}/)?.[0] || ''
+  const initSource = source.slice(source.indexOf('export async function initKmlSupport3d'))
+  const personalInitSource = initSource.slice(initSource.indexOf('bindKmlAccountSyncStatus()'))
   assert.match(source, /renderShareClusterLayers3d/)
   assert.match(source, /renderPersonalClusterLayers3d/)
-  assert.match(source, /getAuthSnapshot\(\)\.config\?\.kml\?\.pointClustering/)
+  assert.doesNotMatch(source.match(/function renderPersonalClusterLayers3d \(config\)[\s\S]*?\n}/)?.[0] || '', /isAccountKmlMode/)
+  assert.match(globalConfig, /getAuthSnapshot\(\)\.config\?\.kml\?\.pointClustering/)
+  assert.match(globalConfig, /resolveGlobalKmlPointClusteringConfig/)
   assert.match(source, /feature\.type !== 'Point'/)
   assert.match(source, /hasShareClustering/)
   assert.match(source, /hasPersonalClustering/)
   assert.match(source, /camera\.moveEnd\.addEventListener\(scheduleKmlViewportRerender3d\)/)
   assert.match(source, /_map3dKmlCluster/)
+  assert.match(personalInitSource, /ensureAuthConfig/)
+  assert.match(personalInitSource, /await Promise\.all\([\s\S]*ensureAuthConfig[\s\S]*await loadKmlDirectories\(\)\s+renderAllKmls\(\)/)
 })
 
 test('3D 分享显隐在聚合开启时选择一次全量重绘', () => {

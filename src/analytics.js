@@ -1,4 +1,4 @@
-import { apiRequest } from './auth/api.js'
+import { ensureAuthConfig } from './auth/session.js'
 
 function isSafeDescriptor (descriptor) {
   if (!descriptor || typeof descriptor !== 'object' || typeof descriptor.src !== 'string') return false
@@ -31,7 +31,7 @@ export function loadAnalyticsScript (descriptor, options = {}) {
 
 export async function loadGlobalAnalytics () {
   try {
-    const config = await apiRequest('/auth/config', { csrf: false })
+    const config = await ensureAuthConfig()
     return loadAnalyticsScript(config?.analytics?.global)
   } catch {
     return null

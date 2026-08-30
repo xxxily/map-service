@@ -2,6 +2,7 @@ import { ApiError, apiRequest } from './api.js'
 import { isEmbeddedDocument } from './embed-context.js'
 
 const listeners = new Set()
+let authConfigRequest = null
 
 let snapshot = {
   loaded: false,
@@ -53,9 +54,22 @@ export function subscribeAuth (listener) {
 }
 
 export async function loadAuthConfig () {
-  const config = await apiRequest('/auth/config', { csrf: false })
-  setSnapshot({ config })
-  return config
+  if (authConfigRequest) return authConfigRequest
+  const request = apiRequest('/auth/config', { csrf: false }).then(config => {
+    setSnapshot({ config })
+    return config
+  })
+  authConfigRequest = request
+  try {
+    return await request
+  } finally {
+    if (authConfigRequest === request) authConfigRequest = null
+  }
+}
+
+export async function ensureAuthConfig () {
+  if (snapshot.config) return snapshot.config
+  return loadAuthConfig()
 }
 
 export async function refreshAuthSession () {
