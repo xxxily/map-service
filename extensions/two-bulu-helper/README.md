@@ -14,6 +14,8 @@
 
 扩展加载后，两步路页面主世界会提供 `MapServiceTwoBuluPageExport`。需要先单独验证页面提取时，可在该页面执行 `await MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })`；它会直接下载当前页面整理出的 KML，不经过 map-service。
 
+从 `0.3.8` 起，助手只有在确认至少一条有效轨迹线后才会返回成功。页面运行态暂时只有标注点时，会继续尝试页面已经访问的轨迹资源，并通过页面现有 `request.get` 对固定白名单接口执行页面自身的解码流程，不再生成只有点位的 KML。
+
 ## 使用
 
 1. 在 map-service 的“我的 KML”或地图 KML 面板点击“两步路导入”。
@@ -44,6 +46,6 @@
 
 ## 更新已加载的开发版扩展
 
-扩展目录有代码更新时，打开 `chrome://extensions/`，在“map-service 两步路导入助手”卡片上点击“重新加载”，随后刷新 map-service 和已打开的两步路页面。当前版本为 `0.3.7`。扩展图标采用“轨迹双节点 + 导入箭头”识别符号，资源位于 `icons/`，如需重新生成尺寸可从 `two-bulu-helper.svg` 导出。
+扩展目录有代码更新时，打开 `chrome://extensions/`，在“map-service 两步路导入助手”卡片上点击“重新加载”，随后刷新 map-service 和已打开的两步路页面。当前版本为 `0.3.8`。扩展图标采用“轨迹双节点 + 导入箭头”识别符号，资源位于 `icons/`，如需重新生成尺寸可从 `two-bulu-helper.svg` 导出。
 
 完整操作和故障处理见 [两步路导入助手用户操作手册](../../docs/user-guides/two-bulu-import.md)。

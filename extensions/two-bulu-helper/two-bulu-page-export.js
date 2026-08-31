@@ -4,13 +4,17 @@
   if (globalThis.MapServiceTwoBuluPageExport) return
 
   const PAGE_HOSTS = new Set(['2bulu.com', 'www.2bulu.com', 'app.2bulu.com'])
-  const DATA_PATHS = new Set([
+  const TRACK_DATA_PATHS = [
+    '/track/get_track_positions_list.htm',
     '/track/get_track_positions_list4.htm',
     '/track/get_track_positions_list_new.htm',
-    '/track/get_track_positions_list.htm',
+  ]
+  const MARKER_DATA_PATHS = [
     '/track/get_track_marker_list_new.htm',
     '/track/get_track_marker_list_2.htm',
-  ])
+  ]
+  const DATA_PATHS = new Set([...TRACK_DATA_PATHS, ...MARKER_DATA_PATHS])
+  const TRACK_ID_PATTERN = /^[A-Za-z0-9+/_=-]{1,160}$/
   const MAX_BYTES = 10 * 1024 * 1024
   const MAX_POINTS = 100000
   const MAX_RESOURCE_COUNT = 40
@@ -50,10 +54,31 @@
   }
 
   function parseJson (value) {
-    if (value && typeof value === 'object') return value
-    const text = String(value || '').replace(/^\uFEFF/, '').trim()
+    let normalized = value
+    const isArrayBuffer = Object.prototype.toString.call(normalized) === '[object ArrayBuffer]'
+    if (typeof ArrayBuffer !== 'undefined' && isArrayBuffer) {
+      if (normalized.byteLength > MAX_BYTES) return null
+      normalized = new TextDecoder('utf-8').decode(new Uint8Array(normalized))
+    } else if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(normalized)) {
+      if (normalized.byteLength > MAX_BYTES) return null
+      normalized = new TextDecoder('utf-8').decode(new Uint8Array(normalized.buffer, normalized.byteOffset, normalized.byteLength))
+    }
+    if (normalized && typeof normalized === 'object') return normalized
+    const text = String(normalized || '').replace(/^\uFEFF/, '').trim()
     if (!text || text.length > MAX_BYTES) return null
     try { return JSON.parse(text) } catch { return null }
+  }
+
+  function unwrapResponsePayload (value) {
+    let current = value
+    for (let depth = 0; depth < 4; depth += 1) {
+      const parsed = parseJson(current)
+      if (parsed === null) return null
+      current = parsed
+      if (!current || typeof current !== 'object' || Array.isArray(current) || current.data === undefined) return current
+      current = current.data
+    }
+    return parseJson(current)
   }
 
   function decodeText (value) {
@@ -242,6 +267,30 @@
       if (value !== undefined && value !== null && value !== '') return value
     }
     return undefined
+  }
+
+  function normalizeTrackId (value) {
+    let normalized = String(value || '').trim().replaceAll(' ', '+')
+    for (let index = 0; index < 2; index += 1) {
+      try {
+        const decoded = decodeURIComponent(normalized)
+        if (decoded === normalized) break
+        normalized = decoded.replaceAll(' ', '+')
+      } catch {
+        return ''
+      }
+    }
+    return TRACK_ID_PATTERN.test(normalized) ? normalized : ''
+  }
+
+  function currentTrackId (options = {}) {
+    const candidates = [
+      readGlobal(['trackId']),
+      readGlobal(['trackStr']),
+      readGlobal(['encryptTrackId']),
+      options.trackId,
+    ]
+    return candidates.map(normalizeTrackId).find(Boolean) || ''
   }
 
   function pairLongitudeLatitude (lngValue, latValue, altitudeValue) {
@@ -547,6 +596,73 @@
     return payloads
   }
 
+  async function readPageRequestPayloads (diagnostics, options = {}, needs = {}) {
+    const requestClient = safeRead(() => globalThis.request, null)
+    const trackId = currentTrackId(options)
+    if (typeof requestClient?.get !== 'function' || !trackId) return []
+    const operationCode = normalizeTrackId(readGlobal(['operationCode']))
+    const payloads = []
+    let requestCount = 0
+    const requestPayload = async path => {
+      try {
+        requestCount += 1
+        const url = new URL(path, location.origin).toString()
+        const response = await requestClient.get(url, {
+          params: { trackId, operationCode },
+          decrypt: true,
+          responseType: 'arraybuffer',
+        })
+        const payload = unwrapResponsePayload(response)
+        return payload === null ? null : { url, payload }
+      } catch {
+        return null
+      }
+    }
+
+    if (needs.positions !== false) {
+      for (const path of TRACK_DATA_PATHS) {
+        const item = await requestPayload(path)
+        if (!item) continue
+        const segments = dataApi()?.findTrackSegments?.(item.payload) || []
+        if (!segments.length) continue
+        payloads.push(item)
+        break
+      }
+    }
+    if (needs.markers !== false) {
+      for (const path of MARKER_DATA_PATHS) {
+        const item = await requestPayload(path)
+        if (!item) continue
+        const markerResult = dataApi()?.findMarkerList?.(item.payload)
+        if (!markerResult?.found) continue
+        payloads.push(item)
+        break
+      }
+    }
+    diagnostics.pageRequests = requestCount
+    return payloads
+  }
+
+  function addPayloadCandidates (items, positionCandidates, markerValues, scoreBonus = 1500) {
+    items.forEach(item => {
+      const pathname = safeRead(() => new URL(item.url, location.href).pathname, '')
+      if (/positions/i.test(pathname)) {
+        const segments = dataApi()?.findTrackSegments?.(item.payload) || []
+        if (segments.length) {
+          positionCandidates.push({
+            payload: item.payload,
+            score: segments.reduce((sum, segment) => sum + segment.length, 0) + scoreBonus,
+            source: 'raw',
+          })
+        }
+      }
+      if (/marker/i.test(pathname)) {
+        const markerResult = dataApi()?.findMarkerList?.(item.payload)
+        if (markerResult?.found) markerValues.push(...markerResult.markers)
+      }
+    })
+  }
+
   function positionSegmentKey (segment) {
     const coordinates = (Array.isArray(segment) ? segment : [])
       .map(pointFromValue)
@@ -620,17 +736,17 @@
     const needsResourceFallback = !positionsPayload || (markers.length === 0 && options.partialPolicy !== 'allow-track-only')
     if (needsResourceFallback) {
       const resources = await readResourcePayloads(diagnostics)
-      resources.forEach(item => {
-        const pathname = safeRead(() => new URL(item.url, location.href).pathname, '')
-        if (/positions/i.test(pathname)) {
-          const segments = dataApi()?.findTrackSegments?.(item.payload) || []
-          if (segments.length) positionCandidates.push({ payload: item.payload, score: segments.reduce((sum, segment) => sum + segment.length, 0) + 1500, source: 'raw' })
-        }
-        if (/marker/i.test(pathname)) {
-          const markerResult = dataApi()?.findMarkerList?.(item.payload)
-          if (markerResult?.found) markerValues.push(...markerResult.markers)
-        }
+      addPayloadCandidates(resources, positionCandidates, markerValues)
+      positionsPayload = mergePositions(positionCandidates)
+      markers = uniqueMarkers(markerValues)
+    }
+    const needsPageRequestFallback = !positionsPayload || (markers.length === 0 && options.partialPolicy !== 'allow-track-only')
+    if (needsPageRequestFallback) {
+      const pagePayloads = await readPageRequestPayloads(diagnostics, options, {
+        positions: !positionsPayload,
+        markers: markers.length === 0 && options.partialPolicy !== 'allow-track-only',
       })
+      addPayloadCandidates(pagePayloads, positionCandidates, markerValues, 2500)
       positionsPayload = mergePositions(positionCandidates)
       markers = uniqueMarkers(markerValues)
     }

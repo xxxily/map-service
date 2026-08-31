@@ -54,6 +54,7 @@ function loadTwoBuluPageExportApi (options = {}) {
   const context = vm.createContext({
     URL,
     TextEncoder,
+    TextDecoder,
     Blob,
     document,
     location: new URL(options.url || 'https://www.2bulu.com/track/track_detail.htm?trackId=test'),
@@ -184,7 +185,7 @@ test('扩展完成回传后激活原页面并仅关闭受管临时标签页', as
     },
     permissions: { contains: async () => true },
     runtime: {
-      getManifest: () => ({ version: '0.3.7' }),
+      getManifest: () => ({ version: '0.3.8' }),
       onMessage: { addListener: listener => listeners.messages.push(listener) },
       onInstalled: { addListener: () => {} },
       onStartup: { addListener: () => {} },
@@ -408,7 +409,7 @@ test('助手探测消息和 Manifest 固定协议能力且不声明任意两步�
     'service-worker.js',
   ].map(file => fs.readFileSync(path.join(extensionDir, file), 'utf8')).join('\n')
   assert.equal(manifest.manifest_version, 3)
-  assert.equal(manifest.version, '0.3.7')
+  assert.equal(manifest.version, '0.3.8')
   assert.deepEqual(manifest.icons, {
     '16': 'icons/icon-16.png',
     '32': 'icons/icon-32.png',
@@ -446,6 +447,8 @@ test('助手探测消息和 Manifest 固定协议能力且不声明任意两步�
   assert.match(sources, /chrome\.tabs\.remove/)
   assert.match(sources, /返回 map-service/)
   assert.match(sources, /__mapServiceTwoBuluCapturedResponses/)
+  assert.match(sources, /decrypt:\s*true/)
+  assert.match(sources, /responseType:\s*['"]arraybuffer['"]/)
   assert.doesNotMatch(pageHookSource, /globalThis\.fetch\s*=|XMLHttpRequest\.prototype/)
   assert.match(sources, /findMarkerList\?\.\(candidatePayload\)/)
   assert.match(sources, /if \(!markerResult\?\.found\) continue/)
@@ -510,6 +513,23 @@ test('轨迹解析器会合并嵌套对象中的全部独立线段并去重', ()
   assert.equal(segments.length, 2)
   assert.deepEqual(Array.from(segments[0], point => [point.lng, point.lat]), [[113.1, 23.1], [113.2, 23.2]])
   assert.deepEqual(Array.from(segments[1], point => [point.lng, point.lat]), [[114.1, 24.1], [114.2, 24.2]])
+})
+
+test('浏览器转换不会把仅标注点误判为完整轨迹', () => {
+  const api = loadTwoBuluDataApi()
+
+  assert.throws(
+    () => api.convertTwoBuluRenderedData({
+      title: '缺少轨迹线的页面',
+      sourceUrl: 'https://www.2bulu.com/track/track_detail.htm?trackId=abc',
+      partialPolicy: 'reject',
+      positionsPayload: { trackPositions: [] },
+      markersPayload: {
+        markers: [{ longitude: 113.15, latitude: 23.15, text: '补给点' }],
+      },
+    }),
+    error => error.code === 'TWO_BULU_TRACK_EMPTY'
+  )
 })
 
 test('浏览器转换不会为无名标注生成自动点位名称', () => {
@@ -606,6 +626,51 @@ test('页面导出脚本优先从运行态经纬度数组生成 KML', async () =
   assert.equal(result.completeness, 'track-only')
   assert.match(result.kmlText, /<LineString>/)
   assert.match(result.kmlText, /113\.3,23\.3/)
+})
+
+test('页面导出脚本只有标注点时不会提前返回成功', async () => {
+  const api = loadTwoBuluPageExportApi({
+    globals: {
+      trackMarks: [{ longitude: 113.15, latitude: 23.15, text: '补给点' }],
+    },
+  })
+
+  const result = await api.collect({ partialPolicy: 'reject' })
+
+  assert.equal(result.status, 'failed')
+  assert.equal(result.code, 'TWO_BULU_TRACK_EMPTY')
+})
+
+test('页面导出脚本缺少路线时使用页面请求对象解码固定轨迹接口', async () => {
+  const calls = []
+  const encode = value => new TextEncoder().encode(JSON.stringify({ data: JSON.stringify(value) })).buffer
+  const api = loadTwoBuluPageExportApi({
+    globals: {
+      request: {
+        get: async (url, options) => {
+          calls.push({ url, options })
+          return url.includes('positions')
+            ? encode({
+                trackPositions: [[
+                  { longitude: 113.1, latitude: 23.1 },
+                  { longitude: 113.2, latitude: 23.2 },
+                ]],
+              })
+            : encode([{ longitude: 113.15, latitude: 23.15, text: '补给点' }])
+        },
+      },
+    },
+  })
+
+  const result = await api.collect({ partialPolicy: 'reject', trackId: 'GJmCy0jlMmfp/R2KBg5Tzw==' })
+  const features = parseKmlText(result.kmlText).features
+
+  assert.equal(result.status, 'success')
+  assert.equal(result.completeness, 'full')
+  assert.deepEqual(features.map(feature => feature.type), ['LineString', 'Point'])
+  assert.equal(calls.length, 2)
+  assert.ok(calls.every(call => call.options.decrypt === true && call.options.responseType === 'arraybuffer'))
+  assert.ok(calls.every(call => new URL(call.url).hostname === 'www.2bulu.com'))
 })
 
 test('页面导出脚本可从 Leaflet 风格图层提取轨迹和标注媒体', async () => {

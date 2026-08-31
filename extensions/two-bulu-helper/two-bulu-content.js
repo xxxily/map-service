@@ -7,9 +7,9 @@
   const PAGE_HOSTS = new Set(['2bulu.com', 'www.2bulu.com', 'app.2bulu.com'])
   const DOWNLOAD_HOSTS = new Set([...PAGE_HOSTS, 'down-files.2bulu.com'])
   const TRACK_DATA_PATHS = new Set([
+    '/track/get_track_positions_list.htm',
     '/track/get_track_positions_list4.htm',
     '/track/get_track_positions_list_new.htm',
-    '/track/get_track_positions_list.htm',
   ])
   const MARKER_DATA_PATHS = new Set([
     '/track/get_track_marker_list_new.htm',

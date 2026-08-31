@@ -169,6 +169,16 @@ test('服务端兼容转换保留用户命名并让无名标注保持空名称',
   assert.equal(converted.features.at(-1).name, '用户命名营地')
 })
 
+test('服务端兼容转换不会把仅标注点误判为完整轨迹', () => {
+  assert.throws(
+    () => convertTwoBuluPublicData({ trackPositions: [] }, {
+      sourceUrl: 'https://www.2bulu.com/track/track_detail.htm?trackId=abc',
+      markersPayload: [{ longitude: 113.15, latitude: 23.15, text: '补给点' }],
+    }),
+    error => error.statusCode === 422 && error.code === 'TWO_BULU_TRACK_EMPTY'
+  )
+})
+
 test('公开标注媒体只保留固定两步路端点且不传播敏感查询参数', () => {
   const converted = convertTwoBuluPublicData({
     trackPositions: [[{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }]],

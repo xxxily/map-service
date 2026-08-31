@@ -476,6 +476,10 @@
       }
     })
 
+    if (!features.some(feature => feature.type === 'LineString')) {
+      throw dataError('两步路公开分享中未找到有效轨迹线', 'TWO_BULU_TRACK_EMPTY')
+    }
+
     if (markerResult.found) {
       markerResult.markers.forEach((marker, index) => {
         const feature = markerFeature(marker, index, options.sourceUrl || 'https://www.2bulu.com/')

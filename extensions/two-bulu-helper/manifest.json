@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "map-service 两步路导入助手",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "在用户浏览器内读取已授权的两步路公开轨迹数据并还原为 KML，安全交给 map-service 导入。",
   "icons": {
     "16": "icons/icon-16.png",

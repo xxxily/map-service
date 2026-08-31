@@ -424,6 +424,10 @@ export function convertTwoBuluPublicData (positionsPayload, options = {}) {
     }
   })
 
+  if (!features.some(feature => feature.type === 'LineString')) {
+    throw createHttpError('两步路公开分享中未找到有效轨迹线', 422, 'TWO_BULU_TRACK_EMPTY')
+  }
+
   const markers = options.markersPayload === undefined ? null : findMarkerList(options.markersPayload)
   if (markers) {
     if (pointCount + markers.length > maxPoints) {

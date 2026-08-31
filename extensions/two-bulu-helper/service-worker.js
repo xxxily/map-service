@@ -307,7 +307,10 @@ async function collectFromTab (tabId, payload) {
           code: 'TWO_BULU_PAGE_DATA_NOT_RECOGNIZED',
           message: '页面导出脚本未返回可转换的轨迹数据。',
         },
-        args: [{ partialPolicy: payload.partialPolicy === 'allow-track-only' ? 'allow-track-only' : 'reject' }],
+        args: [{
+          partialPolicy: payload.partialPolicy === 'allow-track-only' ? 'allow-track-only' : 'reject',
+          trackId: String(payload.trackId || ''),
+        }],
       })
       runtimeResult = executed?.[0]?.result
       if (runtimeResult?.status === 'success') return runtimeResult
