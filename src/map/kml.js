@@ -76,12 +76,21 @@ import {
 } from './kml-directory-batch.js'
 import { loadKmlFilesWithConcurrency } from './kml-detail-loading.js'
 import {
+  createKmlFileViewportScheduler,
+  shouldRenderKmlFileInViewport,
+} from './kml-file-viewport-loading.js'
+import {
   expandKmlViewportBounds,
   KML_VIEWPORT_BUFFER_RATIO,
   getKmlFeatureFocusPlan,
   isKmlPointInsideBounds,
   shouldVirtualizeKmlPoints,
 } from './kml-performance.js'
+import {
+  computeKmlBounds,
+  normalizeKmlBounds,
+} from '../../shared/kml-spatial.js'
+import { getRotatedPanTargetPoint } from './rotated-share-bounds.js'
 import {
   appendKmlResourceCollectionLinks,
   isKmlResourceCollectionFeature,
@@ -95,12 +104,56 @@ import {
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
   if (!map || typeof map.getBounds !== 'function') return {}
+  const zoom = typeof map.getZoom === 'function' ? map.getZoom() : 16
+  const bearing = Number(map.getBearing?.() || 0)
+  const size = map.getSize?.()
+  const center = map.getCenter?.()
+  if (center && size && Number.isFinite(size.x) && Number.isFinite(size.y) &&
+      typeof map.project === 'function' && typeof map.unproject === 'function') {
+    try {
+      const centerPoint = map.project(center, zoom)
+      const corners = [[0, 0], [size.x, 0], [size.x, size.y], [0, size.y]].map(([x, y]) => {
+        const point = getRotatedPanTargetPoint(centerPoint, {
+          x: x - size.x / 2,
+          y: y - size.y / 2,
+        }, bearing)
+        const latlng = map.unproject(point, zoom)
+        return [latlng.lng, latlng.lat]
+      })
+      const summary = computeKmlBounds(corners.map((coordinates, index) => ({
+        type: 'Point',
+        id: `viewport-${index}`,
+        coordinates,
+      })))
+      if (summary.status === 'ready' && summary.bbox) {
+        const [west, south, east, north] = summary.bbox
+        return {
+          viewportBounds: {
+            south,
+            west,
+            north,
+            east,
+            crossesAntimeridian: summary.crossesAntimeridian,
+          },
+          center: { lat: center.lat, lng: center.lng },
+          zoom,
+          bearing,
+        }
+      }
+    } catch (error) {
+      // Fall through to Leaflet's conservative axis-aligned bounds.
+    }
+  }
   const bounds = map.getBounds()
   if (!bounds || !bounds.isValid()) return {}
   const ne = bounds.getNorthEast()
   const sw = bounds.getSouthWest()
-  const zoom = typeof map.getZoom === 'function' ? map.getZoom() : 16
-  return { viewportBounds: { south: sw.lat, west: sw.lng, north: ne.lat, east: ne.lng }, zoom }
+  return {
+    viewportBounds: { south: sw.lat, west: sw.lng, north: ne.lat, east: ne.lng },
+    center: center ? { lat: center.lat, lng: center.lng } : undefined,
+    zoom,
+    bearing,
+  }
 }
 
 const KML_STORAGE_KEY = 'map_kml_list'
@@ -122,6 +175,8 @@ let kmlViewportRerenderTimer = null // KML 图层视口变化重渲染的 deboun
 let kmlViewportRenderTask = null
 let mediaFeatureActivationTimer = null
 let kmlViewportRerenderBinding = null
+let kmlFileViewportScheduler = null
+let kmlFileViewportSchedulerMap = null
 let kmlMapInteractionBinding = null
 let kmlPointLabelSyncTimer = null
 let kmlPointLabelIdleTask = null
@@ -280,11 +335,42 @@ function isKmlEditable (kmlFile) {
 }
 
 function saveKmlChanges (kmlFile) {
+  if (kmlFile && Array.isArray(kmlFile.features)) kmlFile.bounds = computeKmlBounds(kmlFile.features)
   invalidateKmlMediaGallery(kmlFile)
   if (kmlFile.isPublic) {
     isPublicKmlDirty = true
   } else if (canWritePersonalKml()) {
     saveToStorage()
+  }
+}
+
+async function loadPublicKmlFileForUse (kmlFile, options = {}) {
+  if (options.scheduled !== true && kmlFile?.contentLoaded === false && kmlFileViewportScheduler) {
+    const loaded = await kmlFileViewportScheduler.request(kmlFile, { priority: options.priority ?? 0 })
+    if (loaded && options.enableOnSuccess === true) kmlFile.enabled = true
+    return loaded
+  }
+  if (!kmlFile?.isPublic || kmlFile.contentLoaded !== false) {
+    return Boolean(kmlFile && !kmlFile.loadError)
+  }
+  try {
+    const response = await window.fetch(`/api/v1/kml/shared/${encodeURIComponent(kmlFile.id)}`)
+    const payload = await response.json()
+    if (!response.ok || !payload?.result) throw new Error(payload?.error?.message || '公共 KML 详情加载失败')
+    const detail = payload.result
+    Object.assign(kmlFile, detail, {
+      isPublic: true,
+      contentLoaded: true,
+      features: Array.isArray(detail.features) ? detail.features : [],
+      featureCount: Number(detail.featureCount ?? detail.features?.length ?? 0),
+      bounds: normalizeKmlBounds(detail.bounds, { featureCount: detail.features?.length || 0 }) || computeKmlBounds(detail.features || []),
+      loadError: '',
+    })
+    return true
+  } catch (error) {
+    kmlFile.loadError = error?.message || '公共 KML 详情加载失败'
+    kmlFile.contentLoaded = false
+    return false
   }
 }
 
@@ -302,20 +388,14 @@ async function loadPublicKmls (map) {
         isPublic: true,
         enabled: Boolean(publicKmlPrefs[kml.id]),
         features: oldKml ? oldKml.features : [],
+        featureCount: Number(kml.featureCount ?? oldKml?.featureCount ?? oldKml?.features?.length ?? 0),
+        bounds: normalizeKmlBounds(kml.bounds, { featureCount: kml.featureCount }) || oldKml?.bounds || null,
+        contentLoaded: oldKml ? oldKml.contentLoaded !== false : false,
       }
     })
-
-    await Promise.all(publicKmlList.map(async kml => {
-      if (kml.enabled && (!kml.features || kml.features.length === 0)) {
-        try {
-          const detail = await window.fetch(`/api/v1/kml/shared/${kml.id}`).then(res => res.json()).then(payload => payload.result)
-          kml.features = detail.features || []
-          renderKmlLayers(map, kml)
-        } catch (err) {
-          console.error(`Failed to load public KML detail for ${kml.id}`, err)
-        }
-      }
-    }))
+    ensureKmlFileViewportScheduler(map)
+    refreshKmlFileViewportLoading(map)
+    renderAllKmls(map)
   } catch (err) {
     console.error('Failed to load public KML list', err)
   }
@@ -339,7 +419,9 @@ async function checkPublicKmlEditMode (map) {
     editingPublicKml = {
       ...detail,
       isPublic: true,
-      enabled: true
+      enabled: true,
+      contentLoaded: true,
+      bounds: normalizeKmlBounds(detail.bounds, { featureCount: detail.features?.length || 0 }) || computeKmlBounds(detail.features || []),
     }
     isPublicKmlDirty = false
 
@@ -347,6 +429,9 @@ async function checkPublicKmlEditMode (map) {
     if (existing) {
       existing.enabled = true
       existing.features = editingPublicKml.features
+      existing.featureCount = editingPublicKml.featureCount
+      existing.bounds = editingPublicKml.bounds
+      existing.contentLoaded = true
     } else {
       publicKmlList.push(editingPublicKml)
     }
@@ -940,7 +1025,7 @@ async function moveKmlFileFromPanel (map, kmlId) {
 }
 
 async function loadInitialKmlFiles () {
-  const account = await initializeKmlAccountMode()
+  const account = await initializeKmlAccountMode({ loadDetails: false })
   if (account.mode === 'account') {
     if (account.error) {
       kmlList = (account.files || []).map(normalizeKmlFile)
@@ -969,6 +1054,9 @@ async function loadInitialKmlFiles () {
 }
 
 function saveToStorage (options = {}) {
+  kmlList.forEach(file => {
+    if (Array.isArray(file?.features) && file.contentLoaded !== false) file.bounds = computeKmlBounds(file.features)
+  })
   if (isAccountKmlMode()) {
     if (isAccountKmlWritable()) scheduleKmlAccountSync(kmlList, options)
     return
@@ -993,6 +1081,11 @@ function saveKmlHistoryState (previousFiles) {
 function normalizeKmlFile (kmlFile) {
   const isDefault = kmlFile.id === DEFAULT_KML_ID || kmlFile.isDefault === true
   const preserveServerDefaultId = isDefault && isAccountKmlMode() && kmlFile.id
+  const features = Array.isArray(kmlFile.features)
+    ? kmlFile.features.map(normalizeKmlFeatureMarkerIcon)
+    : []
+  const contentLoaded = kmlFile.contentLoaded !== false
+  const normalizedBounds = normalizeKmlBounds(kmlFile.bounds, { featureCount: kmlFile.featureCount ?? features.length })
   return {
     ...kmlFile,
     id: preserveServerDefaultId
@@ -1009,9 +1102,10 @@ function normalizeKmlFile (kmlFile) {
     directoryId: kmlFile.directoryId ? String(kmlFile.directoryId) : null,
     directoryName: String(kmlFile.directoryName || ''),
     position: Number.isFinite(Number(kmlFile.position)) ? Number(kmlFile.position) : 0,
-    features: Array.isArray(kmlFile.features) ? kmlFile.features.map(normalizeKmlFeatureMarkerIcon) : [],
-    featureCount: Number(kmlFile.featureCount ?? kmlFile.features?.length ?? 0),
-    contentLoaded: kmlFile.contentLoaded !== false,
+    features,
+    featureCount: Number(kmlFile.featureCount ?? features.length ?? 0),
+    bounds: normalizedBounds || (contentLoaded ? computeKmlBounds(features) : null),
+    contentLoaded,
   }
 }
 
@@ -1525,7 +1619,14 @@ function renderShareClusterLayers (map) {
     ? expandKmlViewportBounds(viewportOptions.viewportBounds)
     : null
 
-  publicKmlList.filter(isKmlEnabled).forEach(kmlFile => {
+  publicKmlList.filter(kmlFile => (
+    isKmlEnabled(kmlFile) &&
+    shouldRenderKmlFileInViewport(kmlFile, viewportOptions.viewportBounds && {
+      ...viewportOptions.viewportBounds,
+      zoom: viewportOptions.zoom,
+      center: viewportOptions.center,
+    })
+  )).forEach(kmlFile => {
     const { features } = getRenderableKmlFeatures(map, kmlFile)
     features.forEach(feature => {
       if (feature.type === 'Point') {
@@ -1599,7 +1700,12 @@ function renderPersonalClusterLayers (map, config) {
     : null
 
   kmlList.filter(kmlFile => (
-    isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError
+    isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError &&
+    shouldRenderKmlFileInViewport(kmlFile, viewportOptions.viewportBounds && {
+      ...viewportOptions.viewportBounds,
+      zoom: viewportOptions.zoom,
+      center: viewportOptions.center,
+    })
   )).forEach(kmlFile => {
     const { features } = getRenderableKmlFeatures(map, kmlFile)
     features.forEach(feature => {
@@ -1713,6 +1819,18 @@ function renderKmlLayers (map, kmlFile, options = {}) {
     return
   }
   if (options.incremental && isKmlEnabled(kmlFile)) {
+    const incrementalViewport = getViewportOptions2d(map)
+    const incrementalIds = options.includeFeatureIds instanceof Set
+      ? options.includeFeatureIds
+      : new Set(options.includeFeatureIds || [])
+    if (!incrementalIds.size && !shouldRenderKmlFileInViewport(kmlFile, incrementalViewport.viewportBounds && {
+      ...incrementalViewport.viewportBounds,
+      zoom: incrementalViewport.zoom,
+      center: incrementalViewport.center,
+    })) {
+      removeKmlLayers(map, kmlFile)
+      return
+    }
     const { features, viewportOptions } = getRenderableKmlFeatures(map, kmlFile, options)
     syncKmlLayers(map, kmlFile, features)
     rememberKmlViewport(kmlFile, viewportOptions)
@@ -1723,6 +1841,15 @@ function renderKmlLayers (map, kmlFile, options = {}) {
   removeKmlLayers(map, kmlFile)
 
   if (!isKmlEnabled(kmlFile)) return
+  const viewportOptionsForFile = getViewportOptions2d(map)
+  const includeFeatureIds = options.includeFeatureIds instanceof Set
+    ? options.includeFeatureIds
+    : new Set(options.includeFeatureIds || [])
+  if (!includeFeatureIds.size && !shouldRenderKmlFileInViewport(kmlFile, viewportOptionsForFile.viewportBounds && {
+    ...viewportOptionsForFile.viewportBounds,
+    zoom: viewportOptionsForFile.zoom,
+    center: viewportOptionsForFile.center,
+  })) return
   
   const group = L.featureGroup()
   const { features: displayFeatures, viewportOptions } = getRenderableKmlFeatures(map, kmlFile, options)
@@ -1775,6 +1902,8 @@ function bindAccountSessionExpiry (map) {
     suspendKmlAccountSync({ preserveDraft: true, reason: 'session-expired' })
     if (!isEmbeddedKmlAuthRequired()) loadFromStorage()
     else kmlList = []
+    ensureKmlFileViewportScheduler(map)
+    refreshKmlFileViewportLoading(map)
     renderAllKmls(map)
     updateKmlPanelUI(map)
     showAlert(isEmbeddedKmlAuthRequired()
@@ -1784,6 +1913,11 @@ function bindAccountSessionExpiry (map) {
 }
 
 async function loadSharedKmlFileForUse (kmlFile, options = {}) {
+  if (options.scheduled !== true && kmlFile?.contentLoaded === false && kmlFileViewportScheduler) {
+    const loaded = await kmlFileViewportScheduler.request(kmlFile, { priority: options.priority ?? 0 })
+    if (loaded && options.enableOnSuccess === true) kmlFile.enabled = true
+    return loaded
+  }
   if (!kmlFile?.isShare || kmlFile.contentLoaded !== false) return Boolean(kmlFile && !kmlFile.loadError)
   const loaded = await loadActiveShareFile(kmlFile)
   const succeeded = Boolean(loaded?.contentLoaded && !loaded.loadError)
@@ -1792,7 +1926,10 @@ async function loadSharedKmlFileForUse (kmlFile, options = {}) {
   return succeeded
 }
 
-async function loadAccountKmlFileForUse (kmlFile) {
+async function loadAccountKmlFileForUse (kmlFile, options = {}) {
+  if (options.scheduled !== true && kmlFile?.contentLoaded === false && kmlFileViewportScheduler) {
+    return kmlFileViewportScheduler.request(kmlFile, { priority: options.priority ?? 0 })
+  }
   if (!kmlFile || !isAccountKmlMode() || kmlFile.contentLoaded !== false) {
     return Boolean(kmlFile && !kmlFile.loadError)
   }
@@ -1803,6 +1940,56 @@ async function loadAccountKmlFileForUse (kmlFile) {
     kmlFile.loadError = error?.message || 'KML 文件详情加载失败'
     return false
   }
+}
+
+function allKmlFilesForViewport () {
+  return [...kmlList, ...publicKmlList]
+}
+
+function scheduleKmlViewportRender (map) {
+  if (!map) return
+  if (kmlViewportRenderTask) clearTimeout(kmlViewportRenderTask)
+  kmlViewportRenderTask = setTimeout(() => {
+    kmlViewportRenderTask = null
+    renderAllKmls(map)
+    updateKmlPanelUI(map)
+    if (getActiveShare()) renderShareKmlPanel(map)
+  }, 0)
+}
+
+function ensureKmlFileViewportScheduler (map) {
+  if (!map) return null
+  if (kmlFileViewportScheduler && kmlFileViewportSchedulerMap === map) return kmlFileViewportScheduler
+  kmlFileViewportScheduler?.dispose?.()
+  kmlFileViewportSchedulerMap = map
+  kmlFileViewportScheduler = createKmlFileViewportScheduler({
+    getFiles: allKmlFilesForViewport,
+    loadFile: async file => {
+      if (file?.isShare) return loadSharedKmlFileForUse(file, { scheduled: true })
+      if (file?.isPublic) return loadPublicKmlFileForUse(file, { scheduled: true })
+      if (isAccountKmlMode()) return loadAccountKmlFileForUse(file, { scheduled: true })
+      if (file?.contentLoaded === false && Array.isArray(file.features)) file.contentLoaded = true
+      return Boolean(file && !file.loadError)
+    },
+    onLoaded: () => scheduleKmlViewportRender(map),
+    onError: () => scheduleKmlViewportRender(map),
+  })
+  return kmlFileViewportScheduler
+}
+
+function refreshKmlFileViewportLoading (map, options = {}) {
+  const scheduler = ensureKmlFileViewportScheduler(map)
+  if (!scheduler) return null
+  return scheduler.refresh(getViewportOptions2d(map), options)
+}
+
+async function requestKmlFileDetail (map, file) {
+  if (!file) return false
+  const scheduler = ensureKmlFileViewportScheduler(map)
+  if (scheduler) return scheduler.request(file, { priority: 0 })
+  if (file.isShare) return loadSharedKmlFileForUse(file)
+  if (file.isPublic) return loadPublicKmlFileForUse(file)
+  return loadAccountKmlFileForUse(file)
 }
 
 function updateKmlPanelUI (map) {
@@ -2710,34 +2897,33 @@ function scheduleKmlViewportRerender (map) {
   if (kmlViewportRenderTask) clearTimeout(kmlViewportRenderTask)
   kmlViewportRerenderTimer = setTimeout(() => {
     kmlViewportRerenderTimer = null
-    if (getActiveShare() && sharePointClusteringConfig?.enabled) {
-      kmlViewportRenderTask = setTimeout(() => {
-        kmlViewportRenderTask = null
-        renderAllKmls(map)
-      }, 0)
-      return
-    }
-    if (getGlobalPointClusteringConfig2d()?.enabled) {
-      kmlViewportRenderTask = setTimeout(() => {
-        kmlViewportRenderTask = null
-        renderAllKmls(map)
-      }, 0)
-      return
-    }
-    const managedKmlFiles = [...kmlList, ...publicKmlList].filter(kmlFile =>
-      kmlFile.enabled && (kmlFile.isLiveTrack || shouldVirtualizeKmlPoints(kmlFile.features?.length)))
-    if (!managedKmlFiles.length) return
-
     const viewportOptions = getViewportOptions2d(map)
+    refreshKmlFileViewportLoading(map)
     scheduleKmlPointLabelSync(map)
-    if (viewportOptions.viewportBounds && managedKmlFiles.every(kmlFile => (
-      isViewportWithinCache2d(kmlFile, viewportOptions.viewportBounds, viewportOptions.zoom)
-    ))) {
-      return
-    }
-
     kmlViewportRenderTask = setTimeout(() => {
       kmlViewportRenderTask = null
+      const managedKmlFiles = [...kmlList, ...publicKmlList].filter(kmlFile =>
+        kmlFile.enabled && kmlFile.contentLoaded !== false &&
+        (kmlFile.isLiveTrack || shouldVirtualizeKmlPoints(kmlFile.features?.length)))
+      const hasFileViewportBounds = [...kmlList, ...publicKmlList].some(kmlFile => (
+        normalizeKmlBounds(kmlFile?.bounds, { featureCount: kmlFile?.featureCount })?.status === 'ready'
+      ))
+      if (getActiveShare()) {
+        renderAllKmls(map)
+        return
+      }
+      if (getGlobalPointClusteringConfig2d()?.enabled) {
+        renderAllKmls(map)
+        return
+      }
+      if (hasFileViewportBounds) {
+        renderAllKmls(map)
+        return
+      }
+      if (!managedKmlFiles.length) {
+        renderAllKmls(map)
+        return
+      }
       managedKmlFiles.forEach(kmlFile => {
         if (!viewportOptions.viewportBounds || !isViewportWithinCache2d(kmlFile, viewportOptions.viewportBounds, viewportOptions.zoom)) {
           renderKmlLayers(map, kmlFile, { incremental: true })
@@ -2753,11 +2939,18 @@ function bindKmlViewportRerender (map) {
   const rerender = () => scheduleKmlViewportRerender(map)
   const unbind = () => {
     map.off('moveend zoomend', rerender)
+    map.off('rotate resize', rerender)
     map.off('unload', unbind)
     cancelKmlScheduledTasks()
+    if (kmlFileViewportSchedulerMap === map) {
+      kmlFileViewportScheduler?.dispose?.()
+      kmlFileViewportScheduler = null
+      kmlFileViewportSchedulerMap = null
+    }
     if (kmlViewportRerenderBinding?.map === map) kmlViewportRerenderBinding = null
   }
   map.on('moveend zoomend', rerender)
+  map.on('rotate resize', rerender)
   map.on('unload', unbind)
   kmlViewportRerenderBinding = { map, unbind }
 }
@@ -2822,6 +3015,16 @@ function getKmlFilesBounds (files) {
   const bounds = L.latLngBounds([])
   files.forEach(kmlFile => {
     const features = kmlFile.features || []
+    if (!features.length) {
+      const summary = normalizeKmlBounds(kmlFile.bounds, { featureCount: kmlFile.featureCount })
+      if (summary?.status === 'ready' && summary.bbox) {
+        const [west, south, east, north] = summary.bbox
+        bounds.extend([south, west])
+        bounds.extend([north, west])
+        bounds.extend([south, east])
+        bounds.extend([north, east])
+      }
+    }
     features.forEach(feature => {
       try {
         extendKmlBounds(bounds, getMapCoordinates(kmlFile, feature))
@@ -3091,7 +3294,9 @@ async function initShareKmlSupport (map, options = {}) {
   window.activateKmlFeatureForMedia = (item, options) => activateFeatureForMedia(map, item, options)
   kmlList = []
   sharePointClusteringConfig = getActiveShare()?.manifest?.viewConfig?.kmlPointClustering || { enabled: false }
-  publicKmlList = await loadActiveShareFiles()
+  ensureKmlFileViewportScheduler(map)
+  publicKmlList = await loadActiveShareFiles({ loadDetails: false })
+  refreshKmlFileViewportLoading(map)
   expandedKmlIds.clear()
   expandedKmlActionIds.clear()
   const firstExpandable = publicKmlList.find(kmlFile => !kmlFile.loadError && (kmlFile.features || []).length)
@@ -3522,6 +3727,9 @@ export async function initKmlSupport (map, options = {}) {
   ])
   initCustomControlsListeners()
 
+  ensureKmlFileViewportScheduler(map)
+  refreshKmlFileViewportLoading(map)
+
   loadPublicKmls(map).then(() => {
     renderAllKmls(map)
     updateKmlPanelUI(map)
@@ -3929,14 +4137,12 @@ export async function initKmlSupport (map, options = {}) {
         await showAlert(personalFile.loadError || 'KML 文件详情加载失败')
       }
       const kmlFile = publicKmlList.find(k => k.id === kmlId)
-      if (willExpand && kmlFile?.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
-        try {
-          const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
-          kmlFile.features = detail.features || []
-          renderKmlLayers(map, kmlFile)
-        } catch (err) {
+      if (willExpand && kmlFile?.enabled && kmlFile.contentLoaded === false) {
+        const loaded = await loadPublicKmlFileForUse(kmlFile)
+        if (loaded) renderKmlLayers(map, kmlFile)
+        else {
           expandedKmlIds.delete(kmlId)
-          showAlert('加载公共图层详情失败')
+          await showAlert(kmlFile.loadError || '加载公共图层详情失败')
         }
       }
       updateKmlPanelUI(map)
@@ -3951,13 +4157,9 @@ export async function initKmlSupport (map, options = {}) {
         publicKmlPrefs[kmlFile.id] = kmlFile.enabled
         savePublicPrefs()
 
-        if (kmlFile.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
-          try {
-            const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
-            kmlFile.features = detail.features || []
-          } catch (err) {
-            showAlert('加载公共图层详情失败')
-          }
+        if (kmlFile.enabled && kmlFile.contentLoaded === false) {
+          const loaded = await loadPublicKmlFileForUse(kmlFile)
+          if (!loaded) await showAlert(kmlFile.loadError || '加载公共图层详情失败')
         }
 
         renderKmlLayers(map, kmlFile)
@@ -4048,14 +4250,9 @@ export async function initKmlSupport (map, options = {}) {
       event.stopPropagation()
       let kmlFile = publicKmlList.find(k => k.id === kmlId)
       if (kmlFile) {
-        if (!kmlFile.features || kmlFile.features.length === 0) {
-          try {
-            const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
-            kmlFile.features = detail.features || []
-          } catch (err) {
-            showAlert('获取数据失败')
-            return
-          }
+        if (kmlFile.contentLoaded === false && !(await loadPublicKmlFileForUse(kmlFile))) {
+          await showAlert(kmlFile.loadError || '获取数据失败')
+          return
         }
         const kmlText = generateKmlText(kmlFile.name, kmlFile.features, kmlFile.description)
         downloadKmlFile(kmlFile.name, kmlText)

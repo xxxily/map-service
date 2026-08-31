@@ -1,6 +1,7 @@
 import { apiRequest } from '../auth/api.js'
 import { loadAnalyticsScript } from '../analytics.js'
 import { applySharePageMetadata, getSharePageCanonicalUrl } from '../../shared/share-page-metadata.js'
+import { computeKmlBounds, normalizeKmlBounds } from '../../shared/kml-spatial.js'
 
 let activeShare = null
 const activeShareFileLoads = new Map()
@@ -283,6 +284,7 @@ export async function loadActiveShareFiles (options = {}) {
   const publicId = activeShare.publicId
   const items = activeShare.manifest.items || []
   const loadHidden = options.loadHidden === true
+  const loadDetails = options.loadDetails !== false
   const concurrency = Math.max(1, Math.min(6, Number(options.concurrency) || 4))
   const results = new Array(items.length)
   let nextIndex = 0
@@ -292,7 +294,7 @@ export async function loadActiveShareFiles (options = {}) {
       const index = nextIndex
       nextIndex += 1
       const summary = items[index]
-      if (!loadHidden && summary.visibleByDefault === false) {
+      if (!loadDetails || (!loadHidden && summary.visibleByDefault === false)) {
         results[index] = {
           ...summary,
           id: summary.shareItemId,
@@ -300,11 +302,15 @@ export async function loadActiveShareFiles (options = {}) {
           shareItemId: summary.shareItemId,
           isPublic: true,
           isShare: true,
-          enabled: false,
+          // Deferring detail loading must not change the manifest's runtime
+          // visibility. Visible-by-default files enter the viewport scheduler;
+          // hidden files remain available in the panel without a request.
+          enabled: summary.visibleByDefault !== false,
           readOnly: true,
           allowDownload: Boolean(activeShare.manifest.allowDownload),
           features: [],
           contentLoaded: false,
+          loadError: '',
         }
         continue
       }
@@ -347,6 +353,8 @@ export async function loadActiveShareFile (fileOrSummary) {
         `/public/kml-shares/${encodeURIComponent(publicId)}/files/${encodeURIComponent(shareItemId)}`,
         { csrf: false }
       )
+      const features = Array.isArray(detail.features) ? detail.features : []
+      const bounds = normalizeKmlBounds(detail.bounds, { featureCount: features.length }) || computeKmlBounds(features)
       Object.assign(summary, {
         ...detail,
         id: shareItemId,
@@ -358,7 +366,8 @@ export async function loadActiveShareFile (fileOrSummary) {
         lockDrag: true,
         readOnly: true,
         allowDownload: Boolean(activeShare.manifest.allowDownload),
-        features: Array.isArray(detail.features) ? detail.features : [],
+        features,
+        bounds,
         contentLoaded: true,
         loadError: null,
       })

@@ -776,6 +776,7 @@ function transportFieldsFromDocument (file, document) {
   if (document.updatedAt !== undefined) file.updatedAt = document.updatedAt
   if (document.shareReferenceCount !== undefined) file.shareReferenceCount = Number(document.shareReferenceCount || 0)
   if (document.outdatedShareReferenceCount !== undefined) file.outdatedShareReferenceCount = Number(document.outdatedShareReferenceCount || 0)
+  if (document.bounds !== undefined) file.bounds = cloneValue(document.bounds)
 }
 
 const KML_MERGE_FIELDS = [
@@ -1276,8 +1277,9 @@ async function loadAllAccountDocuments (options = {}) {
     existing: existingById.get(String(item.id || '')),
   }))
   const indexesToLoad = []
+  const loadDetails = options.loadDetails !== false
   summaries.forEach((document, index) => {
-    const shouldLoad = options.loadHidden === true || document.isDefault === true || document.enabled !== false
+    const shouldLoad = loadDetails && (options.loadHidden === true || document.isDefault === true || document.enabled !== false)
     if (!shouldLoad || document.contentLoaded === true) return
     if (Object.hasOwn(items[index], 'featureCount') && Number(document.featureCount || 0) === 0) {
       document.contentLoaded = true
@@ -1572,7 +1574,7 @@ function bindDraftLifecycle () {
   }
 }
 
-export async function initializeKmlAccountMode () {
+export async function initializeKmlAccountMode (options = {}) {
   const initializationEpoch = ++syncEpoch
   const previousState = {
     accountMode,
@@ -1681,6 +1683,7 @@ export async function initializeKmlAccountMode () {
     let [loaded, directories] = await Promise.all([
       loadAllAccountDocuments({
         existingFiles: previousState.accountUserId === accountUserId ? previousState.latestFiles : [],
+        loadDetails: options.loadDetails !== false,
       }),
       loadKmlDirectories(),
     ])

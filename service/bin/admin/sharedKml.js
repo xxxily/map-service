@@ -1,6 +1,7 @@
 import { AdminStore } from './store.js'
 import { buildFeatureContentView } from './kmlContent.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
+import { computeKmlBounds, normalizeKmlBounds } from '../../../shared/kml-spatial.js'
 import { tryNormalizeKmlResourceCollection } from '../../../shared/kml-resource-collection.js'
 
 function normalizeFeatureMarkerIcons (features) {
@@ -145,6 +146,13 @@ function parseKml (kmlText) {
   return { features, warnings }
 }
 
+function normalizeSharedKmlRecord (kml) {
+  if (!kml || typeof kml !== 'object') return kml
+  const features = Array.isArray(kml.features) ? kml.features : []
+  const bounds = normalizeKmlBounds(kml.bounds, { featureCount: features.length }) || computeKmlBounds(features)
+  return { ...kml, bounds }
+}
+
 export class SharedKmlManager {
   constructor (options = {}) {
     this.store = options.store
@@ -153,7 +161,7 @@ export class SharedKmlManager {
   }
 
   async list (isAdmin = false) {
-    const kmls = await this.store.read(this.storeName, [])
+    const kmls = (await this.store.read(this.storeName, [])).map(normalizeSharedKmlRecord)
     if (isAdmin) {
       return kmls
     }
@@ -164,12 +172,13 @@ export class SharedKmlManager {
         name: kml.name,
         coordCorrection: kml.coordCorrection,
         featureCount: kml.features ? kml.features.length : 0,
+        bounds: normalizeKmlBounds(kml.bounds, { featureCount: kml.features ? kml.features.length : 0 }),
         updatedAt: kml.updatedAt,
       }))
   }
 
   async get (id, isAdmin = false) {
-    const kmls = await this.store.read(this.storeName, [])
+    const kmls = (await this.store.read(this.storeName, [])).map(normalizeSharedKmlRecord)
     const kml = kmls.find(k => k.id === id)
     if (!kml) {
       const err = new Error('KML 未找到')
@@ -212,6 +221,7 @@ export class SharedKmlManager {
       status,
       coordCorrection,
       features,
+      bounds: computeKmlBounds(features),
       createdAt: now,
       updatedAt: now,
     }
@@ -232,7 +242,12 @@ export class SharedKmlManager {
     if (input.name !== undefined) kml.name = String(input.name).trim()
     if (input.status !== undefined) kml.status = input.status
     if (input.coordCorrection !== undefined) kml.coordCorrection = input.coordCorrection
-    if (input.features !== undefined) kml.features = normalizeFeatureMarkerIcons(input.features)
+    if (input.features !== undefined) {
+      kml.features = normalizeFeatureMarkerIcons(input.features)
+      kml.bounds = computeKmlBounds(kml.features)
+    } else if (!normalizeKmlBounds(kml.bounds, { featureCount: kml.features?.length || 0 })) {
+      kml.bounds = computeKmlBounds(kml.features)
+    }
     kml.updatedAt = new Date().toISOString()
     await this.store.write(this.storeName, kmls)
     return kml

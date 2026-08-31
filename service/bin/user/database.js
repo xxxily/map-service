@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 11
+export const USER_DATABASE_VERSION = 12
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS kml_documents (
   is_live_track INTEGER NOT NULL DEFAULT 0 CHECK (is_live_track IN (0, 1)),
   features_json TEXT NOT NULL DEFAULT '[]',
   feature_count INTEGER NOT NULL DEFAULT 0,
+  bounds_json TEXT,
   byte_size INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 1,
   source_type TEXT NOT NULL DEFAULT 'created',
@@ -296,6 +297,20 @@ export class UserDatabase {
       )
     `)
     const current = Number(this.database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get()?.version || 0)
+    const hasKmlDocumentsTable = () => Boolean(this.database.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kml_documents'
+    `).get())
+    const hasKmlBoundsColumn = () => hasKmlDocumentsTable() && this.database
+      .prepare('PRAGMA table_info(kml_documents)')
+      .all()
+      .some(column => column.name === 'bounds_json')
+    const ensureKmlBoundsColumn = () => {
+      if (hasKmlDocumentsTable() && !hasKmlBoundsColumn()) {
+        this.database.exec('ALTER TABLE kml_documents ADD COLUMN bounds_json TEXT')
+        return true
+      }
+      return false
+    }
 
     if (current < 1) {
       this.transaction(() => {
@@ -655,6 +670,25 @@ export class UserDatabase {
         }
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(11, now)
+      })
+    }
+
+    if (current < 12) {
+      this.transaction(() => {
+        ensureKmlBoundsColumn()
+        // Existing documents intentionally remain nullable. Their original
+        // feature graph is still authoritative; the next content write (or a
+        // background repair) computes a fresh summary without blocking startup.
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(12, new Date().toISOString())
+      })
+    } else if (!hasKmlBoundsColumn()) {
+      // A previous startup may have recorded v12 before the ALTER completed
+      // (for example after an interrupted deployment). Keep the migration
+      // marker authoritative while repairing the nullable compatibility column
+      // idempotently on every subsequent startup.
+      this.transaction(() => {
+        ensureKmlBoundsColumn()
       })
     }
 

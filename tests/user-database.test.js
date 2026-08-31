@@ -518,7 +518,36 @@ test('UserDatabase v11 repairs active KML positions per owner and directory', ()
       database.prepare("SELECT updated_at FROM kml_documents WHERE id = 'one-null-first'").get().updated_at,
       '2026-08-28T00:00:00.000Z',
     )
-    assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 11)
+    assert.equal(
+      database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version,
+      USER_DATABASE_VERSION,
+    )
+    assert.doesNotThrow(() => database.migrate())
+  } finally {
+    database.close()
+  }
+})
+
+test('UserDatabase v12 repairs a missing bounds column even when the migration marker already exists', () => {
+  const rawDatabase = new DatabaseSync(':memory:')
+  rawDatabase.exec(`
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations(version, applied_at) VALUES (12, '2026-08-30T00:00:00.000Z');
+    CREATE TABLE kml_documents (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      features_json TEXT NOT NULL DEFAULT '[]'
+    );
+    INSERT INTO kml_documents(id, owner_id) VALUES ('kml_legacy', 'usr_one');
+  `)
+
+  const database = new UserDatabase({ filePath: ':memory:', database: rawDatabase })
+  try {
+    assert.equal(
+      database.prepare('PRAGMA table_info(kml_documents)').all().some(row => row.name === 'bounds_json'),
+      true,
+    )
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM kml_documents').get().count, 1)
     assert.doesNotThrow(() => database.migrate())
   } finally {
     database.close()

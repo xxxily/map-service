@@ -9,6 +9,7 @@ import {
   verifyPassword,
 } from './security.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
+import { computeKmlBounds, normalizeKmlBounds } from '../../../shared/kml-spatial.js'
 import {
   decoratePublishedSnapshot,
   inspectPublishedResourceReferences,
@@ -656,6 +657,7 @@ function normalizeKmlInput (input = {}, current = {}) {
   const features = input.features === undefined
     ? clone(current.features || [])
     : normalizeKmlFeatures(input.features)
+  const bounds = computeKmlBounds(features)
   return {
     name: normalizeText(input.name, {
       fallback: current.name || '新建 KML 文件',
@@ -674,6 +676,7 @@ function normalizeKmlInput (input = {}, current = {}) {
     enabled: normalizeBoolean(input.enabled, current.enabled ?? true),
     isLiveTrack: normalizeBoolean(input.isLiveTrack, current.isLiveTrack),
     features,
+    bounds,
     featureCount: features.length,
     byteSize: serializedByteSize(features),
   }
@@ -2046,6 +2049,12 @@ export class UserContentService {
 
   kmlViewFromRow (row, options = {}) {
     if (!row) return null
+    const includeFeatures = options.includeFeatures === true
+    const features = includeFeatures ? parseJson(row.features_json, []) : null
+    const storedBounds = normalizeKmlBounds(
+      parseJson(row.bounds_json, null),
+      { featureCount: Number(row.feature_count || 0) },
+    )
     const result = {
       id: row.id,
       ownerId: row.owner_id,
@@ -2060,6 +2069,7 @@ export class UserContentService {
       enabled: Boolean(row.enabled),
       isLiveTrack: Boolean(row.is_live_track),
       featureCount: Number(row.feature_count),
+      bounds: storedBounds || (includeFeatures ? computeKmlBounds(features) : null),
       byteSize: Number(row.byte_size),
       revision: Number(row.revision),
       sourceType: row.source_type,
@@ -2075,7 +2085,7 @@ export class UserContentService {
       position: Number(row.position || 0),
     }
     if (row.sync_client_id) result.syncClientId = row.sync_client_id
-    if (options.includeFeatures) result.features = parseJson(row.features_json, [])
+    if (includeFeatures) result.features = features
     return result
   }
 
@@ -2193,9 +2203,9 @@ export class UserContentService {
         INSERT INTO kml_documents(
           id, owner_id, name, description, is_default, status,
           coord_correction, theme, color, lock_drag, enabled, is_live_track,
-          features_json, feature_count, byte_size, revision, source_type,
+          features_json, feature_count, bounds_json, byte_size, revision, source_type,
           sync_client_id, directory_id, position, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         ownerId,
@@ -2210,6 +2220,7 @@ export class UserContentService {
         normalized.isLiveTrack ? 1 : 0,
         JSON.stringify(normalized.features),
         normalized.featureCount,
+        JSON.stringify(normalized.bounds),
         normalized.byteSize,
         sourceType,
         syncClientId,
@@ -2411,6 +2422,7 @@ export class UserContentService {
         normalized.isLiveTrack ? 1 : 0,
         JSON.stringify(normalized.features),
         normalized.featureCount,
+        JSON.stringify(normalized.bounds),
         normalized.byteSize,
       ]
       updateParams.push(now)
@@ -2420,7 +2432,7 @@ export class UserContentService {
         UPDATE kml_documents SET
           name = ?, description = ?, is_default = ?, coord_correction = ?, theme = ?,
           color = ?, lock_drag = ?, enabled = ?, is_live_track = ?, features_json = ?,
-          feature_count = ?, byte_size = ?, revision = revision + 1, updated_at = ?${positionClause}
+          feature_count = ?, bounds_json = ?, byte_size = ?, revision = revision + 1, updated_at = ?${positionClause}
         WHERE id = ? AND revision = ?
       `).run(
         ...updateParams
@@ -3126,7 +3138,7 @@ export class UserContentService {
   shareItemsForOwner (shareId) {
     return this.database.prepare(`
       SELECT i.*, k.name AS kml_name, k.description AS kml_description,
-             k.status AS kml_status, k.feature_count, k.byte_size, k.revision
+             k.status AS kml_status, k.feature_count, k.bounds_json, k.byte_size, k.revision
       FROM kml_share_items i
       LEFT JOIN kml_documents k ON k.id = i.kml_id
       WHERE i.share_id = ?
@@ -3146,6 +3158,7 @@ export class UserContentService {
         name: row.kml_name,
         status: row.kml_status,
         featureCount: Number(row.feature_count),
+        bounds: normalizeKmlBounds(parseJson(row.bounds_json, null), { featureCount: Number(row.feature_count || 0) }),
         byteSize: Number(row.byte_size),
         revision: sourceRevision,
         sourceRevision,
@@ -3244,7 +3257,7 @@ export class UserContentService {
         : [this.database.prepare(`
         SELECT id, name, description, coord_correction, theme, color,
                lock_drag, enabled, is_live_track, features_json,
-               feature_count, byte_size, revision, updated_at,
+               feature_count, bounds_json, byte_size, revision, updated_at,
                directory_id, position,
                (SELECT name FROM kml_directories WHERE id = kml_documents.directory_id) AS directory_name
         FROM kml_documents
@@ -3282,6 +3295,11 @@ export class UserContentService {
   }
 
   publishedSnapshotFromDocument (row) {
+    const features = sanitizePublishedKmlFeatures(parseJson(row.features_json, []))
+    const storedBounds = normalizeKmlBounds(
+      parseJson(row.bounds_json, null),
+      { featureCount: Number(row.feature_count || features.length || 0) },
+    )
     return preparePublishedInteractionSnapshot({
       name: row.name,
       description: row.description || '',
@@ -3291,8 +3309,9 @@ export class UserContentService {
       lockDrag: Boolean(row.lock_drag),
       enabled: Boolean(row.enabled),
       isLiveTrack: Boolean(row.is_live_track),
-      features: sanitizePublishedKmlFeatures(parseJson(row.features_json, [])),
+      features,
       featureCount: Number(row.feature_count || 0),
+      bounds: storedBounds || computeKmlBounds(features),
       byteSize: Number(row.byte_size || 0),
       revision: Number(row.revision || 0),
       updatedAt: row.updated_at,
@@ -3692,7 +3711,7 @@ export class UserContentService {
              i.directory_id, i.source_directory_id, i.directory_name, i.source_position,
              k.name, k.description, k.coord_correction, k.theme, k.color,
              k.lock_drag, k.enabled, k.is_live_track, k.features_json,
-             k.feature_count, k.byte_size, k.revision, k.updated_at,
+             k.feature_count, k.bounds_json, k.byte_size, k.revision, k.updated_at,
              k.directory_id AS current_directory_id,
              k.position AS current_position,
              d.name AS current_directory_name
@@ -4379,6 +4398,8 @@ export class UserContentService {
 
   publicItemSummary (row) {
     const snapshot = row.snapshot || {}
+    const snapshotFeatures = Array.isArray(snapshot.features) ? snapshot.features : []
+    const storedBounds = normalizeKmlBounds(snapshot.bounds, { featureCount: Number(snapshot.featureCount || snapshotFeatures.length || 0) })
     const visibleByDefault = Boolean(row.visible_by_default)
     return {
       shareItemId: row.share_item_id,
@@ -4395,6 +4416,7 @@ export class UserContentService {
       enabled: visibleByDefault,
       isLiveTrack: Boolean(snapshot.isLiveTrack),
       featureCount: Number(snapshot.featureCount || 0),
+      bounds: storedBounds || computeKmlBounds(snapshotFeatures),
       revision: Number(row.published_revision || snapshot.revision || 0),
       updatedAt: snapshot.updatedAt || row.published_at,
     }

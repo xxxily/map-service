@@ -32,7 +32,7 @@ import { initFavoriteActions } from './map/favorite-actions.js'
 import { initAmapGeolocation } from './map/geolocation.js'
 import { registerServiceWorker } from './pwa.js'
 import { initGuidelines3d, toggleGuidelineMode3d } from './map3d/guidelines.js'
-import { initKmlSupport3d } from './map3d/kml.js'
+import { disposeKmlSupport3d, initKmlSupport3d } from './map3d/kml.js'
 import {
   updatePosition3d,
   intervalLocationState3d,
@@ -842,6 +842,7 @@ async function init3dEarth () {
     cameraInteraction?.destroy()
     cameraInteraction = null
     destroyLocationCamera3d(previousViewer)
+    disposeKmlSupport3d(previousViewer)
     if (previousViewer.isDestroyed?.() !== true) previousViewer.destroy?.()
     viewer = null
   }

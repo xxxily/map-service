@@ -271,6 +271,26 @@ system.super_admin
 
 目录相关错误码包括 `KML_DIRECTORY_NOT_FOUND`、`KML_DIRECTORY_NAME_CONFLICT`、`KML_DIRECTORY_LIMIT_EXCEEDED`、`KML_REORDER_INVALID` 和 `KML_MOVE_INVALID`。`/auth/config` 的 `kml.batchDownloadEnabled` 控制目录批量下载入口，默认 `false`；`kml.pointClustering` 控制个人地图 2D/3D 跨文件 Point 聚合，默认开启且 `minClusterPoints=10`。进入分享页后分享级配置优先，全局配置不覆盖分享显式关闭。
 
+#### 文件边界摘要与按需加载
+
+`GET /kml/files`、`GET /kml/files/:id`、分享 manifest/详情以及管理员公共 KML 响应可带可选的 `bounds` 字段。字段由服务端或本地 KML 解析器根据有效 WGS84 坐标生成，客户端不能提交该字段作为服务端写入依据：
+
+```json
+{
+  "version": 1,
+  "status": "ready",
+  "bbox": [113.1, 22.1, 113.8, 23.0],
+  "crossesAntimeridian": false,
+  "featureCount": 123
+}
+```
+
+`bbox` 固定为 `[west, south, east, north]`。`status` 为 `ready`、`empty` 或 `missing`；`ready` 必须有合法范围，`empty` 表示没有有效坐标，`missing` 表示旧记录尚未计算或计算失败。跨日界线时允许 `west > east` 并设置 `crossesAntimeridian=true`，不得展开成全球范围。旧数据库通过 v12 增加 nullable `kml_documents.bounds_json`，即使迁移标记已存在但列缺失，服务启动也会幂等修复；没有摘要的旧文件继续走兼容加载队列。
+
+地图端先读取文件摘要，再由统一文件调度器请求详情。默认详情并发为 3、硬上限 6，相邻请求启动间隔 40ms，自动重试 1 次；有摘要的文件按“视口内、缓冲区内、中心距离”排序，视口外文件暂不请求。默认缓冲比例为 1.8，缩放级别 `<=4` 或视口不可用时最终加载所有启用文件，但仍受并发和间隔控制。2D 旋转使用容器四角 footprint，3D 优先使用 Cesium `computeViewRectangle()`；视口变化会淘汰尚未开始的旧队列，已开始的请求不得写入被替换的地图/账号实例。详情失败保留文件名、摘要和错误原因，用户可通过展开、显示、定位、导出等明确操作重试。
+
+个人匿名本地 KML 不产生详情网络请求，但同样使用文件边界过滤图层；全局 `kml.pointClustering` 对登录和未登录地图均生效。分享页的 `viewConfig.kmlPointClustering` 始终优先于个人全局配置。
+
 回收站通过 `GET /kml/files?status=trashed` 进入；列表只返回摘要，用户可调用 `GET /kml/files/:id` 获取详情。恢复使用 `POST /kml/files/:id/restore`。永久删除必须携带当前登录密码：
 
 ```http
@@ -807,6 +827,13 @@ Content-Type: application/json
   "shareItemId": "shi_public_a",
   "name": "备用路线",
   "featureCount": 320,
+  "bounds": {
+    "version": 1,
+    "status": "ready",
+    "bbox": [113.1, 22.1, 113.8, 23.0],
+    "crossesAntimeridian": false,
+    "featureCount": 320
+  },
   "visibleByDefault": false,
   "enabled": false,
   "directoryId": "shd_public_weekend",
@@ -814,7 +841,7 @@ Content-Type: application/json
 }
 ```
 
-摘要不包含 `features`。客户端首次进入分享时只拉取默认显示文件；隐藏文件在显示、展开或导出时调用文件详情接口。同一 `shareItemId` 的并发详情请求应合并，失败后保持隐藏并允许重试。
+摘要不包含 `features`。客户端首次进入分享时只拉取视口/缓冲区候选中的默认显示文件；隐藏文件在显示、展开或导出时调用文件详情接口。同一 `shareItemId` 的并发详情请求应合并，失败后保持隐藏并允许重试。缺少或非法 `bounds` 的文件按兼容候选处理，不会被静默忽略。
 
 公开文件 `GET /public/kml-shares/:publicId/files/:shareItemId` 返回的每个 Feature 可能包含交互资源元数据：
 

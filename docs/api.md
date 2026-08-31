@@ -1384,6 +1384,8 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 
 分享项还会返回 `visibleByDefault`、`directoryId`、`directoryName`、`featureCount` 等摘要。`visibleByDefault=false` 的文件在 manifest 中保留摘要但不含 `features`；分享页面首次加载不请求详情，用户显示、展开、导出或批量选择时才调用详情接口。详情接口为 `GET /api/v1/public/kml-shares/:publicId/files/:shareItemId`，并按分享授权校验；并发请求同一文件只产生一次上游加载。详情加载失败返回统一 `RESOURCE_NOT_FOUND` 或授权错误，文件保持隐藏且可重试。
 
+所有个人、分享和公共 KML 摘要可带统一 `bounds`：`{version:1,status,bbox,crossesAntimeridian,featureCount}`。`bbox` 为 WGS84 `[west,south,east,north]`，跨日界线允许 `west > east`；旧记录缺失时客户端按兼容路径加载。文件级详情调度默认并发 3、硬上限 6、请求启动间隔 40ms、自动重试 1 次和 1.8 倍视口缓冲；有摘要的文件按视口内/缓冲区内/中心距离排序，无摘要文件仍会受同一并发队列控制。低缩放或视口不可用时最终加载全部启用文件，不以固定窗口截断内容。2D 旋转使用四角 footprint，3D 使用 Cesium 可见矩形；已开始的旧请求完成后只允许更新仍属于当前地图实例的文件。
+
 管理员设置新增个人地图全局聚合 `kml.pointClustering`，默认 `{enabled:true,minZoom:0,maxClusterZoom:13,gridSize:64,minClusterPoints:10,maxMembersPerCluster:5000}`，同时保留 `kml.batchDownloadEnabled`（默认 `false`）。该全局配置用于 2D/3D 个人 KML 跨文件 Point 聚合；LineString/Polygon 始终完整渲染。进入分享页后不读取全局配置，分享显式 `enabled:false` 仍保持关闭，分享级 `viewConfig.kmlPointClustering` 优先。
 
 分享强制策略继续使用 `share.kmlClusterForceEnabled`（默认 `false`）、`share.kmlClusterMaxZoom`（默认 `12`，范围 0～24）和 `share.kmlClusterMinPoints`（默认 `250`，只要求为不小于 2 的安全整数）。强制聚合开启时，公开 manifest 将管理员策略与分享配置按更积极聚合合成，并返回 `forcedByPolicy=true`；它不改变个人地图全局配置。
@@ -1487,7 +1489,7 @@ GET /api/v1/kml/media?url=https%3A%2F%2Fdown-files.2bulu.com%2Ff%2Fdn1%3FdownPar
 
 ### `GET /api/v1/kml/shared/:id`
 
-获取已发布的公共 KML 详情。
+获取已发布的公共 KML 详情。列表和详情均可返回 `bounds`；详情仍返回完整 `features`，列表只返回摘要和 `featureCount`。
 
 ### `GET /api/v1/kml/shared/:id/features/:featureId/content`
 

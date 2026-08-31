@@ -5,6 +5,7 @@ import {
   HeightReference,
   LabelStyle,
   PolygonHierarchy,
+  Rectangle,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   VerticalOrigin,
@@ -88,6 +89,14 @@ import {
   normalizeKmlPointClusteringConfig,
   resolveGlobalKmlPointClusteringConfig,
 } from '../map/kml-point-clustering.js'
+import {
+  createKmlFileViewportScheduler,
+  shouldRenderKmlFileInViewport,
+} from '../map/kml-file-viewport-loading.js'
+import {
+  computeKmlBounds,
+  normalizeKmlBounds,
+} from '../../shared/kml-spatial.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_DIRECTORIES_STORAGE_KEY = 'map_kml_directories'
@@ -108,6 +117,11 @@ let lastRenderedCamLat3d = null // 上次渲染时相机纬度
 let lastRenderedCamLng3d = null // 上次渲染时相机经度
 let lastRenderedCamHeight3d = null // 上次渲染时相机高度
 let lastRenderedZoom3d = null // 上次渲染时的等效缩放级别
+let kmlFileViewportScheduler3d = null
+let kmlFileViewportSchedulerViewer3d = null
+let kmlViewportRenderTask3d = null
+let kmlViewportMoveEndBinding3d = null
+let kmlViewportLifecycleToken3d = 0
 
 /**
  * 检查当前相机位置是否仍在上次渲染的缓冲范围内，如果是则跳过重渲染。
@@ -210,6 +224,7 @@ function isKmlEditable (kmlFile) {
 }
 
 function saveKmlChanges (kmlFile) {
+  if (kmlFile && Array.isArray(kmlFile.features)) kmlFile.bounds = computeKmlBounds(kmlFile.features)
   invalidateKmlMediaGallery(kmlFile)
   if (kmlFile?.isPublic) {
     isPublicKmlDirty = true
@@ -314,7 +329,7 @@ function commitAccountKmlOrganizationDocuments (documents = []) {
 }
 
 async function loadInitialKmlFiles () {
-  const account = await initializeKmlAccountMode()
+  const account = await initializeKmlAccountMode({ loadDetails: false })
   if (account.mode === 'account') {
     if (account.error) {
       kmlList = (account.files || []).map(normalizeKmlFile)
@@ -339,6 +354,9 @@ async function loadInitialKmlFiles () {
 }
 
 function saveToStorage (options = {}) {
+  kmlList.forEach(file => {
+    if (Array.isArray(file?.features) && file.contentLoaded !== false) file.bounds = computeKmlBounds(file.features)
+  })
   if (isAccountKmlMode()) {
     if (isAccountKmlWritable()) scheduleKmlAccountSync(kmlList, options)
     return
@@ -363,6 +381,13 @@ function saveKmlHistoryState (previousFiles) {
 function normalizeKmlFile (kmlFile) {
   const isDefault = kmlFile.id === DEFAULT_KML_ID || kmlFile.isDefault === true
   const preserveServerDefaultId = isDefault && isAccountKmlMode() && kmlFile.id
+  const features = Array.isArray(kmlFile.features)
+    ? kmlFile.features.map(normalizeKmlFeatureMarkerIcon)
+    : []
+  const contentLoaded = kmlFile.contentLoaded !== false
+  const normalizedBounds = normalizeKmlBounds(kmlFile.bounds, {
+    featureCount: kmlFile.featureCount ?? features.length,
+  })
   return {
     ...kmlFile,
     id: preserveServerDefaultId
@@ -379,9 +404,10 @@ function normalizeKmlFile (kmlFile) {
     directoryName: String(kmlFile.directoryName || ''),
     position: Number.isFinite(Number(kmlFile.position)) ? Number(kmlFile.position) : 0,
     enabled: kmlFile.enabled !== false,
-    features: Array.isArray(kmlFile.features) ? kmlFile.features.map(normalizeKmlFeatureMarkerIcon) : [],
-    featureCount: Number(kmlFile.featureCount ?? kmlFile.features?.length ?? 0),
-    contentLoaded: kmlFile.contentLoaded !== false,
+    features,
+    featureCount: Number(kmlFile.featureCount ?? features.length ?? 0),
+    bounds: normalizedBounds || (contentLoaded ? computeKmlBounds(features) : null),
+    contentLoaded,
   }
 }
 
@@ -815,9 +841,15 @@ function renderVisibilityChangedKmlFiles3d (files) {
 
 function renderShareClusterLayers3d (config) {
   const records = []
-  const zoom = getViewportOptions3d().zoom ?? 0
+  const viewportOptions = getViewportOptions3d()
+  const zoom = viewportOptions.zoom ?? 0
   publicKmlList.filter(kmlFile => (
-    kmlFile.isShare && isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError
+    kmlFile.isShare && isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError &&
+    shouldRenderKmlFileInViewport(kmlFile, viewportOptions.viewportBounds && {
+      ...viewportOptions.viewportBounds,
+      zoom: viewportOptions.zoom,
+      center: viewportOptions.center,
+    })
   )).forEach(kmlFile => {
     const features = kmlFile.features || []
     features.forEach(feature => {
@@ -845,7 +877,12 @@ function renderPersonalClusterLayers3d (config) {
   const viewportOptions = getViewportOptions3d()
   const zoom = viewportOptions.zoom ?? 0
   kmlList.filter(kmlFile => (
-    isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError
+    isKmlEnabled(kmlFile) && kmlFile.contentLoaded !== false && !kmlFile.loadError &&
+    shouldRenderKmlFileInViewport(kmlFile, viewportOptions.viewportBounds && {
+      ...viewportOptions.viewportBounds,
+      zoom: viewportOptions.zoom,
+      center: viewportOptions.center,
+    })
   )).forEach(kmlFile => {
     const features = getTrackDisplayFeatures(kmlFile, viewportOptions)
     features.forEach(feature => {
@@ -965,6 +1002,11 @@ function renderKmlDirectoryBatchControls (group) {
 }
 
 async function loadSharedKmlFileForUse (kmlFile, options = {}) {
+  if (options.scheduled !== true && kmlFile?.contentLoaded === false && kmlFileViewportScheduler3d) {
+    const loaded = await kmlFileViewportScheduler3d.request(kmlFile, { priority: options.priority ?? 0 })
+    if (loaded && options.enableOnSuccess === true) kmlFile.enabled = true
+    return loaded
+  }
   if (!kmlFile?.isShare || kmlFile.contentLoaded !== false) return Boolean(kmlFile && !kmlFile.loadError)
   const loaded = await loadActiveShareFile(kmlFile)
   const succeeded = Boolean(loaded?.contentLoaded && !loaded.loadError)
@@ -973,7 +1015,10 @@ async function loadSharedKmlFileForUse (kmlFile, options = {}) {
   return succeeded
 }
 
-async function loadAccountKmlFileForUse (kmlFile) {
+async function loadAccountKmlFileForUse (kmlFile, options = {}) {
+  if (options.scheduled !== true && kmlFile?.contentLoaded === false && kmlFileViewportScheduler3d) {
+    return kmlFileViewportScheduler3d.request(kmlFile, { priority: options.priority ?? 0 })
+  }
   if (!kmlFile || !isAccountKmlMode() || kmlFile.contentLoaded !== false) {
     return Boolean(kmlFile && !kmlFile.loadError)
   }
@@ -984,6 +1029,118 @@ async function loadAccountKmlFileForUse (kmlFile) {
     kmlFile.loadError = error?.message || 'KML 文件详情加载失败'
     return false
   }
+}
+
+async function loadPublicKmlFileForUse (kmlFile, options = {}) {
+  if (options.scheduled !== true && kmlFile?.contentLoaded === false && kmlFileViewportScheduler3d) {
+    const loaded = await kmlFileViewportScheduler3d.request(kmlFile, { priority: options.priority ?? 0 })
+    if (loaded && options.enableOnSuccess === true) kmlFile.enabled = true
+    return loaded
+  }
+  if (!kmlFile?.isPublic || kmlFile.contentLoaded !== false) return Boolean(kmlFile && !kmlFile.loadError)
+  try {
+    const response = await window.fetch(`/api/v1/kml/shared/${encodeURIComponent(kmlFile.id)}`)
+    const payload = await response.json()
+    if (!response.ok || !payload?.result) throw new Error(payload?.error?.message || '公共 KML 详情加载失败')
+    const detail = payload.result
+    Object.assign(kmlFile, detail, {
+      isPublic: true,
+      contentLoaded: true,
+      features: Array.isArray(detail.features) ? detail.features : [],
+      featureCount: Number(detail.featureCount ?? detail.features?.length ?? 0),
+      bounds: normalizeKmlBounds(detail.bounds, { featureCount: detail.features?.length || 0 }) || computeKmlBounds(detail.features || []),
+      loadError: '',
+    })
+    return true
+  } catch (error) {
+    kmlFile.loadError = error?.message || '公共 KML 详情加载失败'
+    kmlFile.contentLoaded = false
+    return false
+  }
+}
+
+function allKmlFilesForViewport3d () {
+  return [...kmlList, ...publicKmlList]
+}
+
+function scheduleKmlFileViewportRender3d () {
+  if (kmlViewportRenderTask3d) clearTimeout(kmlViewportRenderTask3d)
+  const scheduledViewer = viewerRef
+  const lifecycleToken = kmlViewportLifecycleToken3d
+  kmlViewportRenderTask3d = setTimeout(() => {
+    kmlViewportRenderTask3d = null
+    if (!viewerRef || viewerRef !== scheduledViewer || lifecycleToken !== kmlViewportLifecycleToken3d) return
+    renderAllKmls()
+    updateKmlPanelUI()
+  }, 0)
+}
+
+function ensureKmlFileViewportScheduler3d (viewer = viewerRef) {
+  if (!viewer) return null
+  if (kmlFileViewportScheduler3d && kmlFileViewportSchedulerViewer3d === viewer) return kmlFileViewportScheduler3d
+  kmlFileViewportScheduler3d?.dispose?.()
+  kmlFileViewportSchedulerViewer3d = viewer
+  kmlFileViewportScheduler3d = createKmlFileViewportScheduler({
+    getFiles: allKmlFilesForViewport3d,
+    loadFile: async (file) => {
+      if (file?.isShare) return loadSharedKmlFileForUse(file, { scheduled: true })
+      if (file?.isPublic) return loadPublicKmlFileForUse(file, { scheduled: true })
+      if (isAccountKmlMode()) return loadAccountKmlFileForUse(file, { scheduled: true })
+      if (file?.contentLoaded === false && Array.isArray(file.features)) file.contentLoaded = true
+      return Boolean(file && !file.loadError)
+    },
+    onLoaded: scheduleKmlFileViewportRender3d,
+    onError: scheduleKmlFileViewportRender3d,
+  })
+  return kmlFileViewportScheduler3d
+}
+
+function disposeKmlFileViewportScheduler3d (viewer = null) {
+  kmlViewportLifecycleToken3d += 1
+  const boundViewer = kmlViewportMoveEndBinding3d?.viewer
+  if (boundViewer && (!viewer || boundViewer === viewer)) {
+    boundViewer.camera?.moveEnd?.removeEventListener?.(scheduleKmlViewportRerender3d)
+    kmlViewportMoveEndBinding3d = null
+  }
+  if (!viewer || kmlFileViewportSchedulerViewer3d === viewer) {
+    kmlFileViewportScheduler3d?.dispose?.()
+    kmlFileViewportScheduler3d = null
+    kmlFileViewportSchedulerViewer3d = null
+  }
+  if (kmlViewportRenderTask3d) clearTimeout(kmlViewportRenderTask3d)
+  kmlViewportRenderTask3d = null
+  if (kmlViewportRerenderTimer3d) clearTimeout(kmlViewportRerenderTimer3d)
+  kmlViewportRerenderTimer3d = null
+}
+
+export function disposeKmlSupport3d (viewer = viewerRef) {
+  disposeKmlFileViewportScheduler3d(viewer)
+  if (viewer && viewerRef === viewer) viewerRef = null
+}
+
+function bindKmlViewportMoveEnd3d (viewer) {
+  if (!viewer?.camera?.moveEnd) return
+  if (kmlViewportMoveEndBinding3d?.viewer === viewer) return
+  if (kmlViewportMoveEndBinding3d?.viewer?.camera?.moveEnd?.removeEventListener) {
+    kmlViewportMoveEndBinding3d.viewer.camera.moveEnd.removeEventListener(scheduleKmlViewportRerender3d)
+  }
+  viewer.camera.moveEnd.addEventListener(scheduleKmlViewportRerender3d)
+  kmlViewportMoveEndBinding3d = { viewer }
+}
+
+function refreshKmlFileViewportLoading3d (options = {}) {
+  const scheduler = ensureKmlFileViewportScheduler3d()
+  if (!scheduler) return null
+  return scheduler.refresh(getViewportOptions3d(), options)
+}
+
+async function requestKmlFileDetail3d (file, options = {}) {
+  if (!file) return false
+  const scheduler = ensureKmlFileViewportScheduler3d()
+  if (scheduler) return scheduler.request(file, { priority: options.priority ?? 0 })
+  if (file.isShare) return loadSharedKmlFileForUse(file, options)
+  if (file.isPublic) return loadPublicKmlFileForUse(file, options)
+  return loadAccountKmlFileForUse(file, options)
 }
 
 async function ensureAccountKmlFilesLoaded (...files) {
@@ -1008,7 +1165,7 @@ async function downloadDirectoryBatchFiles () {
       } else {
         const loaded = file.isShare
           ? await loadSharedKmlFileForUse(file)
-          : await loadAccountKmlFileForUse(file)
+          : await requestKmlFileDetail3d(file, { priority: 0 })
         if (!loaded) throw new Error(file.loadError || '文件内容加载失败')
         downloadKmlFile(file.name, generateKmlText(file.name, file.features || [], file.description))
       }
@@ -1291,10 +1448,82 @@ function removeKmlLayers (kmlFileOrId) {
 // 辅助函数：从 Cesium viewer 获取视口参数
 function getViewportOptions3d () {
   if (!viewerRef?.camera) return {}
-  const carto = viewerRef.camera.positionCartographic
-  if (!carto) return {}
-  const zoom = cameraHeightToZoom(carto.height)
-  return { zoom, viewer3d: viewerRef }
+  const camera = viewerRef.camera
+  const carto = camera.positionCartographic
+  const height = Number(carto?.height)
+  const zoom = cameraHeightToZoom(height)
+  const center = carto && Number.isFinite(Number(carto.latitude)) && Number.isFinite(Number(carto.longitude))
+    ? {
+        lat: CesiumMath.toDegrees(carto.latitude),
+        lng: normalizeLongitude(CesiumMath.toDegrees(carto.longitude)),
+      }
+    : null
+
+  // Cesium's view rectangle accounts for heading, pitch and roll. It is the
+  // most accurate footprint available and is deliberately preferred over a
+  // camera-height approximation.
+  let rectangle = null
+  try {
+    rectangle = camera.computeViewRectangle?.(viewerRef.scene?.globe?.ellipsoid) || null
+  } catch {
+    rectangle = null
+  }
+  if (rectangle && [rectangle.west, rectangle.south, rectangle.east, rectangle.north].every(value => Number.isFinite(Number(value)))) {
+    const west = normalizeLongitude(CesiumMath.toDegrees(rectangle.west))
+    const east = normalizeLongitude(CesiumMath.toDegrees(rectangle.east))
+    const south = Math.max(-90, Math.min(90, CesiumMath.toDegrees(rectangle.south)))
+    const north = Math.max(-90, Math.min(90, CesiumMath.toDegrees(rectangle.north)))
+    if (south <= north && west !== undefined && east !== undefined) {
+      const crossesAntimeridian = Number(rectangle.east) < Number(rectangle.west) || west > east
+      return {
+        viewportBounds: { south, west, north, east, crossesAntimeridian },
+        center: center || {
+          lat: (south + north) / 2,
+          lng: normalizeLongitude(west + (crossesAntimeridian ? east + 360 - west : east - west) / 2),
+        },
+        zoom,
+        cameraHeight: Number.isFinite(height) ? height : null,
+        viewer3d: viewerRef,
+      }
+    }
+  }
+
+  // A globe/terrain can briefly make computeViewRectangle unavailable (for
+  // example while the scene is initializing). Use a deliberately generous
+  // height-derived footprint so bounded files are still loaded near the
+  // camera; if even the camera center is unavailable the scheduler falls back
+  // to loading every summary file in its controlled queue.
+  if (center && Number.isFinite(height) && height > 0) {
+    const latRange = Math.min(90, Math.max(1, (height / 111000) * 2.5))
+    const lngRange = Math.min(180, latRange / Math.max(0.15, Math.cos(center.lat * Math.PI / 180)))
+    const westRaw = center.lng - lngRange
+    const eastRaw = center.lng + lngRange
+    const west = normalizeLongitude(westRaw)
+    const east = normalizeLongitude(eastRaw)
+    const crossesAntimeridian = westRaw < -180 || eastRaw > 180 || west > east
+    return {
+      viewportBounds: {
+        south: Math.max(-90, center.lat - latRange),
+        west,
+        north: Math.min(90, center.lat + latRange),
+        east,
+        crossesAntimeridian,
+      },
+      center,
+      zoom,
+      cameraHeight: Number.isFinite(height) ? height : null,
+      viewer3d: viewerRef,
+    }
+  }
+
+  // No usable footprint is a compatibility state: the scheduler treats it as
+  // an invalid viewport and queues all enabled files with bounded concurrency.
+  return {
+    center: center || undefined,
+    zoom,
+    cameraHeight: Number.isFinite(height) ? height : null,
+    viewer3d: viewerRef,
+  }
 }
 
 function renderKmlLayers (kmlFile, options = {}) {
@@ -1307,9 +1536,17 @@ function renderKmlLayers (kmlFile, options = {}) {
     renderAllKmls()
     return
   }
+  const viewportOptions = getViewportOptions3d()
+  if (!shouldRenderKmlFileInViewport(kmlFile, viewportOptions.viewportBounds && {
+    ...viewportOptions.viewportBounds,
+    zoom: viewportOptions.zoom,
+    center: viewportOptions.center,
+  })) {
+    removeKmlLayers(kmlFile)
+    return
+  }
   removeKmlLayers(kmlFile)
   if (!isKmlEnabled(kmlFile)) return
-  const viewportOptions = getViewportOptions3d()
   const displayFeatures = kmlFile.isShare
     ? (kmlFile.features || [])
     : getTrackDisplayFeatures(kmlFile, viewportOptions)
@@ -1355,6 +1592,7 @@ function bindAccountSessionExpiry3d () {
     suspendKmlAccountSync({ preserveDraft: true, reason: 'session-expired' })
     if (!isEmbeddedKmlAuthRequired()) loadFromStorage()
     else kmlList = []
+    refreshKmlFileViewportLoading3d()
     renderAllKmls()
     updateKmlPanelUI()
     showAlert(isEmbeddedKmlAuthRequired()
@@ -2070,20 +2308,14 @@ async function loadPublicKmls () {
         isPublic: true,
         enabled: Boolean(publicKmlPrefs[kml.id]),
         features: oldKml ? oldKml.features : [],
+        featureCount: Number(kml.featureCount ?? oldKml?.featureCount ?? oldKml?.features?.length ?? 0),
+        bounds: normalizeKmlBounds(kml.bounds, { featureCount: kml.featureCount }) || oldKml?.bounds || null,
+        contentLoaded: oldKml ? oldKml.contentLoaded !== false : false,
       }
     })
-
-    await Promise.all(publicKmlList.map(async kml => {
-      if (kml.enabled && (!kml.features || kml.features.length === 0)) {
-        try {
-          const detail = await window.fetch(`/api/v1/kml/shared/${kml.id}`).then(res => res.json()).then(payload => payload.result)
-          kml.features = detail.features || []
-          renderKmlLayers(kml)
-        } catch (err) {
-          console.error(`Failed to load public KML detail for ${kml.id}`, err)
-        }
-      }
-    }))
+    ensureKmlFileViewportScheduler3d()
+    refreshKmlFileViewportLoading3d()
+    renderAllKmls()
   } catch (err) {
     console.error('Failed to load public KML list', err)
   }
@@ -3037,25 +3269,11 @@ function bindPanelEvents () {
       if (willExpand) {
         expandedKmlIds.add(kmlId)
         const kmlFile = publicKmlList.find(k => k.id === kmlId) || kmlList.find(k => k.id === kmlId)
-        if (kmlFile && !kmlFile.isShare && !getActiveShare() && !(await ensureAccountKmlFilesLoaded(kmlFile))) {
-          expandedKmlIds.delete(kmlId)
-          await showAlert(kmlFile.loadError || '加载 KML 详情失败')
-          return
-        }
-        if (kmlFile?.isShare && kmlFile.contentLoaded === false) {
-          const loaded = await loadSharedKmlFileForUse(kmlFile)
+        if (kmlFile && kmlFile.contentLoaded === false) {
+          const loaded = await requestKmlFileDetail3d(kmlFile, { priority: 0 })
           if (!loaded) {
             expandedKmlIds.delete(kmlId)
-            await showAlert(kmlFile.loadError || '加载分享 KML 详情失败')
-          }
-        } else if (kmlFile && !kmlFile.isShare && kmlFile.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
-          try {
-            const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
-            kmlFile.features = detail.features || []
-            renderKmlLayers(kmlFile)
-          } catch (err) {
-            expandedKmlIds.delete(kmlId)
-            showAlert('加载公共图层详情失败')
+            await showAlert(kmlFile.loadError || '加载 KML 详情失败')
           }
         }
       } else {
@@ -3070,27 +3288,19 @@ function bindPanelEvents () {
       let kmlFile = publicKmlList.find(k => k.id === kmlId)
       if (kmlFile) {
         const nextEnabled = !kmlFile.enabled
-        if (kmlFile.isShare && nextEnabled) {
-          const loaded = await loadSharedKmlFileForUse(kmlFile, { enableOnSuccess: true })
+        if (nextEnabled && kmlFile.contentLoaded === false) {
+          const loaded = kmlFile.isShare
+            ? await loadSharedKmlFileForUse(kmlFile, { enableOnSuccess: true })
+            : await requestKmlFileDetail3d(kmlFile, { priority: 0 })
           if (!loaded) {
-            await showAlert(kmlFile.loadError || '加载分享 KML 详情失败')
+            await showAlert(kmlFile.loadError || '加载 KML 详情失败')
             updateKmlPanelUI()
             return
           }
-        } else {
-          kmlFile.enabled = nextEnabled
         }
+        kmlFile.enabled = nextEnabled
         publicKmlPrefs[kmlFile.id] = kmlFile.enabled
         savePublicPrefs()
-
-        if (!kmlFile.isShare && kmlFile.enabled && (!kmlFile.features || kmlFile.features.length === 0)) {
-          try {
-            const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
-            kmlFile.features = detail.features || []
-          } catch (err) {
-            showAlert('加载公共图层详情失败')
-          }
-        }
 
         renderVisibilityChangedKmlFiles3d([kmlFile])
         updateKmlPanelUI()
@@ -3176,14 +3386,9 @@ function bindPanelEvents () {
           downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features || [], kmlFile.description))
           return
         }
-        if (!kmlFile.features || kmlFile.features.length === 0) {
-          try {
-            const detail = await window.fetch(`/api/v1/kml/shared/${kmlFile.id}`).then(res => res.json()).then(payload => payload.result)
-            kmlFile.features = detail.features || []
-          } catch (err) {
-            showAlert('获取数据失败')
-            return
-          }
+        if (kmlFile.contentLoaded === false && !(await requestKmlFileDetail3d(kmlFile, { priority: 0 }))) {
+          await showAlert(kmlFile.loadError || '获取数据失败')
+          return
         }
         downloadKmlFile(kmlFile.name, generateKmlText(kmlFile.name, kmlFile.features, kmlFile.description))
         return
@@ -3422,34 +3627,28 @@ function bindKeyboardEvents () {
  */
 function scheduleKmlViewportRerender3d () {
   if (kmlViewportRerenderTimer3d) clearTimeout(kmlViewportRerenderTimer3d)
+  const scheduledViewer = viewerRef
+  const lifecycleToken = kmlViewportLifecycleToken3d
   kmlViewportRerenderTimer3d = setTimeout(() => {
     kmlViewportRerenderTimer3d = null
-    if (!viewerRef) return
+    if (!viewerRef || viewerRef !== scheduledViewer || lifecycleToken !== kmlViewportLifecycleToken3d) return
+    refreshKmlFileViewportLoading3d()
     const hasShareClustering = Boolean(getSharePointClusteringConfig3d())
     const hasPersonalClustering = Boolean(getGlobalPointClusteringConfig3d())
     const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
                          publicKmlList.some(k => k.isLiveTrack && !k.isShare && k.enabled)
-    if (!hasLiveTrack && !hasShareClustering && !hasPersonalClustering) return
+    const hasFileViewportBounds = [...kmlList, ...publicKmlList].some(file => (
+      normalizeKmlBounds(file?.bounds, { featureCount: file?.featureCount })?.status === 'ready'
+    ))
+    if (!hasLiveTrack && !hasShareClustering && !hasPersonalClustering && !hasFileViewportBounds) return
 
     // 聚合依赖当前相机投影；只有纯实时轨迹重渲染可以使用视口缓存跳过。
     if (!hasShareClustering && !hasPersonalClustering && isCameraWithinCache3d()) return
 
     // 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先绘制再渲染
     setTimeout(() => {
-      if (hasShareClustering || hasPersonalClustering) {
-        renderAllKmls()
-        return
-      }
-      kmlList.forEach(kmlFile => {
-        if (kmlFile.isLiveTrack && !kmlFile.isShare && kmlFile.enabled) {
-          renderKmlLayers(kmlFile)
-        }
-      })
-      publicKmlList.forEach(kmlFile => {
-        if (kmlFile.isLiveTrack && !kmlFile.isShare && kmlFile.enabled) {
-          renderKmlLayers(kmlFile)
-        }
-      })
+      if (!viewerRef || viewerRef !== scheduledViewer || lifecycleToken !== kmlViewportLifecycleToken3d) return
+      renderAllKmls()
       // 视口重渲染时不更新面板 UI，避免不必要的 DOM 操作导致卡顿
     }, 0)
   }, 150)
@@ -3466,9 +3665,35 @@ export function getShareFitEntities3d (files, renderedEntities) {
 async function fitShareKmlView () {
   if (!viewerRef) return false
   const entities = getShareFitEntities3d(publicKmlList, renderedKmlEntities)
-  if (!entities.length) return false
+  if (!entities.length) {
+    const summaries = publicKmlList
+      .filter(kmlFile => isKmlEnabled(kmlFile) && !kmlFile.loadError)
+      .map(kmlFile => normalizeKmlBounds(kmlFile.bounds, { featureCount: kmlFile.featureCount }))
+      .filter(bounds => bounds?.status === 'ready' && Array.isArray(bounds.bbox))
+    if (!summaries.length) return false
+    const south = Math.min(...summaries.map(bounds => bounds.bbox[1]))
+    const north = Math.max(...summaries.map(bounds => bounds.bbox[3]))
+    // A single Rectangle cannot represent a collection of disjoint wrapped
+    // longitude intervals without risking an almost-global fly-to. Use the
+    // full longitude span for wrapped data; ordinary data keeps its tight fit.
+    const wraps = summaries.some(bounds => bounds.crossesAntimeridian)
+    const west = wraps ? -180 : Math.min(...summaries.map(bounds => bounds.bbox[0]))
+    const east = wraps ? 180 : Math.max(...summaries.map(bounds => bounds.bbox[2]))
+    try {
+      await viewerRef.camera.flyTo({
+        destination: Rectangle.fromDegrees(west, south, east, north),
+        duration: 0,
+      })
+      refreshKmlFileViewportLoading3d()
+      return true
+    } catch (error) {
+      console.warn('Failed to fit shared KML summary view', error)
+      return false
+    }
+  }
   try {
     await viewerRef.flyTo(entities, { duration: 0 })
+    refreshKmlFileViewportLoading3d()
     return true
   } catch (error) {
     console.warn('Failed to fit shared KML view', error)
@@ -3477,15 +3702,19 @@ async function fitShareKmlView () {
 }
 
 export async function initKmlSupport3d (viewer, options = {}) {
+  if (viewerRef && viewerRef !== viewer) disposeKmlFileViewportScheduler3d(viewerRef)
   viewerRef = viewer
+  ensureKmlFileViewportScheduler3d(viewer)
+  bindKmlViewportMoveEnd3d(viewer)
   window.activateKmlFeatureForMedia = (item, options) => activateFeatureForMedia(item, options)
   window.getIsKmlPickupModeActive = () => isAddingPoint
   initCustomControlsListeners()
 
   if (getActiveShare()) {
     kmlList = []
-    publicKmlList = await loadActiveShareFiles()
+    publicKmlList = await loadActiveShareFiles({ loadDetails: false })
     publicKmlList = publicKmlList.map(normalizeKmlFile)
+    refreshKmlFileViewportLoading3d()
     expandedKmlIds.clear()
     expandedKmlActionIds.clear()
     const firstExpandable = publicKmlList.find(kmlFile => !kmlFile.loadError && (kmlFile.features || []).length)
@@ -3497,7 +3726,6 @@ export async function initKmlSupport3d (viewer, options = {}) {
     panel?.querySelector('#kml-import-dropzone')?.setAttribute('hidden', '')
     panel?.querySelector('[data-kml-action="create-file"]')?.setAttribute('hidden', '')
     panel?.querySelector('.kml-import-option')?.setAttribute('hidden', '')
-    viewer.camera.moveEnd.addEventListener(scheduleKmlViewportRerender3d)
     bindPanelEvents()
     bindCanvasPickEvents()
     initLongPressPointCreation({ allowPointCreation: false })
@@ -3507,6 +3735,7 @@ export async function initKmlSupport3d (viewer, options = {}) {
   bindKmlAccountSyncStatus()
   bindKmlAccountConflictRecovery((files) => {
     kmlList = files.map(normalizeKmlFile)
+    refreshKmlFileViewportLoading3d()
     renderAllKmls()
     updateKmlPanelUI()
     return kmlList
@@ -3520,12 +3749,11 @@ export async function initKmlSupport3d (viewer, options = {}) {
   ])
   await loadKmlDirectories()
   renderAllKmls()
+  refreshKmlFileViewportLoading3d()
   updateKmlPanelUI()
 
   // 注册视口变化监听，按需重渲染轨迹 KML 图层
   // 使用 camera.moveEnd 替代 camera.changed，仅在相机停止移动后触发，避免移动过程中的频繁回调
-  viewer.camera.moveEnd.addEventListener(scheduleKmlViewportRerender3d)
-
   loadPublicKmls().then(() => {
     renderAllKmls()
     updateKmlPanelUI()
