@@ -24,6 +24,7 @@ export const accountApi = {
   restoreKml: id => apiRequest(`/kml/files/${pathId(id)}/restore`, { method: 'POST' }),
   deleteKmlPermanently: (id, password) => apiRequest(`/kml/files/${pathId(id)}/permanent`, { method: 'DELETE', body: { password } }),
   moveKml: (id, body) => apiRequest(`/kml/files/${pathId(id)}/move`, { method: 'POST', body }),
+  batchMoveKml: body => apiRequest('/kml/files/batch-move', { method: 'POST', body }),
   reorderKml: body => apiRequest('/kml/files/reorder', { method: 'POST', body }),
   importKml: (file, options = {}) => {
     const formData = new FormData()

@@ -7,6 +7,7 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 const MAX_KML_BYTES = 10 * 1024 * 1024
 const DEFAULT_PROBE_TIMEOUT_MS = 1200
 const DEFAULT_IMPORT_TIMEOUT_MS = 120000
+const DEFAULT_BATCH_PREVIEW_TIMEOUT_MS = 30000
 const DEFAULT_COMPLETION_TIMEOUT_MS = 5000
 
 let state = {
@@ -219,6 +220,44 @@ export async function requestTwoBuluKml (input = {}, options = {}) {
   }
 }
 
+export async function requestTwoBuluBatchPreview (input = {}, options = {}) {
+  const targetDocument = options.document || (typeof document !== 'undefined' ? document : null)
+  const operationId = randomId('batch-preview')
+  const url = String(input.url || '').trim()
+  if (!url || url.length > 2048) {
+    const error = new Error('请输入有效的两步路公开用户轨迹列表链接')
+    error.code = 'TWO_BULU_LIST_URL_INVALID'
+    throw error
+  }
+  await probeTwoBuluHelper({ document: targetDocument, timeoutMs: options.probeTimeoutMs, force: true })
+  if (!getTwoBuluHelperState().available) {
+    const error = new Error('未检测到已授权的两步路浏览器助手，请先安装并授权扩展后刷新页面。')
+    error.code = 'HELPER_NOT_INSTALLED'
+    throw error
+  }
+  const response = await waitForResponse(
+    operationId,
+    'BATCH_PREVIEW_RESULT',
+    options.timeoutMs || DEFAULT_BATCH_PREVIEW_TIMEOUT_MS,
+    targetDocument,
+    { type: 'IMPORT_2BULU_BATCH', url },
+  )
+  if (response.status !== 'success') {
+    const error = new Error(String(response.message || '浏览器助手无法读取两步路用户轨迹列表'))
+    error.code = String(response.code || 'HELPER_FAILED')
+    error.status = response.status
+    throw error
+  }
+  return {
+    sourceUrl: String(response.sourceUrl || url),
+    userName: String(response.userName || '').slice(0, 80),
+    items: Array.isArray(response.items) ? response.items : [],
+    detectedCount: Number(response.detectedCount || 0),
+    warnings: Array.isArray(response.warnings) ? response.warnings.map(String).slice(0, 10) : [],
+    tabLifecycle: String(response.tabLifecycle || ''),
+  }
+}
+
 export async function finalizeTwoBuluImport (importResult = {}, outcome = {}, options = {}) {
   const importSessionId = String(importResult.importSessionId || '')
   if (!isRequestId(importSessionId)) {
@@ -271,6 +310,7 @@ export {
   CAPABILITY as TWO_BULU_HELPER_CAPABILITY,
   DEFAULT_COMPLETION_TIMEOUT_MS,
   DEFAULT_IMPORT_TIMEOUT_MS,
+  DEFAULT_BATCH_PREVIEW_TIMEOUT_MS,
   DEFAULT_PROBE_TIMEOUT_MS,
   MAX_KML_BYTES as TWO_BULU_HELPER_MAX_KML_BYTES,
   PROTOCOL_VERSION as TWO_BULU_HELPER_PROTOCOL_VERSION,

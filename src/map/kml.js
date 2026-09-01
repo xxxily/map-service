@@ -32,7 +32,10 @@ import { accountApi, saveDownload } from '../account/api.js'
 import { ensureAuthConfig, getAuthSnapshot, hasPermission } from '../auth/session.js'
 import {
   clearTwoBuluImportRequest,
+  prepareTwoBuluImportRequest,
   showTwoBuluImportDialog,
+  showTwoBuluBatchImportDialog,
+  twoBuluBatchPreviewMessageHtml,
   twoBuluImportResultMessage,
 } from '../ui/two-bulu-import-dialog.js'
 import {
@@ -40,9 +43,12 @@ import {
   getTwoBuluHelperState,
   probeTwoBuluHelper,
   requestTwoBuluKml,
+  requestTwoBuluBatchPreview,
   subscribeTwoBuluHelper,
   TWO_BULU_HELPER_PROTOCOL_VERSION,
 } from '../integrations/two-bulu-helper-bridge.js'
+import { runTwoBuluBatchImport } from '../integrations/two-bulu-batch-runner.js'
+import { filterAndSortTwoBuluItems } from '../integrations/two-bulu-batch.js'
 import {
   bindKmlAccountSyncStatus,
   initializeKmlAccountMode,
@@ -1994,7 +2000,9 @@ async function requestKmlFileDetail (map, file) {
 
 function updateKmlPanelUI (map) {
   const twoBuluImportButton = document.getElementById('kml-import-2bulu')
+  const twoBuluBatchImportButton = document.getElementById('kml-import-2bulu-batch')
   if (twoBuluImportButton) twoBuluImportButton.hidden = !canImportTwoBuluKml()
+  if (twoBuluBatchImportButton) twoBuluBatchImportButton.hidden = !canImportTwoBuluKml()
   const panel = document.getElementById('kml-panel')
   const personalKmlWritable = canWritePersonalKml()
   const dropzone = document.getElementById('kml-import-dropzone')
@@ -3098,9 +3106,7 @@ async function handleTwoBuluImport (map, button, correctionInput) {
       return
     }
 
-    const existingIndex = kmlList.findIndex(item => item.id === importedKml.id)
-    if (existingIndex >= 0) kmlList.splice(existingIndex, 1, importedKml)
-    else kmlList.splice(1, 0, importedKml)
+    upsertImportedKmlFile(importedKml)
     expandKmlFileExclusively(importedKml.id)
     rememberTargetKmlId(importedKml.id)
     saveToStorage()
@@ -3130,6 +3136,106 @@ async function handleTwoBuluImport (map, button, correctionInput) {
       button.disabled = false
       button.textContent = originalText
     }
+  }
+}
+
+function upsertImportedKmlFile (importedKml) {
+  if (!importedKml?.id) return false
+  const importedId = String(importedKml.id)
+  const existingIndex = kmlList.findIndex(item => (
+    String(item?.id || '') === importedId ||
+    String(item?.serverId || '') === importedId
+  ))
+  if (existingIndex >= 0) kmlList.splice(existingIndex, 1, importedKml)
+  else kmlList.splice(Math.max(1, kmlList.length), 0, importedKml)
+  return true
+}
+
+async function ensureTwoBuluBatchDirectory (userName) {
+  const name = String(userName || '').normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || '两步路用户轨迹'
+  const catalog = await accountApi.listKmlDirectories()
+  const existing = (catalog?.items || []).find(item => String(item.name || '').normalize('NFKC').toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))
+  if (existing?.id) return existing.id
+  try {
+    return (await accountApi.createKmlDirectory({ name }))?.id || ''
+  } catch (error) {
+    if (error?.code !== 'KML_DIRECTORY_NAME_CONFLICT') throw error
+    const refreshed = await accountApi.listKmlDirectories()
+    return refreshed?.items?.find(item => String(item.name || '').normalize('NFKC').toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))?.id || ''
+  }
+}
+
+async function handleTwoBuluBatchImport (map, button, correctionInput) {
+  if (!canImportTwoBuluKml()) {
+    await showAlert('请先登录具备个人 KML 写权限的账号后再从两步路导入。')
+    return
+  }
+  const settings = await showTwoBuluBatchImportDialog({
+    coordCorrection: correctionInput?.checked === false ? 'none' : KML_COORD_CORRECTION,
+  })
+  if (!settings) return
+  let preview
+  try {
+    preview = await requestTwoBuluBatchPreview(settings)
+    const selected = filterAndSortTwoBuluItems(preview.items, settings)
+    if (!selected.length) {
+      await showAlert('没有轨迹符合当前筛选条件。', { title: '批量导入' })
+      return
+    }
+    const confirmed = await showChoiceDialog({
+      title: '确认批量导入',
+      trustedMessageHtml: twoBuluBatchPreviewMessageHtml(preview, selected),
+      choices: [{ text: '开始导入', value: 'start', class: 'app-dialog-primary' }],
+    })
+    if (confirmed !== 'start') return
+    const originalText = button?.textContent || '从两步路批量导入'
+    if (button) { button.disabled = true; button.textContent = '正在批量导入…' }
+    const directoryId = await ensureTwoBuluBatchDirectory(preview.userName)
+    if (!directoryId) throw new Error('无法创建或找到两步路用户专属目录')
+    const batchResult = await runTwoBuluBatchImport({
+      items: selected,
+      filters: settings,
+      onProgress: ({ index, total, item }) => { if (button) button.textContent = `导入 ${index + 1}/${total}…` },
+      importItem: async item => {
+        const input = prepareTwoBuluImportRequest({ ...settings, url: item.url })
+        let helperResult = null
+        try {
+          helperResult = await requestTwoBuluKml(input)
+          const result = await apiRequest('/kml/import/2bulu/browser-helper', {
+            method: 'POST',
+            body: {
+              ...input,
+              directoryId,
+              protocolVersion: TWO_BULU_HELPER_PROTOCOL_VERSION,
+              helperVersion: helperResult.helperVersion,
+              name: helperResult.name || item.name,
+              kmlText: helperResult.kmlText,
+              sourceMode: helperResult.sourceMode,
+              completeness: helperResult.completeness,
+              warnings: helperResult.warnings,
+            },
+          })
+          const importedKml = normalizeKmlFile(result)
+          registerKmlAccountDocument(importedKml)
+          upsertImportedKmlFile(importedKml)
+          renderKmlLayers(map, importedKml)
+          await finalizeTwoBuluImport(helperResult, { status: 'success', message: twoBuluImportResultMessage(result) })
+          clearTwoBuluImportRequest(input)
+          return result
+        } catch (error) {
+          if (helperResult) await finalizeTwoBuluImport(helperResult, { status: 'failed', message: `map-service 保存失败：${error?.message || '请返回地图页面重试。'}` })
+          throw error
+        }
+      },
+    })
+    updateKmlPanelUI(map)
+    fitKmlFilesBounds(map, batchResult.results.filter(item => item.status === 'success').map(item => normalizeKmlFile(item.result)).filter(Boolean))
+    const summary = batchResult.results.reduce((acc, item) => { acc[item.status] = (acc[item.status] || 0) + 1; return acc }, {})
+    await showAlert(`批量导入完成：成功 ${summary.success || 0} 条，失败 ${summary.failed || 0} 条，取消 ${summary.cancelled || 0} 条。`, { title: '批量导入完成' })
+  } catch (error) {
+    await showAlert(error?.message || '读取两步路用户轨迹列表失败，请稍后重试。')
+  } finally {
+    if (button) { button.disabled = false; button.textContent = '从两步路批量导入' }
   }
 }
 
@@ -3314,10 +3420,12 @@ async function initShareKmlSupport (map, options = {}) {
   const dropzone = document.getElementById('kml-import-dropzone')
   const createButton = panel?.querySelector('[data-kml-action="create-file"]')
   const twoBuluImportButton = panel?.querySelector('[data-kml-action="import-2bulu"]')
+  const twoBuluBatchImportButton = panel?.querySelector('[data-kml-action="import-2bulu-batch"]')
   const correctionOption = panel?.querySelector('.kml-import-option')
   if (dropzone) dropzone.hidden = true
   if (createButton) createButton.hidden = true
   if (twoBuluImportButton) twoBuluImportButton.hidden = true
+  if (twoBuluBatchImportButton) twoBuluBatchImportButton.hidden = true
   if (correctionOption) correctionOption.hidden = true
   if (!panel) return
 
@@ -3744,6 +3852,7 @@ export async function initKmlSupport (map, options = {}) {
   const dropzone = document.getElementById('kml-import-dropzone')
   const createButton = panel?.querySelector('[data-kml-action="create-file"]')
   const twoBuluImportButton = panel?.querySelector('[data-kml-action="import-2bulu"]')
+  const twoBuluBatchImportButton = panel?.querySelector('[data-kml-action="import-2bulu-batch"]')
   const correctionOption = panel?.querySelector('.kml-import-option')
 
   if (twoBuluImportButton) {
@@ -3752,6 +3861,12 @@ export async function initKmlSupport (map, options = {}) {
       twoBuluImportButton.hidden = !canImportTwoBuluKml()
     })
     probeTwoBuluHelper().catch(() => {})
+  }
+  if (twoBuluBatchImportButton) {
+    twoBuluBatchImportButton.hidden = !canImportTwoBuluKml()
+    subscribeTwoBuluHelper(() => {
+      twoBuluBatchImportButton.hidden = !canImportTwoBuluKml()
+    })
   }
 
   if (!canWritePersonalKml()) {
@@ -3974,6 +4089,12 @@ export async function initKmlSupport (map, options = {}) {
     if (action === 'import-2bulu') {
       event.stopPropagation()
       await handleTwoBuluImport(map, actionTarget, correctionInput)
+      return
+    }
+
+    if (action === 'import-2bulu-batch') {
+      event.stopPropagation()
+      await handleTwoBuluBatchImport(map, actionTarget, correctionInput)
       return
     }
 

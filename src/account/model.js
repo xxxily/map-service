@@ -246,6 +246,14 @@ export function groupKmlDocumentsByDirectory (documents, directoryCatalog = {}) 
   return groups
 }
 
+export function selectedActiveKmlIdsInDisplayOrder (selectedIds, documents, directoryCatalog = {}) {
+  const selected = new Set(Array.from(selectedIds || [], String))
+  return groupKmlDocumentsByDirectory(documents, directoryCatalog)
+    .flatMap(group => group.items)
+    .filter(document => document?.status === 'active' && selected.has(String(document.id || '')))
+    .map(document => String(document.id))
+}
+
 export function normalizeKmlSort (sort, order) {
   return {
     sort: KML_SORT_FIELDS.has(String(sort || '')) ? String(sort) : 'updatedAt',

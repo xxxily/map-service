@@ -34,6 +34,7 @@ import {
   normalizeCompletePagedResult,
   normalizeAccountTab,
   normalizeKmlSort,
+  selectedActiveKmlIdsInDisplayOrder,
   normalizeSpatialAccess,
   passwordAccessLabel,
   parseLocalKmlFiles,
@@ -285,6 +286,28 @@ test('KML 排序和批量回收选择只接受服务端支持的安全范围', (
   assert.deepEqual(selection.skippedMissing, ['kml_missing'])
 })
 
+test('KML 批量移动选择按目录和文件显示顺序生成跨目录 ID', () => {
+  const directories = {
+    items: [
+      { id: 'dir-b', name: '目录乙', position: 1 },
+      { id: 'dir-a', name: '目录甲', position: 0 },
+    ],
+    uncategorized: { id: null, name: '未分类' },
+  }
+  const documents = [
+    { id: 'a-2', directoryId: 'dir-a', position: 1, status: 'active' },
+    { id: 'root', directoryId: null, position: 0, status: 'active' },
+    { id: 'b-1', directoryId: 'dir-b', position: 0, status: 'active' },
+    { id: 'a-1', directoryId: 'dir-a', position: 0, status: 'active' },
+    { id: 'trashed', directoryId: 'dir-a', position: 2, status: 'trashed' },
+  ]
+  assert.deepEqual(selectedActiveKmlIdsInDisplayOrder(
+    new Set(['root', 'a-2', 'b-1', 'a-1', 'trashed', 'missing']),
+    documents,
+    directories,
+  ), ['a-1', 'a-2', 'b-1', 'root'])
+})
+
 test('KML 分页规范化拒绝不完整响应并保留服务端分页契约', () => {
   assert.deepEqual(normalizeCompletePagedResult({
     items: [{ id: 'kml-a' }],
@@ -510,6 +533,7 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
 
   assert.match(viewSource, /name="sort"/)
   assert.match(viewSource, /data-account-action="trash-selected-kml"/)
+  assert.match(viewSource, /data-account-action="move-selected-kml"/)
   assert.match(viewSource, /data-account-action="open-kml-trash"/)
   assert.match(viewSource, /data-account-action="back-kml-active"/)
   assert.match(viewSource, /data-account-action="back-kml-active"[^>]*>返回<\/button>/)
@@ -517,6 +541,9 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.match(viewSource, /account-kml-directory-count/)
   assert.match(appSource, /state\.kml\.trashCount/)
   assert.match(appSource, /for \(const item of selection\.eligible\)/)
+  assert.match(appSource, /accountApi\.batchMoveKml\(\{ ids, directoryId: targetId \}\)/)
+  assert.match(apiSource, /batchMoveKml: body => apiRequest\('\/kml\/files\/batch-move'/)
+  assert.match(appSource, /name: 'color', label: '主题色', type: 'color'/)
   assert.match(appSource, /passwordlessSharingEnabled: passwordlessSharingEnabled\(\)/)
   assert.match(appSource, /spatialUnrestrictedTileMaxZoom: spatialTileZoomMax\(\)/)
   assert.match(dialogSource, /data-account-share-move="up"/)
@@ -750,13 +777,17 @@ test('两步路公开轨迹导入仅对登录写用户展示并复用同一弹�
 
   assert.match(indexHtml, /id="kml-import-2bulu"[^>]*hidden/)
   assert.match(indexHtml, /data-kml-action="import-2bulu"/)
+  assert.match(indexHtml, /id="kml-import-2bulu-batch"[^>]*hidden/)
   assert.match(accountViewSource, /data-account-action="import-2bulu"/)
+  assert.match(accountViewSource, /data-account-action="import-2bulu-batch"/)
   assert.match(accountViewSource, /canImportTwoBulu[\s\S]*data-account-action="import-2bulu"/)
   assert.match(accountAppSource, /showTwoBuluImportDialog\(\)/)
   assert.match(accountAppSource, /requestTwoBuluKml\(values\)/)
   assert.match(accountAppSource, /finalizeTwoBuluImport\(helperResult,[\s\S]*status: 'success'/)
   assert.match(accountAppSource, /finalizeTwoBuluImport\(helperResult,[\s\S]*status: 'failed'/)
   assert.match(accountAppSource, /importTwoBuluBrowserHelperKml/)
+  assert.match(accountAppSource, /requestTwoBuluBatchPreview/)
+  assert.match(accountAppSource, /directoryId/)
   assert.match(accountAppSource, /sourceMode: helperResult\.sourceMode/)
   assert.match(accountAppSource, /completeness: helperResult\.completeness/)
   assert.match(accountAppSource, /warnings: helperResult\.warnings/)

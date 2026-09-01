@@ -31,6 +31,7 @@
 - [KML 导入导出](./kml-import-export.md)
 - [两步路授权浏览器助手与浏览器内导入](./2bulu-authorized-browser-helper.md)（第四版已实现，待手工验收）
 - [两步路公开分享轨迹导入](./2bulu-public-track-import.md)（服务端直连兼容方案，网站入口由浏览器助手替代）
+- [两步路用户公开轨迹列表批量导入](./2bulu-public-track-batch-import.md)（第一版实现中）
 - [KML 点位富媒体内容展示](./kml-feature-rich-content.md)
 - [KML 媒体预览与 3D 地图界面精简](./kml-media-preview-and-3d-ui-polish.md)（v1.5.19 已发布）
 - [KML 点位第三方分享链接识别与嵌入预览](./kml-point-share-link-embed.md)（首期抖音 provider 已实现，待手工验收）
@@ -41,6 +42,7 @@
 - [账号 KML 同步数据丢失防护](./kml-account-sync-data-loss-prevention.md)（1.5.47 已实现；覆盖误删、冲突、恢复草稿和保存失败）
 - [管理后台数值配置自由裁量与 KML 移动端布局修订](./admin-user-system-configurable-limits-and-kml-mobile-layout.md)（1.5.50 已实现）
 - [用户管理与个人空间 KML 工具栏界面优化需求](./admin-users-and-account-kml-toolbar-ui-polish.md)（v1.5.52 已发布）
+- [KML 协调色板与个人空间批量移动需求](./kml-color-palettes-and-account-batch-move.md)（已实现，待发布验收）
 - [瓦片缓存治理与 URL 缓存键策略](./cache-governance-and-url-key-policy.md)（v1.5.53 已部署到 161，待内测验收）
 - [KML 分享发布控制与地图交互性能](./kml-share-publishing-and-map-interaction.md)（开发中；分享生命周期与删除增强已于 v1.5.37 实施）
 - [2D macOS 触摸板缩放方向稳定性](./2d-trackpad-zoom-direction-stability.md)（v1.5.23 已实现）

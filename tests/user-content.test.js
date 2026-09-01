@@ -573,6 +573,150 @@ test('file reordering updates only changed revisions and returns refreshed organ
   }
 })
 
+test('batch KML move appends cross-directory files in request order and skips target matches', () => {
+  const harness = createHarness()
+  try {
+    const sourceA = harness.service.createKmlDirectory(harness.one, { name: '来源甲' })
+    const sourceB = harness.service.createKmlDirectory(harness.one, { name: '来源乙' })
+    const target = harness.service.createKmlDirectory(harness.one, { name: '目标目录' })
+    const first = harness.service.createKml(harness.one, { name: '甲一', directoryId: sourceA.id })
+    const remaining = harness.service.createKml(harness.one, { name: '甲二', directoryId: sourceA.id })
+    const second = harness.service.createKml(harness.one, { name: '乙一', directoryId: sourceB.id })
+    const targetHead = harness.service.createKml(harness.one, { name: '目标首项', directoryId: target.id })
+    const skipped = harness.service.createKml(harness.one, { name: '已在目标', directoryId: target.id })
+
+    const result = harness.service.batchMoveKmlFiles(harness.one, {
+      ids: [second.id, skipped.id, first.id],
+      directoryId: target.id,
+    })
+
+    assert.deepEqual(result.movedIds, [second.id, first.id])
+    assert.deepEqual(result.skippedIds, [skipped.id])
+    assert.equal(result.movedCount, 2)
+    assert.equal(result.skippedCount, 1)
+    assert.deepEqual(result.documents.map(item => item.id), [second.id, first.id])
+    assert.deepEqual(harness.service.listKmlFiles(harness.one, { sort: 'position', order: 'asc' }).items
+      .filter(item => item.directoryId === target.id)
+      .map(item => [item.id, item.position]), [
+      [targetHead.id, 0],
+      [skipped.id, 1],
+      [second.id, 2],
+      [first.id, 3],
+    ])
+    assert.equal(harness.service.getKml(harness.one, skipped.id).revision, skipped.revision)
+    assert.deepEqual(
+      harness.service.listKmlFiles(harness.one, { sort: 'position', order: 'asc' }).items
+        .filter(item => item.directoryId === sourceA.id)
+        .map(item => [item.id, item.position]),
+      [[remaining.id, 0]],
+    )
+    assert.equal(harness.service.getKml(harness.one, remaining.id).revision, remaining.revision + 1)
+    assert.deepEqual(new Set(result.affectedDocuments.map(item => item.id)), new Set([
+      remaining.id,
+      second.id,
+      first.id,
+    ]))
+  } finally {
+    harness.close()
+  }
+})
+
+test('batch KML move treats an all-target selection as a successful no-op', () => {
+  const harness = createHarness()
+  try {
+    const target = harness.service.createKmlDirectory(harness.one, { name: '原目录' })
+    const first = harness.service.createKml(harness.one, { name: '原目录一', directoryId: target.id })
+    const second = harness.service.createKml(harness.one, { name: '原目录二', directoryId: target.id })
+    const result = harness.service.batchMoveKmlFiles(harness.one, {
+      ids: [second.id, first.id],
+      directoryId: target.id,
+    })
+
+    assert.deepEqual(result.movedIds, [])
+    assert.deepEqual(result.skippedIds, [second.id, first.id])
+    assert.deepEqual(result.documents, [])
+    assert.deepEqual(result.affectedDocuments, [])
+    assert.deepEqual([
+      harness.service.getKml(harness.one, first.id).revision,
+      harness.service.getKml(harness.one, second.id).revision,
+    ], [first.revision, second.revision])
+  } finally {
+    harness.close()
+  }
+})
+
+test('batch KML move validates every file before writing and rolls back database failures', () => {
+  const harness = createHarness()
+  try {
+    const source = harness.service.createKmlDirectory(harness.one, { name: '事务来源' })
+    const target = harness.service.createKmlDirectory(harness.one, { name: '事务目标' })
+    const first = harness.service.createKml(harness.one, { name: '事务一', directoryId: source.id })
+    const second = harness.service.createKml(harness.one, { name: '事务二', directoryId: source.id })
+    const foreign = harness.service.createKml(harness.two, { name: '其他用户文件' })
+    const foreignDirectory = harness.service.createKmlDirectory(harness.two, { name: '其他用户目录' })
+    const trashed = harness.service.createKml(harness.one, { name: '回收站文件', directoryId: source.id })
+    harness.service.trashKml(harness.one, trashed.id)
+
+    assert.throws(
+      () => harness.service.batchMoveKmlFiles(harness.one, { ids: [], directoryId: target.id }),
+      error => error.code === 'KML_MOVE_INVALID',
+    )
+    assert.throws(
+      () => harness.service.batchMoveKmlFiles(harness.one, {
+        ids: [first.id, first.id],
+        directoryId: target.id,
+      }),
+      error => error.code === 'KML_MOVE_INVALID',
+    )
+    assert.throws(
+      () => harness.service.batchMoveKmlFiles(harness.one, {
+        ids: [first.id],
+        directoryId: foreignDirectory.id,
+      }),
+      error => error.code === 'KML_DIRECTORY_NOT_FOUND',
+    )
+    assert.throws(
+      () => harness.service.batchMoveKmlFiles(harness.one, {
+        ids: [first.id, foreign.id],
+        directoryId: target.id,
+      }),
+      error => error.code === 'RESOURCE_NOT_FOUND',
+    )
+    assert.equal(harness.service.getKml(harness.one, first.id).directoryId, source.id)
+    assert.throws(
+      () => harness.service.batchMoveKmlFiles(harness.one, {
+        ids: [first.id, trashed.id],
+        directoryId: target.id,
+      }),
+      error => error.code === 'KML_MOVE_INVALID',
+    )
+    assert.equal(harness.service.getKml(harness.one, first.id).directoryId, source.id)
+
+    harness.database.exec(`
+      CREATE TRIGGER reject_second_batch_kml_move
+      BEFORE UPDATE OF directory_id ON kml_documents
+      WHEN NEW.id = '${second.id}' AND NEW.directory_id = '${target.id}'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected batch move failure');
+      END;
+    `)
+    assert.throws(() => harness.service.batchMoveKmlFiles(harness.one, {
+      ids: [first.id, second.id],
+      directoryId: target.id,
+    }), /injected batch move failure/)
+    assert.deepEqual([
+      harness.service.getKml(harness.one, first.id).directoryId,
+      harness.service.getKml(harness.one, second.id).directoryId,
+    ], [source.id, source.id])
+    assert.deepEqual([
+      harness.service.getKml(harness.one, first.id).revision,
+      harness.service.getKml(harness.one, second.id).revision,
+    ], [first.revision, second.revision])
+  } finally {
+    harness.close()
+  }
+})
+
 test('invalid KML position does not partially update document content', () => {
   const harness = createHarness()
   try {

@@ -911,6 +911,20 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/kml/files/batch-move',
+    method: 'post',
+    describe: '批量移动个人 KML 文件到指定目录',
+    tags: ['kml'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.batchMoveUserKmlFiles(
+        requireUser(req, 'kml.own.write'),
+        req.body || {},
+        requestContext(req)
+      ))
+    },
+  },
+  {
     path: '/kml/files/:id/move',
     method: 'post',
     describe: '移动个人 KML 文件到目录或指定位置',

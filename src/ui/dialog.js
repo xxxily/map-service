@@ -1,3 +1,9 @@
+import {
+  closeCustomControlsDropdowns,
+  initCustomControlsListeners,
+  renderCustomColorPicker,
+} from './controls.js'
+
 function ensureDialogRoot () {
   let root = document.getElementById('app-dialog-root')
   if (!root) {
@@ -144,6 +150,7 @@ export function showDialog (options = {}) {
 
   return new Promise((resolve) => {
     const cleanup = () => {
+      closeCustomControlsDropdowns()
       root.removeEventListener('click', onClick)
       document.removeEventListener('keydown', onKeydown)
     }
@@ -239,6 +246,24 @@ export function showEditDialog (options = {}) {
             if (field.type === 'icon-picker') {
               return renderIconPickerField(field, values[field.name] || '')
             }
+            if (field.type === 'color') {
+              const color = values[field.name] || '#0f766e'
+              return `
+                <div class="app-dialog-color-field">
+                  <span>${escapeHtml(field.label)}</span>
+                  <div class="app-dialog-color-control">
+                    ${renderCustomColorPicker({
+                      value: color,
+                      className: 'app-dialog-color-picker',
+                      attrs: `data-dialog-color-input="${escapeHtml(field.name)}"`,
+                    })}
+                    <input type="hidden" name="${escapeHtml(field.name)}" value="${escapeHtml(color)}" data-dialog-color-value>
+                    <code>${escapeHtml(color)}</code>
+                  </div>
+                  ${field.hint ? `<small class="app-dialog-field-hint">${escapeHtml(field.hint)}</small>` : ''}
+                </div>
+              `
+            }
             if (field.type === 'textarea') {
               return `
                 <label style="display: block; margin-bottom: 12px;">
@@ -272,6 +297,7 @@ export function showEditDialog (options = {}) {
 
   // 用 JS 填充 textarea，避免模板内多行文本破坏结构。
   const form = root.querySelector('[data-dialog-form]')
+  initCustomControlsListeners()
   fields.forEach(field => {
     if (field.type === 'textarea') {
       const textarea = form.querySelector(`textarea[name="${field.name}"]`)
@@ -339,9 +365,22 @@ export function showEditDialog (options = {}) {
     }
 
     const cleanup = () => {
+      closeCustomControlsDropdowns()
       root.removeEventListener('click', onClick)
       form?.removeEventListener('submit', onSubmit)
+      form?.removeEventListener('change', onFieldChange)
       document.removeEventListener('keydown', onKeydown)
+    }
+
+    const onFieldChange = (event) => {
+      const picker = event.target.closest?.('[data-dialog-color-input]')
+      if (!picker) return
+      const control = picker.closest('.app-dialog-color-control')
+      const value = picker.getAttribute('data-color') || '#0f766e'
+      const input = control?.querySelector('[data-dialog-color-value]')
+      const label = control?.querySelector('code')
+      if (input) input.value = value
+      if (label) label.textContent = value
     }
 
     const onSubmit = (event) => {
@@ -468,6 +507,7 @@ export function showEditDialog (options = {}) {
 
     root.addEventListener('click', onClick)
     form?.addEventListener('submit', onSubmit)
+    form?.addEventListener('change', onFieldChange)
     document.addEventListener('keydown', onKeydown)
   })
 }

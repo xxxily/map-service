@@ -407,6 +407,60 @@ test('KML 同步业务错误只透传可操作的安全详情', async () => {
   }
 })
 
+test('个人 KML 批量移动接口校验登录写权限并透传原子移动结果', async () => {
+  const session = testSession()
+  const calls = []
+  const responseBody = {
+    directoryId: 'dir_target',
+    movedIds: ['kml_a'],
+    skippedIds: ['kml_b'],
+    movedCount: 1,
+    skippedCount: 1,
+    documents: [{ id: 'kml_a', directoryId: 'dir_target' }],
+    affectedDocuments: [{ id: 'kml_a', directoryId: 'dir_target' }],
+  }
+  const restore = withMockedService({
+    verifyUserSession: token => token === 'session-token' ? session : null,
+    verifyUserCsrf: (current, token) => {
+      assert.equal(current, session)
+      assert.equal(token, 'csrf-token')
+    },
+    assertUserPermission: (current, permission) => {
+      assert.equal(current, session)
+      assert.equal(permission, 'kml.own.write')
+    },
+    batchMoveUserKmlFiles: (current, input) => {
+      calls.push({ current, input })
+      return responseBody
+    },
+  })
+  const { server, baseUrl } = await listen(createTestApp())
+
+  try {
+    const anonymous = await requestJson(baseUrl, '/api/v1/kml/files/batch-move', {
+      method: 'POST',
+      body: JSON.stringify({ ids: ['kml_a'], directoryId: 'dir_target' }),
+    })
+    assert.equal(anonymous.response.status, 401)
+    assert.equal(anonymous.payload.error.code, 'AUTH_REQUIRED')
+    assert.equal(calls.length, 0)
+
+    const result = await requestJson(baseUrl, '/api/v1/kml/files/batch-move', {
+      method: 'POST',
+      headers: { Cookie: 'map_user_session=session-token', 'X-CSRF-Token': 'csrf-token' },
+      body: JSON.stringify({ ids: ['kml_a', 'kml_b'], directoryId: 'dir_target' }),
+    })
+    assert.equal(result.response.status, 200)
+    assert.deepEqual(result.payload.result, responseBody)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].current, session)
+    assert.deepEqual(calls[0].input, { ids: ['kml_a', 'kml_b'], directoryId: 'dir_target' })
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    restore()
+  }
+})
+
 test('browser login and registration reject cross-site credential requests', async () => {
   let loginCalls = 0
   let registerCalls = 0

@@ -1374,9 +1374,32 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 | `POST` | `/api/v1/kml/directories/reorder` | `kml.own.write` | `{ids:[directoryId...]}`，必须提交完整目录顺序 |
 | `POST` | `/api/v1/kml/directories/:id/visibility` | `kml.own.write` | `{enabled:boolean}`，批量设置目录下 active 文件显隐 |
 | `POST` | `/api/v1/kml/files/reorder` | `kml.own.write` | `{directoryId:string|null,ids:[kmlId...]}` |
+| `POST` | `/api/v1/kml/files/batch-move` | `kml.own.write` | `{directoryId:string|null,ids:[kmlId...]}`，跨目录原子批量移动 |
 | `POST` | `/api/v1/kml/files/:id/move` | `kml.own.write` | `{directoryId:string|null,beforeId?:string|null}` |
 
 `GET /api/v1/kml/files` 的每个文件增加 `directoryId`、`directoryName`、`position`，并支持 `directoryId` 和 `sort=position`。目录/排序错误使用 `KML_DIRECTORY_NOT_FOUND`、`KML_DIRECTORY_NAME_CONFLICT`、`KML_REORDER_INVALID`、`KML_MOVE_INVALID`。
+
+`POST /api/v1/kml/files/batch-move` 要求 `ids` 非空、无重复且全部属于当前用户的 active KML；`directoryId=null` 表示未分类。服务端在一个事务内验证全部文件、重排各源目录并按请求 ID 顺序追加到目标目录。已经位于目标目录的文件自动进入 `skippedIds`，不修改位置、更新时间或 revision；其他任一文件不存在、越权、在回收站或目标目录无效时整个请求失败且不产生部分移动。
+
+成功响应示例：
+
+```json
+{
+  "code": 0,
+  "result": {
+    "directoryId": "dir_target",
+    "movedIds": ["kml_a", "kml_c"],
+    "skippedIds": ["kml_b"],
+    "movedCount": 2,
+    "skippedCount": 1,
+    "documents": [],
+    "affectedDocuments": []
+  },
+  "error": null
+}
+```
+
+`documents` 按 `movedIds` 顺序返回实际移动的所选文件摘要；`affectedDocuments` 还包含因源目录位置收紧而增加 revision 的其他文件。全部所选文件已在目标目录时仍返回成功，`movedCount=0`。
 
 目录显隐、目录排序、文件排序和文件移动都会递增实际受影响 KML 的 `revision`，成功响应会返回刷新后的 `documents`；客户端必须按文档维度单调吸收 revision，不能让较晚到达的旧同步响应覆盖较新的组织操作结果。
 

@@ -88,17 +88,17 @@
       return
     }
 
-    if (request.type !== 'IMPORT_2BULU_KML' || typeof request.url !== 'string' || request.url.length > 2048) return
+    if (!['IMPORT_2BULU_KML', 'IMPORT_2BULU_BATCH'].includes(request.type) || typeof request.url !== 'string' || request.url.length > 2048) return
     try {
       const result = await chrome.runtime.sendMessage({
         channel: 'map-service-two-bulu-helper',
-        action: 'IMPORT_2BULU_KML',
+        action: request.type === 'IMPORT_2BULU_BATCH' ? 'IMPORT_2BULU_BATCH_PREVIEW' : 'IMPORT_2BULU_KML',
         requestId: request.requestId,
         url: request.url,
         partialPolicy: request.partialPolicy === 'allow-track-only' ? 'allow-track-only' : 'reject',
       })
       respond({
-        type: 'IMPORT_RESULT',
+        type: request.type === 'IMPORT_2BULU_BATCH' ? 'BATCH_PREVIEW_RESULT' : 'IMPORT_RESULT',
         requestId: request.requestId,
         helperVersion: chrome.runtime.getManifest().version,
         ...(result || {
@@ -109,7 +109,7 @@
       })
     } catch (error) {
       respond({
-        type: 'IMPORT_RESULT',
+        type: request.type === 'IMPORT_2BULU_BATCH' ? 'BATCH_PREVIEW_RESULT' : 'IMPORT_RESULT',
         requestId: request.requestId,
         helperVersion: chrome.runtime.getManifest().version,
         status: 'failed',

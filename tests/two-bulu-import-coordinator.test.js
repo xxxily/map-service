@@ -54,6 +54,10 @@ function createHarness (options = {}) {
       assert.equal(actor.user.id, ACTOR.user.id)
       return state.documentsBySyncId.get(syncClientId) || null
     },
+    assertOwnedDirectoryId (actor, directoryId) {
+      assert.equal(actor.user.id, ACTOR.user.id)
+      return directoryId || null
+    },
     createKml (actor, input, createOptions) {
       assert.equal(actor.user.id, ACTOR.user.id)
       const features = normalizeKmlFeatures(input.features)
@@ -278,6 +282,22 @@ test('浏览器助手导入保留 KML 文档统计介绍并追加服务端规范
   assert.match(result.description, /来源[：:].*两步路公开分享轨迹/s)
   assert.match(result.description, /https:\/\/www\.2bulu\.com\/track\/track_detail\.htm\?trackId=/)
   assert.doesNotMatch(result.description, /<script|alert\(1\)/i)
+})
+
+test('浏览器助手导入将受校验的目录 ID 写入 KML 创建请求', async () => {
+  const { coordinator, state } = createHarness({ withoutProvider: true })
+  const result = await coordinator.importFromBrowserHelper(ACTOR, {
+    protocolVersion: 1,
+    helperVersion: '0.3.9',
+    url: SHARE_URL,
+    requestId: 'helper-directory-one',
+    directoryId: 'kmd_user_tracks',
+    kmlText: VALID_KML,
+    sourceMode: 'rendered-data',
+    completeness: 'full',
+  })
+  assert.equal(result.id, 'kml_import_1')
+  assert.equal(state.createCalls[0].input.directoryId, 'kmd_user_tracks')
 })
 
 test('服务端兼容文档已有两步路来源时替换为规范化来源且不重复追加', async () => {

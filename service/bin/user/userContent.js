@@ -2047,6 +2047,86 @@ export class UserContentService {
     }
   }
 
+  batchMoveKmlFiles (actor, input = {}) {
+    this.assertPermission(actor, 'kml.own.write')
+    requireObject(input)
+    if (!Array.isArray(input.ids) || input.ids.length === 0 || input.ids.some(id => typeof id !== 'string')) {
+      throw createHttpError('KML 文件 ID 列表格式不正确', 400, 'KML_MOVE_INVALID')
+    }
+    let ids
+    try {
+      ids = input.ids.map(id => normalizeText(id, {
+        minLength: 1,
+        maxLength: 160,
+        message: 'KML 文件 ID 格式不正确',
+      }))
+    } catch {
+      throw createHttpError('KML 文件 ID 列表格式不正确', 400, 'KML_MOVE_INVALID')
+    }
+    if (new Set(ids).size !== ids.length) {
+      throw createHttpError('KML 文件 ID 不能重复', 400, 'KML_MOVE_INVALID')
+    }
+
+    const ownerId = this.actorUser(actor).id
+    return this.database.transaction(() => {
+      const targetDirectoryId = this.assertOwnedDirectoryId(actor, input.directoryId)
+      const select = this.database.prepare('SELECT * FROM kml_documents WHERE id = ? AND owner_id = ?')
+      const rows = ids.map(id => {
+        const row = select.get(id, ownerId)
+        if (!row) throw createHttpError('资源不存在', 404, 'RESOURCE_NOT_FOUND')
+        if (row.status !== 'active') {
+          throw createHttpError('回收站中的 KML 不能移动目录', 409, 'KML_MOVE_INVALID')
+        }
+        return row
+      })
+      const skippedIds = rows
+        .filter(row => (row.directory_id || null) === targetDirectoryId)
+        .map(row => row.id)
+      const movedRows = rows.filter(row => (row.directory_id || null) !== targetDirectoryId)
+      const movedIds = movedRows.map(row => row.id)
+      if (!movedIds.length) {
+        return {
+          directoryId: targetDirectoryId,
+          movedIds,
+          skippedIds,
+          movedCount: 0,
+          skippedCount: skippedIds.length,
+          documents: [],
+          affectedDocuments: [],
+        }
+      }
+
+      const movedSet = new Set(movedIds)
+      const changedIds = []
+      const sourceDirectoryIds = [...new Set(movedRows
+        .map(row => row.directory_id || null)
+        .filter(directoryId => directoryId !== targetDirectoryId))]
+      sourceDirectoryIds.forEach(directoryId => {
+        const remainingIds = this.kmlIdsInDirectory(ownerId, directoryId)
+          .filter(id => !movedSet.has(id))
+        changedIds.push(...this.writeKmlDirectoryOrder(ownerId, directoryId, remainingIds))
+      })
+      const targetIds = this.kmlIdsInDirectory(ownerId, targetDirectoryId)
+        .filter(id => !movedSet.has(id))
+      targetIds.push(...movedIds)
+      changedIds.push(...this.writeKmlDirectoryOrder(ownerId, targetDirectoryId, targetIds))
+
+      const uniqueChangedIds = [...new Set(changedIds)]
+      const view = id => this.kmlViewFromRow(
+        this.database.prepare('SELECT * FROM kml_documents WHERE id = ?').get(id)
+      )
+      return {
+        directoryId: targetDirectoryId,
+        movedIds,
+        skippedIds,
+        movedCount: movedIds.length,
+        skippedCount: skippedIds.length,
+        documents: movedIds.map(view),
+        affectedDocuments: uniqueChangedIds.map(view),
+      }
+    })
+  }
+
   kmlViewFromRow (row, options = {}) {
     if (!row) return null
     const includeFeatures = options.includeFeatures === true

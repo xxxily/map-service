@@ -2169,18 +2169,18 @@ body.account-view .app-dialog:not(.account-share-dialog) {
   }
 
   .account-selection-actions > button:not(.account-primary-button, .is-danger) {
-    grid-column: 1;
-    grid-row: 1;
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .account-selection-actions .account-primary-button {
-    grid-column: 2;
-    grid-row: 1;
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .account-selection-actions > button.is-danger {
-    grid-column: 1 / -1;
-    grid-row: 2;
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .account-share-dialog-columns,

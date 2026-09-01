@@ -7,6 +7,7 @@ import {
   isKmlText,
   normalizeAllowedOrigin,
   normalizeOfficialDownloadUrl,
+  normalizeTwoBuluTrackListUrl,
   normalizeTwoBuluShareUrl,
   originMatchPattern,
 } from './protocol.js'
@@ -339,6 +340,32 @@ async function collectFromTab (tabId, payload) {
   throw lastError || new Error('无法连接两步路页面，请刷新后重试')
 }
 
+async function collectBatchPreviewFromTab (tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      files: ['two-bulu-list-export.js'],
+    })
+    const executed = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => globalThis.MapServiceTwoBuluListExport?.collect?.() || {
+        status: 'unsupported',
+        code: 'TWO_BULU_LIST_DATA_NOT_RECOGNIZED',
+        message: '页面列表数据尚未准备好，请稍后重试。',
+      },
+    })
+    return executed?.[0]?.result || null
+  } catch (error) {
+    return {
+      status: 'failed',
+      code: error?.code || 'TWO_BULU_LIST_DATA_NOT_RECOGNIZED',
+      message: error?.message || '无法读取两步路用户轨迹列表。',
+    }
+  }
+}
+
 function importFailureFeedback (result) {
   const needsUserAction = result?.status === 'needs-user-action'
   return {
@@ -431,6 +458,27 @@ async function importTwoBuluKml (message, sender) {
     sourceMode: result.sourceMode === 'rendered-data' ? 'rendered-data' : 'official-kml',
     completeness: result.completeness === 'track-only' ? 'track-only' : 'full',
     warnings: Array.isArray(result.warnings) ? result.warnings.map(value => String(value).slice(0, 300)).slice(0, 10) : [],
+  }
+}
+
+async function importTwoBuluBatchPreview (message, sender) {
+  await assertMapServiceSender(sender)
+  const normalized = normalizeTwoBuluTrackListUrl(message.url)
+  const helper = await openHelperTab(normalized.canonicalUrl, sender.tab)
+  let result = null
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    result = await collectBatchPreviewFromTab(helper.tab.id)
+    if (result?.status === 'success' || result?.code === 'TWO_BULU_BATCH_TOO_LARGE') break
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)))
+  }
+  if (!result || typeof result !== 'object') {
+    return { status: 'unsupported', code: 'TWO_BULU_LIST_DATA_NOT_RECOGNIZED', message: '未读取到两步路用户轨迹列表。' }
+  }
+  return {
+    ...result,
+    sourceUrl: normalized.canonicalUrl,
+    userId: normalized.userId,
+    tabLifecycle: helper.created ? 'created' : 'managed-reused',
   }
 }
 
@@ -549,6 +597,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.channel !== 'map-service-two-bulu-helper') return false
   let operation
   if (message.action === 'IMPORT_2BULU_KML') operation = importTwoBuluKml(message, sender)
+  else if (message.action === 'IMPORT_2BULU_BATCH_PREVIEW') operation = importTwoBuluBatchPreview(message, sender)
   else if (message.action === 'FINALIZE_2BULU_IMPORT') operation = finalizeTwoBuluImport(message, sender)
   else if (message.action === 'IMPORT_TAB_ACTION') operation = handleImportTabAction(message, sender)
   else if (message.action === 'FETCH_OFFICIAL_KML') operation = fetchOfficialKml(message, sender)

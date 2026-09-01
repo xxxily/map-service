@@ -287,6 +287,9 @@ export class TwoBuluImportCoordinator {
       const partialPolicy = normalizeTwoBuluPartialPolicy(input.partialPolicy)
       const requestId = normalizeTwoBuluRequestId(input.requestId)
       const coordCorrection = normalizeKmlCoordCorrection(input.coordCorrection)
+      const directoryId = input.directoryId === undefined
+        ? undefined
+        : this.userContent.assertOwnedDirectoryId(actor, input.directoryId)
       normalizedHelper = normalizeTwoBuluBrowserHelperInput(input)
       if (normalizedHelper.completeness === 'track-only' && partialPolicy !== 'allow-track-only') {
         throw createHttpError(
@@ -344,6 +347,7 @@ export class TwoBuluImportCoordinator {
         sourceType: 'imported',
         coordCorrection,
         theme: 'simple',
+        ...(directoryId !== undefined ? { directoryId } : {}),
       }, {
         sourceType: 'imported',
         sourceByteSize: normalizedHelper.sourceByteSize,

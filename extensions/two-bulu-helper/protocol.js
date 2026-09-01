@@ -97,6 +97,31 @@ export function normalizeTwoBuluShareUrl (value) {
   }
 }
 
+export function normalizeTwoBuluTrackListUrl (value) {
+  const raw = String(value || '').trim()
+  if (!raw || raw.length > 2048) throw invalidUrl('请输入有效的两步路公开用户轨迹列表链接')
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw invalidUrl('两步路用户轨迹列表链接格式不正确')
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '')
+  if (parsed.protocol !== 'https:' || !PAGE_HOSTS.has(hostname) || parsed.username || parsed.password || parsed.port) {
+    throw invalidUrl('只支持两步路官方 HTTPS 用户轨迹列表链接')
+  }
+  const pathname = parsed.pathname.replace(/;jsessionid=[^/?]*/gi, '')
+  if (!/^\/spaceindex\/my_track\.htm$/i.test(pathname)) {
+    throw invalidUrl('该链接不是受支持的两步路用户轨迹列表页')
+  }
+  const userId = String(parsed.searchParams.get('userId') || '').trim()
+  if (!userId || userId.length > 160 || !TRACK_ID_PATTERN.test(userId)) throw invalidUrl('两步路用户轨迹列表缺少有效 userId')
+  return {
+    userId,
+    canonicalUrl: `https://www.2bulu.com/spaceindex/my_track.htm?userId=${encodeURIComponent(userId)}`,
+  }
+}
+
 export function normalizeOfficialDownloadUrl (value, baseUrl = 'https://www.2bulu.com/') {
   const raw = String(value || '').trim()
   if (!raw || raw.length > 4096) throw invalidUrl('两步路返回的下载地址无效')

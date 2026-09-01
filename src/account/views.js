@@ -242,7 +242,7 @@ function renderKml (state) {
                 <summary>导入</summary>
                 <div class="account-import-menu-panel">
                   <button type="button" data-account-action="import-kml">导入 KML</button>
-                  ${canImportTwoBulu ? '<button type="button" data-account-action="import-2bulu">从两步路导入</button>' : ''}
+                  ${canImportTwoBulu ? '<button type="button" data-account-action="import-2bulu">从两步路导入</button><button type="button" data-account-action="import-2bulu-batch">从两步路批量导入</button>' : ''}
                   <button type="button" data-account-action="migrate-local">迁移本地数据</button>
                 </div>
               </details>
@@ -253,6 +253,7 @@ function renderKml (state) {
             <span class="account-selection-status" aria-live="polite">已选 ${selectedCount} 个</span>
             <div class="account-selection-actions">
               <button type="button" data-account-action="select-all-kml">全选本页</button>
+              ${capabilities.canWriteKml ? `<button type="button" data-account-action="move-selected-kml" ${selectedCount ? '' : 'disabled'}>批量移动</button>` : ''}
               ${capabilities.canWriteKml ? `<button type="button" class="is-danger" data-account-action="trash-selected-kml" ${selectedCount ? '' : 'disabled'}>批量移入回收站</button>` : ''}
               ${capabilities.canManageShares ? `<button type="button" class="account-primary-button" data-account-action="create-share" ${state.kml.items.some(item => item.status === 'active') ? '' : 'disabled'}>分享</button>` : ''}
             </div>

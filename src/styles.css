@@ -346,6 +346,40 @@ body.admin-view #footer-bar {
   line-height: 1.4;
 }
 
+.app-dialog-color-field {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.app-dialog-color-field > span {
+  color: #4b5563;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.app-dialog-color-control {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 7px 9px;
+  background: #fff;
+}
+
+.app-dialog-color-control .custom-color-trigger {
+  width: 34px;
+  height: 24px;
+}
+
+.app-dialog-color-control code {
+  color: #53666a;
+  font-size: 12px;
+}
+
 .app-dialog-icon-library {
   display: grid;
   position: fixed;
@@ -6552,10 +6586,13 @@ body.media-preview-window-resizing .media-preview-root {
 .custom-color-trigger {
   width: 22px;
   height: 18px;
+  min-height: 0;
   border: 1.5px solid #ffffff;
   border-radius: 4px;
+  padding: 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 0 0 1px #cbd5e1;
   box-sizing: border-box;
+  cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -6588,7 +6625,7 @@ body.media-preview-window-resizing .media-preview-root {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  width: 120px !important;
+  width: min(246px, calc(100vw - 16px)) !important;
 }
 
 .custom-color-picker.is-open .custom-color-dropdown,
@@ -6598,29 +6635,56 @@ body.media-preview-window-resizing .media-preview-root {
   transform: translateY(0);
 }
 
+.custom-color-palettes {
+  display: grid;
+  gap: 8px;
+}
+
+.custom-color-palette-group {
+  display: grid;
+  gap: 4px;
+}
+
+.custom-color-palette-name {
+  color: #52666a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .custom-color-palette {
-  display: flex;
-  flex-wrap: wrap;
-  width: 100px;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  width: 100%;
   gap: 5px;
-  margin-bottom: 2px;
   box-sizing: border-box;
 }
 
 .custom-color-swatch {
-  width: 16px;
-  height: 16px;
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  height: 20px;
+  min-height: 20px;
   border-radius: 3px;
   border: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 0;
   cursor: pointer;
-  transition: transform 0.1s ease;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
   box-sizing: border-box;
-  flex-shrink: 0;
 }
 
-.custom-color-swatch:hover {
-  transform: scale(1.2);
+.custom-color-swatch:hover,
+.custom-color-swatch:focus-visible {
+  transform: scale(1.15);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  outline: 2px solid #ffffff;
+  outline-offset: -3px;
+}
+
+.custom-color-swatch.is-selected {
+  z-index: 1;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #0f766e;
 }
 
 .custom-color-hex-row {
@@ -6630,7 +6694,7 @@ body.media-preview-window-resizing .media-preview-root {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid #f1f5f9;
-  width: 100px;
+  width: 100%;
   box-sizing: border-box;
 }
 
@@ -6641,7 +6705,8 @@ body.media-preview-window-resizing .media-preview-root {
 }
 
 .custom-color-hex-input {
-  width: 52px;
+  width: auto;
+  min-width: 0;
   height: 18px;
   font-size: 10px;
   border: 1px solid #cbd5e1;
@@ -6653,7 +6718,7 @@ body.media-preview-window-resizing .media-preview-root {
   background: #ffffff;
   transition: border-color 0.15s ease;
   box-sizing: border-box;
-  flex-shrink: 1;
+  flex: 1 1 auto;
 }
 
 .custom-color-hex-input:focus {
@@ -6690,7 +6755,7 @@ body.media-preview-window-resizing .media-preview-root {
   cursor: pointer;
   transition: all 0.15s ease;
   font-weight: 500;
-  width: 100px;
+  width: 100%;
   box-sizing: border-box;
 }
 
@@ -6698,4 +6763,36 @@ body.media-preview-window-resizing .media-preview-root {
   color: #0f766e;
   background: #f1f5f9;
   border-color: #cbd5e1;
+}
+.two-bulu-batch-preview-message {
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  text-align: left;
+}
+
+.two-bulu-batch-preview-message p {
+  margin: 0 0 10px;
+}
+
+.two-bulu-batch-preview-message ol {
+  margin: 8px 0 0;
+  padding-left: 24px;
+}
+
+.two-bulu-batch-preview-message li {
+  margin: 0 0 8px;
+}
+
+.two-bulu-batch-preview-message li strong,
+.two-bulu-batch-preview-message li span {
+  display: block;
+}
+
+.two-bulu-batch-preview-message li span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.two-bulu-batch-preview-warning {
+  color: #a16207;
 }

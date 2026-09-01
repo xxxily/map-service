@@ -250,7 +250,7 @@ system.super_admin
 | `DELETE` | `/kml/files/:id/permanent` | `kml.own.write` | 永久删除回收站文件；请求体必须携带当前登录密码进行二次验证 |
 | `POST` | `/kml/import` | `kml.own.write` | `multipart/form-data` 导入 KML |
 | `POST` | `/kml/share-links/resolve` | `kml.own.write`、`kml.any.manage` 或 `admin.public_kml.manage` | 解析受支持的第三方分享短链 |
-| `POST` | `/kml/import/2bulu/browser-helper` | `kml.own.write` | 保存授权浏览器助手取得的标准 KML；网站使用此接口 |
+| `POST` | `/kml/import/2bulu/browser-helper` | `kml.own.write` | 保存授权浏览器助手取得的标准 KML；网站使用此接口，支持受校验的 `directoryId` |
 | `POST` | `/kml/import/2bulu` | `kml.own.write` | 服务端直连兼容接口，保留给未来官方 API provider |
 | `GET` | `/kml/files/:id/export` | `kml.own.read` | 下载标准 KML 文本 |
 | `POST` | `/kml/sync` | `kml.own.write` | 地图编辑器增量批量同步 |
@@ -267,9 +267,12 @@ system.super_admin
 | `POST` | `/kml/directories/reorder` | `kml.own.write` | `{ids:[...]}`，必须为完整目录顺序 |
 | `POST` | `/kml/directories/:id/visibility` | `kml.own.write` | `{enabled}`，批量设置 active 文件显隐；未分类使用 `uncategorized` |
 | `POST` | `/kml/files/reorder` | `kml.own.write` | `{directoryId,ids}`，提交目标目录完整文件顺序 |
+| `POST` | `/kml/files/batch-move` | `kml.own.write` | `{directoryId,ids}`，跨目录原子移动；同目录项自动跳过 |
 | `POST` | `/kml/files/:id/move` | `kml.own.write` | `{directoryId,beforeId?}` 移动并排序 |
 
 目录相关错误码包括 `KML_DIRECTORY_NOT_FOUND`、`KML_DIRECTORY_NAME_CONFLICT`、`KML_DIRECTORY_LIMIT_EXCEEDED`、`KML_REORDER_INVALID` 和 `KML_MOVE_INVALID`。`/auth/config` 的 `kml.batchDownloadEnabled` 控制目录批量下载入口，默认 `false`；`kml.pointClustering` 控制个人地图 2D/3D 跨文件 Point 聚合，默认开启且 `minClusterPoints=10`。进入分享页后分享级配置优先，全局配置不覆盖分享显式关闭。
+
+批量移动的 `ids` 必须是非空、无重复且全部属于当前用户的 active 文件。所有校验、源目录连续编号和目标目录追加在同一事务中完成，失败不产生部分移动；目标目录已有文件返回 `skippedIds` 且不增加 revision。响应同时返回 `movedIds`、`skippedIds`、数量统计、实际移动的 `documents` 和包含源目录重排项的 `affectedDocuments`。
 
 #### 文件边界摘要与按需加载
 
@@ -606,7 +609,8 @@ Content-Type: application/json
   "warnings": [],
   "coordCorrection": "wgs84-to-gcj02",
   "partialPolicy": "reject",
-  "requestId": "2bulu-helper-6c2d6a2d-2fc5-4e55-a193-d93c6ef10bf5"
+  "requestId": "2bulu-helper-6c2d6a2d-2fc5-4e55-a193-d93c6ef10bf5",
+  "directoryId": "kmd_xxx"
 }
 ```
 
@@ -618,8 +622,37 @@ Content-Type: application/json
 - `kmlText` 必填，UTF-8 最大 10 MiB；服务端复用标准 KML 解析、DOCTYPE/ENTITY 拒绝、富文本清洗、坐标、要素和用户配额校验。
 - `sourceMode` 为 `official-kml` 或 `rendered-data`；`completeness` 为 `full` 或 `track-only`；`warnings` 最多 10 项、每项最多 300 字符。0.3.x 助手会提交这些字段，服务端执行枚举和长度规范化；兼容旧版助手时省略字段分别按 `official-kml`、`full` 和空数组处理。
 - `coordCorrection`、`partialPolicy`、`requestId` 与 3.3 相同；当 `completeness=track-only` 时必须同时提交 `partialPolicy=allow-track-only`，否则返回 `422 TWO_BULU_PARTIAL_REJECTED`。浏览器助手在页面已展示轨迹但标注接口不可用时才会产生 `track-only`。
+- `directoryId` 可选。提交后服务端校验目录属于当前用户；目录不存在或归属不符返回 `404 KML_DIRECTORY_NOT_FOUND`，格式非法返回 `400 VALIDATION_FAILED`。省略或传空值时保存到未分类目录。
 
 浏览器助手 `0.3.4+` 在扩展内部使用 `importSessionId` 和二阶段 `COMPLETE_2BULU_IMPORT` 标签页确认；`0.3.5` 支持多线段合并、重复图层去重和可信点位名称；`0.3.6` 增加分享页总里程、运动耗时、原作者提取，并将其写入 KML 文档级 `description`。这些字段和显示策略不属于本 HTTP API；`importSessionId` 也不得提交给服务端。前端只在本接口明确保存成功后通知扩展：扩展校验原发起标签页后激活 map-service，并安全关闭自己管理的未固定两步路临时页；保存失败或无法自动关闭时由两步路页面结果卡片提供手动返回/关闭操作。
+
+### 3.5 用户公开轨迹列表批量导入
+
+批量预览由浏览器助手完成，不新增服务端列表抓取接口。页面通过 `IMPORT_2BULU_BATCH` 消息提交 `spaceindex/my_track.htm?userId=...` 列表 URL，助手返回可见公开轨迹摘要；网站在本地执行点位数量、发布时间、里程、点赞和收藏筛选及排序，然后为每条结果复用 3.4 保存接口。批量导入时在每次请求中增加可选 `directoryId`，服务端校验该目录属于当前用户。
+
+助手返回的列表摘要示例：
+
+```json
+{
+  "status": "success",
+  "sourceUrl": "https://www.2bulu.com/spaceindex/my_track.htm?userId=...",
+  "userName": "山友阿明",
+  "detectedCount": 2,
+  "items": [{
+    "url": "https://www.2bulu.com/track/track_detail.htm?trackId=...",
+    "name": "白云山环线",
+    "pointCount": 128,
+    "publishedAt": "2026-08-20T10:30:00.000Z",
+    "distanceKm": 12.34,
+    "likeCount": 56,
+    "favoriteCount": 12,
+    "position": 0
+  }],
+  "warnings": []
+}
+```
+
+列表页超过浏览器助手单次批量上限时返回 `TWO_BULU_BATCH_TOO_LARGE`，不会静默截断；页面字段不可识别时返回 `TWO_BULU_LIST_DATA_NOT_RECOGNIZED`。批量导入按预览顺序串行执行，单项失败不回滚其他成功文件，目录/权限/配额错误停止后续任务。
 
 - 相同用户、规范化轨迹和 `requestId` 重放时返回原文档，`importSummary.completeness=existing`，不会再次创建文件或占用配额。
 

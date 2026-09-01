@@ -2,6 +2,54 @@
  * 高复用自定义 WebUI 组件控件库
  */
 
+import { KML_COLOR_PALETTES } from './kml-color-palettes.js'
+
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i
+
+function normalizePickerColor (value, fallback = '#0f766e') {
+  const normalized = String(value || '').trim().toLowerCase()
+  return HEX_COLOR_PATTERN.test(normalized) ? normalized : fallback
+}
+
+export function closeCustomControlsDropdowns () {
+  if (typeof document === 'undefined') return
+  document.body.querySelectorAll('.custom-select-options.is-open').forEach(options => {
+    options.classList.remove('is-open')
+    const parent = options.__parentControl
+    if (parent) {
+      parent.classList.remove('is-open')
+      parent.appendChild(options)
+    }
+    options.style.position = ''
+    options.style.zIndex = ''
+    options.style.width = ''
+    options.style.top = ''
+    options.style.left = ''
+    options.style.margin = ''
+  })
+
+  document.body.querySelectorAll('.custom-color-dropdown.is-open').forEach(dropdown => {
+    dropdown.classList.remove('is-open')
+    const parent = dropdown.__parentControl
+    if (parent) {
+      parent.classList.remove('is-open')
+      parent.querySelector('.custom-color-trigger')?.setAttribute('aria-expanded', 'false')
+      parent.appendChild(dropdown)
+    }
+    dropdown.style.position = ''
+    dropdown.style.zIndex = ''
+    dropdown.style.top = ''
+    dropdown.style.left = ''
+    dropdown.style.margin = ''
+  })
+
+  document.querySelectorAll('.custom-select.is-open').forEach(el => el.classList.remove('is-open'))
+  document.querySelectorAll('.custom-color-picker.is-open').forEach(el => {
+    el.classList.remove('is-open')
+    el.querySelector('.custom-color-trigger')?.setAttribute('aria-expanded', 'false')
+  })
+}
+
 export function renderCustomSelect (options = {}) {
   const selectedValue = options.value || 'default'
   const items = options.options || []
@@ -29,31 +77,25 @@ export function renderCustomSelect (options = {}) {
 }
 
 export function renderCustomColorPicker (options = {}) {
-  const value = options.value || '#0f766e'
+  const value = normalizePickerColor(options.value)
   const attrs = options.attrs || ''
-  const hexVal = value.startsWith('#') ? value.slice(1) : value
-  const presetColors = [
-    '#0f766e', // 默认青色
-    '#10b981', // 翠绿
-    '#3b82f6', // 亮蓝
-    '#f97316', // 亮橙
-    '#ef4444', // 鲜红
-    '#8b5cf6', // 梦幻紫
-    '#ec4899', // 粉红
-    '#22c55e', // 绿色
-    '#f59e0b', // 琥珀黄
-    '#64748b'  // 灰色
-  ]
-
-  const paletteHtml = presetColors.map(color => {
-    return `<div class="custom-color-swatch" style="background-color: ${color};" data-color="${color}" title="${color}"></div>`
-  }).join('')
+  const hexVal = value.slice(1)
+  const paletteHtml = KML_COLOR_PALETTES.map(group => `
+    <section class="custom-color-palette-group" aria-label="${group.name}">
+      <span class="custom-color-palette-name">${group.name}</span>
+      <div class="custom-color-palette" role="group" aria-label="${group.name}">
+        ${group.colors.map(color => `
+          <button type="button" class="custom-color-swatch${color === value ? ' is-selected' : ''}" style="background-color: ${color};" data-color="${color}" title="${group.name} ${color}" aria-label="选择颜色 ${color}" aria-pressed="${color === value}"></button>
+        `).join('')}
+      </div>
+    </section>
+  `).join('')
 
   return `
     <div class="custom-color-picker ${options.className || ''}" data-color="${value}" ${attrs}>
-      <div class="custom-color-trigger" style="background-color: ${value};" title="选择颜色"></div>
-      <div class="custom-color-dropdown">
-        <div class="custom-color-palette">
+      <button type="button" class="custom-color-trigger" style="background-color: ${value};" title="选择颜色" aria-label="选择颜色" aria-haspopup="dialog" aria-expanded="false"></button>
+      <div class="custom-color-dropdown" role="dialog" aria-label="KML 主题色色板">
+        <div class="custom-color-palettes">
           ${paletteHtml}
         </div>
         <div class="custom-color-hex-row">
@@ -61,7 +103,7 @@ export function renderCustomColorPicker (options = {}) {
           <input type="text" class="custom-color-hex-input" placeholder="0f766e" maxlength="6" value="${hexVal}">
           <button type="button" class="custom-color-hex-btn">应用</button>
         </div>
-        <div class="custom-color-custom-btn">更多色彩...</div>
+        <button type="button" class="custom-color-custom-btn">更多色彩...</button>
         <input type="color" class="custom-color-hidden-input" value="${value}" style="display: none;">
       </div>
     </div>
@@ -74,42 +116,11 @@ export function initCustomControlsListeners () {
   if (window.__customControlsInitialized) return
   window.__customControlsInitialized = true
 
-  // 辅助关闭所有自定义下拉浮层
-  const closeAllDropdowns = () => {
-    // 1. 处理所有挂在 body 下的 custom-select-options 并移回原处
-    document.body.querySelectorAll('.custom-select-options.is-open').forEach(options => {
-      options.classList.remove('is-open')
-      const parent = options.__parentControl
-      if (parent) {
-        parent.classList.remove('is-open')
-        parent.appendChild(options)
-      }
-      options.style.position = ''
-      options.style.zIndex = ''
-      options.style.width = ''
-      options.style.top = ''
-      options.style.left = ''
-      options.style.margin = ''
-    })
-
-    // 2. 处理所有挂在 body 下的 custom-color-dropdown 并移回原处
-    document.body.querySelectorAll('.custom-color-dropdown.is-open').forEach(dropdown => {
-      dropdown.classList.remove('is-open')
-      const parent = dropdown.__parentControl
-      if (parent) {
-        parent.classList.remove('is-open')
-        parent.appendChild(dropdown)
-      }
-      dropdown.style.position = ''
-      dropdown.style.zIndex = ''
-      dropdown.style.top = ''
-      dropdown.style.left = ''
-      dropdown.style.margin = ''
-    })
-
-    // 3. 防御性清除任何残留的 is-open 类
-    document.querySelectorAll('.custom-select.is-open').forEach(el => el.classList.remove('is-open'))
-    document.querySelectorAll('.custom-color-picker.is-open').forEach(el => el.classList.remove('is-open'))
+  const colorDropdownFor = (el) => {
+    const nested = el.querySelector('.custom-color-dropdown')
+    if (nested) return nested
+    return [...document.body.querySelectorAll('.custom-color-dropdown')]
+      .find(dropdown => dropdown.__parentControl === el) || null
   }
 
   // 绑定 value 属性存取器到自定义 select 元素
@@ -141,19 +152,26 @@ export function initCustomControlsListeners () {
     Object.defineProperty(el, 'value', {
       get () { return this.getAttribute('data-color') },
       set (val) {
-        this.setAttribute('data-color', val)
+        const normalized = normalizePickerColor(val, this.getAttribute('data-color') || '#0f766e')
+        this.setAttribute('data-color', normalized)
         const trigger = this.querySelector('.custom-color-trigger')
         if (trigger) {
-          trigger.style.backgroundColor = val
+          trigger.style.backgroundColor = normalized
         }
-        const hiddenInput = this.querySelector('.custom-color-hidden-input') || document.body.querySelector(`.custom-color-dropdown[data-kml-id="${this.getAttribute('data-kml-id')}"] .custom-color-hidden-input`)
+        const dropdown = colorDropdownFor(this)
+        const hiddenInput = dropdown?.querySelector('.custom-color-hidden-input')
         if (hiddenInput) {
-          hiddenInput.value = val
+          hiddenInput.value = normalized
         }
-        const hexInput = this.querySelector('.custom-color-hex-input') || document.body.querySelector(`.custom-color-dropdown[data-kml-id="${this.getAttribute('data-kml-id')}"] .custom-color-hex-input`)
+        const hexInput = dropdown?.querySelector('.custom-color-hex-input')
         if (hexInput) {
-          hexInput.value = val.startsWith('#') ? val.slice(1) : val
+          hexInput.value = normalized.slice(1)
         }
+        dropdown?.querySelectorAll('.custom-color-swatch').forEach(swatch => {
+          const selected = swatch.getAttribute('data-color') === normalized
+          swatch.classList.toggle('is-selected', selected)
+          swatch.setAttribute('aria-pressed', String(selected))
+        })
       },
       configurable: true
     })
@@ -163,12 +181,12 @@ export function initCustomControlsListeners () {
   document.addEventListener('click', (event) => {
     const isTrigger = event.target.closest('.custom-select-trigger, .custom-color-trigger, .custom-color-dropdown')
     if (!isTrigger) {
-      closeAllDropdowns()
+      closeCustomControlsDropdowns()
     }
   }, true)
 
   // 页面滚动、地图拖动时自动收起所有下拉面板，保证视觉一致性
-  document.addEventListener('scroll', () => closeAllDropdowns(), { capture: true, passive: true })
+  document.addEventListener('scroll', () => closeCustomControlsDropdowns(), { capture: true, passive: true })
 
   // 利用事件委托监听点击（采用捕获阶段，突破一切冒泡拦截）
   document.addEventListener('click', (event) => {
@@ -182,7 +200,7 @@ export function initCustomControlsListeners () {
       const select = selectTrigger.closest('.custom-select')
       if (select) {
         const isOpen = select.classList.contains('is-open')
-        closeAllDropdowns()
+        closeCustomControlsDropdowns()
 
         if (!isOpen) {
           select.classList.add('is-open')
@@ -222,7 +240,7 @@ export function initCustomControlsListeners () {
           select.value = val
           select.dispatchEvent(new Event('change', { bubbles: true }))
         }
-        closeAllDropdowns()
+        closeCustomControlsDropdowns()
       }
       return
     }
@@ -235,10 +253,11 @@ export function initCustomControlsListeners () {
       const picker = colorTrigger.closest('.custom-color-picker')
       if (picker) {
         const isOpen = picker.classList.contains('is-open')
-        closeAllDropdowns()
+        closeCustomControlsDropdowns()
 
         if (!isOpen) {
           picker.classList.add('is-open')
+          colorTrigger.setAttribute('aria-expanded', 'true')
           const dropdown = picker.querySelector('.custom-color-dropdown')
           if (dropdown) {
             dropdown.__parentControl = picker
@@ -247,13 +266,21 @@ export function initCustomControlsListeners () {
             dropdown.style.position = 'fixed'
             dropdown.style.zIndex = '99999'
             dropdown.style.margin = '0'
-            dropdown.style.top = `${rect.bottom + 4}px`
-            
-            const leftVal = rect.right - 120
-            dropdown.style.left = `${leftVal < 0 ? rect.left : leftVal}px`
-
             document.body.appendChild(dropdown)
             dropdown.getBoundingClientRect()
+            const viewportPadding = 8
+            const dropdownWidth = Math.min(dropdown.offsetWidth, window.innerWidth - viewportPadding * 2)
+            const dropdownHeight = dropdown.offsetHeight
+            const left = Math.min(
+              Math.max(viewportPadding, rect.right - dropdownWidth),
+              Math.max(viewportPadding, window.innerWidth - dropdownWidth - viewportPadding),
+            )
+            const belowTop = rect.bottom + 4
+            const top = belowTop + dropdownHeight <= window.innerHeight - viewportPadding
+              ? belowTop
+              : Math.max(viewportPadding, rect.top - dropdownHeight - 4)
+            dropdown.style.top = `${top}px`
+            dropdown.style.left = `${left}px`
             dropdown.classList.add('is-open')
           }
         }
@@ -276,7 +303,7 @@ export function initCustomControlsListeners () {
           picker.value = color
           picker.dispatchEvent(new Event('change', { bubbles: true }))
         }
-        closeAllDropdowns()
+        closeCustomControlsDropdowns()
       }
       return
     }
@@ -299,7 +326,7 @@ export function initCustomControlsListeners () {
             ensureColorValueProperty(picker)
             picker.value = hex
             picker.dispatchEvent(new Event('change', { bubbles: true }))
-            closeAllDropdowns()
+            closeCustomControlsDropdowns()
           } else {
             hexInput.value = picker.value.replace('#', '')
           }

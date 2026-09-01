@@ -17,6 +17,7 @@ import {
   registrationEnabled,
   revisionConflictPrompt,
   sanitizeReturnTo,
+  selectedActiveKmlIdsInDisplayOrder,
 } from './model.js'
 import { renderAccountShell, renderAuthView } from './views.js'
 import {
@@ -31,7 +32,10 @@ import {
 import { showAlert, showChoiceDialog, showConfirm, showEditDialog } from '../ui/dialog.js'
 import {
   clearTwoBuluImportRequest,
+  prepareTwoBuluImportRequest,
   showTwoBuluImportDialog,
+  showTwoBuluBatchImportDialog,
+  twoBuluBatchPreviewMessageHtml,
   twoBuluImportResultMessage,
 } from '../ui/two-bulu-import-dialog.js'
 import {
@@ -39,14 +43,17 @@ import {
   getTwoBuluHelperState,
   probeTwoBuluHelper,
   requestTwoBuluKml,
+  requestTwoBuluBatchPreview,
   subscribeTwoBuluHelper,
   TWO_BULU_HELPER_PROTOCOL_VERSION,
 } from '../integrations/two-bulu-helper-bridge.js'
+import { runTwoBuluBatchImport } from '../integrations/two-bulu-batch-runner.js'
+import { filterAndSortTwoBuluItems } from '../integrations/two-bulu-batch.js'
 
 const LOCAL_KML_KEY = 'map_kml_list'
 const LOCAL_MIGRATION_STATE_KEY = 'map_account_local_migration'
 const KML_WRITE_ACTIONS = new Set([
-  'create-kml', 'edit-kml', 'import-kml', 'import-2bulu', 'migrate-local', 'trash-selected-kml',
+  'create-kml', 'edit-kml', 'import-kml', 'import-2bulu', 'import-2bulu-batch', 'migrate-local', 'move-selected-kml', 'trash-selected-kml',
   'trash-kml', 'restore-kml', 'delete-kml', 'create-kml-directory', 'edit-kml-directory',
   'delete-kml-directory', 'toggle-directory-visibility', 'move-kml',
 ])
@@ -311,6 +318,46 @@ async function moveKmlFile (id) {
   render()
 }
 
+async function moveSelectedKmlFiles () {
+  if (!requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  const ids = selectedActiveKmlIdsInDisplayOrder(
+    state.kml.selected,
+    state.kml.items,
+    state.kml.directories,
+  )
+  if (!ids.length) {
+    await showAlert('请先选择需要移动的 KML 文件。', { title: '批量移动 KML' })
+    return
+  }
+  const groups = groupKmlDocumentsByDirectory(
+    state.kml.items.filter(item => item.status === 'active'),
+    state.kml.directories,
+  )
+  const first = state.kml.items.find(item => item.id === ids[0])
+  const values = await showEditDialog({
+    title: `批量移动 ${ids.length} 个 KML`,
+    fields: [{
+      name: 'directoryId',
+      label: '目标目录',
+      type: 'select',
+      options: groups.map(group => ({ value: String(group.id || ''), label: group.name })),
+    }],
+    values: { directoryId: String(first?.directoryId || '') },
+    confirmText: '移动',
+  })
+  if (!values) return
+  const targetId = values.directoryId || null
+  const result = await runAction(() => accountApi.batchMoveKml({ ids, directoryId: targetId }), {
+    progress: `正在移动 ${ids.length} 个 KML…`,
+  })
+  if (!result) return
+  ;[...(result.movedIds || []), ...(result.skippedIds || [])]
+    .forEach(id => state.kml.selected.delete(id))
+  await loadKml()
+  setMessage(`批量移动完成：已移动 ${Number(result.movedCount || 0)} 个，跳过 ${Number(result.skippedCount || 0)} 个已在目标目录的文件。`, '')
+  render()
+}
+
 async function loadFavorites () {
   const result = normalizePagedResult(await accountApi.listFavorites({
     page: 1,
@@ -531,7 +578,7 @@ async function editKml (id) {
     fields: [
       { name: 'name', label: '文件名称' },
       { name: 'description', label: '描述', type: 'textarea' },
-      { name: 'color', label: '主题色' },
+      { name: 'color', label: '主题色', type: 'color' },
       { name: 'theme', label: '显示主题', type: 'select', options: [{ label: '默认主题', value: 'default' }, { label: '简洁主题', value: 'simple' }] },
       { name: 'coordCorrection', label: '坐标纠偏', type: 'select', options: [{ label: 'WGS84 转 GCJ-02', value: 'wgs84-to-gcj02' }, { label: '不纠偏', value: 'none' }] },
       { name: 'enabled', label: '文件启用状态', type: 'select', options: [{ label: '启用', value: 'true' }, { label: '禁用', value: 'false' }] },
@@ -635,6 +682,103 @@ async function importTwoBuluKml () {
     setMessage(twoBuluImportResultMessage(result), '')
   }
   render()
+}
+
+async function ensureTwoBuluBatchDirectory (userName) {
+  const name = String(userName || '').normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || '两步路用户轨迹'
+  const catalog = await accountApi.listKmlDirectories()
+  const existing = (catalog?.items || []).find(item => String(item.name || '').normalize('NFKC').toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))
+  if (existing?.id) return existing.id
+  try {
+    const created = await accountApi.createKmlDirectory({ name })
+    return created?.id || ''
+  } catch (error) {
+    if (error?.code !== 'KML_DIRECTORY_NAME_CONFLICT') throw error
+    const refreshed = await accountApi.listKmlDirectories()
+    return refreshed?.items?.find(item => String(item.name || '').normalize('NFKC').toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))?.id || ''
+  }
+}
+
+async function importTwoBuluBatchKml () {
+  if (!requireCapability('canWriteKml', '当前账号只有 KML 查看权限')) return
+  if (!state.twoBuluHelper.available) {
+    setMessage('', '未检测到已安装并授权当前站点的两步路浏览器助手，请安装或授权后刷新页面。')
+    render()
+    return
+  }
+  const settings = await showTwoBuluBatchImportDialog()
+  if (!settings) return
+  let preview
+  try {
+    preview = await requestTwoBuluBatchPreview(settings)
+  } catch (error) {
+    setMessage('', error?.message || '读取两步路用户轨迹列表失败，请稍后重试。')
+    render()
+    return
+  }
+  let selected
+  try {
+    selected = filterAndSortTwoBuluItems(preview.items, settings)
+  } catch (error) {
+    setMessage('', error?.message || '批量筛选条件不正确。')
+    render()
+    return
+  }
+  if (!selected.length) {
+    await showAlert('没有轨迹符合当前筛选条件。', { title: '批量导入' })
+    return
+  }
+  const confirmed = await showChoiceDialog({
+    title: '确认批量导入',
+    trustedMessageHtml: twoBuluBatchPreviewMessageHtml(preview, selected),
+    choices: [{ text: '开始导入', value: 'start', class: 'app-dialog-primary' }],
+  })
+  if (confirmed !== 'start') return
+  const batchResult = await runAction(async () => {
+    const directoryId = await ensureTwoBuluBatchDirectory(preview.userName)
+    if (!directoryId) throw new Error('无法创建或找到两步路用户专属目录')
+    const result = await runTwoBuluBatchImport({
+      items: selected,
+      filters: settings,
+      onProgress: ({ index, total, item }) => {
+        setMessage(`正在导入第 ${index + 1}/${total} 条：${item.name || '两步路轨迹'}`, '')
+        render()
+      },
+      importItem: async (item) => {
+        const input = prepareTwoBuluImportRequest({ ...settings, url: item.url })
+        const helperResult = await requestTwoBuluKml(input)
+        try {
+          const saved = await accountApi.importTwoBuluBrowserHelperKml({
+            ...input,
+            directoryId,
+            protocolVersion: TWO_BULU_HELPER_PROTOCOL_VERSION,
+            helperVersion: helperResult.helperVersion,
+            name: helperResult.name || item.name,
+            kmlText: helperResult.kmlText,
+            sourceMode: helperResult.sourceMode,
+            completeness: helperResult.completeness,
+            warnings: helperResult.warnings,
+          })
+          await finalizeTwoBuluImport(helperResult, { status: 'success', message: twoBuluImportResultMessage(saved) })
+          clearTwoBuluImportRequest(input)
+          return saved
+        } catch (error) {
+          await finalizeTwoBuluImport(helperResult, { status: 'failed', message: `map-service 保存失败：${error?.message || '请返回原页面重试。'}` })
+          throw error
+        }
+      },
+    })
+    await loadKml()
+    return result
+  }, { progress: '正在读取两步路用户轨迹列表…' })
+  if (batchResult) {
+    const summary = batchResult.results.reduce((acc, item) => {
+      acc[item.status] = (acc[item.status] || 0) + 1
+      return acc
+    }, {})
+    setMessage(`批量导入完成：成功 ${summary.success || 0} 条，失败 ${summary.failed || 0} 条，取消 ${summary.cancelled || 0} 条。`, '')
+    render()
+  }
 }
 
 function getMigrationBatchId (rawValue, fileCount) {
@@ -1040,12 +1184,16 @@ async function handleClick (event) {
     render()
   } else if (action === 'move-kml') {
     await moveKmlFile(id)
+  } else if (action === 'move-selected-kml') {
+    await moveSelectedKmlFiles()
   } else if (action === 'edit-kml') {
     await editKml(id)
   } else if (action === 'import-kml') {
     document.getElementById('account-kml-import')?.click()
   } else if (action === 'import-2bulu') {
     await importTwoBuluKml()
+  } else if (action === 'import-2bulu-batch') {
+    await importTwoBuluBatchKml()
   } else if (action === 'migrate-local') {
     await migrateLocalKml()
   } else if (action === 'select-all-kml') {

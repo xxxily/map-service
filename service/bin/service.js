@@ -465,6 +465,10 @@ const service = {
     return userContent.moveKmlFile(actor, id, input, context)
   },
 
+  batchMoveUserKmlFiles (actor, input, context) {
+    return userContent.batchMoveKmlFiles(actor, input, context)
+  },
+
   createUserKml (actor, input, context) {
     return userContent.createKml(actor, input, context)
   },

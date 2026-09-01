@@ -11,6 +11,7 @@ import {
   getTwoBuluHelperState,
   parseTwoBuluHelperResponse,
   probeTwoBuluHelper,
+  requestTwoBuluBatchPreview,
   requestTwoBuluKml,
   TWO_BULU_HELPER_PROTOCOL_VERSION,
 } from '../src/integrations/two-bulu-helper-bridge.js'
@@ -20,6 +21,7 @@ import {
   normalizeAllowedOrigin,
   normalizeOfficialDownloadUrl,
   normalizeTwoBuluShareUrl,
+  normalizeTwoBuluTrackListUrl,
   originMatchPattern,
 } from '../extensions/two-bulu-helper/protocol.js'
 import {
@@ -96,6 +98,14 @@ test('浏览器助手协议规范化精确站点 origin、两步路分享 URL �
   )
   assert.throws(() => normalizeOfficialDownloadUrl('https://evil.example/track.kml'), /不在允许范围/)
   assert.equal(isKmlText('<?xml version="1.0"?><kml><Document></Document></kml>'), true)
+  assert.equal(
+    normalizeTwoBuluTrackListUrl('https://www.2bulu.com/spaceindex/my_track.htm?userId=ytVzFDQq3DURcjFubZmtkA%3D%3D').userId,
+    'ytVzFDQq3DURcjFubZmtkA==',
+  )
+  assert.throws(
+    () => normalizeTwoBuluTrackListUrl('https://www.2bulu.com/spaceindex/my_track.htm?userId=bad%20id'),
+    /有效 userId/,
+  )
 })
 
 test('导入标签页会话只允许原发起页结束，并只自动关闭助手管理的安全页面', () => {
@@ -382,6 +392,54 @@ test('网站只在收到兼容 PONG 后启用助手，并用同一 requestId 接
   }
 })
 
+test('网站批量预览使用独立消息类型并保留列表元数据', async () => {
+  const originalCustomEvent = globalThis.CustomEvent
+  globalThis.CustomEvent = TestCustomEvent
+  const documentTarget = new EventTarget()
+  const requests = []
+  documentTarget.addEventListener('map-service:two-bulu-helper:request', (event) => {
+    const request = JSON.parse(event.detail)
+    requests.push(request)
+    if (request.type === 'PING') {
+      documentTarget.dispatchEvent(new TestCustomEvent('map-service:two-bulu-helper:response', {
+        detail: JSON.stringify({
+          protocolVersion: 1,
+          type: 'PONG',
+          requestId: request.requestId,
+          helperVersion: '0.4.0',
+          capabilities: ['2bulu-kml-import', '2bulu-import-tab-lifecycle'],
+        }),
+      }))
+    } else if (request.type === 'IMPORT_2BULU_BATCH') {
+      documentTarget.dispatchEvent(new TestCustomEvent('map-service:two-bulu-helper:response', {
+        detail: JSON.stringify({
+          protocolVersion: 1,
+          type: 'BATCH_PREVIEW_RESULT',
+          requestId: request.requestId,
+          status: 'success',
+          sourceUrl: request.url,
+          userName: '山友阿明',
+          detectedCount: 1,
+          items: [{ url: 'https://www.2bulu.com/track/track_detail.htm?trackId=abc', name: '路线 A', pointCount: 12 }],
+        }),
+      }))
+    }
+  })
+
+  try {
+    const result = await requestTwoBuluBatchPreview({
+      url: 'https://www.2bulu.com/spaceindex/my_track.htm?userId=user-1',
+    }, { document: documentTarget, timeoutMs: 200 })
+    assert.equal(result.userName, '山友阿明')
+    assert.equal(result.detectedCount, 1)
+    assert.equal(result.items[0].pointCount, 12)
+    assert.equal(requests.at(-1).type, 'IMPORT_2BULU_BATCH')
+  } finally {
+    if (originalCustomEvent === undefined) delete globalThis.CustomEvent
+    else globalThis.CustomEvent = originalCustomEvent
+  }
+})
+
 test('助手探测消息和 Manifest 固定协议能力且不声明任意两步路凭据通道', () => {
   const ping = buildTwoBuluHelperPing('probe-request-one')
   assert.equal(ping.protocolVersion, TWO_BULU_HELPER_PROTOCOL_VERSION)
@@ -404,12 +462,13 @@ test('助手探测消息和 Manifest 固定协议能力且不声明任意两步�
     'two-bulu-data.js',
     'two-bulu-page-hook.js',
     'two-bulu-page-export.js',
+    'two-bulu-list-export.js',
     'two-bulu-feedback.js',
     'two-bulu-content.js',
     'service-worker.js',
   ].map(file => fs.readFileSync(path.join(extensionDir, file), 'utf8')).join('\n')
   assert.equal(manifest.manifest_version, 3)
-  assert.equal(manifest.version, '0.3.8')
+  assert.equal(manifest.version, '0.4.0')
   assert.deepEqual(manifest.icons, {
     '16': 'icons/icon-16.png',
     '32': 'icons/icon-32.png',
