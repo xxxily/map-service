@@ -90,6 +90,7 @@ test('批量预览 HTML 包含每条筛选后的轨迹摘要并转义不可信�
   assert.match(html, /&lt;用户&gt;/)
   assert.match(html, /&lt;路线&gt;/)
   assert.match(html, /点位 12/)
-  assert.match(html, /2026\/08\/20|2026-08-20/)
+  assert.match(html, /2026-08-20/)
   assert.doesNotMatch(html, /<路线>/)
+  assert.match(twoBuluBatchPreviewMessageHtml({}, [{ name: '无统计', pointCount: null }]), /点位 未知/)
 })

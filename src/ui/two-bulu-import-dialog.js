@@ -17,6 +17,7 @@ function escapeHtml (value) {
 }
 
 function previewNumber (value, suffix = '') {
+  if (value === null || value === undefined || String(value).trim() === '') return '未知'
   const number = Number(value)
   return Number.isFinite(number) ? `${number.toLocaleString('zh-CN')}${suffix}` : '未知'
 }
@@ -27,7 +28,10 @@ export function twoBuluBatchPreviewMessageHtml (preview = {}, selected = []) {
   const detectedCount = Number(preview.detectedCount || preview.items?.length || 0)
   const rows = items.map((item, index) => {
     const name = String(item?.name || `公开轨迹 ${index + 1}`).slice(0, 200)
-    const published = item?.publishedAt ? new Date(item.publishedAt).toLocaleDateString('zh-CN') : '发布时间未知'
+    const publishedDate = item?.publishedAt ? new Date(item.publishedAt) : null
+    const published = publishedDate && Number.isFinite(publishedDate.getTime())
+      ? publishedDate.toISOString().slice(0, 10)
+      : '发布时间未知'
     const stats = [
       `点位 ${previewNumber(item?.pointCount)}`,
       `里程 ${previewNumber(item?.distanceKm, ' km')}`,
