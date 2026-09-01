@@ -1,6 +1,6 @@
 # KML 协调色板与个人空间批量移动需求
 
-> 状态：已实现，待发布验收
+> 状态：v1.5.57 已发布到 161，待内测验收
 > 更新时间：2026-09-01
 > 关联文档：[KML 目录管理、文件排序与点位聚合](./kml-directory-ordering-and-share-point-clustering.md)、[用户系统 RBAC 与多 KML 分享](./user-system-rbac-and-multi-kml-sharing.md)
 

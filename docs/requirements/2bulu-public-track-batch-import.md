@@ -1,6 +1,6 @@
 # 两步路用户公开轨迹列表批量导入需求
 
-> 状态：已实现（第一版）
+> 状态：v1.5.57 已发布到 161，待内测验收
 > 更新时间：2026-09-02
 > 关联文档：[两步路授权浏览器助手与浏览器内导入](./2bulu-authorized-browser-helper.md)、[两步路公开分享轨迹导入](./2bulu-public-track-import.md)、[用户体系 API](../api-user-system.md)、[两步路导入助手用户操作手册](../user-guides/two-bulu-import.md)
 
