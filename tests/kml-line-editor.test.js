@@ -50,11 +50,16 @@ test('KML 线段编辑器保留地图拖拽缩放并提供完整工具栏动作'
   assert.match(editorSource, /bubblingMouseEvents: false/)
   assert.match(editorSource, /leaflet-interactive/)
   assert.match(editorSource, /data-kml-line-action="merge"/)
+  assert.match(editorSource, /options\.initialPoints/)
   assert.doesNotMatch(editorSource, /map\.dragging\.disable\(/)
   assert.match(kmlSource, /data-kml-action="add-line"/)
+  assert.match(kmlSource, /data-kml-action="edit-feature"/)
+  assert.match(kmlSource, /startKmlLineEditor\(map, kmlId, \{ featureId/)
+  assert.match(kmlSource, /const currentLayer = featureLayers\.get\(getFeatureLayerKey\(kmlId, featureId\)\)/)
   assert.match(kmlSource, /type: 'LineString'/)
   assert.match(kmlSource, /mapLatLngToStoredCoordinate\(kmlFile, point\)/)
   assert.match(indexSource, /id="kml-line-editor-toolbar"/)
+  assert.match(indexSource, /data-kml-line-action="merge"[\s\S]*?<span class="btn-text">保存<\/span>/)
   for (const action of ['undo', 'redo', 'delete', 'clear', 'merge', 'cancel']) {
     assert.match(indexSource, new RegExp(`data-kml-line-action="${action}"`))
   }

@@ -2446,7 +2446,7 @@ function renderFeatureItem (kmlFile, feature, editable) {
         <span class="kml-feature-icon">${iconSvg}</span>
         ${displayName ? `<span class="kml-feature-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>` : ''}
       </div>
-      ${editable && !batchSelectable ? `<button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>` : ''}
+      ${editable && !batchSelectable ? `<span class="kml-feature-actions"><button type="button" class="kml-feature-edit" data-kml-action="edit-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="编辑标注" aria-label="编辑标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></button><button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注" aria-label="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button></span>` : ''}
     </div>
   `
 }
@@ -3330,6 +3330,12 @@ function bindPanelEvents () {
 
     if (action === 'focus-feature') {
       focusFeature(kmlId, featureId)
+      return
+    }
+
+    if (action === 'edit-feature') {
+      event.stopPropagation()
+      await handleEditFeature(kmlId, featureId)
       return
     }
 

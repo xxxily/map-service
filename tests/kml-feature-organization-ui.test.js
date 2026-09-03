@@ -23,6 +23,7 @@ test('2D and 3D KML editors expose shared move, copy and drag organization flows
     assert.match(source, /data-kml-action="batch-select-all"/)
     assert.match(source, /data-kml-action="batch-invert"/)
     assert.match(source, /data-kml-action="toggle-batch-feature"/)
+    assert.match(source, /data-kml-action="edit-feature"/)
     assert.match(source, /if \(action === 'toggle-batch'\)/)
     assert.match(source, /if \(action === 'batch-operate'\)/)
     assert.match(source, /action === 'batch-select-all' \|\| action === 'batch-invert'/)

@@ -1242,6 +1242,25 @@ function getFeatureLayerKey (kmlId, featureId) {
   return JSON.stringify([String(kmlId || ''), String(featureId || '')])
 }
 
+function getOpenKmlPopupIdentity (map) {
+  const popup = map?.getPopup?.() || map?._popup
+  const source = popup?._source
+  const kmlId = String(source?._mapServiceKmlFileId || '')
+  const featureId = String(source?._mapServiceKmlFeatureId || '')
+  return kmlId && featureId ? { kmlId, featureId } : null
+}
+
+function restoreKmlPopup (map, identity, delay = 0) {
+  if (!identity) return
+  const open = () => {
+    const layer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId))
+    if (!layer || (map.hasLayer && !map.hasLayer(layer))) return
+    layer.openPopup()
+  }
+  if (delay > 0) window.setTimeout(open, delay)
+  else open()
+}
+
 function resolveTargetKmlId (preferredKmlId = '') {
   if (isEditingPublicKml && editingPublicKmlId) {
     return editingPublicKmlId
@@ -1825,6 +1844,7 @@ function syncKmlLayers (map, kmlFile, displayFeatures) {
 }
 
 function renderKmlLayers (map, kmlFile, options = {}) {
+  const popupIdentity = getOpenKmlPopupIdentity(map)
   if (!kmlFile?.isPublic && !kmlFile?.isShare &&
       getGlobalPointClusteringConfig2d()?.enabled && options.individualPersonalRender !== true) {
     renderAllKmls(map)
@@ -1847,6 +1867,7 @@ function renderKmlLayers (map, kmlFile, options = {}) {
     syncKmlLayers(map, kmlFile, features)
     rememberKmlViewport(kmlFile, viewportOptions)
     scheduleKmlPointLabelSync(map)
+    restoreKmlPopup(map, popupIdentity)
     return
   }
 
@@ -1878,9 +1899,11 @@ function renderKmlLayers (map, kmlFile, options = {}) {
 
   rememberKmlViewport(kmlFile, viewportOptions)
   scheduleKmlPointLabelSync(map)
+  restoreKmlPopup(map, popupIdentity)
 }
 
 function renderAllKmls (map) {
+  const popupIdentity = getOpenKmlPopupIdentity(map)
   kmlLayerGroups.forEach(group => map.removeLayer(group))
   kmlLayerGroups.clear()
   featureLayers.clear()
@@ -1889,6 +1912,7 @@ function renderAllKmls (map) {
 
   if (getActiveShare() && sharePointClusteringConfig?.enabled) {
     renderShareClusterLayers(map)
+    restoreKmlPopup(map, popupIdentity)
     return
   }
 
@@ -1902,6 +1926,7 @@ function renderAllKmls (map) {
   publicKmlList.forEach(kmlFile => {
     renderKmlLayers(map, kmlFile, { individualPersonalRender: true })
   })
+  restoreKmlPopup(map, popupIdentity)
 }
 
 function bindAccountSessionExpiry (map) {
@@ -2187,7 +2212,7 @@ function updateKmlPanelUI (map) {
                         <span class="kml-feature-icon">${iconSvg}</span>
                         ${displayName ? `<span class="kml-feature-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>` : ''}
                       </div>
-                      ${writable && !batchSelectable ? `<button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>` : ''}
+                      ${writable && !batchSelectable ? `<span class="kml-feature-actions"><button type="button" class="kml-feature-edit" data-kml-action="edit-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="编辑标注" aria-label="编辑标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></button><button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注" aria-label="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button></span>` : ''}
                     </div>
                   `
                 }).join('')}
@@ -2299,7 +2324,7 @@ function updateKmlPanelUI (map) {
                         ${displayName ? `<span class="kml-feature-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>` : ''}
                       </div>
                       ${isEditingThis ? `
-                        <button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>
+                        <span class="kml-feature-actions"><button type="button" class="kml-feature-edit" data-kml-action="edit-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="编辑标注" aria-label="编辑标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></button><button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注" aria-label="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button></span>
                       ` : ''}
                     </div>
                   `
@@ -2388,9 +2413,11 @@ function activateFeatureForMedia (map, item, options = {}) {
     })
     layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
   }
-  if (!layer) return
   const delay = options.closePreview ? 0 : 300
-  mediaFeatureActivationTimer = window.setTimeout(() => layer.openPopup(), delay)
+  mediaFeatureActivationTimer = window.setTimeout(() => {
+    const currentLayer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
+    if (currentLayer) currentLayer.openPopup()
+  }, delay)
 }
 
 async function handleEditFeature (map, kmlId, featureId) {
@@ -2409,6 +2436,11 @@ async function handleEditFeature (map, kmlId, featureId) {
   }
   const feature = kmlFile.features.find(f => f.id === featureId)
   if (!feature) return
+  if (feature.type === 'LineString') {
+    map.closePopup?.()
+    await startKmlLineEditor(map, kmlId, { featureId: String(featureId) })
+    return
+  }
   const targetOptions = buildKmlOrganizationTargetOptions(kmlFile)
   const fields = [
     {
@@ -2564,8 +2596,9 @@ async function handleEditFeature (map, kmlId, featureId) {
   if (feature.type === 'Point') recordKmlMarkerRecentIcon(result.markerIcon)
 
   renderKmlLayers(map, kmlFile)
-  const layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
-  if (layer) setTimeout(() => layer.openPopup(), 100)
+  if (featureLayers.has(getFeatureLayerKey(kmlId, featureId))) {
+    setTimeout(() => featureLayers.get(getFeatureLayerKey(kmlId, featureId))?.openPopup(), 100)
+  }
 
   updateKmlPanelUI(map)
   if (enriched.warnings.length) {
@@ -2771,10 +2804,12 @@ async function stopKmlLineEditor (options = {}) {
   return editor.cancel(options)
 }
 
-async function startKmlLineEditor (map, kmlId) {
+async function startKmlLineEditor (map, kmlId, options = {}) {
   const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
+  const featureId = String(options.featureId || '')
+  const editingFeature = featureId ? kmlFile?.features?.find(feature => String(feature.id) === featureId) : null
   if (!isKmlEditable(kmlFile)) {
-    await showAlert('目标 KML 当前为只读，不能新增线段。')
+    await showAlert(editingFeature ? '目标 KML 当前为只读，不能编辑线段。' : '目标 KML 当前为只读，不能新增线段。')
     return
   }
   if (!isKmlEnabled(kmlFile)) {
@@ -2796,26 +2831,34 @@ async function startKmlLineEditor (map, kmlId) {
     window.exitGuidelineMode?.()
   }
 
+  const initialPoints = editingFeature && editingFeature.type === 'LineString'
+    ? getMapLatLngs(kmlFile, editingFeature).map(([lat, lng], index) => ({ id: `line-point-${index + 1}`, lat, lng }))
+    : []
+
   const editor = createKmlLineEditor(map, {
     color: getKmlColor(kmlFile),
+    title: editingFeature ? '编辑线段' : '添加线段',
+    initialPoints,
     onCommit: async points => {
-      if (points.length < 2) throw new Error('至少添加两个点位后才能合并成线段。')
+      if (points.length < 2) throw new Error('至少添加两个点位后才能保存线段。')
       pushKmlHistory()
-      const newFeature = {
+      const coordinates = points.map(point => mapLatLngToStoredCoordinate(kmlFile, point))
+      const savedFeature = editingFeature || {
         id: `feat-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         type: 'LineString',
         name: '新建线段',
         description: '',
-        coordinates: points.map(point => mapLatLngToStoredCoordinate(kmlFile, point)),
       }
-      kmlFile.features.push(newFeature)
+      savedFeature.coordinates = coordinates
+      if (!editingFeature) kmlFile.features.push(savedFeature)
       expandedKmlIds.add(kmlFile.id)
       rememberTargetKmlId(kmlFile.id)
       saveKmlChanges(kmlFile)
       renderKmlLayers(map, kmlFile)
       updateKmlPanelUI(map)
-      const layer = featureLayers.get(getFeatureLayerKey(kmlFile.id, newFeature.id))
-      if (layer) setTimeout(() => layer.openPopup(), 100)
+      if (featureLayers.has(getFeatureLayerKey(kmlFile.id, savedFeature.id))) {
+        setTimeout(() => featureLayers.get(getFeatureLayerKey(kmlFile.id, savedFeature.id))?.openPopup(), 100)
+      }
     },
     onStop: () => {
       activeKmlLineEditor = null
@@ -4388,6 +4431,12 @@ export async function initKmlSupport (map, options = {}) {
     
     if (action === 'focus-feature') {
       focusFeature(map, kmlId, featureId)
+      return
+    }
+
+    if (action === 'edit-feature') {
+      event.stopPropagation()
+      await handleEditFeature(map, kmlId, featureId)
       return
     }
     

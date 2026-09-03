@@ -67,6 +67,8 @@ export function createKmlLineEditor (map, options = {}) {
 
   const updateToolbar = () => {
     if (!toolbar) return
+    const title = toolbar.querySelector('.guideline-title-text')
+    if (title) title.textContent = options.title || '添加线段'
     const count = toolbar.querySelector('[data-kml-line-count]')
     if (count) count.textContent = `${state.size} 个点`
     const undoButton = toolbar.querySelector('[data-kml-line-action="undo"]')
@@ -228,7 +230,7 @@ export function createKmlLineEditor (map, options = {}) {
   const merge = async () => {
     if (finishing) return
     if (state.size < MIN_LINE_POINTS) {
-      await showAlert('至少添加两个点位后才能合并成线段。')
+      await showAlert('至少添加两个点位后才能保存线段。')
       return
     }
     finishing = true
