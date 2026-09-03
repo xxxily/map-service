@@ -682,6 +682,7 @@ export async function clearAllGuidelines () {
 // 初始化辅助线功能
 export function initGuidelines (map) {
   window.getIsGuidelineModeActive = () => isGuidelineModeActive
+  window.exitGuidelineMode = exitGuidelineMode
   activeMap = map
   loadGuidelinesData()
   renderGuidelines()

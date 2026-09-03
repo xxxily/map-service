@@ -103,6 +103,10 @@ import {
   showKmlResourceCollectionEditor,
 } from './kml-resource-collection.js'
 import {
+  createKmlLineEditor,
+  getIsKmlLineEditorActive,
+} from './kml-line-editor.js'
+import {
   clusterKmlPoints,
   resolveGlobalKmlPointClusteringConfig,
 } from './kml-point-clustering.js'
@@ -761,6 +765,8 @@ let isAddingPoint = false
 let activeKmlIdForAdd = null
 let clickListener = null
 let pickupToastElement = null
+let activeKmlLineEditor = null
+let activeKmlLineEditorKmlId = null
 
 function loadFromStorage () {
   let shouldSave = false
@@ -1903,6 +1909,7 @@ function bindAccountSessionExpiry (map) {
   accountSessionExpiryBound = true
   window.addEventListener('map-auth-session-expired', () => {
     if (!isAccountKmlMode()) return
+    if (getIsKmlLineEditorActive()) void stopKmlLineEditor({ force: true })
     exitKmlBatchMode()
     exitKmlDirectoryBatchMode()
     suspendKmlAccountSync({ preserveDraft: true, reason: 'session-expired' })
@@ -2153,6 +2160,7 @@ function updateKmlPanelUI (map) {
                 </div>
                 <div class="kml-file-tool-actions">
                   ${writable ? `<button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${safeKmlId}" title="在此文件下新增标注点" aria-label="新增标注点"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>` : ''}
+                  ${writable ? `<button type="button" class="kml-file-btn" data-kml-action="add-line" data-kml-id="${safeKmlId}" title="在此文件下绘制线段" aria-label="新增线段"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><circle cx="3" cy="17" r="1.5"/><circle cx="9" cy="11" r="1.5"/><circle cx="13" cy="15" r="1.5"/><circle cx="21" cy="7" r="1.5"/></svg></button>` : ''}
                 </div>
               </div>
               <div class="kml-features-list" ${featureOrderingAvailable ? `data-kml-drop-target="list" data-kml-id="${safeKmlId}"` : ''}>
@@ -2269,6 +2277,7 @@ function updateKmlPanelUI (map) {
                 </div>
                 <div class="kml-file-tool-actions">
                   ${isEditingThis ? `<button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${safeKmlId}" title="新增标注点" aria-label="新增标注点"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>` : ''}
+                  ${isEditingThis ? `<button type="button" class="kml-file-btn" data-kml-action="add-line" data-kml-id="${safeKmlId}" title="绘制线段" aria-label="新增线段"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><circle cx="3" cy="17" r="1.5"/><circle cx="9" cy="11" r="1.5"/><circle cx="13" cy="15" r="1.5"/><circle cx="21" cy="7" r="1.5"/></svg></button>` : ''}
                 </div>
               </div>
               <div class="kml-features-list">
@@ -2756,6 +2765,67 @@ async function createPointAtLatLng (map, latlng, options = {}) {
   }
 }
 
+async function stopKmlLineEditor (options = {}) {
+  if (!activeKmlLineEditor) return true
+  const editor = activeKmlLineEditor
+  return editor.cancel(options)
+}
+
+async function startKmlLineEditor (map, kmlId) {
+  const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
+  if (!isKmlEditable(kmlFile)) {
+    await showAlert('目标 KML 当前为只读，不能新增线段。')
+    return
+  }
+  if (!isKmlEnabled(kmlFile)) {
+    await showAlert('该 KML 文件已隐藏，请先启用后再新增线段。')
+    return
+  }
+  const loaded = kmlFile.isPublic
+    ? await loadPublicKmlFileForUse(kmlFile)
+    : await loadAccountKmlFileForUse(kmlFile)
+  if (!loaded) {
+    await showAlert(kmlFile.loadError || 'KML 文件详情加载失败')
+    return
+  }
+  if (activeKmlLineEditor) {
+    if (!(await stopKmlLineEditor())) return
+  }
+  if (isAddingPoint) togglePickupMode(map, null)
+  if (typeof window.getIsGuidelineModeActive === 'function' && window.getIsGuidelineModeActive()) {
+    window.exitGuidelineMode?.()
+  }
+
+  const editor = createKmlLineEditor(map, {
+    color: getKmlColor(kmlFile),
+    onCommit: async points => {
+      if (points.length < 2) throw new Error('至少添加两个点位后才能合并成线段。')
+      pushKmlHistory()
+      const newFeature = {
+        id: `feat-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        type: 'LineString',
+        name: '新建线段',
+        description: '',
+        coordinates: points.map(point => mapLatLngToStoredCoordinate(kmlFile, point)),
+      }
+      kmlFile.features.push(newFeature)
+      expandedKmlIds.add(kmlFile.id)
+      rememberTargetKmlId(kmlFile.id)
+      saveKmlChanges(kmlFile)
+      renderKmlLayers(map, kmlFile)
+      updateKmlPanelUI(map)
+      const layer = featureLayers.get(getFeatureLayerKey(kmlFile.id, newFeature.id))
+      if (layer) setTimeout(() => layer.openPopup(), 100)
+    },
+    onStop: () => {
+      activeKmlLineEditor = null
+      activeKmlLineEditorKmlId = null
+    },
+  })
+  activeKmlLineEditor = editor
+  activeKmlLineEditorKmlId = kmlFile.id
+}
+
 function togglePickupMode (map, kmlId) {
   if (!isAddingPoint && kmlId && !canWritePersonalKml() && !isEditingPublicKml) {
     showAlert('当前账号只有 KML 查看权限，不能新增标注。')
@@ -2817,7 +2887,7 @@ function initLongPressPointCreation (map) {
       clearPress()
       return
     }
-    if (isAddingPoint || event.button > 0 || isInteractiveTarget(event.target)) return
+    if (isAddingPoint || getIsKmlLineEditorActive() || event.button > 0 || isInteractiveTarget(event.target)) return
 
     try {
       container.setPointerCapture?.(event.pointerId)
@@ -3894,6 +3964,7 @@ export async function initKmlSupport (map, options = {}) {
       }
     },
     closeKmlPanel: () => {
+      if (getIsKmlLineEditorActive()) void stopKmlLineEditor({ force: true })
       panel.hidden = true
       exitKmlBatchMode()
       exitKmlDirectoryBatchMode()
@@ -4308,6 +4379,7 @@ export async function initKmlSupport (map, options = {}) {
       if (isAddingPoint && activeKmlIdForAdd === kmlId && !isKmlEnabled(kmlFile)) {
         togglePickupMode(map, null)
       }
+      if (getIsKmlLineEditorActive() && activeKmlLineEditorKmlId === kmlId) await stopKmlLineEditor({ force: true })
 
       renderKmlLayers(map, kmlFile)
       updateKmlPanelUI(map)
@@ -4343,6 +4415,7 @@ export async function initKmlSupport (map, options = {}) {
       const index = kmlList.findIndex(k => k.id === kmlId)
       if (index !== -1) {
         pushKmlHistory()
+        if (getIsKmlLineEditorActive() && activeKmlLineEditorKmlId === kmlId) await stopKmlLineEditor({ force: true })
         if (isAddingPoint && activeKmlIdForAdd === kmlId) {
           togglePickupMode(map, null)
         }
@@ -4394,6 +4467,7 @@ export async function initKmlSupport (map, options = {}) {
     
     if (action === 'add-point') {
       event.stopPropagation()
+      if (getIsKmlLineEditorActive() && !(await stopKmlLineEditor())) return
       const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
       if (!isKmlEditable(kmlFile)) {
         await showAlert('目标 KML 当前为只读，不能新增标注。')
@@ -4408,6 +4482,12 @@ export async function initKmlSupport (map, options = {}) {
         return
       }
       togglePickupMode(map, kmlId)
+      return
+    }
+
+    if (action === 'add-line') {
+      event.stopPropagation()
+      await startKmlLineEditor(map, kmlId)
       return
     }
   })
@@ -4527,6 +4607,7 @@ export async function initKmlSupport (map, options = {}) {
   document.addEventListener('keydown', (event) => {
     // 规避冲突：若当前已激活辅助线模式，键盘快捷键优先给辅助线模块使用
     if (typeof window.getIsGuidelineModeActive === 'function' && window.getIsGuidelineModeActive()) return
+    if (getIsKmlLineEditorActive()) return
 
     const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0
     const modifier = isMac ? event.metaKey : event.ctrlKey

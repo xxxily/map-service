@@ -9,9 +9,9 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/pwa-icon.svg">
     <title>混合地图</title>
-    <script type="module" crossorigin src="/assets/main-C_o9TOB6.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/access-control-DLK0SSbB.js">
-    <link rel="stylesheet" crossorigin href="/assets/access-control-CBTN8qke.css">
+    <script type="module" crossorigin src="/assets/main-0vNqSy_I.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/access-control-CMIDYfgQ.js">
+    <link rel="stylesheet" crossorigin href="/assets/access-control-CwPWJAEY.css">
     <link rel="stylesheet" crossorigin href="/assets/main-BLThYdqn.css">
   </head>
   <body>
@@ -113,6 +113,38 @@
       <button type="button" class="guideline-btn" data-guideline-action="exit" title="退出辅助线模式">
         <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
         <span class="btn-text">退出</span>
+      </button>
+    </div>
+
+    <div id="kml-line-editor-toolbar" class="guideline-toolbar kml-line-editor-toolbar" hidden>
+      <span class="guideline-toolbar-title">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><circle cx="3" cy="17" r="1.5"/><circle cx="9" cy="11" r="1.5"/><circle cx="13" cy="15" r="1.5"/><circle cx="21" cy="7" r="1.5"/></svg>
+        <span class="guideline-title-text">添加线段</span>
+      </span>
+      <span class="kml-line-editor-count" data-kml-line-count>0 个点</span>
+      <button type="button" class="guideline-btn" data-kml-line-action="undo" title="撤销 (Ctrl+Z)">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+        <span class="btn-text">撤销</span>
+      </button>
+      <button type="button" class="guideline-btn" data-kml-line-action="redo" title="重做 (Ctrl+Y)">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></svg>
+        <span class="btn-text">重做</span>
+      </button>
+      <button type="button" class="guideline-btn" data-kml-line-action="delete" title="删除选中点位 (Delete / Backspace)">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2"/></svg>
+        <span class="btn-text">删点</span>
+      </button>
+      <button type="button" class="guideline-btn danger" data-kml-line-action="clear" title="清除所有临时点位">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-2-2-2V6"/><path d="M8 6V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+        <span class="btn-text">清除</span>
+      </button>
+      <button type="button" class="guideline-btn kml-line-editor-merge" data-kml-line-action="merge" title="合并为 KML 线段">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><path d="M3 21h18"/></svg>
+        <span class="btn-text">合并线段</span>
+      </button>
+      <button type="button" class="guideline-btn" data-kml-line-action="cancel" title="取消添加线段">
+        <svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+        <span class="btn-text">取消</span>
       </button>
     </div>
 
