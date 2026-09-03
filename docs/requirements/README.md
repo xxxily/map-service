@@ -38,7 +38,7 @@
 - [KML 点位 720 云内容与可配置图标](./kml-720yun-and-marker-icons.md)（第二版已实现，待用户验收）
 - [KML 要素组织与受控 URL 参数保留](./kml-feature-organization-and-url-preservation.md)（第一版已实现）
 - [KML 批量管理与媒体窗口自由布局](./kml-batch-management-and-media-window-layout.md)（第二版已实现，待手工验收）
-- [KML 性能优化与资源集合点位](./kml-performance-and-resource-collections.md)（已实现）
+- [KML 性能优化与资源集合点位](./kml-performance-and-resource-collections.md)（v1.5.58 待 161 内测验收）
 - [账号 KML 同步数据丢失防护](./kml-account-sync-data-loss-prevention.md)（1.5.47 已实现；覆盖误删、冲突、恢复草稿和保存失败）
 - [管理后台数值配置自由裁量与 KML 移动端布局修订](./admin-user-system-configurable-limits-and-kml-mobile-layout.md)（1.5.50 已实现）
 - [用户管理与个人空间 KML 工具栏界面优化需求](./admin-users-and-account-kml-toolbar-ui-polish.md)（v1.5.52 已发布）

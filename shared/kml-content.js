@@ -406,7 +406,19 @@ export function extractContentUrls (text, options = {}) {
 }
 
 function createContentItem (parsed, index, options = {}) {
-  const trustedShareEmbed = getTrustedKmlShareEmbed(parsed)
+  const directTrustedShareEmbed = getTrustedKmlShareEmbed(parsed)
+  // Canonical provider URLs (for example www.douyin.com/video/<id>) are
+  // safe to upgrade locally even though the persisted player URL is the
+  // provider's official embed endpoint. Short links without a resource ID
+  // still remain ordinary links until the server resolver expands them.
+  const trustedShareEmbed = directTrustedShareEmbed || (() => {
+    const known = resolveKnownKmlShareLink(parsed.toString())
+    if (!known.item) return null
+    const embed = getTrustedKmlShareEmbed(known.item.embedUrl)
+    return embed
+      ? { ...embed, sourceUrl: known.item.sourceUrl, canonicalUrl: known.item.canonicalUrl }
+      : null
+  })()
   const explicitType = ['image', 'video', 'audio', 'iframe'].includes(options.typeHint)
     ? options.typeHint
     : ''
@@ -455,6 +467,7 @@ function createContentItem (parsed, index, options = {}) {
     sourceType: trustedShareEmbed ? 'description-share-embed' : 'description-link',
     ...(trustedShareEmbed ? {
       provider: trustedShareEmbed.provider,
+      providerLabel: trustedShareEmbed.providerLabel,
       resourceId: trustedShareEmbed.resourceId,
       sourceUrl: maskedShareSourceUrl,
       canonicalUrl: trustedShareEmbed.canonicalUrl,

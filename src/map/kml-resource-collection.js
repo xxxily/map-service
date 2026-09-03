@@ -1,4 +1,5 @@
 import { classifyContentUrl, createInteractionMediaId } from '../../shared/kml-content.js'
+import { resolveKnownKmlShareLink } from '../../shared/kml-share-links.js'
 import {
   KML_RESOURCE_COLLECTION_ITEM_TYPES,
   KML_RESOURCE_COLLECTION_MAX_ITEMS,
@@ -7,8 +8,10 @@ import {
   normalizeKmlResourceCollection,
   tryNormalizeKmlResourceCollection,
 } from '../../shared/kml-resource-collection.js'
+import { enrichKmlDescriptionWithShareLinks } from '../integrations/kml-share-links.js'
 import { showAlert, showConfirm } from '../ui/dialog.js'
 import { openMediaPreview } from '../ui/media-preview.js'
+import { getKmlMediaProviderListIcon } from './kml-media-marker.js'
 
 const PREVIEWABLE_TYPES = new Set(['image', 'video', 'audio', 'iframe'])
 const TYPE_LABELS = Object.freeze({
@@ -19,6 +22,7 @@ const TYPE_LABELS = Object.freeze({
   iframe: '页面',
   link: '链接',
 })
+const PROVIDER_LABELS = Object.freeze({ douyin: '抖音视频', '720yun': '720 云全景' })
 let activeCollectionPanelClose = null
 
 function escapeHtml (value) {
@@ -32,11 +36,13 @@ function escapeHtml (value) {
 
 function createDraftItem (values = {}) {
   const uuid = globalThis.crypto?.randomUUID?.()
+  const coverUrl = String(values.coverUrl || '')
   return {
     id: String(values.id || (uuid ? `res-${uuid}` : `res-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`)),
     title: String(values.title || ''),
     url: String(values.url || ''),
     type: KML_RESOURCE_COLLECTION_ITEM_TYPES.includes(values.type) ? values.type : 'auto',
+    ...(coverUrl ? { coverUrl } : {}),
   }
 }
 
@@ -62,6 +68,58 @@ function getComparableHttpsUrl (value) {
     return parsed.protocol === 'https:' ? parsed.toString() : String(value || '').trim()
   } catch {
     return String(value || '').trim()
+  }
+}
+
+function getInputUrlOffset (input, url) {
+  const source = String(input || '')
+  const index = source.indexOf(String(url || ''))
+  return index >= 0 ? index : source.length
+}
+
+function inferResourceTitle (input, url, fallback = '') {
+  const beforeUrl = String(input || '').slice(0, getInputUrlOffset(input, url))
+  const bracketTitles = [...beforeUrl.matchAll(/【([^】\r\n]{1,200})】/g)]
+    .map(match => String(match[1] || '').trim())
+    .filter(Boolean)
+  return bracketTitles.at(-1) || String(fallback || '').trim()
+}
+
+function createResolvedDraftItem (input, sourceUrl, shareItem) {
+  return createDraftItem({
+    url: shareItem.embedUrl,
+    type: 'iframe',
+    title: inferResourceTitle(input, sourceUrl, shareItem.title),
+  })
+}
+
+/**
+ * Convert pasted share text into collection drafts while leaving ordinary
+ * HTTPS URLs intact. Supported share links are stored as official embed URLs
+ * so later collection browsing does not need another network request.
+ */
+export async function resolveKmlResourceCollectionInput (input, options = {}) {
+  const source = String(input || '')
+  const urls = extractKmlResourceCollectionHttpsUrls(source)
+  if (!urls.length) return { urls: [], items: [], warnings: [] }
+
+  const enriched = await enrichKmlDescriptionWithShareLinks(source, options)
+  const resolvedBySource = new Map(
+    (enriched.items || []).map(item => [getComparableHttpsUrl(item.sourceUrl), item]),
+  )
+  const items = urls.map(url => {
+    const shareItem = resolvedBySource.get(getComparableHttpsUrl(url))
+    return shareItem?.embedUrl
+      ? createResolvedDraftItem(source, url, shareItem)
+      : createDraftItem({
+          url,
+          title: inferResourceTitle(source, url),
+        })
+  })
+  return {
+    urls,
+    items,
+    warnings: [...new Set((enriched.warnings || []).map(message => String(message || '').trim()).filter(Boolean))],
   }
 }
 
@@ -92,7 +150,7 @@ export function planKmlResourceCollectionBatchAdd (items, input, maxItems = KML_
 }
 
 function isBlankEditorItem (item) {
-  return !String(item?.title || '').trim() && !String(item?.url || '').trim() && (!item?.type || item.type === 'auto')
+  return !String(item?.title || '').trim() && !String(item?.url || '').trim() && !String(item?.coverUrl || '').trim() && (!item?.type || item.type === 'auto')
 }
 
 function getErrorPathLocation (path) {
@@ -138,9 +196,9 @@ export function prepareKmlResourceCollectionEditorSave (draft) {
 function formatEditorError (error, itemIndex, field) {
   const message = String(error?.message || '资源集合格式不正确')
   if (!Number.isInteger(itemIndex) || itemIndex < 0) return message
-  const label = { title: '标题', url: '地址', type: '类型', id: '标识' }[field] || '内容'
+  const label = { title: '标题', url: '地址', coverUrl: '封面', type: '类型', id: '标识' }[field] || '内容'
   let detail = message
-    .replace(/^items\[\d+\]\.(?:title|url|type|id)/i, '')
+    .replace(/^items\[\d+\]\.(?:title|url|coverUrl|type|id)/i, '')
     .replace(/^第\s*\d+\s*个资源/, '')
     .trim()
   if (detail.startsWith(label)) detail = detail.slice(label.length).trim()
@@ -153,14 +211,32 @@ function resolveCollectionDisplayItem (resource, index, contentOptions, classify
     index,
     typeHint: resource.type === 'auto' ? '' : resource.type,
     title: resource.title,
+    thumbnailUrl: resource.coverUrl || '',
   })
   if (classified.accepted) {
+    const knownShare = resolveKnownKmlShareLink(resource.url)
+    const item = classified.item.type === 'link'
+      ? {
+          ...classified.item,
+          type: 'iframe',
+          title: resource.title || knownShare.item?.title || PROVIDER_LABELS[knownShare.provider] || classified.item.title,
+          provider: classified.item.provider || knownShare.item?.provider || knownShare.provider || '',
+          providerLabel: classified.item.providerLabel || knownShare.item?.providerLabel || '',
+          renderUrl: classified.item.url,
+          embedPolicy: {
+            sandbox: 'allow-scripts allow-forms allow-popups',
+            referrerPolicy: 'no-referrer',
+          },
+        }
+      : classified.item
     return {
-      ...classified.item,
+      ...item,
       id: `resource-collection-${resource.id}`,
       collectionItemId: resource.id,
       resourceIndex: index,
       resourceType: resource.type,
+      coverUrl: String(resource.coverUrl || ''),
+      thumbnailUrl: String(resource.coverUrl || item.thumbnailUrl || ''),
       sourceType: 'resource-collection',
     }
   }
@@ -169,6 +245,8 @@ function resolveCollectionDisplayItem (resource, index, contentOptions, classify
     collectionItemId: resource.id,
     resourceIndex: index,
     resourceType: resource.type,
+    coverUrl: String(resource.coverUrl || ''),
+    thumbnailUrl: String(resource.coverUrl || ''),
     type: 'link',
     title: resource.title || new URL(resource.url).hostname,
     url: resource.url,
@@ -228,7 +306,7 @@ function renderEditorItem (item, index, total, viewMode, validation) {
   return `
     <article class="kml-resource-editor-item is-${escapeHtml(viewMode)}${invalid ? ' is-invalid' : ''}" data-resource-index="${index}">
       <div class="kml-resource-editor-item-head">
-        <span>资源 ${index + 1}</span>
+        <div><span class="kml-resource-editor-item-number">资源 ${index + 1}</span><span class="kml-resource-editor-item-type">${escapeHtml(TYPE_LABELS[item.type] || '资源')}</span></div>
         <div class="kml-resource-editor-item-actions">
           <button type="button" data-resource-action="up" title="上移" aria-label="上移" ${index === 0 ? 'disabled' : ''}>↑</button>
           <button type="button" data-resource-action="down" title="下移" aria-label="下移" ${index >= total - 1 ? 'disabled' : ''}>↓</button>
@@ -236,11 +314,12 @@ function renderEditorItem (item, index, total, viewMode, validation) {
         </div>
       </div>
       <div class="kml-resource-editor-fields">
-        <label><span>标题</span><input type="text" data-resource-field="title" value="${escapeHtml(item.title)}" maxlength="200" ${invalidField === 'title' ? 'aria-invalid="true"' : ''}></label>
+        <label><span>标题</span><input type="text" data-resource-field="title" value="${escapeHtml(item.title)}" maxlength="200" placeholder="资源标题" ${invalidField === 'title' ? 'aria-invalid="true"' : ''}></label>
         <label><span>地址</span><input type="url" data-resource-field="url" value="${escapeHtml(item.url)}" inputmode="url" placeholder="https://" ${invalidField === 'url' ? 'aria-invalid="true"' : ''}></label>
         <label><span>类型</span><select data-resource-field="type" ${invalidField === 'type' ? 'aria-invalid="true"' : ''}>
           ${KML_RESOURCE_COLLECTION_ITEM_TYPES.map(type => `<option value="${type}" ${item.type === type ? 'selected' : ''}>${TYPE_LABELS[type]}</option>`).join('')}
         </select></label>
+        <label class="kml-resource-editor-cover-field"><span>封面</span><input type="url" data-resource-field="coverUrl" value="${escapeHtml(item.coverUrl || '')}" inputmode="url" placeholder="可选 https://" ${invalidField === 'coverUrl' ? 'aria-invalid="true"' : ''}></label>
       </div>
       ${invalid ? `<p class="kml-resource-editor-item-error" data-resource-item-error>${escapeHtml(validation.message)}</p>` : ''}
     </article>
@@ -263,6 +342,7 @@ export async function showKmlResourceCollectionEditor (value, options = {}) {
   let validation = null
   let dirty = false
   let closePromptOpen = false
+  const pendingResolutions = new Set()
 
   const render = () => {
     const pageWindow = getKmlResourceCollectionPage(draft.items, page)
@@ -350,6 +430,30 @@ export async function showKmlResourceCollectionEditor (value, options = {}) {
       closePromptOpen = false
       if (confirmed) close(null)
     }
+    const resolveEditorItem = async (item, itemIndex) => {
+      if (!item || item.type !== 'auto' || !String(item.url || '').trim()) return
+      const sourceUrl = String(item.url).trim()
+      const task = resolveKmlResourceCollectionInput(sourceUrl)
+        .then(result => {
+          if (String(item.url || '').trim() !== sourceUrl || item.type !== 'auto') return
+          const resolved = result.items?.[0]
+          if (resolved && resolved.type === 'iframe' && resolved.url) {
+            item.url = resolved.url
+            item.type = resolved.type
+            if (!String(item.title || '').trim()) item.title = resolved.title
+            dirty = true
+            rerender({ focusIndex: itemIndex, focusField: 'url', scrollTo: false })
+          }
+          if (result.warnings?.length) setFeedback(result.warnings.join('；'), 'info')
+        })
+        .catch(error => setFeedback(error?.message || '分享链接识别失败，请检查地址', 'error'))
+      pendingResolutions.add(task)
+      try {
+        await task
+      } finally {
+        pendingResolutions.delete(task)
+      }
+    }
     const onKeydown = event => {
       if (event.key === 'Escape') {
         event.preventDefault()
@@ -385,9 +489,19 @@ export async function showKmlResourceCollectionEditor (value, options = {}) {
       if (item && field) {
         item[field] = event.target.value
         dirty = true
+        if (field === 'type' && item.type === 'auto') {
+          void resolveEditorItem(item, Number(itemRoot.dataset.resourceIndex))
+        }
       }
     })
-    root.addEventListener('click', event => {
+    root.addEventListener('blur', event => {
+      const field = event.target.dataset.resourceField
+      if (field !== 'url') return
+      const itemRoot = event.target.closest('[data-resource-index]')
+      const item = draft.items[Number(itemRoot?.dataset.resourceIndex)]
+      if (item?.type === 'auto') void resolveEditorItem(item, Number(itemRoot.dataset.resourceIndex))
+    }, true)
+    root.addEventListener('click', async event => {
       const viewButton = event.target.closest('[data-resource-view]')
       if (viewButton) {
         if (draft.viewMode === viewButton.dataset.resourceView) return
@@ -413,23 +527,34 @@ export async function showKmlResourceCollectionEditor (value, options = {}) {
         setFeedback('')
         rerender({ focusIndex: draft.items.length - 1, focusField: 'url', scrollTo: true })
       } else if (action === 'batch-add') {
-        const textarea = root.querySelector('[data-resource-batch]')
-        batchInput = textarea?.value || batchInput
-        const plan = planKmlResourceCollectionBatchAdd(draft.items, batchInput)
-        if (!plan.urls.length) return setFeedback('没有识别到有效的 HTTPS 地址')
-        if (!plan.additions.length) {
-          return setFeedback('输入的地址已全部存在，未新增资源', 'info')
+        actionButton.disabled = true
+        try {
+          const textarea = root.querySelector('[data-resource-batch]')
+          batchInput = textarea?.value || batchInput
+          const resolvedInput = await resolveKmlResourceCollectionInput(batchInput)
+          const plan = planKmlResourceCollectionBatchAdd(draft.items, resolvedInput.items.map(item => item.url).join('\n'))
+          if (!plan.urls.length) return setFeedback('没有识别到有效的 HTTPS 地址')
+          if (!plan.additions.length) return setFeedback('输入的地址已全部存在，未新增资源', 'info')
+          const firstAddedIndex = draft.items.length
+          const additionsByUrl = new Map(resolvedInput.items.map(item => [getComparableHttpsUrl(item.url), item]))
+          plan.additions.forEach(url => {
+            const resolvedItem = additionsByUrl.get(getComparableHttpsUrl(url))
+            draft.items.push(resolvedItem || createDraftItem({ url }))
+          })
+          batchInput = ''
+          dirty = true
+          page = Math.floor(firstAddedIndex / KML_RESOURCE_COLLECTION_PAGE_SIZE) + 1
+          const notes = []
+          if (plan.duplicateCount) notes.push(`跳过 ${plan.duplicateCount} 个重复地址`)
+          if (plan.omittedCount) notes.push(`另有 ${plan.omittedCount} 个地址超出上限`)
+          if (resolvedInput.warnings.length) notes.push(...resolvedInput.warnings)
+          setFeedback(notes.length ? `已添加 ${plan.additions.length} 项，${notes.join('，')}` : '', notes.length ? 'info' : 'error')
+          rerender({ focusIndex: firstAddedIndex, focusField: 'url', scrollTo: true })
+        } catch (error) {
+          setFeedback(error?.message || '批量识别失败，请检查地址后重试')
+        } finally {
+          actionButton.disabled = false
         }
-        const firstAddedIndex = draft.items.length
-        plan.additions.forEach(url => draft.items.push(createDraftItem({ url })))
-        batchInput = ''
-        dirty = true
-        page = Math.floor(firstAddedIndex / KML_RESOURCE_COLLECTION_PAGE_SIZE) + 1
-        const notes = []
-        if (plan.duplicateCount) notes.push(`跳过 ${plan.duplicateCount} 个重复地址`)
-        if (plan.omittedCount) notes.push(`另有 ${plan.omittedCount} 个地址超出上限`)
-        setFeedback(notes.length ? `已添加 ${plan.additions.length} 项，${notes.join('，')}` : '', notes.length ? 'info' : 'error')
-        rerender({ focusIndex: firstAddedIndex, focusField: 'url', scrollTo: true })
       } else if (action === 'delete' && Number.isInteger(itemIndex)) {
         draft.items.splice(itemIndex, 1)
         dirty = true
@@ -454,6 +579,7 @@ export async function showKmlResourceCollectionEditor (value, options = {}) {
         page += 1
         render()
       } else if (action === 'save') {
+        if (pendingResolutions.size) await Promise.all([...pendingResolutions])
         const result = prepareKmlResourceCollectionEditorSave(draft)
         if (result.value) {
           dirty = false
@@ -479,17 +605,18 @@ export async function showKmlResourceCollectionEditor (value, options = {}) {
 function renderCollectionItem (item, viewMode) {
   const typeLabel = TYPE_LABELS[item.type] || '资源'
   const canPreview = PREVIEWABLE_TYPES.has(item.type) && !item.unavailable
-  const image = item.type === 'image'
-    ? `<img src="${escapeHtml(item.thumbnailUrl || item.renderUrl || item.url)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
-    : `<span class="kml-resource-collection-type" aria-hidden="true">${item.type === 'video' ? '▶' : item.type === 'audio' ? '♪' : item.type === 'iframe' ? '▣' : '↗'}</span>`
-  const tagName = canPreview ? 'button' : 'a'
-  const interactiveAttributes = canPreview
-    ? `type="button" data-collection-item="${item.resourceIndex}"`
-    : `href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" data-collection-item="${item.resourceIndex}" aria-label="打开原地址"`
+  const thumbnailUrl = item.coverUrl || (item.type === 'image' ? (item.thumbnailUrl || item.renderUrl || item.url) : '')
+  const providerIcon = getKmlMediaProviderListIcon(item.provider)
+  const fallback = providerIcon || `<span class="kml-resource-collection-type" aria-hidden="true">${item.type === 'video' ? '▶' : item.type === 'audio' ? '♪' : item.type === 'iframe' ? '▣' : '↗'}</span>`
+  const media = thumbnailUrl
+    ? `<img src="${escapeHtml(thumbnailUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer"><span class="kml-resource-collection-fallback" aria-hidden="true">${fallback}</span>`
+    : `<span class="kml-resource-collection-fallback" aria-hidden="true">${fallback}</span>`
+  const tagName = 'button'
+  const interactiveAttributes = `type="button" data-collection-item="${item.resourceIndex}"${canPreview ? '' : ' disabled aria-label="资源不可预览"'}`
   return `
     <${tagName} class="kml-resource-collection-item is-${escapeHtml(viewMode)}${canPreview ? '' : ' is-unavailable'}" ${interactiveAttributes} ${canPreview ? '' : 'data-unavailable="true"'}>
-      <span class="kml-resource-collection-media">${image}</span>
-      <span class="kml-resource-collection-copy"><strong>${escapeHtml(item.title || `资源 ${item.resourceIndex + 1}`)}</strong><small>${escapeHtml(canPreview ? typeLabel : '打开原地址')}</small></span>
+      <span class="kml-resource-collection-media${thumbnailUrl ? ' has-cover' : ''}">${media}</span>
+      <span class="kml-resource-collection-copy"><strong>${escapeHtml(item.title || `资源 ${item.resourceIndex + 1}`)}</strong><small>${escapeHtml(canPreview ? (item.providerLabel || typeLabel) : '暂不可预览')}</small></span>
     </${tagName}>
   `
 }
@@ -516,7 +643,10 @@ export function openKmlResourceCollectionPanel (kmlFile, feature, options = {}) 
       .map(item => ({
         ...item,
         featureId: String(feature.id || ''),
-        featureName: String(feature.name || ''),
+        // A collection has one map feature but many resource titles. Use the
+        // item title for the preview track so every thumbnail remains
+        // distinguishable instead of repeating the collection name.
+        featureName: String(item.title || feature.name || ''),
         kmlId: String(kmlFile?.id || ''),
         kmlName: String(kmlFile?.name || ''),
         sharePublicId: String(kmlFile?.sharePublicId || ''),

@@ -126,6 +126,11 @@ function normalizeItemUrl (value, path) {
   return parsed.toString()
 }
 
+function normalizeOptionalItemUrl (value, path) {
+  const raw = normalizeText(value, KML_RESOURCE_COLLECTION_MAX_URL_LENGTH, path)
+  return raw ? normalizeItemUrl(raw, path) : ''
+}
+
 function parseInput (value) {
   if (typeof value !== 'string') return value
   if (byteLength(value) > KML_RESOURCE_COLLECTION_MAX_BYTES) {
@@ -202,11 +207,13 @@ export function normalizeKmlResourceCollection (value, options = {}) {
       id = defaultCreateId()
     }
     ids.add(id)
+    const coverUrl = normalizeOptionalItemUrl(rawItem.coverUrl, `${path}.coverUrl`)
     return {
       id,
       title: normalizeText(rawItem.title, KML_RESOURCE_COLLECTION_MAX_TITLE_LENGTH, `${path}.title`),
       url: normalizeItemUrl(rawItem.url, `${path}.url`),
       type,
+      ...(coverUrl ? { coverUrl } : {}),
     }
   })
 

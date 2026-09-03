@@ -234,6 +234,7 @@ test('KML resource collections round-trip through standard ExtendedData', () => 
         title: '夜景视角',
         url: 'https://www.720yun.com/t/demo?scene_id=4279442',
         type: 'iframe',
+        coverUrl: 'https://cdn.example.com/night-view.jpg',
       }],
     },
   }

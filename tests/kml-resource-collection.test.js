@@ -15,6 +15,7 @@ import {
   extractKmlResourceCollectionHttpsUrls,
   planKmlResourceCollectionBatchAdd,
   prepareKmlResourceCollectionEditorSave,
+  resolveKmlResourceCollectionInput,
 } from '../src/map/kml-resource-collection.js'
 
 test('resource collection editor keeps full HTTPS URLs and skips duplicate batch entries', () => {
@@ -38,6 +39,21 @@ test('resource collection editor keeps full HTTPS URLs and skips duplicate batch
   assert.deepEqual(plan.additions, ['https://example.com/new.jpg', 'https://example.com/last.jpg'])
   assert.equal(plan.duplicateCount, 1)
   assert.equal(plan.omittedCount, 0)
+})
+
+test('resource collection input resolves provider links and infers copied share titles', async () => {
+  const result = await resolveKmlResourceCollectionInput(
+    '9.79 复制打开抖音，看看【奢望的作品】是牛马向往的地方 https://www.douyin.com/video/7645601561687440101',
+  )
+
+  assert.equal(result.warnings.length, 0)
+  assert.equal(result.items.length, 1)
+  assert.deepEqual(result.items[0], {
+    id: result.items[0].id,
+    title: '奢望的作品',
+    url: 'https://open.douyin.com/player/video?vid=7645601561687440101',
+    type: 'iframe',
+  })
 })
 
 test('resource collection editor save removes untouched placeholders and maps validation to original item', () => {
@@ -89,6 +105,21 @@ test('resource collection normalizes stable items and preserves URL query parame
     }],
   })
   assert.deepEqual(JSON.parse(serializeKmlResourceCollection(normalized)), normalized)
+})
+
+test('resource collection accepts an optional safe cover URL and omits empty covers', () => {
+  const normalized = normalizeKmlResourceCollection({
+    items: [
+      { id: 'cover', url: 'https://www.douyin.com/video/7645601561687440101', type: 'auto', coverUrl: 'https://cdn.example.com/cover.jpg' },
+      { id: 'no-cover', url: 'https://www.720yun.com/vr/f4ejtOsf5y0', type: 'auto', coverUrl: '' },
+    ],
+  })
+
+  assert.equal(normalized.items[0].coverUrl, 'https://cdn.example.com/cover.jpg')
+  assert.equal(Object.hasOwn(normalized.items[1], 'coverUrl'), false)
+  assert.equal(tryNormalizeKmlResourceCollection({
+    items: [{ url: 'https://example.com/page', type: 'auto', coverUrl: 'http://example.com/cover.jpg' }],
+  }).error.code, 'RESOURCE_COLLECTION_URL_PROTOCOL')
 })
 
 test('resource collection rejects duplicate IDs and unsafe protocols', () => {
@@ -221,6 +252,57 @@ test('resource collection display resolver classifies only requested pages until
   assert.equal(classifyCalls, 300)
 })
 
+test('resource collection display resolver routes ordinary links through the browser preview', () => {
+  const resolver = createKmlResourceCollectionDisplayResolver({
+    version: 1,
+    viewMode: 'grid',
+    items: [{ id: 'res-link', title: '说明页', url: 'https://docs.example.com/readme', type: 'auto' }],
+  }, {
+    normalized: true,
+    classify: () => ({
+      accepted: true,
+      item: {
+        id: 'classified-link',
+        type: 'link',
+        title: '说明页',
+        url: 'https://docs.example.com/readme',
+        displayUrl: 'https://docs.example.com/readme',
+      },
+    }),
+  })
+
+  const item = resolver.page(1).items[0]
+  assert.equal(item.type, 'iframe')
+  assert.equal(item.renderUrl, item.url)
+  assert.match(item.embedPolicy.sandbox, /allow-scripts/)
+})
+
+test('resource collection display resolver keeps an explicit cover for cards and thumbnails', () => {
+  const resolver = createKmlResourceCollectionDisplayResolver({
+    version: 1,
+    viewMode: 'grid',
+    items: [{ id: 'res-cover', title: '抖音视频', url: 'https://open.douyin.com/player/video?vid=7645601561687440101', type: 'iframe', coverUrl: 'https://cdn.example.com/cover.jpg' }],
+  }, { normalized: true })
+
+  const item = resolver.page(1).items[0]
+  assert.equal(item.coverUrl, 'https://cdn.example.com/cover.jpg')
+  assert.equal(item.thumbnailUrl, 'https://cdn.example.com/cover.jpg')
+  assert.equal(item.provider, 'douyin')
+})
+
+test('resource collection display resolver exposes provider identity for unresolved short links', () => {
+  const resolver = createKmlResourceCollectionDisplayResolver({
+    version: 1,
+    viewMode: 'list',
+    items: [{ id: 'res-short', title: '', url: 'https://v.douyin.com/kUTlrij29B0/', type: 'auto' }],
+  }, { normalized: true })
+
+  const item = resolver.page(1).items[0]
+  assert.equal(item.type, 'iframe')
+  assert.equal(item.provider, 'douyin')
+  assert.equal(item.title, '抖音视频')
+})
+
 test('resource collection Escape handling keeps the collection open while media preview is visible', () => {
   const source = readFileSync(new URL('../src/map/kml-resource-collection.js', import.meta.url), 'utf8')
   const panelSource = source.slice(source.indexOf('export function openKmlResourceCollectionPanel'))
@@ -239,4 +321,7 @@ test('resource collection editor renders a mode-aware field layout and preserves
   assert.match(source, /data-resource-batch[^>]*>\$\{escapeHtml\(batchInput\)\}<\/textarea>/)
   assert.match(source, /aria-pressed="\$\{draft\.viewMode === 'grid'\}"/)
   assert.match(source, /prepareKmlResourceCollectionEditorSave\(draft\)/)
+  assert.match(source, /data-resource-action="delete"/)
+  assert.doesNotMatch(source, /target="_blank" rel="noopener noreferrer" data-collection-item/)
+  assert.match(source, /resolveKmlResourceCollectionInput/)
 })

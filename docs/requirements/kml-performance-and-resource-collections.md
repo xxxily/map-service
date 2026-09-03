@@ -1,6 +1,6 @@
 # KML 性能优化与资源集合点位
 
-状态：已实现，验收通过（2026-08-18）；编辑器可用性与 Leaflet 集合点位悬停稳定性修复待随下一小版本发布
+状态：v1.5.58 已实现，待 161 内测验收
 
 ## 1. 背景与目标
 
@@ -67,7 +67,8 @@
         "id": "res-...",
         "title": "2024 秋季全景",
         "url": "https://example.com/pano",
-        "type": "auto"
+        "type": "auto",
+        "coverUrl": "https://example.com/pano-cover.jpg"
       }
     ]
   }
@@ -79,6 +80,7 @@
 - `version` 当前固定为 `1`。导入或读取到未知版本、非法 JSON 或超限集合时，保留 Point 几何并忽略该扩展，同时返回 warning；服务端直接写入未知/非法集合返回 `400 VALIDATION_FAILED`，不会把未知结构写入持久化数据。
 - `viewMode` 只能为 `list` 或 `grid`，缺省为 `grid`。
 - `items` 保持用户排序；单集合最多 300 项，单项 `title` 最多 200 个字符，`url` 最多 4,096 个字符。
+- `coverUrl` 为可选封面地址，使用与 `url` 相同的 HTTPS、凭据和敏感查询参数校验，最多 4,096 个字符；未设置时不写入字段，展示层按图片缩略图、provider logo、类型图标顺序回退。
 - `type` 只能为 `auto`、`image`、`video`、`audio`、`iframe`；`auto` 由现有受控内容识别器决定。
 - 每个集合序列化后的大小不超过 512 KiB；超出时服务端拒绝并返回字段级中文错误。
 - 集合项 `id` 在集合内唯一；缺失时服务端生成稳定随机 ID，更新时不得因排序变化而重建已有 ID。

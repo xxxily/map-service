@@ -64,6 +64,18 @@ test('Douyin official player is a built-in trusted iframe with provider policy',
   assert.equal(classified.item.embedPolicy.allowFullscreen, true)
 })
 
+test('Douyin canonical video URLs are upgraded to the official player locally', () => {
+  const videoId = '7645601561687440101'
+  const classified = classifyContentUrl(`https://www.douyin.com/video/${videoId}`)
+
+  assert.equal(classified.accepted, true)
+  assert.equal(classified.item.type, 'iframe')
+  assert.equal(classified.item.provider, 'douyin')
+  assert.equal(classified.item.resourceId, videoId)
+  assert.equal(classified.item.canonicalUrl, `https://www.douyin.com/video/${videoId}`)
+  assert.match(classified.item.renderUrl, /open\.douyin\.com\/player\/video\?vid=/)
+})
+
 test('720yun public panorama preserves trusted query and hash with a fixed provider policy', () => {
   const workId = 'f4ejtOsf5y0'
   const url = `https://www.720yun.com/vr/${workId}?scene_id=12#view`

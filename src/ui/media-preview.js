@@ -435,7 +435,7 @@ function renderMediaTrack () {
         ? `查看${featureName}的第 ${index + 1} 项${TYPE_LABELS[item.type] || '媒体'}`
         : `查看第 ${index + 1} 项，${TYPE_LABELS[item.type] || '媒体'}：${getItemTitle(item)}`)
       button.title = featureName || getItemTitle(item)
-      if (item.type === 'image') {
+      if (item.thumbnailUrl) {
         const image = document.createElement('img')
         const imageUrl = String(item.thumbnailUrl || item.renderUrl || item.url || '')
         image.alt = ''
