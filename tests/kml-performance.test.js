@@ -8,6 +8,44 @@ import {
   KML_VIEWPORT_BUFFER_RATIO,
   shouldVirtualizeKmlPoints,
 } from '../src/map/kml-performance.js'
+import { getOpenKmlPopupIdentity } from '../src/map/kml-popup-state.js'
+
+function popupFixture (isOpen) {
+  return {
+    isOpen: () => isOpen,
+    _source: {
+      _mapServiceKmlFileId: 'kml-1',
+      _mapServiceKmlFeatureId: 'feature-1',
+    },
+  }
+}
+
+test('closed KML popup is not restored after viewport rerender', () => {
+  const map = { _popup: popupFixture(false) }
+  assert.equal(getOpenKmlPopupIdentity(map), null)
+
+  map._popup = popupFixture(true)
+  assert.deepEqual(getOpenKmlPopupIdentity(map), {
+    kmlId: 'kml-1',
+    featureId: 'feature-1',
+  })
+})
+
+test('popup identity supports lightweight map and popup mocks', () => {
+  const map = {}
+  const popup = {
+    _map: map,
+    _source: {
+      _mapServiceKmlFileId: 'kml-2',
+      _mapServiceKmlFeatureId: 'feature-2',
+    },
+  }
+  map._popup = popup
+  assert.deepEqual(getOpenKmlPopupIdentity(map), {
+    kmlId: 'kml-2',
+    featureId: 'feature-2',
+  })
+})
 
 test('KML feature focus opens visible points immediately and never queues a long flight', () => {
   assert.deepEqual(getKmlFeatureFocusPlan({

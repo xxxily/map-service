@@ -106,6 +106,7 @@ import {
   createKmlLineEditor,
   getIsKmlLineEditorActive,
 } from './kml-line-editor.js'
+import { getOpenKmlPopupIdentity } from './kml-popup-state.js'
 import {
   clusterKmlPoints,
   resolveGlobalKmlPointClusteringConfig,
@@ -1240,14 +1241,6 @@ function getFeatureById (kmlId, featureId) {
 
 function getFeatureLayerKey (kmlId, featureId) {
   return JSON.stringify([String(kmlId || ''), String(featureId || '')])
-}
-
-function getOpenKmlPopupIdentity (map) {
-  const popup = map?.getPopup?.() || map?._popup
-  const source = popup?._source
-  const kmlId = String(source?._mapServiceKmlFileId || '')
-  const featureId = String(source?._mapServiceKmlFeatureId || '')
-  return kmlId && featureId ? { kmlId, featureId } : null
 }
 
 function restoreKmlPopup (map, identity, delay = 0) {
