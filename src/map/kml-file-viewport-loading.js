@@ -7,7 +7,7 @@ import {
   normalizeKmlBounds,
   wrappedLongitudeDistance,
 } from '../../shared/kml-spatial.js'
-import { normalizeLongitude, wgs84ToGcj02, wgs84ToGcj02Deep } from './coord-transform.js'
+import { normalizeLongitude, wgs84ToGcj02 } from './coord-transform.js'
 
 export const KML_FILE_VIEWPORT_DEFAULTS = Object.freeze({
   concurrency: 3,
@@ -39,6 +39,30 @@ function correctionEnabled (file) {
   return file?.coordCorrection !== 'none'
 }
 
+function isCoordinatePair (value) {
+  return Array.isArray(value) && value.length >= 2 &&
+    !Array.isArray(value[0]) && !Array.isArray(value[1])
+}
+
+function transformCoordinatesForBounds (value) {
+  if (!Array.isArray(value)) return value
+  if (!isCoordinatePair(value)) return value.map(transformCoordinatesForBounds)
+
+  const longitude = Number(value[0])
+  const latitude = Number(value[1])
+  // Leave malformed pairs in place. collectKmlCoordinates will ignore them,
+  // while valid siblings can still contribute a conservative file boundary.
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude) ||
+      latitude < -90 || latitude > 90) return value
+
+  const transformed = wgs84ToGcj02([longitude, latitude])
+  if (!Array.isArray(transformed) || transformed.length < 2 ||
+      !Number.isFinite(Number(transformed[0])) || !Number.isFinite(Number(transformed[1]))) {
+    return value
+  }
+  return [Number(transformed[0]), Number(transformed[1]), ...value.slice(2)]
+}
+
 function boundsCacheSignature (value) {
   if (!value || typeof value !== 'object') return ''
   const bbox = Array.isArray(value.bbox) ? value.bbox.join(',') : ''
@@ -60,7 +84,7 @@ function withFeatureCount (bounds, featureCount) {
 function computeFeatureBounds (file, features, featureCount, transform = false) {
   if (file?.contentLoaded === false || !features.length) return null
   const sourceFeatures = transform
-    ? features.map(feature => ({ coordinates: wgs84ToGcj02Deep(feature?.coordinates) }))
+    ? features.map(feature => ({ coordinates: transformCoordinatesForBounds(feature?.coordinates) }))
     : features
   const computed = computeKmlBounds(sourceFeatures)
   return computed?.status === 'ready' ? withFeatureCount(computed, featureCount) : null

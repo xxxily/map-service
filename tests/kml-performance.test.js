@@ -5,6 +5,7 @@ import {
   expandKmlViewportBounds,
   getKmlFeatureFocusPlan,
   getKmlLeafletPerformanceOptions,
+  isKmlPointInsideBounds,
   KML_VIEWPORT_BUFFER_RATIO,
   shouldVirtualizeKmlPoints,
 } from '../src/map/kml-performance.js'
@@ -95,6 +96,19 @@ test('ordinary KML point virtualization uses a bounded two-view buffer', () => {
     north: 13,
     east: 26,
   })
+})
+
+test('ordinary KML point containment accepts wrapped viewport bounds', () => {
+  const bounds = expandKmlViewportBounds({
+    south: -1,
+    west: 179,
+    north: 1,
+    east: -179,
+    crossesAntimeridian: true,
+  })
+  assert.equal(isKmlPointInsideBounds([179.5, 0], bounds), true)
+  assert.equal(isKmlPointInsideBounds([-179.5, 0], bounds), true)
+  assert.equal(isKmlPointInsideBounds([0, 0], bounds), false)
 })
 
 test('2D KML popup content is lazy and feature focus has no fixed 850ms wait', () => {

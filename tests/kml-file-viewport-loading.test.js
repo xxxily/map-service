@@ -119,6 +119,50 @@ test('none correction keeps summary coordinates and antimeridian semantics', () 
   assert.equal(display.crossesAntimeridian, true)
 })
 
+test('malformed loaded coordinates do not discard valid display bounds', () => {
+  const correctedFile = file('malformed-loaded', 111, {
+    contentLoaded: true,
+    coordCorrection: 'wgs84-to-gcj02',
+    bounds: {
+      version: 1,
+      status: 'ready',
+      bbox: [111.38, 22.23, 111.39, 22.24],
+      crossesAntimeridian: false,
+      featureCount: 3,
+    },
+    features: [
+      { type: 'Point', coordinates: [111.382, 22.234] },
+      { type: 'LineString', coordinates: [[111.383, 22.235], [NaN, 22.236]] },
+      { type: 'Point', coordinates: ['not-a-number', 22.237] },
+    ],
+  })
+  const display = getKmlFileViewportBounds(correctedFile)
+  assert.equal(display?.status, 'ready')
+  const transformed = wgs84ToGcj02([111.382, 22.234])
+  const epsilon = 1e-8
+  assert.ok(display.bbox[0] <= transformed[0] + epsilon && display.bbox[2] >= transformed[0] - epsilon)
+  assert.ok(display.bbox[1] <= transformed[1] + epsilon && display.bbox[3] >= transformed[1] - epsilon)
+})
+
+test('missing and empty summaries stay on the conservative compatibility path', () => {
+  const missing = file('missing-summary', 110, {
+    bounds: { version: 1, status: 'missing', bbox: null, crossesAntimeridian: false, featureCount: 1 },
+  })
+  const empty = file('empty-summary', 110, {
+    bounds: { version: 1, status: 'empty', bbox: null, crossesAntimeridian: false, featureCount: 0 },
+  })
+  const viewport = { south: 22, west: 111, north: 23, east: 112, zoom: 19, center: { lat: 22.5, lng: 111.5 } }
+
+  assert.equal(getKmlFileViewportBounds(missing).status, 'missing')
+  assert.equal(getKmlFileViewportBounds(empty).status, 'empty')
+  assert.equal(shouldRenderKmlFileInViewport(missing, viewport), true)
+  assert.equal(shouldRenderKmlFileInViewport(empty, viewport), true)
+  assert.deepEqual(
+    new Set(rankKmlFilesForViewport([missing, empty], viewport).map(item => item.id)),
+    new Set(['missing-summary', 'empty-summary']),
+  )
+})
+
 test('scheduler enforces concurrency and does not let a delayed retry block ready work', async () => {
   const pending = new Map()
   const started = []

@@ -1,3 +1,9 @@
+import {
+  expandKmlViewportForFiles,
+  isKmlCoordinateInsideBounds,
+} from '../../shared/kml-spatial.js'
+import { wgs84ToGcj02 } from './coord-transform.js'
+
 export const LIVE_TRACK_RENDER_POINT_LIMIT = 120
 export const LIVE_TRACK_RENDER_LINE_POINT_LIMIT = 2000
 export const MAX_LOCATION_INTERVAL_SECONDS = 60
@@ -32,11 +38,159 @@ export const TRACK_LOD_CONFIGS = [
 
 /** 3D 相机高度换算缩放级别的基准高度（与 startIntervalLocation3d 一致） */
 const CAMERA_HEIGHT_BASE = 20_000_000
+const trackDisplayCoordinatesCache = new WeakMap()
 
 function finiteNumber (value) {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
+}
+
+function shouldCorrectTrackCoordinates (kmlFile) {
+  return kmlFile?.coordCorrection !== 'none'
+}
+
+function isCoordinatePair (value) {
+  return Array.isArray(value) && value.length >= 2 &&
+    !Array.isArray(value[0]) && !Array.isArray(value[1])
+}
+
+function cameraViewportBounds (viewer, bufferRatio = VIEWPORT_BUFFER_RATIO) {
+  const carto = viewer?.camera?.positionCartographic
+  if (!carto) return null
+  const heightMeters = finiteNumber(carto.height)
+  const camLat = finiteNumber(Number(carto.latitude) * 180 / Math.PI)
+  const camLng = finiteNumber(Number(carto.longitude) * 180 / Math.PI)
+  if (heightMeters === null || heightMeters <= 0 || camLat === null || camLng === null) return null
+
+  const safeRatio = Math.max(1, Number(bufferRatio) || VIEWPORT_BUFFER_RATIO)
+  const latRange = Math.min(90, (heightMeters / 111000) * 1.5 * safeRatio)
+  const lngRange = Math.min(180, latRange / Math.max(0.1, Math.cos(camLat * Math.PI / 180)))
+  const south = Math.max(-90, camLat - latRange)
+  const north = Math.min(90, camLat + latRange)
+  if (lngRange >= 180 - 1e-7) {
+    return { south, west: -180, north, east: 180, crossesAntimeridian: false }
+  }
+
+  const westRaw = camLng - lngRange
+  const eastRaw = camLng + lngRange
+  const west = ((westRaw + 180) % 360 + 360) % 360 - 180
+  const east = ((eastRaw + 180) % 360 + 360) % 360 - 180
+  return {
+    south,
+    west,
+    north,
+    east,
+    crossesAntimeridian: westRaw < -180 || eastRaw > 180 || west > east,
+  }
+}
+
+/**
+ * Return one track coordinate in the same coordinate space as the map view.
+ * Track data is persisted as WGS84 while KML layers normally render GCJ-02.
+ * Invalid or malformed data is returned as null so viewport filtering can
+ * reject only that feature without making the entire render fail.
+ */
+function getTrackDisplayCoordinate (kmlFile, coordinate) {
+  if (!Array.isArray(coordinate) || coordinate.length < 2) return null
+  const lng = finiteNumber(coordinate[0])
+  const lat = finiteNumber(coordinate[1])
+  if (lng === null || lat === null) return null
+  const source = [lng, lat]
+  if (!shouldCorrectTrackCoordinates(kmlFile)) return source
+  const transformed = wgs84ToGcj02(source)
+  const displayLng = finiteNumber(transformed?.[0])
+  const displayLat = finiteNumber(transformed?.[1])
+  return displayLng === null || displayLat === null ? source : [displayLng, displayLat]
+}
+
+function mapTrackDisplayCoordinates (kmlFile, value) {
+  if (!Array.isArray(value)) return value
+  if (isCoordinatePair(value)) return getTrackDisplayCoordinate(kmlFile, value)
+  return value.map(item => mapTrackDisplayCoordinates(kmlFile, item))
+}
+
+function coordinateEdgeSignature (value) {
+  if (!Array.isArray(value)) return String(value)
+  if (isCoordinatePair(value)) return `${value.length}:${String(value[0])},${String(value[1])}`
+  if (!value.length) return '0:'
+  return `${value.length}:${coordinateEdgeSignature(value[0])}|${coordinateEdgeSignature(value[value.length - 1])}`
+}
+
+function filterLineByPredicate (coordinates, predicate) {
+  if (!Array.isArray(coordinates) || coordinates.length <= 2 || typeof predicate !== 'function') {
+    return { coordinates: coordinates || [], indices: null }
+  }
+  const visible = coordinates.map(predicate)
+  const indices = new Set()
+  for (let index = 0; index < visible.length; index += 1) {
+    if (visible[index] || visible[index - 1] || visible[index + 1]) indices.add(index)
+  }
+  if (indices.size < 2) return { coordinates, indices: null }
+  return {
+    coordinates: coordinates.filter((_, index) => indices.has(index)),
+    indices,
+  }
+}
+
+function getTrackDisplayCoordinates (kmlFile, feature) {
+  const coordinates = feature?.coordinates
+  if (!Array.isArray(coordinates) || !shouldCorrectTrackCoordinates(kmlFile)) return coordinates
+  const cached = feature && typeof feature === 'object'
+    ? trackDisplayCoordinatesCache.get(feature)
+    : null
+  const corrected = kmlFile?.coordCorrection !== 'none'
+  const sourceLength = coordinates.length
+  const sourceFirst = coordinateEdgeSignature(coordinates[0])
+  const sourceLast = coordinateEdgeSignature(coordinates[sourceLength - 1])
+  const sourceRevision = feature?.coordinatesRevision ?? feature?.revision ?? null
+  if (cached?.source === coordinates && cached.corrected === corrected &&
+      cached.sourceLength === sourceLength && cached.sourceFirst === sourceFirst &&
+      cached.sourceLast === sourceLast && cached.sourceRevision === sourceRevision) {
+    return cached.value
+  }
+
+  const value = mapTrackDisplayCoordinates(kmlFile, coordinates)
+  if (feature && typeof feature === 'object') {
+    trackDisplayCoordinatesCache.set(feature, {
+      source: coordinates,
+      corrected,
+      sourceLength,
+      sourceFirst,
+      sourceLast,
+      sourceRevision,
+      value,
+    })
+  }
+  return value
+}
+
+function filterTrackLineCoordinates (kmlFile, feature, viewportBounds, viewer3d) {
+  const coordinates = feature?.coordinates
+  if (!Array.isArray(coordinates)) return coordinates || []
+
+  if (!shouldCorrectTrackCoordinates(kmlFile)) {
+    return viewer3d
+      ? filterLineInViewport3d(coordinates, viewer3d)
+      : filterLineInViewport2d(coordinates, viewportBounds)
+  }
+
+  const displayCoordinates = getTrackDisplayCoordinates(kmlFile, feature)
+  if (!Array.isArray(displayCoordinates)) return coordinates
+  const displayBounds = viewer3d
+    ? cameraViewportBounds(viewer3d)
+    : expandKmlViewportForFiles(viewportBounds, VIEWPORT_BUFFER_RATIO)
+  if (!displayBounds) return coordinates
+
+  const filtered = filterLineByPredicate(
+    displayCoordinates,
+    coordinate => isKmlCoordinateInsideBounds(coordinate, displayBounds),
+  )
+  if (!filtered.indices) return coordinates
+
+  // Preserve the original WGS84 vertices in the feature so the renderer
+  // performs the correction exactly once when it creates the geometry.
+  return coordinates.filter((_, index) => filtered.indices.has(index))
 }
 
 export function parseBoundedInteger (value, { min, max }) {
@@ -338,32 +492,12 @@ export function applyLodToPointList (points, lodConfig) {
  */
 export function filterPointsInViewport2d (points, bounds, bufferRatio = VIEWPORT_BUFFER_RATIO) {
   if (!Array.isArray(points) || !bounds) return points || []
-  const { south, west, north, east } = bounds
-  if (![south, west, north, east].every(Number.isFinite)) return points
-
-  // 计算缓冲后的边界
-  const latRange = north - south
-  const lngRange = east - west
-  const latPad = latRange * (bufferRatio - 1) / 2
-  const lngPad = lngRange * (bufferRatio - 1) / 2
-  const minLat = south - latPad
-  const maxLat = north + latPad
-  const minLng = west - lngPad
-  const maxLng = east + lngPad
-
-  // 处理经度跨越 ±180° 的情况
-  const crossesAntimeridian = minLng < -180 || maxLng > 180
-
+  const expanded = expandKmlViewportForFiles(bounds, bufferRatio)
+  if (!expanded) return points
   return points.filter(pt => {
     const lat = typeof pt.lat === 'number' ? pt.lat : (Array.isArray(pt.latlng) ? pt.latlng[0] : pt.latlng?.lat)
     const lng = typeof pt.lng === 'number' ? pt.lng : (Array.isArray(pt.latlng) ? pt.latlng[1] : pt.latlng?.lng)
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
-    if (lat < minLat || lat > maxLat) return false
-    if (crossesAntimeridian) {
-      const normLng = ((lng + 540) % 360) - 180
-      return normLng >= minLng || normLng <= maxLng
-    }
-    return lng >= minLng && lng <= maxLng
+    return isKmlCoordinateInsideBounds([lng, lat], expanded)
   })
 }
 
@@ -377,32 +511,12 @@ export function filterPointsInViewport2d (points, bounds, bufferRatio = VIEWPORT
  */
 export function filterPointsInViewport3d (points, viewer, bufferRatio = VIEWPORT_BUFFER_RATIO) {
   if (!Array.isArray(points) || !viewer?.camera) return points || []
-  const camera = viewer.camera
-  const carto = camera.positionCartographic
-  if (!carto) return points
-
-  // 相机高度决定可见范围（简化估算）
-  const heightMeters = carto.height
-  if (!Number.isFinite(heightMeters) || heightMeters <= 0) return points
-
-  const camLat = (carto.latitude * 180) / Math.PI
-  const camLng = (carto.longitude * 180) / Math.PI
-
-  // 可见范围估算：高度越高，可见范围越大
-  // 约每 1m 高度对应 0.00001 度（约 1.1m），考虑俯仰角放大 1.5 倍
-  const latRange = Math.min(90, (heightMeters / 111000) * 1.5 * bufferRatio)
-  const lngRange = Math.min(180, latRange / Math.max(0.1, Math.cos(camLat * Math.PI / 180)))
-
-  const minLat = camLat - latRange
-  const maxLat = camLat + latRange
-  const minLng = camLng - lngRange
-  const maxLng = camLng + lngRange
-
+  const viewport = cameraViewportBounds(viewer, bufferRatio)
+  if (!viewport) return points
   return points.filter(pt => {
     const lat = typeof pt.lat === 'number' ? pt.lat : (Array.isArray(pt.latlng) ? pt.latlng[0] : pt.latlng?.lat)
     const lng = typeof pt.lng === 'number' ? pt.lng : (Array.isArray(pt.latlng) ? pt.latlng[1] : pt.latlng?.lng)
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
-    return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng
+    return isKmlCoordinateInsideBounds([lng, lat], viewport)
   })
 }
 
@@ -415,35 +529,14 @@ export function filterPointsInViewport3d (points, viewer, bufferRatio = VIEWPORT
  */
 export function filterLineInViewport2d (coordinates, bounds, bufferRatio = VIEWPORT_BUFFER_RATIO) {
   if (!Array.isArray(coordinates) || coordinates.length <= 2 || !bounds) return coordinates || []
-  const { south, west, north, east } = bounds
-  if (![south, west, north, east].every(Number.isFinite)) return coordinates
-
-  const latRange = north - south
-  const lngRange = east - west
-  const latPad = latRange * (bufferRatio - 1) / 2
-  const lngPad = lngRange * (bufferRatio - 1) / 2
-  const minLat = south - latPad
-  const maxLat = north + latPad
-  const minLng = west - lngPad
-  const maxLng = east + lngPad
+  const expanded = expandKmlViewportForFiles(bounds, bufferRatio)
+  if (!expanded) return coordinates
 
   const isInBounds = (coord) => {
-    if (!Array.isArray(coord) || coord.length < 2) return false
-    const [lng, lat] = coord
-    return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng
+    return isKmlCoordinateInsideBounds(coord, expanded)
   }
 
-  // 保留视口内的点及其前后各一个点（保证线段连续性）
-  const result = []
-  for (let i = 0; i < coordinates.length; i++) {
-    const inBounds = isInBounds(coordinates[i])
-    const prevInBounds = i > 0 && isInBounds(coordinates[i - 1])
-    const nextInBounds = i < coordinates.length - 1 && isInBounds(coordinates[i + 1])
-    if (inBounds || prevInBounds || nextInBounds) {
-      result.push(coordinates[i])
-    }
-  }
-  return result.length >= 2 ? result : coordinates
+  return filterLineByPredicate(coordinates, isInBounds).coordinates
 }
 
 /**
@@ -455,38 +548,14 @@ export function filterLineInViewport2d (coordinates, bounds, bufferRatio = VIEWP
  */
 export function filterLineInViewport3d (coordinates, viewer, bufferRatio = VIEWPORT_BUFFER_RATIO) {
   if (!Array.isArray(coordinates) || coordinates.length <= 2 || !viewer?.camera) return coordinates || []
-  const camera = viewer.camera
-  const carto = camera.positionCartographic
-  if (!carto) return coordinates
-
-  const heightMeters = carto.height
-  if (!Number.isFinite(heightMeters) || heightMeters <= 0) return coordinates
-
-  const camLat = (carto.latitude * 180) / Math.PI
-  const camLng = (carto.longitude * 180) / Math.PI
-  const latRange = Math.min(90, (heightMeters / 111000) * 1.5 * bufferRatio)
-  const lngRange = Math.min(180, latRange / Math.max(0.1, Math.cos(camLat * Math.PI / 180)))
-  const minLat = camLat - latRange
-  const maxLat = camLat + latRange
-  const minLng = camLng - lngRange
-  const maxLng = camLng + lngRange
+  const viewport = cameraViewportBounds(viewer, bufferRatio)
+  if (!viewport) return coordinates
 
   const isInBounds = (coord) => {
-    if (!Array.isArray(coord) || coord.length < 2) return false
-    const [lng, lat] = coord
-    return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng
+    return isKmlCoordinateInsideBounds(coord, viewport)
   }
 
-  const result = []
-  for (let i = 0; i < coordinates.length; i++) {
-    const inBounds = isInBounds(coordinates[i])
-    const prevInBounds = i > 0 && isInBounds(coordinates[i - 1])
-    const nextInBounds = i < coordinates.length - 1 && isInBounds(coordinates[i + 1])
-    if (inBounds || prevInBounds || nextInBounds) {
-      result.push(coordinates[i])
-    }
-  }
-  return result.length >= 2 ? result : coordinates
+  return filterLineByPredicate(coordinates, isInBounds).coordinates
 }
 
 /**
@@ -532,14 +601,9 @@ export function getTrackDisplayFeatures (kmlFile, options = {}) {
       continue
     }
 
-    let coords = feature.coordinates
-
-    // 视口过滤线坐标
-    if (viewer3d) {
-      coords = filterLineInViewport3d(coords, viewer3d)
-    } else if (viewportBounds) {
-      coords = filterLineInViewport2d(coords, viewportBounds)
-    }
+    // 视口过滤必须在显示坐标（通常为 GCJ-02）中进行；保留的顶点仍以
+    // WGS84 存储，后续由 KML 渲染器统一完成一次坐标转换。
+    let coords = filterTrackLineCoordinates(kmlFile, feature, viewportBounds, viewer3d)
 
     // LOD 顶点抽稀
     coords = downsampleLineCoordinates(coords, perLinePointLimit)
@@ -559,37 +623,19 @@ export function getTrackDisplayFeatures (kmlFile, options = {}) {
 
   // 视口过滤点
   if (viewer3d) {
-    pointFeatures = pointFeatures.filter(({ feature }) => {
-      const coord = feature.coordinates
-      if (!Array.isArray(coord) || coord.length < 2) return false
-      const camera = viewer3d.camera
-      const carto = camera.positionCartographic
-      if (!carto) return true
-      const heightMeters = carto.height
-      const camLat = (carto.latitude * 180) / Math.PI
-      const camLng = (carto.longitude * 180) / Math.PI
-      const latRange = Math.min(90, (heightMeters / 111000) * 1.5 * VIEWPORT_BUFFER_RATIO)
-      const lngRange = Math.min(180, latRange / Math.max(0.1, Math.cos(camLat * Math.PI / 180)))
-      const [lng, lat] = coord
-      return lat >= camLat - latRange && lat <= camLat + latRange &&
-             lng >= camLng - lngRange && lng <= camLng + lngRange
-    })
+    const viewport = cameraViewportBounds(viewer3d)
+    if (viewport) {
+      pointFeatures = pointFeatures.filter(({ feature }) => (
+        isKmlCoordinateInsideBounds(getTrackDisplayCoordinates(kmlFile, feature), viewport)
+      ))
+    }
   } else if (viewportBounds) {
-    const { south, west, north, east } = viewportBounds
-    const latRange = north - south
-    const lngRange = east - west
-    const latPad = latRange * (VIEWPORT_BUFFER_RATIO - 1) / 2
-    const lngPad = lngRange * (VIEWPORT_BUFFER_RATIO - 1) / 2
-    const minLat = south - latPad
-    const maxLat = north + latPad
-    const minLng = west - lngPad
-    const maxLng = east + lngPad
-    pointFeatures = pointFeatures.filter(({ feature }) => {
-      const coord = feature.coordinates
-      if (!Array.isArray(coord) || coord.length < 2) return false
-      const [lng, lat] = coord
-      return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng
-    })
+    const viewport = expandKmlViewportForFiles(viewportBounds, VIEWPORT_BUFFER_RATIO)
+    if (viewport) {
+      pointFeatures = pointFeatures.filter(({ feature }) => (
+        isKmlCoordinateInsideBounds(getTrackDisplayCoordinates(kmlFile, feature), viewport)
+      ))
+    }
   }
 
   // LOD 点抽样（从末尾向前，保留最新点）

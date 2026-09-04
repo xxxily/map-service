@@ -1,3 +1,8 @@
+import {
+  expandKmlViewportForFiles,
+  isKmlCoordinateInsideBounds,
+} from '../../shared/kml-spatial.js'
+
 export const KML_FEATURE_FOCUS_ZOOM = 15
 export const KML_VIEWPORT_FILTER_MIN_FEATURES = 80
 export const KML_VIEWPORT_BUFFER_RATIO = 2
@@ -7,30 +12,17 @@ export function shouldVirtualizeKmlPoints (featureCount) {
 }
 
 export function expandKmlViewportBounds (bounds, ratio = KML_VIEWPORT_BUFFER_RATIO) {
-  if (!bounds) return null
-  const south = Number(bounds.south)
-  const west = Number(bounds.west)
-  const north = Number(bounds.north)
-  const east = Number(bounds.east)
-  if (![south, west, north, east].every(Number.isFinite) || north < south || east < west) return null
-  const safeRatio = Math.max(1, Number(ratio) || KML_VIEWPORT_BUFFER_RATIO)
-  const latPad = (north - south) * (safeRatio - 1) / 2
-  const lngPad = (east - west) * (safeRatio - 1) / 2
-  return {
-    south: Math.max(-90, south - latPad),
-    west: west - lngPad,
-    north: Math.min(90, north + latPad),
-    east: east + lngPad,
-  }
+  const expanded = expandKmlViewportForFiles(bounds, ratio)
+  if (!expanded) return null
+  // Keep the legacy object shape for ordinary ranges. Wrapped ranges carry
+  // the explicit flag so consumers can test both sides of the dateline.
+  if (expanded.crossesAntimeridian) return expanded
+  const { south, west, north, east } = expanded
+  return { south, west, north, east }
 }
 
 export function isKmlPointInsideBounds (coordinates, bounds) {
-  if (!Array.isArray(coordinates) || coordinates.length < 2 || !bounds) return false
-  const longitude = Number(coordinates[0])
-  const latitude = Number(coordinates[1])
-  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return false
-  return latitude >= bounds.south && latitude <= bounds.north &&
-    longitude >= bounds.west && longitude <= bounds.east
+  return isKmlCoordinateInsideBounds(coordinates, bounds)
 }
 
 export function getKmlFeatureFocusPlan (options = {}) {

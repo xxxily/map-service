@@ -14,6 +14,7 @@ import {
   VIEWPORT_MAX_LINE_VERTICES,
   VIEWPORT_MAX_POINTS,
 } from '../src/map/location-track.js'
+import { wgs84ToGcj02 } from '../src/map/coord-transform.js'
 
 // ---------------------------------------------------------------------------
 // getTrackLodConfig
@@ -312,6 +313,82 @@ test('getTrackDisplayFeatures with viewport bounds filters points outside viewpo
     assert.ok(lat >= 22 && lat <= 28, `lat ${lat} outside viewport`)
     assert.ok(lng >= 112 && lng <= 118, `lng ${lng} outside viewport`)
   })
+})
+
+test('getTrackDisplayFeatures filters corrected live tracks in display coordinates', () => {
+  const storedPoint = [111.38209788, 22.23462543]
+  const displayPoint = wgs84ToGcj02(storedPoint)
+  const storedLine = [
+    storedPoint,
+    [storedPoint[0] + 0.0001, storedPoint[1] + 0.0001],
+    [storedPoint[0] + 0.0002, storedPoint[1] + 0.0002],
+  ]
+  const kmlFile = {
+    isLiveTrack: true,
+    coordCorrection: 'wgs84-to-gcj02',
+    features: [
+      { id: 'line', type: 'LineString', coordinates: storedLine },
+      { id: 'inside', type: 'Point', coordinates: storedPoint },
+      { id: 'outside', type: 'Point', coordinates: [storedPoint[0] - 0.02, storedPoint[1] - 0.02] },
+    ],
+  }
+  const viewportBounds = {
+    south: displayPoint[1] - 0.0001,
+    west: displayPoint[0] - 0.0001,
+    north: displayPoint[1] + 0.0004,
+    east: displayPoint[0] + 0.0004,
+  }
+
+  const displayed = getTrackDisplayFeatures(kmlFile, { viewportBounds, zoom: 18 })
+  assert.ok(displayed.some(feature => feature.id === 'line'))
+  assert.ok(displayed.some(feature => feature.id === 'inside'))
+  assert.equal(displayed.some(feature => feature.id === 'outside'), false)
+  assert.deepEqual(displayed.find(feature => feature.id === 'line').coordinates, storedLine)
+})
+
+test('getTrackDisplayFeatures refreshes corrected coordinates after in-place edits', () => {
+  const storedCoordinates = [111.2, 22.1]
+  const kmlFile = {
+    isLiveTrack: true,
+    coordCorrection: 'wgs84-to-gcj02',
+    features: [{ id: 'point', type: 'Point', coordinates: storedCoordinates }],
+  }
+  const displayPoint = wgs84ToGcj02([111.205, 22.105])
+  const viewportBounds = {
+    south: displayPoint[1] - 0.001,
+    west: displayPoint[0] - 0.001,
+    north: displayPoint[1] + 0.001,
+    east: displayPoint[0] + 0.001,
+  }
+
+  const before = getTrackDisplayFeatures(kmlFile, { viewportBounds, zoom: 18 })
+  assert.equal(before.some(feature => feature.id === 'point'), false)
+  storedCoordinates[0] = 111.205
+  storedCoordinates[1] = 22.105
+  const after = getTrackDisplayFeatures(kmlFile, { viewportBounds, zoom: 18 })
+  assert.equal(after.some(feature => feature.id === 'point'), true)
+  assert.equal(after.find(feature => feature.id === 'point').coordinates, storedCoordinates)
+})
+
+test('track viewport filtering keeps coordinates on both sides of the dateline', () => {
+  const kmlFile = {
+    isLiveTrack: true,
+    coordCorrection: 'none',
+    features: [
+      { id: 'line', type: 'LineString', coordinates: [[179.5, 0], [179.8, 0], [-179.8, 0], [-179.5, 0]] },
+      { id: 'east', type: 'Point', coordinates: [179.6, 0] },
+      { id: 'west', type: 'Point', coordinates: [-179.6, 0] },
+      { id: 'middle', type: 'Point', coordinates: [0, 0] },
+    ],
+  }
+  const displayed = getTrackDisplayFeatures(kmlFile, {
+    viewportBounds: { south: -1, west: 179, north: 1, east: -179, crossesAntimeridian: true },
+    zoom: 18,
+  })
+  assert.ok(displayed.some(feature => feature.id === 'line'))
+  assert.ok(displayed.some(feature => feature.id === 'east'))
+  assert.ok(displayed.some(feature => feature.id === 'west'))
+  assert.equal(displayed.some(feature => feature.id === 'middle'), false)
 })
 
 test('getTrackDisplayFeatures with low zoom hides all points', () => {

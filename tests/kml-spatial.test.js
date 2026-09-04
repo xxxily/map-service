@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   computeKmlBounds,
   expandKmlViewportForFiles,
+  isKmlCoordinateInsideBounds,
+  isKmlBoundsReady,
   kmlBoundsCenter,
   kmlBoundsIntersectsViewport,
   normalizeKmlBounds,
@@ -47,6 +49,9 @@ test('invalid or empty coordinates produce an explicit compatibility status', ()
   assert.equal(computeKmlBounds([]).status, 'empty')
   assert.equal(normalizeKmlBounds({ status: 'ready', version: 1, bbox: [0, 0, 1] }), null)
   assert.equal(normalizeKmlBounds({ status: 'missing', version: 1, bbox: null }).status, 'missing')
+  assert.equal(isKmlBoundsReady({ status: 'missing', version: 1, bbox: null }), false)
+  assert.equal(isKmlBoundsReady({ status: 'empty', version: 1, bbox: null }), false)
+  assert.equal(isKmlBoundsReady(computeKmlBounds([point('ok', 10, 20)])), true)
 })
 
 test('viewport expansion accepts wrapped and nested viewport options', () => {
@@ -60,4 +65,32 @@ test('viewport expansion accepts wrapped and nested viewport options', () => {
     computeKmlBounds([point('wrapped', -179.6, 1)]),
     expanded,
   ), true)
+})
+
+test('coordinate containment handles both sides of a wrapped viewport', () => {
+  const viewport = {
+    south: -2,
+    west: 179,
+    north: 2,
+    east: -179,
+    crossesAntimeridian: true,
+  }
+  assert.equal(isKmlCoordinateInsideBounds([179.5, 0], viewport), true)
+  assert.equal(isKmlCoordinateInsideBounds([-179.5, 0], viewport), true)
+  assert.equal(isKmlCoordinateInsideBounds([0, 0], viewport), false)
+  assert.equal(isKmlCoordinateInsideBounds([179.5, 4], viewport), false)
+})
+
+test('explicit full-longitude viewport is not treated as a zero-width range', () => {
+  const viewport = {
+    south: -2,
+    west: 0,
+    north: 2,
+    east: 0,
+    crossesAntimeridian: true,
+  }
+  assert.equal(isKmlCoordinateInsideBounds([0, 0], viewport), true)
+  assert.equal(isKmlCoordinateInsideBounds([120, 0], viewport), true)
+  assert.equal(isKmlCoordinateInsideBounds([-120, 0], viewport), true)
+  assert.equal(kmlBoundsIntersectsViewport(computeKmlBounds([point('anywhere', -120, 0)]), viewport), true)
 })

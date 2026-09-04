@@ -164,7 +164,7 @@ export function normalizeKmlBounds (value, options = {}) {
 }
 
 export function isKmlBoundsReady (value) {
-  return Boolean(normalizeKmlBounds(value))
+  return normalizeKmlBounds(value)?.status === 'ready'
 }
 
 function normalizeViewport (viewport) {
@@ -185,12 +185,34 @@ function normalizeViewport (viewport) {
   const crossesAntimeridian = source.crossesAntimeridian === true || west > east
   const width = crossesAntimeridian ? east + 360 - west : east - west
   if (width < 0 || width > 360 + EPSILON) return null
+  // `west === east` with an explicit wrapped flag represents a full-globe
+  // footprint, not a zero-width interval. Canonicalize every near-global
+  // viewport so containment and intersection use the same two-point range.
+  if (width >= 360 - EPSILON) {
+    return { south, west: -180, north, east: 180, width: 360, crossesAntimeridian: false }
+  }
   return { south, west, north, east, width, crossesAntimeridian }
 }
 
 function longitudeSegments (west, east, crossesAntimeridian = false) {
   if (crossesAntimeridian || east < west) return [[west, 180], [-180, east]]
   return [[west, east]]
+}
+
+/**
+ * Test a [longitude, latitude] coordinate against a normal or wrapped range.
+ * The range may be passed directly or under a viewportBounds property.
+ */
+export function isKmlCoordinateInsideBounds (coordinate, boundsValue) {
+  if (!Array.isArray(coordinate) || coordinate.length < 2) return false
+  const bounds = normalizeViewport(boundsValue)
+  if (!bounds) return false
+  const longitude = normalizeLongitude(coordinate[0])
+  const latitude = finiteNumber(coordinate[1])
+  if (longitude === null || latitude === null || latitude < -90 || latitude > 90) return false
+  if (latitude < bounds.south || latitude > bounds.north) return false
+  return longitudeSegments(bounds.west, bounds.east, bounds.crossesAntimeridian)
+    .some(([west, east]) => longitude >= west && longitude <= east)
 }
 
 export function expandKmlViewportForFiles (viewport, ratio = 1.8) {
