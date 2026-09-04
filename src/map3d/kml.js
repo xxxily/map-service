@@ -1436,12 +1436,10 @@ function removeKmlLayers (kmlFileOrId) {
     renderedKmlEntities.delete(kmlId)
   }
 
-  const kmlFile = typeof kmlFileOrId === 'string' ? getKmlFileById(kmlFileOrId) : kmlFileOrId
-  const renderedFeatures = kmlFile?.isShare
-    ? (kmlFile.features || [])
-    : getTrackDisplayFeatures(kmlFile)
-  renderedFeatures.forEach(feature => {
-    featureEntities.delete(getFeatureEntityKey(kmlId, feature.id))
+  // Clear every feature index for this file, including entities materialized
+  // temporarily for a media-preview target outside the current viewport.
+  featureEntities.forEach((record, key) => {
+    if (String(record?.kmlId || '') === String(kmlId || '')) featureEntities.delete(key)
   })
 }
 
@@ -1754,9 +1752,19 @@ function activateFeatureForMedia (item, options = {}) {
   const featureId = String(item?.featureId || '')
   if (!kmlId || !featureId) return
   const { kmlFile, feature } = getFeatureById(kmlId, featureId)
-  const rendered = featureEntities.get(getFeatureEntityKey(kmlId, featureId))
-  if (!viewerRef || !kmlFile || !feature || !rendered || !isKmlEnabled(kmlFile)) return
   window.clearTimeout(mediaFeatureActivationTimer)
+  if (!viewerRef || !kmlFile || !feature || !isKmlEnabled(kmlFile)) return
+
+  // The media gallery can contain features outside the current 3D viewport.
+  // Materialize the target entity before flying to it so the delayed popup
+  // still has a concrete feature to display after a cross-feature switch.
+  let rendered = featureEntities.get(getFeatureEntityKey(kmlId, featureId))
+  if (!rendered) {
+    renderFeature(kmlFile, feature)
+    rendered = featureEntities.get(getFeatureEntityKey(kmlId, featureId))
+  }
+  if (!rendered) return
+
   viewerRef.camera.cancelFlight?.()
   const duration = options.closePreview ? 0 : 0.28
   if (feature.type === 'Point') {
@@ -3589,7 +3597,6 @@ function bindCanvasPickEvents () {
       if (mediaTarget) {
         openKmlFeatureMediaPreview(mediaTarget.kmlFile, mediaTarget.feature, {
           trigger: viewerRef.canvas,
-          linkMapFeatures: false,
         })
         return
       }

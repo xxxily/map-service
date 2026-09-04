@@ -744,6 +744,7 @@ export function openKmlResourceCollectionPanel (kmlFile, feature, options = {}) 
       index: previewIndex,
       trigger: itemButton,
       collectionTitle: String(feature.name || '资源集合'),
+      onActiveItemChange: options.onActiveItemChange,
     })
   })
   panel.addEventListener('error', event => {

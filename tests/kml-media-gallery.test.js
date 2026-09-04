@@ -194,5 +194,35 @@ test('2D popup binds media actions through the central popupopen lifecycle', () 
   assert.match(panelSource, /const eventRoot = container\.querySelector\('\.leaflet-popup-content'\) \|\| container/)
   assert.match(panelSource, /eventRoot\.addEventListener\('click',[\s\S]*event\.target\.closest\?\.\('\[data-kml-popup-media\]'\)/)
   assert.doesNotMatch(panelSource, /trigger\.dataset\.kmlPopupMediaBound/)
-  assert.match(panelSource, /if \(!nextFeatureKey \|\| nextFeatureKey === activeFeatureKey\) return/)
+  assert.match(panelSource, /nextFeatureKey === activeFeatureKey && \(keepInitialFeaturePopup \|\| hasHandledPreviewNavigation\)/)
+  assert.match(panelSource, /keepInitialFeaturePopup: true/)
+  assert.match(panelSource, /openKmlFeatureMediaPreview\(currentBinding\.kmlFile, currentBinding\.feature, \{[\s\S]*keepInitialFeaturePopup: true/)
+})
+
+test('媒体预览跨点位切换保留地图联动和延迟概要弹窗', () => {
+  const panelSource = readFileSync(new URL('../src/map/kml-content-panel.js', import.meta.url), 'utf8')
+  const map2dSource = readFileSync(new URL('../src/map/kml.js', import.meta.url), 'utf8')
+  const map3dSource = readFileSync(new URL('../src/map3d/kml.js', import.meta.url), 'utf8')
+
+  assert.match(panelSource, /linkMapFeatures = !isTouchFirstEnvironment\(\)/)
+  assert.match(panelSource, /window\.activateKmlFeatureForMedia\?\.\(item\)/)
+  assert.match(panelSource, /let isInitialPreviewItem = true/)
+  assert.match(panelSource, /let hasHandledPreviewNavigation = false/)
+  assert.match(panelSource, /onActiveItemChange,\n    \}\)/)
+  assert.match(panelSource, /if \(!nextFeatureKey \|\| isInitialItem\) return/)
+  assert.match(panelSource, /nextFeatureKey === activeFeatureKey && \(keepInitialFeaturePopup \|\| hasHandledPreviewNavigation\)/)
+
+  const direct2d = map2dSource.slice(map2dSource.indexOf('openKmlFeatureMediaPreview(kmlFile, feature'))
+  const direct3d = map3dSource.slice(map3dSource.indexOf('openKmlFeatureMediaPreview(mediaTarget.kmlFile, mediaTarget.feature'))
+  assert.doesNotMatch(direct2d.slice(0, 500), /linkMapFeatures:\s*false/)
+  assert.doesNotMatch(direct3d.slice(0, 500), /linkMapFeatures:\s*false/)
+
+  const activate2d = map2dSource.match(/function activateFeatureForMedia \(map, item, options = \{\}\) \{[\s\S]*?\n\}/)?.[0] || ''
+  const activate3d = map3dSource.match(/function activateFeatureForMedia \(item, options = \{\}\) \{[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(activate2d, /const delay = options\.closePreview \? 0 : 300/)
+  assert.match(activate2d, /currentLayer\) currentLayer\.openPopup\(\)/)
+  assert.match(activate3d, /const duration = options\.closePreview \? 0 : 0\.28/)
+  assert.match(activate3d, /if \(!rendered\) \{[\s\S]*renderFeature\(kmlFile, feature\)/)
+  assert.match(activate3d, /options\.closePreview \? 0 : 300/)
+  assert.match(map3dSource, /featureEntities\.forEach\(\(record, key\) => \{[\s\S]*record\?\.kmlId[\s\S]*featureEntities\.delete\(key\)/)
 })

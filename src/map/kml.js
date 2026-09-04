@@ -1498,7 +1498,6 @@ function bindMediaPointInteraction (layer, kmlFile, feature) {
     layer.closePopup()
     openKmlFeatureMediaPreview(kmlFile, feature, {
       trigger: layer.getElement?.(),
-      linkMapFeatures: false,
     })
   })
 }

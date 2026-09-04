@@ -228,19 +228,35 @@ export function openKmlFeatureMediaPreview (kmlFile, feature, options = {}) {
     trigger = null,
     view = null,
     linkMapFeatures = !isTouchFirstEnvironment(),
+    keepInitialFeaturePopup = false,
   } = options
-  if (isKmlResourceCollectionFeature(feature)) {
-    return openKmlResourceCollectionPanel(kmlFile, feature, {
-      trigger,
-      contentOptions: getKmlContentOptions(),
-    })
-  }
-  const items = buildPreviewItems(kmlFile, feature, view)
-  if (!items.length) return false
   let activeFeatureKey = getKmlMediaFeatureKey({
     kmlId: kmlFile?.id,
     featureId: feature?.id,
   })
+  let isInitialPreviewItem = true
+  let hasHandledPreviewNavigation = false
+  const onActiveItemChange = item => {
+    if (!linkMapFeatures) return
+    const isInitialItem = isInitialPreviewItem
+    isInitialPreviewItem = false
+    const nextFeatureKey = getKmlMediaFeatureKey(item)
+    if (!nextFeatureKey || isInitialItem) return
+    if (nextFeatureKey === activeFeatureKey && (keepInitialFeaturePopup || hasHandledPreviewNavigation)) return
+    hasHandledPreviewNavigation = true
+    activeFeatureKey = nextFeatureKey
+    window.activateKmlFeatureForMedia?.(item)
+  }
+
+  if (isKmlResourceCollectionFeature(feature)) {
+    return openKmlResourceCollectionPanel(kmlFile, feature, {
+      trigger,
+      contentOptions: getKmlContentOptions(),
+      onActiveItemChange,
+    })
+  }
+  const items = buildPreviewItems(kmlFile, feature, view)
+  if (!items.length) return false
   return openMediaPreview({
     items,
     index: findKmlMediaGalleryIndex(items, {
@@ -249,13 +265,7 @@ export function openKmlFeatureMediaPreview (kmlFile, feature, options = {}) {
     }),
     trigger,
     collectionTitle: String(kmlFile?.name || '').trim() || '未命名 KML',
-    onActiveItemChange: item => {
-      if (!linkMapFeatures) return
-      const nextFeatureKey = getKmlMediaFeatureKey(item)
-      if (!nextFeatureKey || nextFeatureKey === activeFeatureKey) return
-      activeFeatureKey = nextFeatureKey
-      window.activateKmlFeatureForMedia?.(item)
-    },
+    onActiveItemChange,
   })
 }
 
@@ -264,6 +274,7 @@ function openKmlMediaFromSelection (kmlFile, feature, selection, trigger, view =
     selection,
     trigger,
     view,
+    keepInitialFeaturePopup: true,
   })
 }
 
@@ -297,9 +308,9 @@ export function bindKmlFeaturePopupMediaActions (container, kmlFile, feature) {
       event.stopPropagation()
       event.preventDefault()
       const currentBinding = popupMediaBindings.get(eventRoot)
-      if (currentBinding) openKmlResourceCollectionPanel(currentBinding.kmlFile, currentBinding.feature, {
+      if (currentBinding) openKmlFeatureMediaPreview(currentBinding.kmlFile, currentBinding.feature, {
         trigger: collectionTrigger,
-        contentOptions: getKmlContentOptions(),
+        keepInitialFeaturePopup: true,
       })
       return
     }
@@ -512,7 +523,7 @@ function renderPanelContent (panel, kmlFile, feature, view, errorMessage = '') {
 
 export async function openKmlFeatureContentPanel (kmlFile, feature) {
   if (isKmlResourceCollectionFeature(feature)) {
-    openKmlResourceCollectionPanel(kmlFile, feature, { contentOptions: getKmlContentOptions() })
+    openKmlFeatureMediaPreview(kmlFile, feature, { keepInitialFeaturePopup: true })
     return
   }
   const panel = ensurePanel()

@@ -314,6 +314,11 @@ test('resource collection Escape handling keeps the collection open while media 
   )
 })
 
+test('resource collection media preview forwards map activation changes', () => {
+  const source = readFileSync(new URL('../src/map/kml-resource-collection.js', import.meta.url), 'utf8')
+  assert.match(source, /collectionTitle: String\(feature\.name \|\| '资源集合'\),\n\s+onActiveItemChange: options\.onActiveItemChange/)
+})
+
 test('resource collection editor renders a mode-aware field layout and preserves batch input on rerender', () => {
   const source = readFileSync(new URL('../src/map/kml-resource-collection.js', import.meta.url), 'utf8')
   assert.match(source, /class="kml-resource-editor-list is-\$\{escapeHtml\(draft\.viewMode\)\}"/)
