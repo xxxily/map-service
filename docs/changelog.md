@@ -13,7 +13,9 @@
 ### 验证与部署
 
 - 已执行 `rtk npm run check`、`rtk npm test`、`rtk npm run build` 和 `rtk git diff --check`；语法检查、全量测试（1129/1129）、构建和差异校验均通过。
-- 161 内网测试服务器部署：待部署后补充版本构建标识、远程数据库备份位置、健康检查、进程状态和回滚命令。
+- 161 内网测试服务器已完成部署（2026-09-04 13:39:43 CST 起）：发布提交 `96aa46fc5e825e41e835b7cf3b1230e35b908134`，镜像 `map-service:1.5.63`（digest `sha256:6c7202eb8f2d6b0ce54eb1d3c5ba372dd909d803bafcc44bd08c79e5ec1bd657`），备份位于 `/opt/1panel/backup/map-service/2026/09/04/20260904-133943-pre-v1.5.63`。
+- 发布后 `/health`、`/api/v1/health` 均返回 `status=ok`；容器 `map-service-161` 为 `running`、重启次数为 0，容器内包版本为 `1.5.63`；用户数据库 `quick_check=ok`、schema 为 13，资源集合三张表已启用，交互数据库 `quick_check=ok`、schema 为 2，应用静态入口和新构建资源可访问。
+- 远程用户/交互 SQLite 及 admin cache 快照 SHA-256 校验通过，cron 任务已注册；启动探测期间出现一次短暂连接重置，随后健康检查通过，未触发回滚。快速回滚命令：`./deploy-161.sh --rollback /opt/1panel/backup/map-service/2026/09/04/20260904-133943-pre-v1.5.63`。
 
 ### KML 视口渲染修复
 

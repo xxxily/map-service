@@ -1,6 +1,6 @@
 # KML 独立资源集合、引用绑定与按需加载需求
 
-> 状态：v1.5.63 已实现（161 部署记录待发布后补充）
+> 状态：v1.5.63 已实现并完成 161 内网测试部署；部署详情见 [map-service v1.5.63 资源集合引用发布记录](../../notes/serverinfo/161_notes/OperationLog/2026/09/04/map-service-v1.5.63-resource-collection-reference-deploy.md)。
 >
 > 日期：2026-09-04
 >
@@ -1008,7 +1008,7 @@ resource_collection_bindings   (可重建的派生索引)
 
 - 迁移：启动时执行用户数据库 v13 幂等迁移，新增三张资源集合表及必要索引；升级前必须备份用户数据库和 `.db/admin/`。
 - 测试：实现已补充资源集合、引用保护、公开/分享分页、权限、限流和删除生命周期回归测试；发布前统一执行 `rtk npm run check`、`rtk npm test`、`rtk npm run build` 与 `rtk git diff --check`，结果写入变更日志。
-- 部署：目标环境为 161 内网测试服务器；版本 `1.5.63` 的实际部署时间、构建标识、备份位置、健康检查和回滚命令在部署完成后补录至 `docs/changelog.md` 与运维记录。
+- 部署：`v1.5.63` 已于 2026-09-04 部署到 161 内网测试服务器。发布提交为 `96aa46fc5e825e41e835b7cf3b1230e35b908134`，镜像 digest 为 `sha256:6c7202eb8f2d6b0ce54eb1d3c5ba372dd909d803bafcc44bd08c79e5ec1bd657`；发布前备份为 `/opt/1panel/backup/map-service/2026/09/04/20260904-133943-pre-v1.5.63`。双健康接口、容器状态、schema v13、资源集合表和数据库快照校验均通过，回滚命令及完整验收证据见 [161 运维记录](../../notes/serverinfo/161_notes/OperationLog/2026/09/04/map-service-v1.5.63-resource-collection-reference-deploy.md)。
 
 ## 17. 后续事项与风险
 

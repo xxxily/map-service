@@ -39,7 +39,7 @@
 - [KML 要素组织与受控 URL 参数保留](./kml-feature-organization-and-url-preservation.md)（第一版已实现）
 - [KML 批量管理与媒体窗口自由布局](./kml-batch-management-and-media-window-layout.md)（第二版已实现，待手工验收）
 - [KML 性能优化与资源集合点位](./kml-performance-and-resource-collections.md)（v1.5.58 已完成 161 内测发布）
-- [KML 独立资源集合、引用绑定与按需加载需求](./kml-resource-collection-references.md)（v1.5.63 已实现；161 部署记录待补充）
+- [KML 独立资源集合、引用绑定与按需加载需求](./kml-resource-collection-references.md)（v1.5.63 已实现并完成 161 内测部署）
 - [KML 线段绘制编辑器](./kml-line-drawing-editor.md)（v1.5.59 已完成 161 内测发布）
 - [账号 KML 同步数据丢失防护](./kml-account-sync-data-loss-prevention.md)（1.5.47 已实现；覆盖误删、冲突、恢复草稿和保存失败）
 - [管理后台数值配置自由裁量与 KML 移动端布局修订](./admin-user-system-configurable-limits-and-kml-mobile-layout.md)（1.5.50 已实现）
