@@ -9,6 +9,7 @@ import {
   verifyPassword,
 } from './security.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
+import { parseKmlVisibilityValue } from '../../../shared/kml-feature-visibility.js'
 import { computeKmlBounds, normalizeKmlBounds } from '../../../shared/kml-spatial.js'
 import {
   decoratePublishedSnapshot,
@@ -475,6 +476,9 @@ export function normalizeKmlFeatures (value) {
       description: sanitizeRichText(feature.description, 100000),
       coordinates: normalizeFeatureCoordinates(type, feature.coordinates),
     }
+    if (feature.visible !== undefined) {
+      normalized.visible = normalizeBoolean(feature.visible)
+    }
     if (feature.styleUrl !== undefined) {
       normalized.styleUrl = normalizeText(feature.styleUrl, { maxLength: 500 })
     }
@@ -523,6 +527,9 @@ function sanitizePublishedKmlFeatures (value, options = {}) {
   return (Array.isArray(value) ? value : []).map(rawFeature => {
     if (!rawFeature || typeof rawFeature !== 'object' || Array.isArray(rawFeature)) return rawFeature
     const feature = { ...rawFeature }
+    if (feature.visible !== undefined && typeof feature.visible !== 'boolean') {
+      delete feature.visible
+    }
     if (feature.type !== 'Point') {
       delete feature.resourceCollection
       delete feature.resourceCollectionRef
@@ -699,6 +706,10 @@ export function parseKmlText (value) {
       continue
     }
     const markerIcon = type === 'Point' ? readMarkerIconFromXml(source) : ''
+    const parsedVisibility = parseKmlVisibilityValue(readXmlElement(source, 'visibility'))
+    if (!parsedVisibility.valid) {
+      warnings.push(`第 ${features.length + 1} 个标注的显隐状态已忽略：仅支持 0、1、false 或 true`)
+    }
     const rawResourceCollection = type === 'Point'
       ? readExtendedDataValueFromXml(source, 'map-service:resource-collection')
       : ''
@@ -740,6 +751,9 @@ export function parseKmlText (value) {
       name: readXmlElement(source, 'name'),
       description: readXmlElement(source, 'description'),
       coordinates,
+      ...(parsedVisibility.valid && parsedVisibility.present && parsedVisibility.value === false
+        ? { visible: false }
+        : {}),
       ...(readXmlElement(source, 'styleUrl') ? { styleUrl: readXmlElement(source, 'styleUrl') } : {}),
       ...(markerIcon ? { markerIcon } : {}),
       ...(parsedResourceCollection.value ? { resourceCollection: parsedResourceCollection.value } : {}),
@@ -770,6 +784,7 @@ export function generateKmlText (name, features, description = '') {
     parts.push(`      <name>${escapeXml(feature.name)}</name>`)
     parts.push(`      <description>${escapeXml(feature.description)}</description>`)
     if (feature.styleUrl) parts.push(`      <styleUrl>${escapeXml(feature.styleUrl)}</styleUrl>`)
+    if (feature.visible === false) parts.push('      <visibility>0</visibility>')
     const markerIcon = feature.type === 'Point' ? normalizeKmlMarkerIcon(feature.markerIcon) : ''
     const resourceCollection = feature.type === 'Point' && feature.resourceCollection
       ? normalizeKmlResourceCollection(feature.resourceCollection, { createId: () => randomId('res') })

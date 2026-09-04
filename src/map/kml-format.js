@@ -1,4 +1,5 @@
 import { normalizeKmlMarkerIcon } from '../../shared/kml-marker-icons.js'
+import { parseKmlVisibilityValue } from '../../shared/kml-feature-visibility.js'
 import {
   serializeKmlResourceCollectionRef,
   serializeKmlResourceCollection,
@@ -55,6 +56,11 @@ export function parseKmlDocument (kmlText) {
     const name = nameNode?.textContent.trim() || ''
     const description = descNode ? getDescriptionContent(descNode) : ''
     const styleUrl = styleNode?.textContent.trim() || ''
+    const visibilityNode = findDirectChild(placemark, 'visibility')
+    const parsedVisibility = parseKmlVisibilityValue(visibilityNode?.textContent)
+    if (!parsedVisibility.valid) {
+      warnings.push(`第 ${i + 1} 个标注的显隐状态已忽略：仅支持 0、1、false 或 true`)
+    }
     const markerIcon = readMarkerIcon(placemark)
     const rawResourceCollection = readExtendedDataValue(placemark, 'map-service:resource-collection')
     const rawResourceCollectionRef = readExtendedDataValue(placemark, 'map-service:resource-collection-ref')
@@ -112,6 +118,9 @@ export function parseKmlDocument (kmlText) {
         name,
         description,
         ...(styleUrl ? { styleUrl } : {}),
+        ...(parsedVisibility.valid && parsedVisibility.present && parsedVisibility.value === false
+          ? { visible: false }
+          : {}),
         ...(markerIcon ? { markerIcon } : {}),
         ...(type === 'Point' && parsedResourceCollection.value
           ? { resourceCollection: parsedResourceCollection.value }
@@ -185,6 +194,7 @@ export function generateKmlText (kmlName, features, description = '', options = 
     xmlParts.push(`      <name>${escapeXml(feat.name)}</name>`)
     xmlParts.push(`      <description>${escapeXml(feat.description)}</description>`)
     if (feat.styleUrl) xmlParts.push(`      <styleUrl>${escapeXml(feat.styleUrl)}</styleUrl>`)
+    if (feat.visible === false) xmlParts.push('      <visibility>0</visibility>')
     const markerIcon = normalizeKmlMarkerIcon(feat.markerIcon)
     const resourceCollection = feat.type === 'Point'
       ? tryNormalizeKmlResourceCollection(feat.resourceCollection).value

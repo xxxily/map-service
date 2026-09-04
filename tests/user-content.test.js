@@ -1334,6 +1334,43 @@ test('KML import rejects entity declarations and export keeps normalized WGS84 d
   }
 })
 
+test('personal KML persists Placemark visibility and validates API booleans', () => {
+  const harness = createHarness()
+  try {
+    const source = `<?xml version="1.0"?><kml><Document><name>显隐导入</name>
+      <Placemark><visibility>0</visibility><Point><coordinates>113.2,23.1,0</coordinates></Point></Placemark>
+      <Placemark><visibility>1</visibility><LineString><coordinates>113.2,23.1,0 113.3,23.2,0</coordinates></LineString></Placemark>
+    </Document></kml>`
+    const imported = harness.service.importKml(harness.one, { kmlText: source })
+    assert.equal(imported.features[0].visible, false)
+    assert.equal(Object.hasOwn(imported.features[1], 'visible'), false)
+    const exported = harness.service.exportKml(harness.one, imported.id)
+    assert.match(exported.content, /<visibility>0<\/visibility>/)
+
+    const explicitVisible = harness.service.createKml(harness.one, {
+      name: '显式显示',
+      features: [{ ...point('visible-point'), visible: true }],
+    })
+    assert.equal(explicitVisible.features[0].visible, true)
+    assert.throws(
+      () => harness.service.createKml(harness.one, {
+        name: '非法显隐',
+        features: [{ ...point('invalid-visible'), visible: 'false' }],
+      }),
+      error => error.statusCode === 400 && error.code === 'VALIDATION_FAILED'
+    )
+
+    const invalid = parseKmlText(`<?xml version="1.0"?><kml><Document><Placemark>
+      <visibility>2</visibility><Point><coordinates>113.2,23.1,0</coordinates></Point>
+    </Placemark></Document></kml>`)
+    assert.equal(invalid.features.length, 1)
+    assert.equal(invalid.warnings.length, 1)
+    assert.match(invalid.warnings[0], /显隐状态已忽略/)
+  } finally {
+    harness.close()
+  }
+})
+
 test('personal KML validates markerIcon as a Point-only built-in enum', () => {
   const harness = createHarness()
   try {

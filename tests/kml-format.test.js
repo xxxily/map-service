@@ -35,3 +35,22 @@ test('browser KML export never writes unknown or non-Point marker icon values', 
 
   assert.doesNotMatch(kml, /map-service:marker-icon|onload|<value>flag<\/value>/)
 })
+
+test('browser KML export writes only explicit hidden feature visibility', () => {
+  const kml = generateKmlText('显隐测试', [{
+    type: 'Point',
+    name: '隐藏',
+    description: '',
+    visible: false,
+    coordinates: [113.2, 23.1],
+  }, {
+    type: 'LineString',
+    name: '显示',
+    description: '',
+    visible: true,
+    coordinates: [[113.2, 23.1], [113.3, 23.2]],
+  }])
+
+  assert.match(kml, /<visibility>0<\/visibility>/)
+  assert.equal((kml.match(/<visibility>/g) || []).length, 1)
+})

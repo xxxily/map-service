@@ -165,6 +165,26 @@ test('同一要素的不同字段修改可自动合并，坐标双写保持原�
   assert.equal(conflictResult.conflicts[0].field, 'coordinates')
 })
 
+test('要素显隐字段兼容旧数据并将缺省值视为可见', () => {
+  const base = file()
+  const local = file({ features: [point('p1', '起点', [113, 23], { visible: false })] })
+  const server = file({ features: [point('p1', '起点', [113, 23], { visible: true })] })
+  const merged = mergeKmlDocument(base, local, server, { path: 'file.local-a' })
+
+  assert.equal(merged.conflicts.length, 0)
+  assert.equal(merged.file.features[0].visible, false)
+  assert.equal(merged.autoMergedPaths.includes('file.local-a.features.p1.visible'), true)
+
+  const legacy = mergeKmlDocument(
+    file(),
+    file(),
+    file({ features: [point('p1', '起点', [113, 23])] }),
+    { path: 'file.local-a' },
+  )
+  assert.equal(legacy.conflicts.length, 0)
+  assert.equal(Object.hasOwn(legacy.file.features[0], 'visible'), false)
+})
+
 test('删除未修改要素自动删除，删除与修改产生冲突', () => {
   const base = file()
   const deletion = mergeKmlDocument(base, file({ features: [] }), file(), { path: 'file.local-a' })

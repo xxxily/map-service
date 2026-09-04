@@ -1,12 +1,23 @@
 import { AdminStore } from './store.js'
 import { buildFeatureContentView } from './kmlContent.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
+import { parseKmlVisibilityValue } from '../../../shared/kml-feature-visibility.js'
 import { computeKmlBounds, normalizeKmlBounds } from '../../../shared/kml-spatial.js'
 import { tryNormalizeKmlResourceCollection, tryNormalizeKmlResourceCollectionRef } from '../../../shared/kml-resource-collection.js'
+
+function createValidationError (message) {
+  const error = new Error(message)
+  error.statusCode = 400
+  error.code = 'VALIDATION_FAILED'
+  return error
+}
 
 function normalizeFeatureMarkerIcons (features) {
   return (Array.isArray(features) ? features : []).map(feature => {
     const normalized = { ...feature }
+    if (normalized.visible !== undefined && typeof normalized.visible !== 'boolean') {
+      throw createValidationError('布尔字段格式不正确')
+    }
     if (normalized.type !== 'Point') {
       delete normalized.markerIcon
       delete normalized.resourceCollection
@@ -97,6 +108,10 @@ function parseKml (kmlText) {
     const rawName = extractTagContent(placemarkContent, 'name')
     const rawDesc = extractTagContent(placemarkContent, 'description')
     const rawStyleUrl = extractTagContent(placemarkContent, 'styleUrl')
+    const parsedVisibility = parseKmlVisibilityValue(extractTagContent(placemarkContent, 'visibility'))
+    if (!parsedVisibility.valid) {
+      warnings.push(`第 ${i} 个标注的显隐状态已忽略：仅支持 0、1、false 或 true`)
+    }
     const markerIconMatch = /<Data\b[^>]*\bname\s*=\s*["']map-service:marker-icon["'][^>]*>([\s\S]*?)<\/Data\s*>/i.exec(placemarkContent)
     const markerIcon = normalizeKmlMarkerIcon(markerIconMatch ? extractTagContent(markerIconMatch[1], 'value') : '')
     const collectionMatch = /<Data\b[^>]*\bname\s*=\s*["']map-service:resource-collection["'][^>]*>([\s\S]*?)<\/Data\s*>/i.exec(placemarkContent)
@@ -152,6 +167,7 @@ function parseKml (kmlText) {
         name,
         description,
         ...(styleUrl ? { styleUrl } : {}),
+        ...(parsedVisibility.valid && parsedVisibility.present ? { visible: parsedVisibility.value } : {}),
         ...(markerIcon ? { markerIcon } : {}),
         ...(collectionResult.value ? { resourceCollection: collectionResult.value } : {}),
         ...(!collectionResult.value && collectionRefResult.value ? { resourceCollectionRef: collectionRefResult.value } : {}),
@@ -165,9 +181,17 @@ function parseKml (kmlText) {
 
 function normalizeSharedKmlRecord (kml) {
   if (!kml || typeof kml !== 'object') return kml
-  const features = Array.isArray(kml.features) ? kml.features : []
+  const features = Array.isArray(kml.features)
+    ? kml.features.map(feature => {
+      if (!feature || typeof feature !== 'object' || Array.isArray(feature)) return feature
+      if (feature.visible === undefined || typeof feature.visible === 'boolean') return feature
+      const normalized = { ...feature }
+      delete normalized.visible
+      return normalized
+    })
+    : []
   const bounds = normalizeKmlBounds(kml.bounds, { featureCount: features.length }) || computeKmlBounds(features)
-  return { ...kml, bounds }
+  return { ...kml, features, bounds }
 }
 
 export class SharedKmlManager {

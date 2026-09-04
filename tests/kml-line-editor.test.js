@@ -50,6 +50,8 @@ test('KML 线段编辑器保留地图拖拽缩放并提供完整工具栏动作'
   assert.match(editorSource, /bubblingMouseEvents: false/)
   assert.match(editorSource, /leaflet-interactive/)
   assert.match(editorSource, /data-kml-line-action="merge"/)
+  assert.match(editorSource, /const committed = await options\.onCommit\?\./)
+  assert.match(editorSource, /if \(committed === false\)/)
   assert.match(editorSource, /options\.initialPoints/)
   assert.doesNotMatch(editorSource, /map\.dragging\.disable\(/)
   assert.match(kmlSource, /data-kml-action="add-line"/)
@@ -58,6 +60,9 @@ test('KML 线段编辑器保留地图拖拽缩放并提供完整工具栏动作'
   assert.match(kmlSource, /const currentLayer = featureLayers\.get\(getFeatureLayerKey\(kmlId, featureId\)\)/)
   assert.match(kmlSource, /type: 'LineString'/)
   assert.match(kmlSource, /mapLatLngToStoredCoordinate\(kmlFile, point\)/)
+  assert.match(kmlSource, /showEditDialog\(\{[\s\S]*线段名称[\s\S]*description/)
+  assert.match(kmlSource, /name: String\(draftFeature\.name \|\| ''\)\.trim\(\) \|\| '新建线段'/)
+  assert.match(kmlSource, /savedFeature\.description = String\(enriched\.description \|\| ''\)\.trim\(\)/)
   assert.match(indexSource, /id="kml-line-editor-toolbar"/)
   assert.match(indexSource, /data-kml-line-action="merge"[\s\S]*?<span class="btn-text">保存<\/span>/)
   for (const action of ['undo', 'redo', 'delete', 'clear', 'merge', 'cancel']) {

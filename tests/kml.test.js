@@ -145,6 +145,38 @@ test('KML export is independent from file visibility state', () => {
   assert.match(kml, /<coordinates>113\.264385,23\.129112,0<\/coordinates>/)
 })
 
+test('KML 要素显隐状态按 Placemark visibility 往返并兼容缺省值', () => {
+  const source = [
+    {
+      type: 'Point',
+      name: '隐藏点位',
+      description: '',
+      visible: false,
+      coordinates: [113.264385, 23.129112],
+    },
+    {
+      type: 'LineString',
+      name: '默认显示线段',
+      description: '',
+      coordinates: [[113.2, 23.1], [113.3, 23.2]],
+    },
+  ]
+  const exported = generateKmlText('显隐测试', source)
+  assert.match(exported, /<visibility>0<\/visibility>/)
+  const parsed = parseKmlDocument(exported)
+  assert.equal(parsed.warnings.length, 0)
+  assert.equal(parsed.features[0].visible, false)
+  assert.equal(Object.hasOwn(parsed.features[1], 'visible'), false)
+
+  const invalid = parseKmlDocument(`<?xml version="1.0"?><kml><Document>
+    <Placemark><visibility>2</visibility><Point><coordinates>113.2,23.1,0</coordinates></Point></Placemark>
+  </Document></kml>`)
+  assert.equal(invalid.features.length, 1)
+  assert.equal(Object.hasOwn(invalid.features[0], 'visible'), false)
+  assert.equal(invalid.warnings.length, 1)
+  assert.match(invalid.warnings[0], /显隐状态已忽略/)
+})
+
 test('wrapped western longitudes are normalized before KML serialization', () => {
   const wrappedLongitude = 237.5805
   const normalized = normalizeLongitude(wrappedLongitude)

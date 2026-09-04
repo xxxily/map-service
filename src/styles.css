@@ -3506,6 +3506,34 @@ body.admin-view #footer-bar {
   flex: 0 0 auto;
 }
 
+.kml-feature-visibility {
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kml-feature-visibility:hover,
+.kml-feature-visibility:focus-visible {
+  outline: none;
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.kml-feature-visibility.is-visible {
+  color: #0f766e;
+}
+
+.kml-feature-visibility.is-hidden {
+  color: #94a3b8;
+}
+
 .kml-feature-edit,
 .kml-feature-del {
   background: none;

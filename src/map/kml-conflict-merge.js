@@ -29,6 +29,7 @@ const FEATURE_FIELDS = [
   'styleUrl',
   'markerIcon',
   'resourceCollection',
+  'visible',
 ]
 
 function cloneValue (value) {
@@ -342,6 +343,12 @@ function mergeObjectFields (base, local, server, path, conflicts, fields, meta =
       if (value != null) result[key] = value
       continue
     }
+    if (key === 'visible') {
+      const hasValue = Object.hasOwn(base || {}, key) || Object.hasOwn(local || {}, key) || Object.hasOwn(server || {}, key)
+      const value = mergeVisibleField(base?.[key], local?.[key], server?.[key], `${path}.${key}`, conflicts, meta)
+      if (value !== undefined && (hasValue || value !== true)) result[key] = value
+      continue
+    }
     const value = mergeScalar(base?.[key], local?.[key], server?.[key], `${path}.${key}`, conflicts, 'field', {
       ...meta,
       field: key,
@@ -349,6 +356,29 @@ function mergeObjectFields (base, local, server, path, conflicts, fields, meta =
     if (value !== undefined) result[key] = value
   }
   return result
+}
+
+// Feature visibility was added after existing KML snapshots were created.
+// Missing or invalid values therefore mean visible, while explicit false is
+// the only hidden state. Comparing the normalized values avoids false
+// conflicts when one branch writes true and another retains the legacy shape.
+function normalizeVisible (value) {
+  return value === false ? false : true
+}
+
+function mergeVisibleField (base, local, server, path, conflicts, meta = {}) {
+  const hasValue = base !== undefined || local !== undefined || server !== undefined
+  const value = mergeScalar(
+    normalizeVisible(base),
+    normalizeVisible(local),
+    normalizeVisible(server),
+    path,
+    conflicts,
+    'field',
+    { ...meta, field: 'visible' },
+  )
+  if (!hasValue && value === true) return undefined
+  return value
 }
 
 function mergeFeature (base, local, server, path, conflicts) {
@@ -497,6 +527,17 @@ function collectDocumentAutoMerges (base, local, server, path, conflicts) {
           featureBase[field],
           featureLocal[field],
           featureServer[field],
+          fieldPath,
+          conflicts,
+          paths,
+        )
+        return
+      }
+      if (field === 'visible') {
+        collectScalarAutoMerge(
+          normalizeVisible(featureBase[field]),
+          normalizeVisible(featureLocal[field]),
+          normalizeVisible(featureServer[field]),
           fieldPath,
           conflicts,
           paths,

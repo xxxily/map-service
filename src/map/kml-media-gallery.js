@@ -8,7 +8,7 @@ const PREVIEWABLE_MEDIA_TYPE_SET = new Set(KML_PREVIEWABLE_MEDIA_TYPES)
 const KML_MEDIA_GALLERY_CACHE = new WeakMap()
 
 function getKmlMediaGalleryCacheSignature (kmlFile, options = {}) {
-  if (!kmlFile || typeof kmlFile !== 'object' || options.featureViews) return null
+  if (!kmlFile || typeof kmlFile !== 'object' || options.featureViews || options.includeHiddenFeatures === true) return null
   const allowlist = Array.isArray(options.contentOptions?.iframeAllowlist)
     ? options.contentOptions.iframeAllowlist.join(',')
     : String(options.contentOptions?.iframeAllowlist || '')
@@ -95,7 +95,10 @@ export function buildKmlMediaGallery (kmlFile, options = {}) {
   const signature = getKmlMediaGalleryCacheSignature(kmlFile, options)
   const cached = signature ? KML_MEDIA_GALLERY_CACHE.get(kmlFile) : null
   if (mediaGallerySignaturesEqual(cached?.signature, signature)) return cached.value
-  const features = Array.isArray(kmlFile?.features) ? kmlFile.features : []
+  const allFeatures = Array.isArray(kmlFile?.features) ? kmlFile.features : []
+  const features = options.includeHiddenFeatures === true
+    ? allFeatures
+    : allFeatures.filter(feature => feature?.visible !== false)
   const kmlId = String(kmlFile?.id || '')
   const kmlName = String(kmlFile?.name || '').trim() || '未命名 KML'
   const includeResourceCollections = options.includeResourceCollections === true

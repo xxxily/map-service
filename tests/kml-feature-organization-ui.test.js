@@ -24,6 +24,12 @@ test('2D and 3D KML editors expose shared move, copy and drag organization flows
     assert.match(source, /data-kml-action="batch-invert"/)
     assert.match(source, /data-kml-action="toggle-batch-feature"/)
     assert.match(source, /data-kml-action="edit-feature"/)
+    assert.match(source, /toggle-feature-visible/)
+    assert.match(source, /class="kml-feature-visibility/)
+    assert.match(source, /const canPersist = !kmlFile\.isShare && isKmlEditable\(kmlFile\)/)
+    assert.match(source, /function applyPublicKmlFeatureVisibilityPrefs/)
+    assert.match(source, /publicKmlList\.forEach\(applyPublicKmlFeatureVisibilityPrefs\)/)
+    assert.match(source, /applyPublicKmlFeatureVisibilityPrefs\(kmlFile\)/)
     assert.match(source, /if \(action === 'toggle-batch'\)/)
     assert.match(source, /if \(action === 'batch-operate'\)/)
     assert.match(source, /action === 'batch-select-all' \|\| action === 'batch-invert'/)
@@ -55,6 +61,14 @@ test('2D and 3D KML editors expose shared move, copy and drag organization flows
   assert.match(styles, /\.kml-batch-toolbar/)
   assert.match(styles, /\.kml-feature-batch-check/)
   assert.match(styles, /\.kml-feature-item\.is-batch-selected/)
+  assert.match(styles, /\.kml-feature-visibility\s*\{/)
+  assert.match(styles, /\.kml-eye-icon\s*\{/)
+
+  const map3dSource = readFileSync(new URL('../src/map3d/kml.js', import.meta.url), 'utf8')
+  assert.match(map3dSource, /async function loadSharedKmlFileForUse[\s\S]*?if \(succeeded\) applyPublicKmlFeatureVisibilityPrefs\(kmlFile\)/)
+  assert.match(map3dSource, /if \(getActiveShare\(\)\) \{\s*loadPublicPrefs\(\)/)
+  assert.match(map2d, /async function initShareKmlSupport \(map, options = \{\}\) \{\s*loadPublicPrefs\(\)/)
+  assert.match(map2d, /async function loadSharedKmlFileForUse[\s\S]*?if \(succeeded\) applyPublicKmlFeatureVisibilityPrefs\(kmlFile\)/)
 })
 
 test('2D cross-file feature transfers load account summaries before changing either file', () => {

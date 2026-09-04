@@ -42,6 +42,7 @@ import {
   showKmlResourceCollectionEditor,
 } from '../map/kml-resource-collection.js'
 import { normalizeKmlResourceCollectionRef } from '../../shared/kml-resource-collection.js'
+import { isKmlFeatureVisible as isKmlFeatureVisibleValue } from '../../shared/kml-feature-visibility.js'
 import {
   applyKmlMarkerIconSelection,
   buildKmlMarkerIconField,
@@ -258,6 +259,45 @@ function isKmlEditable (kmlFile) {
     return isEditingPublicKml && editingPublicKmlId === kmlFile.id
   }
   return Boolean(kmlFile && canWritePersonalKml())
+}
+
+function getKmlFeatureVisibilityPrefKey (kmlFile, feature) {
+  return `${String(kmlFile?.id || '')}_feature_visibility_${String(feature?.id || '')}`
+}
+
+function isKmlFeatureVisibleForDisplay (kmlFile, feature) {
+  if (!feature) return false
+  if (kmlFile?.isPublic && !isKmlEditable(kmlFile)) {
+    const key = getKmlFeatureVisibilityPrefKey(kmlFile, feature)
+    if (typeof publicKmlPrefs[key] === 'boolean') return publicKmlPrefs[key]
+  }
+  return isKmlFeatureVisibleValue(feature)
+}
+
+function setKmlFeatureVisible (kmlFile, feature, visible) {
+  if (!kmlFile || !feature) return false
+  const nextVisible = visible !== false
+  feature.visible = nextVisible
+  invalidateKmlMediaGallery(kmlFile)
+  if (kmlFile.isPublic && !isKmlEditable(kmlFile)) {
+    publicKmlPrefs[getKmlFeatureVisibilityPrefKey(kmlFile, feature)] = nextVisible
+    savePublicPrefs()
+  }
+  return nextVisible
+}
+
+function applyPublicKmlFeatureVisibilityPrefs (kmlFile) {
+  if (!kmlFile?.isPublic || isKmlEditable(kmlFile) || !Array.isArray(kmlFile.features)) return
+  let changed = false
+  kmlFile.features.forEach(feature => {
+    const key = getKmlFeatureVisibilityPrefKey(kmlFile, feature)
+    const preferred = publicKmlPrefs[key]
+    if (typeof preferred === 'boolean' && feature.visible !== preferred) {
+      feature.visible = preferred
+      changed = true
+    }
+  })
+  if (changed) invalidateKmlMediaGallery(kmlFile)
 }
 
 function saveKmlChanges (kmlFile) {
@@ -889,7 +929,7 @@ function renderShareClusterLayers3d (config) {
       center: viewportOptions.center,
     })
   )).forEach(kmlFile => {
-    const features = kmlFile.features || []
+    const features = (kmlFile.features || []).filter(feature => isKmlFeatureVisibleForDisplay(kmlFile, feature))
     features.forEach(feature => {
       if (feature.type !== 'Point') {
         renderFeature(kmlFile, feature)
@@ -923,6 +963,7 @@ function renderPersonalClusterLayers3d (config) {
     })
   )).forEach(kmlFile => {
     const features = getTrackDisplayFeatures(kmlFile, viewportOptions)
+      .filter(feature => isKmlFeatureVisibleForDisplay(kmlFile, feature))
     features.forEach(feature => {
       if (feature.type !== 'Point') {
         renderFeature(kmlFile, feature)
@@ -1045,11 +1086,15 @@ async function loadSharedKmlFileForUse (kmlFile, options = {}) {
     if (loaded && options.enableOnSuccess === true) kmlFile.enabled = true
     return loaded
   }
-  if (!kmlFile?.isShare || kmlFile.contentLoaded !== false) return Boolean(kmlFile && !kmlFile.loadError)
+  if (!kmlFile?.isShare || kmlFile.contentLoaded !== false) {
+    applyPublicKmlFeatureVisibilityPrefs(kmlFile)
+    return Boolean(kmlFile && !kmlFile.loadError)
+  }
   const loaded = await loadActiveShareFile(kmlFile)
   const succeeded = Boolean(loaded?.contentLoaded && !loaded.loadError)
   if (!succeeded) kmlFile.enabled = false
   else if (options.enableOnSuccess === true) kmlFile.enabled = true
+  if (succeeded) applyPublicKmlFeatureVisibilityPrefs(kmlFile)
   return succeeded
 }
 
@@ -1075,7 +1120,10 @@ async function loadPublicKmlFileForUse (kmlFile, options = {}) {
     if (loaded && options.enableOnSuccess === true) kmlFile.enabled = true
     return loaded
   }
-  if (!kmlFile?.isPublic || kmlFile.contentLoaded !== false) return Boolean(kmlFile && !kmlFile.loadError)
+  if (!kmlFile?.isPublic || kmlFile.contentLoaded !== false) {
+    applyPublicKmlFeatureVisibilityPrefs(kmlFile)
+    return Boolean(kmlFile && !kmlFile.loadError)
+  }
   try {
     const response = await window.fetch(`/api/v1/kml/shared/${encodeURIComponent(kmlFile.id)}`)
     const payload = await response.json()
@@ -1089,6 +1137,7 @@ async function loadPublicKmlFileForUse (kmlFile, options = {}) {
       bounds: normalizeKmlBounds(detail.bounds, { featureCount: detail.features?.length || 0 }) || computeKmlBounds(detail.features || []),
       loadError: '',
     })
+    applyPublicKmlFeatureVisibilityPrefs(kmlFile)
     return true
   } catch (error) {
     kmlFile.loadError = error?.message || '公共 KML 详情加载失败'
@@ -1366,7 +1415,7 @@ function addRenderedEntity (kmlId, entity) {
 }
 
 function renderFeature (kmlFile, feature) {
-  if (!viewerRef) return null
+  if (!viewerRef || !isKmlFeatureVisibleForDisplay(kmlFile, feature)) return null
   const kmlId = kmlFile.id
   const entities = []
   const theme = getKmlTheme(kmlFile)
@@ -1586,7 +1635,8 @@ function renderKmlLayers (kmlFile, options = {}) {
   const displayFeatures = kmlFile.isShare
     ? (kmlFile.features || [])
     : getTrackDisplayFeatures(kmlFile, viewportOptions)
-  displayFeatures.forEach(feature => renderFeature(kmlFile, feature))
+  const visibleFeatures = displayFeatures.filter(feature => isKmlFeatureVisibleForDisplay(kmlFile, feature))
+  visibleFeatures.forEach(feature => renderFeature(kmlFile, feature))
 
   // 更新视口缓存：live track 渲染后记录当前相机位置，用于后续跳过判断
   if (kmlFile.isLiveTrack && viewerRef?.camera) {
@@ -1644,7 +1694,7 @@ function closeFeaturePopup () {
 
 function showFeaturePopup (kmlId, featureId, windowPosition) {
   const { kmlFile, feature } = getFeatureById(kmlId, featureId)
-  if (!kmlFile || !feature) return
+  if (!kmlFile || !feature || !isKmlFeatureVisibleForDisplay(kmlFile, feature)) return
   closeFeaturePopup()
 
   const popup = document.createElement('div')
@@ -1697,7 +1747,7 @@ function getPickedKmlMeta (windowPosition) {
 function getMediaPointTarget (meta) {
   if (!meta) return null
   const { kmlFile, feature } = getFeatureById(meta.kmlId, meta.featureId)
-  if (!kmlFile || feature?.type !== 'Point' || !hasKmlFeaturePreviewMedia(feature)) return null
+  if (!kmlFile || !isKmlFeatureVisibleForDisplay(kmlFile, feature) || feature?.type !== 'Point' || !hasKmlFeaturePreviewMedia(feature)) return null
   return {
     kmlFile,
     feature,
@@ -1753,6 +1803,10 @@ function focusFeature (kmlId, featureId) {
     showAlert('该 KML 文件已隐藏，请先启用后查看。')
     return
   }
+  if (!isKmlFeatureVisibleForDisplay(kmlFile, feature)) {
+    showAlert('该点位或线段已隐藏，请先显示后查看。')
+    return
+  }
 
   const rendered = featureEntities.get(getFeatureEntityKey(kmlId, featureId))
   if (!rendered) return
@@ -1791,7 +1845,7 @@ function activateFeatureForMedia (item, options = {}) {
   if (!kmlId || !featureId) return
   const { kmlFile, feature } = getFeatureById(kmlId, featureId)
   window.clearTimeout(mediaFeatureActivationTimer)
-  if (!viewerRef || !kmlFile || !feature || !isKmlEnabled(kmlFile)) return
+  if (!viewerRef || !kmlFile || !feature || !isKmlEnabled(kmlFile) || !isKmlFeatureVisibleForDisplay(kmlFile, feature)) return
 
   // The media gallery can contain features outside the current 3D viewport.
   // Materialize the target entity before flying to it so the delayed popup
@@ -2373,6 +2427,7 @@ async function loadPublicKmls () {
         contentLoaded: oldKml ? oldKml.contentLoaded !== false : false,
       }
     })
+    publicKmlList.forEach(applyPublicKmlFeatureVisibilityPrefs)
     ensureKmlFileViewportScheduler3d()
     refreshKmlFileViewportLoading3d()
     renderAllKmls()
@@ -2483,6 +2538,12 @@ async function exitEditingPublicKml () {
   updateKmlPanelUI()
 }
 
+function renderKmlFeatureVisibilityButton (kmlFile, feature) {
+  const visible = isKmlFeatureVisibleForDisplay(kmlFile, feature)
+  const title = visible ? '隐藏此点位或线段' : '显示此点位或线段'
+  return `<button type="button" class="kml-feature-visibility kml-visibility-btn ${visible ? 'is-visible' : 'is-hidden'}" data-kml-action="toggle-feature-visible" data-kml-id="${escapeHtml(kmlFile?.id)}" data-feature-id="${escapeHtml(feature?.id)}" aria-label="${title}" aria-pressed="${visible}" title="${title}"><span class="kml-eye-icon" aria-hidden="true"></span></button>`
+}
+
 function renderFeatureItem (kmlFile, feature, editable) {
   const safeKmlId = escapeHtml(kmlFile.id)
   const safeFeatureId = escapeHtml(feature.id)
@@ -2496,6 +2557,7 @@ function renderFeatureItem (kmlFile, feature, editable) {
   const featureOrderingAvailable = featureOrderingAvailability.get(kmlFile.id) === true
   const batchSelectable = isKmlBatchFeatureSelectable(kmlFile, feature)
   const selected = batchSelectable && kmlBatchSelection.has(kmlFile.id, feature.id)
+  const featureVisibilityButton = renderKmlFeatureVisibilityButton(kmlFile, feature)
 
   return `
     <div class="kml-feature-item${featureOrderingAvailable ? ' is-draggable' : ''}${batchSelectable ? ' is-batch-selectable' : ''}${selected ? ' is-batch-selected' : ''}" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" ${featureOrderingAvailable ? 'draggable="true" data-kml-draggable="true" data-kml-drop-target="feature"' : ''}>
@@ -2506,7 +2568,7 @@ function renderFeatureItem (kmlFile, feature, editable) {
         <span class="kml-feature-icon">${iconSvg}</span>
         ${displayName ? `<span class="kml-feature-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>` : ''}
       </div>
-      ${editable && !batchSelectable ? `<span class="kml-feature-actions"><button type="button" class="kml-feature-edit" data-kml-action="edit-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="编辑标注" aria-label="编辑标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></button><button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注" aria-label="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button></span>` : ''}
+      <span class="kml-feature-actions">${featureVisibilityButton}${editable && !batchSelectable ? `<button type="button" class="kml-feature-edit" data-kml-action="edit-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="编辑标注" aria-label="编辑标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l1-4Z"/></svg></button><button type="button" class="kml-feature-del" data-kml-action="delete-feature" data-kml-id="${safeKmlId}" data-feature-id="${safeFeatureId}" title="删除标注" aria-label="删除标注"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg></button>` : ''}</span>
     </div>
   `
 }
@@ -3388,6 +3450,34 @@ function bindPanelEvents () {
       return
     }
 
+    if (action === 'toggle-feature-visible') {
+      event.stopPropagation()
+      const kmlFile = getKmlFileById(kmlId)
+      if (!kmlFile || !featureId) return
+      if (kmlFile.contentLoaded === false) {
+        const loaded = kmlFile.isShare
+          ? await loadSharedKmlFileForUse(kmlFile)
+          : kmlFile.isPublic
+            ? await requestKmlFileDetail3d(kmlFile, { priority: 0 })
+            : await ensureAccountKmlFilesLoaded(kmlFile)
+        if (!loaded) {
+          await showAlert(kmlFile.loadError || '加载 KML 详情失败，未修改显隐状态。')
+          updateKmlPanelUI()
+          return
+        }
+      }
+      const feature = kmlFile.features?.find(item => String(item.id) === String(featureId))
+      if (!feature) return
+      const nextVisible = !isKmlFeatureVisibleForDisplay(kmlFile, feature)
+      const canPersist = !kmlFile.isShare && isKmlEditable(kmlFile)
+      if (canPersist && !kmlFile.isPublic) pushKmlHistory()
+      setKmlFeatureVisible(kmlFile, feature, nextVisible)
+      if (canPersist) saveKmlChanges(kmlFile)
+      renderVisibilityChangedKmlFiles3d([kmlFile])
+      updateKmlPanelUI()
+      return
+    }
+
     if (action === 'focus-feature') {
       focusFeature(kmlId, featureId)
       return
@@ -3776,6 +3866,7 @@ export async function initKmlSupport3d (viewer, options = {}) {
   initCustomControlsListeners()
 
   if (getActiveShare()) {
+    loadPublicPrefs()
     kmlList = []
     publicKmlList = await loadActiveShareFiles({ loadDetails: false })
     publicKmlList = publicKmlList.map(normalizeKmlFile)

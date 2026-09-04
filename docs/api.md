@@ -1735,6 +1735,8 @@ Point 还可以携带 `resourceCollection` 资源集合扩展，用于在一个�
 
 管理员上传 KML 文件并创建公共 KML。请求类型为 `multipart/form-data`，文件字段名为 `file`。
 
+公共 KML 的 `features` 要素可带可选布尔字段 `visible`：缺省和 `true` 表示显示，`false` 表示隐藏。导入会读取 `Placemark` 的 `<visibility>`（支持 `0`、`1`、`false`、`true`，非法值忽略并在 `warnings` 返回）；管理员创建或更新时若提交非布尔 `visible`，接口返回 `400 VALIDATION_FAILED`。隐藏要素仍保留在详情和导出数据中，仅影响地图渲染、定位和媒体浏览。
+
 ## 已移除接口
 
 以下接口不再作为后端契约提供：

@@ -235,7 +235,11 @@ export function createKmlLineEditor (map, options = {}) {
     }
     finishing = true
     try {
-      await options.onCommit?.(state.getPoints())
+      const committed = await options.onCommit?.(state.getPoints())
+      if (committed === false) {
+        finishing = false
+        return
+      }
       stop({ committed: true })
     } catch (error) {
       finishing = false

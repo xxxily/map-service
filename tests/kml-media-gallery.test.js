@@ -52,6 +52,21 @@ test('KML gallery flattens media across points and keeps the selected point inde
   assert.equal(findKmlMediaGalleryIndex(gallery, { featureId: 'missing' }), 0)
 })
 
+test('KML media gallery excludes hidden features by default and can include them explicitly', () => {
+  const visible = createFeature('feature-visible', '可见点位', '<img src="https://cdn.example.com/visible.jpg">')
+  const hidden = {
+    ...createFeature('feature-hidden', '隐藏点位', '<img src="https://cdn.example.com/hidden.jpg">'),
+    visible: false,
+  }
+  const kml = { id: 'kml-visibility', name: '显隐图层', features: [visible, hidden] }
+
+  const gallery = buildKmlMediaGallery(kml)
+  assert.deepEqual(gallery.map(item => item.featureId), ['feature-visible'])
+
+  const expanded = buildKmlMediaGallery(kml, { includeHiddenFeatures: true })
+  assert.deepEqual(expanded.map(item => item.featureId), ['feature-visible', 'feature-hidden'])
+})
+
 test('file-wide media gallery leaves resource collections on their paged lazy path', () => {
   const collection = {
     ...createFeature('collection', '热门点位', '<img src="https://cdn.example.com/cover.jpg">'),

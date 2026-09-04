@@ -152,6 +152,93 @@ test('SharedKmlManager KML parser supports Point, LineString, Polygon and CDATA'
   assert.deepEqual(poly.coordinates[0], [113.321, 23.111])
 })
 
+test('SharedKmlManager preserves Placemark visibility and validates managed booleans', async () => {
+  const store = new MockStore()
+  const manager = new SharedKmlManager({ store })
+  const kmlText = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+  <Placemark>
+    <name>隐藏点位</name>
+    <visibility>0</visibility>
+    <Point><coordinates>113.2,23.1,0</coordinates></Point>
+  </Placemark>
+  <Placemark>
+    <name>显式可见线段</name>
+    <visibility>true</visibility>
+    <LineString><coordinates>113.2,23.1,0 113.3,23.2,0</coordinates></LineString>
+  </Placemark>
+  <Placemark>
+    <name>非法状态</name>
+    <visibility>2</visibility>
+    <Point><coordinates>113.4,23.3,0</coordinates></Point>
+  </Placemark>
+</Document></kml>`
+
+  const imported = await manager.import(Buffer.from(kmlText), '显隐测试.kml')
+  assert.equal(imported.features[0].visible, false)
+  assert.equal(imported.features[1].visible, true)
+  assert.equal(Object.hasOwn(imported.features[2], 'visible'), false)
+  assert.equal(imported.warnings.length, 1)
+  assert.match(imported.warnings[0], /^第 3 个标注的显隐状态已忽略/)
+
+  const created = await manager.create({
+    name: '显隐写入',
+    features: [{
+      id: 'hidden-feature',
+      type: 'LineString',
+      name: '隐藏线段',
+      visible: false,
+      coordinates: [[113.2, 23.1], [113.3, 23.2]],
+    }],
+  })
+  assert.equal(created.features[0].visible, false)
+
+  await assert.rejects(
+    () => manager.create({
+      name: '非法显隐',
+      features: [{
+        id: 'invalid-feature',
+        type: 'Point',
+        name: '非法状态',
+        visible: 'false',
+        coordinates: [113.2, 23.1],
+      }],
+    }),
+    error => error.statusCode === 400 && error.code === 'VALIDATION_FAILED' && /布尔字段/.test(error.message)
+  )
+
+  await assert.rejects(
+    () => manager.update(created.id, {
+      features: [{
+        id: 'hidden-feature',
+        type: 'LineString',
+        name: '非法状态',
+        visible: 0,
+        coordinates: [[113.2, 23.1], [113.3, 23.2]],
+      }],
+    }),
+    error => error.statusCode === 400 && error.code === 'VALIDATION_FAILED'
+  )
+})
+
+test('SharedKmlManager sanitizes legacy invalid visibility values when reading records', async () => {
+  const store = new MockStore()
+  await store.write('shared-kml', [{
+    id: 'legacy-kml',
+    name: '历史公共 KML',
+    status: 'published',
+    features: [
+      { id: 'legacy-hidden', type: 'Point', visible: false, coordinates: [113.2, 23.1] },
+      { id: 'legacy-invalid', type: 'Point', visible: 'false', coordinates: [113.3, 23.2] },
+    ],
+  }])
+  const manager = new SharedKmlManager({ store })
+
+  const fetched = await manager.get('legacy-kml', true)
+  assert.equal(fetched.features[0].visible, false)
+  assert.equal(Object.hasOwn(fetched.features[1], 'visible'), false)
+})
+
 test('SharedKmlManager returns published feature content view', async () => {
   const store = new MockStore()
   const manager = new SharedKmlManager({
