@@ -1,4 +1,4 @@
-const ACCOUNT_TABS = new Set(['profile', 'kml', 'favorites', 'shares', 'security'])
+const ACCOUNT_TABS = new Set(['profile', 'kml', 'collections', 'favorites', 'shares', 'security'])
 const KML_SORT_FIELDS = new Set(['updatedAt', 'createdAt', 'name', 'featureCount', 'position'])
 const DEFAULT_KML_POINT_CLUSTERING = Object.freeze({
   enabled: false,
@@ -32,6 +32,9 @@ export function getAccountCapabilities (user) {
     canWriteKml: userHasPermission(user, 'kml.own.write'),
     canManageShares: userHasPermission(user, 'share.own.manage'),
     canManageFavorites: userHasPermission(user, 'favorite.own.manage'),
+    canReadCollections: userHasPermission(user, 'resource_collection.own.read'),
+    canWriteCollections: userHasPermission(user, 'resource_collection.own.write'),
+    canManageCollections: userHasPermission(user, 'resource_collection.own.manage') || userHasPermission(user, 'resource_collection.own.write'),
     canManageSessions: userHasPermission(user, 'session.self.manage'),
     canAccessSecurity: Boolean(user),
   }
@@ -42,6 +45,7 @@ export function getAvailableAccountTabs (user) {
   return [
     capabilities.canReadProfile && 'profile',
     capabilities.canReadKml && 'kml',
+    capabilities.canReadCollections && 'collections',
     capabilities.canManageFavorites && 'favorites',
     capabilities.canManageShares && 'shares',
     capabilities.canAccessSecurity && 'security',
@@ -490,6 +494,14 @@ export function revisionConflictPrompt (code) {
       message: '该分享已被其他客户端更新，系统没有覆盖服务器内容。是否立即重新加载分享列表？',
       success: '分享列表已重新加载，请重新编辑',
       resource: 'shares',
+    }
+  }
+  if (code === 'RESOURCE_COLLECTION_REVISION_CONFLICT') {
+    return {
+      title: '资源集合版本冲突',
+      message: '该资源集合已被其他客户端更新，系统没有覆盖服务器内容。是否立即重新加载集合？',
+      success: '资源集合已重新加载，请重新编辑',
+      resource: 'collections',
     }
   }
   return null

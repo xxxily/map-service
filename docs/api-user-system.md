@@ -133,6 +133,8 @@ system.super_admin
 
 ## 2. 认证、资料与会话
 
+`GET /api/v1/auth/config` 的公开配置在 v1.5.63 增加顶层 `resourceCollectionRefVersion: 1`，并在 `resourceCollection` 下返回服务端公开的 `maxBatchItemsPerRequest`。集合项默认视觉页为 40（由集合接口分页参数约束）。客户端据此声明可安全读写 `resourceCollectionRef`；不支持该版本的客户端不得覆盖含引用的 KML。
+
 ### 2.1 接口目录
 
 | 方法 | 路径 | 鉴权 | 说明 |
@@ -316,6 +318,44 @@ X-CSRF-Token: <csrf>
 - `order`：`asc`、`desc`，默认 `desc`。
 - `page`、`limit`：通用分页。
 
+#### 3.1.1 个人资源集合 API（v1.5.63）
+
+资源集合与 KML 文件独立存储，接口仍使用当前会话 Cookie；所有 `POST`、`PUT`、`DELETE` 请求必须携带 `X-CSRF-Token`。所有者权限为 `resource_collection.own.read` / `resource_collection.own.write`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/resource-collections` | 集合摘要分页；支持 `status=active\|trashed\|all`、`visibility=private\|public\|all`、`search`、`sort=name\|createdAt\|updatedAt\|itemCount`、`order`、`page`、`limit` |
+| `POST` | `/resource-collections` | 创建集合；`name` 必填，可带 `description`、`visibility`、`viewMode`、首批 `items` |
+| `GET` | `/resource-collections/:id` | 获取元数据，不返回完整项数组 |
+| `PUT` | `/resource-collections/:id` | 更新名称、描述、公开状态或默认视图；提交当前 `revision` |
+| `DELETE` | `/resource-collections/:id` | 移入回收站；`POST /:id/restore` 恢复，恢复后默认回到 private |
+| `DELETE` | `/resource-collections/:id/permanent` | 请求体 `{password}` 进行二次验证；来源仍存在的引用（包括回收后尚未解除的绑定）返回 `409 RESOURCE_COLLECTION_DELETE_REFERENCED` |
+| `GET` | `/resource-collections/:id/items` | 项分页（默认 `limit=40`，最大 100） |
+| `POST` | `/resource-collections/:id/items` | 新增项 |
+| `PUT` / `DELETE` | `/resource-collections/:id/items/:itemId` | 更新或删除项 |
+| `POST` | `/resource-collections/:id/items/batch` | 批量 `create`/`update`/`delete`，整批事务；使用 `itemsRevision` 并发校验 |
+| `POST` | `/resource-collections/:id/items/reorder` | 提交完整 `itemIds`（或兼容 `ids`）顺序 |
+| `GET` | `/resource-collections/:id/references` | 查看 KML/分享引用摘要 |
+| `GET` | `/resource-collections/:id/export` | 显式导出集合 JSON |
+
+集合元数据和项页均返回 `collectionRevision`、`itemsRevision`、兼容别名 `revision` 及 `updatedAt`；读取响应的 `revision` 统一指向 `collectionRevision`，项写入应使用显式 `itemsRevision`（兼容接受 `revision`）。基本信息写入校验 `collectionRevision`；项写入校验 `itemsRevision`，冲突统一返回 `409 RESOURCE_COLLECTION_REVISION_CONFLICT`。集合 ID 和项 ID 均为服务端生成的稳定高熵标识。
+
+公开接口 `GET /api/v1/public/resource-collections/:id` 与 `GET /api/v1/public/resource-collections/:id/items` 仅接受 `active + public` 集合；私有、回收和未知 ID 统一返回 `404 RESOURCE_NOT_FOUND`。公开项页按 `page`、`limit` 返回 `pagination`，不返回 owner、审计或管理字段。公开/分享请求过频返回 `429 RESOURCE_COLLECTION_RATE_LIMITED`。
+
+管理员接口位于 `/api/v1/admin/resource-collections`，读取需要 `resource_collection.any.read`，回收、恢复、引用处置和永久删除需要 `resource_collection.any.manage`：
+
+- `GET /admin/resource-collections`（支持 `ownerId`、状态/公开筛选和分页）
+- `GET /admin/resource-collections/:id`
+- `GET /admin/resource-collections/:id/items`
+- `GET /admin/resource-collections/:id/references`（脱敏分页查看 owner KML、已发布分享和索引状态）
+- `DELETE /admin/resource-collections/:id/references/:bindingId`（从来源 KML/已发布分享快照解除绑定并写审计）
+- `POST /admin/resource-collections/:id/references/:bindingId/repair`（来源已不存在时仅修复派生索引）
+- `DELETE /admin/resource-collections/:id`
+- `POST /admin/resource-collections/:id/restore`
+- `DELETE /admin/resource-collections/:id/permanent`（请求体必须含当前管理员密码）
+
+管理员响应包含脱敏 owner 摘要和绑定统计，不返回密码、Token、Cookie 或上游认证信息。解除接口在来源已经变化时返回 `409 RESOURCE_COLLECTION_REFERENCE_STALE`，不能把解除请求静默转换为索引修复；已发布分享快照的解除操作会递增该分享项 `publishedRevision`。
+
 KML 写入模型：
 
 ```json
@@ -375,6 +415,8 @@ KML 写入模型：
 - Point 可选 `markerIcon`，只接受 `pin`、`star`、`flag`、`viewpoint`、`camera`、`campsite`、`food`、`lodging`、`parking`、`warning`、`heart`、`home`、`water`、`restroom`、`hospital`、`shop`、`charging`、`bus`、`train`、`bicycle`、`hiking`、`summit`、`waterfall`；缺省表示自动识别内容。`auto` 仅为前端选择器选项，不写入 JSON/KML；LineString、Polygon 的该字段会被忽略或拒绝。
 - 标准 KML 通过 Placemark 下的 `ExtendedData/Data name="map-service:marker-icon"` 往返保存 `markerIcon`。未知枚举不导入，服务端 JSON 写入收到未知值返回 `400 VALIDATION_FAILED`；不会读取远程图标 URL。
 - Point 可选 `resourceCollection`，字段为 `version`、`viewMode` 和最多 300 个资源项；资源项 `id`、`title`、`url`、`type` 的长度、类型和总序列化大小由服务端统一校验。标准 KML 使用 `ExtendedData/Data name="map-service:resource-collection"` 保存。
+- Point 也可使用与内嵌字段互斥的 `resourceCollectionRef`：`{version:1,sourceType:'personal',resolution:'live',collectionId,displayName?,viewMode?}` 或 `{version:1,sourceType:'external',resolution:'live',dataUrl,displayName?,viewMode?}`。个人引用按集合 ID 读取，外部引用仅允许安全 HTTPS 地址并由浏览器直读；标准 KML 使用 `ExtendedData/Data name="map-service:resource-collection-ref"` 保存。引用不会把项写入 KML，查看时才分页加载。
+- 含既有引用的 KML 更新必须声明客户端能力 `resourceCollectionRefVersion: 1`（可放在请求顶层或 `capabilities`）；旧客户端省略该字段会返回 `409 KML_RESOURCE_COLLECTION_REF_UNSUPPORTED` 并保留原引用。显式提交 `resourceCollectionRef: null` 才表示解除绑定。导入/迁移的 unresolved 引用在未修改引用时允许保留。
 - 集合 URL 仅接受 HTTPS；禁止 URL 用户名/密码以及 `token`、`access_token`、`password`、`signature`、`api_key`、`authorization` 等敏感查询参数，普通视图参数（如 `scene_id`、`view`）完整保留。接口统一返回 `400 VALIDATION_FAILED` 和对应中文字段消息；共享模型内部使用 `RESOURCE_COLLECTION_URL_CREDENTIALS`、`RESOURCE_COLLECTION_URL_SENSITIVE_QUERY` 区分校验分支。
 - 未知集合版本或导入时非法集合不会阻断整份 KML：Point 几何保留、集合扩展忽略，并在导入响应的 `warnings` 数组返回中文提示；服务端写入接口不会保存未知结构。公开分享读取还会再次过滤历史脏数据中的非法集合。
 - 集合浏览由独立的分页面板承载，默认每页 40 项；地图点位和文件级媒体画廊不会预先展开集合资源，点击资源后才进入统一媒体预览器。

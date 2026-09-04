@@ -41,6 +41,7 @@ import {
   isKmlResourceCollectionFeature,
   showKmlResourceCollectionEditor,
 } from '../map/kml-resource-collection.js'
+import { normalizeKmlResourceCollectionRef } from '../../shared/kml-resource-collection.js'
 import {
   applyKmlMarkerIconSelection,
   buildKmlMarkerIconField,
@@ -91,6 +92,7 @@ import {
 } from '../map/kml-point-clustering.js'
 import {
   createKmlFileViewportScheduler,
+  getKmlFileViewportBounds,
   shouldRenderKmlFileInViewport,
 } from '../map/kml-file-viewport-loading.js'
 import {
@@ -106,6 +108,41 @@ const DEFAULT_KML_ID = 'default-kml'
 const DEFAULT_KML_NAME = '默认标注'
 const PUBLIC_PREFS_KEY = 'map_shared_kml_prefs'
 const KML_POINT_LABEL_MAX_LENGTH = 18
+
+function unwrapResourceCollectionApiResult (value) {
+  if (Array.isArray(value)) return { items: value }
+  if (value?.result) return unwrapResourceCollectionApiResult(value.result)
+  if (value?.data) return unwrapResourceCollectionApiResult(value.data)
+  return value || {}
+}
+
+async function choosePointResourceCollection (current = {}) {
+  const source = await showChoiceDialog({ title: '资源集合来源', message: '选择该点位要读取的资源来源。', choices: [
+    { text: '内嵌数据', value: 'inline', class: 'app-dialog-primary' },
+    { text: '个人资源集合', value: 'personal' },
+    { text: '外部数据接口', value: 'external' },
+  ] })
+  if (!source || source === 'cancel') return null
+  if (source === 'inline') return { sourceType: 'inline' }
+  if (source === 'personal') {
+    try {
+      const result = unwrapResourceCollectionApiResult(await accountApi.listResourceCollections({ page: 1, limit: 100, status: 'active' }))
+      const totalPages = Math.max(1, Number(result?.pageCount || result?.pagination?.pageCount || 1))
+      for (let page = 2; page <= totalPages; page++) {
+        const next = unwrapResourceCollectionApiResult(await accountApi.listResourceCollections({ page, limit: 100, status: 'active' }))
+        result.items = [...(result.items || []), ...(next.items || [])]
+      }
+      const items = Array.isArray(result.items) ? result.items : []
+      if (!items.length) { await showAlert('当前没有可绑定的个人资源集合，请先创建集合。'); return null }
+      const selected = await showEditDialog({ title: '绑定个人资源集合', fields: [{ name: 'collectionId', label: '资源集合', type: 'select', options: items.map(item => ({ value: String(item.id), label: String(item.name || '未命名集合') })) }], values: { collectionId: String(current.collectionId || items[0].id) }, confirmText: '绑定' })
+      if (!selected) return null
+      return normalizeKmlResourceCollectionRef({ sourceType: 'personal', collectionId: selected.collectionId })
+    } catch (error) { await showAlert(error?.message || '资源集合列表加载失败'); return null }
+  }
+  const selected = await showEditDialog({ title: '绑定外部数据接口', fields: [{ name: 'dataUrl', label: '接口地址', required: true, hint: '仅支持 HTTPS；接口需返回约定 JSON。' }], values: { dataUrl: current.dataUrl || '' }, confirmText: '绑定' })
+  if (!selected) return null
+  try { return normalizeKmlResourceCollectionRef({ sourceType: 'external', dataUrl: selected.dataUrl }) } catch (error) { await showAlert(error?.message || '外部接口地址不符合安全要求'); return null }
+}
 const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
 const MEDIA_CLICK_SUPPRESSION_MS = 1400
@@ -704,6 +741,7 @@ function createPointFeature (kmlFile, latlng, result) {
     coordinates: mapLatLngToStoredCoordinate(kmlFile, latlng),
   }
   if (result.resourceCollection) feature.resourceCollection = result.resourceCollection
+  if (result.resourceCollectionRef) feature.resourceCollectionRef = result.resourceCollectionRef
   return applyKmlMarkerIconSelection(feature, result.markerIcon)
 }
 
@@ -1827,9 +1865,9 @@ async function handleEditFeature (kmlId, featureId) {
   const result = await showEditDialog({
     title: '修改标注属性',
     fields,
-    values: {
+      values: {
       name: feature.name,
-      pointKind: isKmlResourceCollectionFeature(feature) ? 'collection' : 'point',
+      pointKind: (isKmlResourceCollectionFeature(feature) || feature.resourceCollectionRef) ? 'collection' : 'point',
       markerIcon: getEditableKmlMarkerIcon(feature),
       description: getEditableKmlDescription(feature.description),
       targetKmlId: kmlFile.id,
@@ -1838,13 +1876,17 @@ async function handleEditFeature (kmlId, featureId) {
 
   if (!result) return
   let resourceCollection = feature.resourceCollection || null
+  let resourceCollectionRef = feature.resourceCollectionRef || null
   let descriptionInput = result.description
   if (feature.type === 'Point' && result.pointKind === 'collection') {
-    resourceCollection = await showKmlResourceCollectionEditor(resourceCollection || { version: 1, viewMode: 'grid', items: [] }, {
-      title: result.name?.trim() || '编辑资源集合',
-    })
-    if (!resourceCollection) return
-  } else if (feature.type === 'Point' && resourceCollection) {
+    const source = await choosePointResourceCollection(resourceCollectionRef || {})
+    if (!source) return
+    if (source.sourceType === 'inline') {
+      resourceCollection = await showKmlResourceCollectionEditor(resourceCollection || { version: 1, viewMode: 'grid', items: [] }, { title: result.name?.trim() || '编辑资源集合' })
+      if (!resourceCollection) return
+      resourceCollectionRef = null
+    } else { resourceCollection = null; resourceCollectionRef = source }
+  } else if (feature.type === 'Point' && (resourceCollection || resourceCollectionRef)) {
     const conversion = await showChoiceDialog({
       title: '转换为普通点位',
       message: '该点位已有资源集合，请选择如何处理集合中的地址。',
@@ -1854,8 +1896,9 @@ async function handleEditFeature (kmlId, featureId) {
       ],
     })
     if (!['keep', 'remove'].includes(conversion)) return
-    if (conversion === 'keep') descriptionInput = appendKmlResourceCollectionLinks(descriptionInput, resourceCollection)
+    if (conversion === 'keep' && resourceCollection) descriptionInput = appendKmlResourceCollectionLinks(descriptionInput, resourceCollection)
     resourceCollection = null
+    resourceCollectionRef = null
   }
   const enriched = await enrichKmlDescriptionWithShareLinks(descriptionInput, {
     previousDescription: feature.description,
@@ -1867,6 +1910,8 @@ async function handleEditFeature (kmlId, featureId) {
   }
   if (resourceCollection) editedFeature.resourceCollection = resourceCollection
   else if (feature.type === 'Point') editedFeature.resourceCollection = null
+  if (resourceCollectionRef) editedFeature.resourceCollectionRef = resourceCollectionRef
+  else if (feature.type === 'Point') delete editedFeature.resourceCollectionRef
   if (feature.type === 'Point') applyKmlMarkerIconSelection(editedFeature, result.markerIcon)
   else delete editedFeature.markerIcon
   const targetKmlId = String(result.targetKmlId || kmlId)
@@ -1893,6 +1938,7 @@ async function handleEditFeature (kmlId, featureId) {
     if (feature.type === 'Point') {
       featurePatch.markerIcon = editedFeature.markerIcon
       featurePatch.resourceCollection = editedFeature.resourceCollection
+      featurePatch.resourceCollectionRef = editedFeature.resourceCollectionRef
     }
     try {
       await applyFeatureOperation({
@@ -1916,6 +1962,8 @@ async function handleEditFeature (kmlId, featureId) {
     if (feature.type === 'Point') {
       if (editedFeature.resourceCollection) feature.resourceCollection = editedFeature.resourceCollection
       else delete feature.resourceCollection
+      if (editedFeature.resourceCollectionRef) feature.resourceCollectionRef = editedFeature.resourceCollectionRef
+      else delete feature.resourceCollectionRef
     }
     saveKmlChanges(kmlFile)
     renderKmlLayers(kmlFile)
@@ -2087,11 +2135,14 @@ async function createPointAtLatLng (latlng, options = {}) {
   }
 
   let resourceCollection = null
+  let resourceCollectionRef = null
   if (result.pointKind === 'collection') {
-    resourceCollection = await showKmlResourceCollectionEditor({ version: 1, viewMode: 'grid', items: [] }, {
-      title: result.name?.trim() || '新建资源集合',
-    })
-    if (!resourceCollection) return
+    const source = await choosePointResourceCollection()
+    if (!source) return
+    if (source.sourceType === 'inline') {
+      resourceCollection = await showKmlResourceCollectionEditor({ version: 1, viewMode: 'grid', items: [] }, { title: result.name?.trim() || '新建资源集合' })
+      if (!resourceCollection) return
+    } else resourceCollectionRef = source
   }
   const enriched = await enrichKmlDescriptionWithShareLinks(result.description)
   pushKmlHistory()
@@ -2099,6 +2150,7 @@ async function createPointAtLatLng (latlng, options = {}) {
     ...result,
     description: enriched.description,
     resourceCollection,
+    resourceCollectionRef,
   })
   kmlFile.features.push(newFeature)
   expandedKmlIds.add(kmlFile.id)
@@ -3651,7 +3703,7 @@ function scheduleKmlViewportRerender3d () {
     const hasLiveTrack = kmlList.some(k => k.isLiveTrack && k.enabled) ||
                          publicKmlList.some(k => k.isLiveTrack && !k.isShare && k.enabled)
     const hasFileViewportBounds = [...kmlList, ...publicKmlList].some(file => (
-      normalizeKmlBounds(file?.bounds, { featureCount: file?.featureCount })?.status === 'ready'
+      getKmlFileViewportBounds(file)?.status === 'ready'
     ))
     if (!hasLiveTrack && !hasShareClustering && !hasPersonalClustering && !hasFileViewportBounds) return
 
@@ -3681,7 +3733,7 @@ async function fitShareKmlView () {
   if (!entities.length) {
     const summaries = publicKmlList
       .filter(kmlFile => isKmlEnabled(kmlFile) && !kmlFile.loadError)
-      .map(kmlFile => normalizeKmlBounds(kmlFile.bounds, { featureCount: kmlFile.featureCount }))
+      .map(kmlFile => getKmlFileViewportBounds(kmlFile))
       .filter(bounds => bounds?.status === 'ready' && Array.isArray(bounds.bbox))
     if (!summaries.length) return false
     const south = Math.min(...summaries.map(bounds => bounds.bbox[1]))

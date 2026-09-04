@@ -695,6 +695,7 @@ export function openKmlResourceCollectionPanel (kmlFile, feature, options = {}) 
   }
   const close = () => {
     if (activeCollectionPanelClose === close) activeCollectionPanelClose = null
+    options.onClose?.()
     document.removeEventListener('keydown', onKeydown)
     panel.querySelectorAll('img, video, audio, iframe').forEach(media => media.removeAttribute('src'))
     panel.remove()

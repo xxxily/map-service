@@ -9,7 +9,16 @@ import {
   normalizeKmlResourceCollection,
   serializeKmlResourceCollection,
   tryNormalizeKmlResourceCollection,
+  normalizeKmlResourceCollectionRef,
+  sanitizeKmlResourceCollectionRef,
 } from '../shared/kml-resource-collection.js'
+
+test('resource collection references normalize personal and external sources safely', () => {
+  assert.deepEqual(normalizeKmlResourceCollectionRef({ sourceType: 'personal', collectionId: 'rc_demo' }), { version: 1, sourceType: 'personal', resolution: 'live', collectionId: 'rc_demo' })
+  assert.equal(normalizeKmlResourceCollectionRef({ sourceType: 'external', dataUrl: 'https://example.com/collection' }).dataUrl, 'https://example.com/collection')
+  assert.throws(() => normalizeKmlResourceCollectionRef({ sourceType: 'external', dataUrl: 'https://127.0.0.1/data' }), /内网主机/)
+  assert.deepEqual(sanitizeKmlResourceCollectionRef({ sourceType: 'personal', collectionId: 'rc_demo' }, { accessState: 'private' }).accessState, 'private')
+})
 import {
   createKmlResourceCollectionDisplayResolver,
   extractKmlResourceCollectionHttpsUrls,
@@ -17,6 +26,36 @@ import {
   prepareKmlResourceCollectionEditorSave,
   resolveKmlResourceCollectionInput,
 } from '../src/map/kml-resource-collection.js'
+import {
+  normalizeCollectionFetchError,
+  validateCollectionPagePayload,
+} from '../src/map/kml-content-panel.js'
+
+test('remote collection pagination rejects inconsistent totals and preserves unknown totals', () => {
+  assert.deepEqual(validateCollectionPagePayload({ items: [{ id: 'a' }], pagination: { page: 2, limit: 1, total: null, pageCount: null, hasNext: true } }, 2), {
+    pagination: { page: 2, limit: 1, total: null, pageCount: null, hasNext: true },
+    page: 2,
+    limit: 1,
+    total: null,
+    pageCount: null,
+    hasNext: true,
+  })
+  assert.throws(
+    () => validateCollectionPagePayload({ items: [], pagination: { page: 1, limit: 40, total: null, pageCount: 2, hasNext: true } }, 1),
+    error => error.code === 'INVALID_SCHEMA',
+  )
+  assert.throws(
+    () => validateCollectionPagePayload({ items: [], pagination: { page: 1, limit: 40, total: 41, pageCount: 1, hasNext: false } }, 1),
+    error => error.code === 'INVALID_SCHEMA',
+  )
+})
+
+test('remote collection redirect errors are policy blocks while generic TypeError stays network error', () => {
+  const redirect = normalizeCollectionFetchError(new TypeError('Failed because of redirect mode'), { redirect: 'error' })
+  assert.equal(redirect.code, 'BLOCKED_BY_POLICY')
+  const network = normalizeCollectionFetchError(new TypeError('Failed to fetch'), { redirect: 'error' })
+  assert.equal(network.code, 'NETWORK_ERROR')
+})
 
 test('resource collection editor keeps full HTTPS URLs and skips duplicate batch entries', () => {
   assert.deepEqual(extractKmlResourceCollectionHttpsUrls([

@@ -1,6 +1,8 @@
 import { normalizeKmlMarkerIcon } from '../../shared/kml-marker-icons.js'
 import {
+  serializeKmlResourceCollectionRef,
   serializeKmlResourceCollection,
+  tryNormalizeKmlResourceCollectionRef,
   tryNormalizeKmlResourceCollection,
 } from '../../shared/kml-resource-collection.js'
 
@@ -55,11 +57,30 @@ export function parseKmlDocument (kmlText) {
     const styleUrl = styleNode?.textContent.trim() || ''
     const markerIcon = readMarkerIcon(placemark)
     const rawResourceCollection = readExtendedDataValue(placemark, 'map-service:resource-collection')
+    const rawResourceCollectionRef = readExtendedDataValue(placemark, 'map-service:resource-collection-ref')
+    const rawResourceCollectionStatus = readExtendedDataValue(placemark, 'map-service:resource-collection-status')
     const parsedResourceCollection = rawResourceCollection
       ? tryNormalizeKmlResourceCollection(rawResourceCollection)
       : { value: null, error: null }
     if (rawResourceCollection && parsedResourceCollection.error) {
       warnings.push(`第 ${i + 1} 个标注的资源集合已忽略：${parsedResourceCollection.error.message}`)
+    }
+    const parsedResourceCollectionRef = rawResourceCollectionRef
+      ? tryNormalizeKmlResourceCollectionRef(rawResourceCollectionRef)
+      : { value: null, error: null }
+    if (rawResourceCollectionRef && parsedResourceCollectionRef.error) {
+      warnings.push(`第 ${i + 1} 个标注的资源集合引用已忽略：${parsedResourceCollectionRef.error.message}`)
+    }
+    let resourceCollectionStatus = null
+    if (rawResourceCollectionStatus && !parsedResourceCollection.value && !parsedResourceCollectionRef.value) {
+      try {
+        const status = JSON.parse(rawResourceCollectionStatus)
+        if (status?.version === 1 && status?.sourceType === 'personal' && ['private', 'missing', 'trashed'].includes(status.accessState)) {
+          resourceCollectionStatus = { version: 1, sourceType: 'personal', accessState: status.accessState }
+        }
+      } catch {
+        warnings.push(`第 ${i + 1} 个标注的资源集合状态已忽略：格式不正确`)
+      }
     }
 
     let type = null
@@ -94,6 +115,12 @@ export function parseKmlDocument (kmlText) {
         ...(markerIcon ? { markerIcon } : {}),
         ...(type === 'Point' && parsedResourceCollection.value
           ? { resourceCollection: parsedResourceCollection.value }
+          : {}),
+        ...(type === 'Point' && !parsedResourceCollection.value && parsedResourceCollectionRef.value
+          ? { resourceCollectionRef: parsedResourceCollectionRef.value }
+          : {}),
+        ...(type === 'Point' && !parsedResourceCollection.value && !parsedResourceCollectionRef.value && resourceCollectionStatus
+          ? { resourceCollectionStatus }
           : {}),
         coordinates,
       })
@@ -136,7 +163,7 @@ function parseCoords (coordText) {
     .filter(coord => !isNaN(coord[0]) && !isNaN(coord[1]))
 }
 
-export function generateKmlText (kmlName, features, description = '') {
+export function generateKmlText (kmlName, features, description = '', options = {}) {
   const escapeXml = (unsafe) => {
     return String(unsafe ?? '')
       .replace(/&/g, '&amp;')
@@ -162,7 +189,13 @@ export function generateKmlText (kmlName, features, description = '') {
     const resourceCollection = feat.type === 'Point'
       ? tryNormalizeKmlResourceCollection(feat.resourceCollection).value
       : null
-    if (feat.type === 'Point' && (markerIcon || resourceCollection)) {
+    const resourceCollectionRef = feat.type === 'Point'
+      ? tryNormalizeKmlResourceCollectionRef(feat.resourceCollectionRef).value
+      : null
+    const resourceCollectionStatus = feat.type === 'Point' && feat.resourceCollectionStatus
+      ? feat.resourceCollectionStatus
+      : null
+    if (feat.type === 'Point' && (markerIcon || resourceCollection || resourceCollectionRef || resourceCollectionStatus)) {
       xmlParts.push('      <ExtendedData>')
       if (markerIcon) {
         xmlParts.push('        <Data name="map-service:marker-icon">')
@@ -172,6 +205,16 @@ export function generateKmlText (kmlName, features, description = '') {
       if (resourceCollection) {
         xmlParts.push('        <Data name="map-service:resource-collection">')
         xmlParts.push(`          <value>${escapeXml(serializeKmlResourceCollection(resourceCollection))}</value>`)
+        xmlParts.push('        </Data>')
+      }
+      if (resourceCollectionRef) {
+        xmlParts.push('        <Data name="map-service:resource-collection-ref">')
+        xmlParts.push(`          <value>${escapeXml(serializeKmlResourceCollectionRef(resourceCollectionRef))}</value>`)
+        xmlParts.push('        </Data>')
+      }
+      if (resourceCollectionStatus && options.publicProjection === true && ['private', 'missing', 'trashed'].includes(resourceCollectionStatus.accessState)) {
+        xmlParts.push('        <Data name="map-service:resource-collection-status">')
+        xmlParts.push(`          <value>${escapeXml(JSON.stringify({ version: 1, sourceType: 'personal', accessState: resourceCollectionStatus.accessState }))}</value>`)
         xmlParts.push('        </Data>')
       }
       xmlParts.push('      </ExtendedData>')

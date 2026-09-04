@@ -16,8 +16,12 @@ import {
 } from '../../../shared/interaction-resource-ref.js'
 import {
   normalizeKmlResourceCollection,
+  normalizeKmlResourceCollectionRef,
   serializeKmlResourceCollection,
+  serializeKmlResourceCollectionRef,
+  sanitizeKmlResourceCollectionRef,
   tryNormalizeKmlResourceCollection,
+  tryNormalizeKmlResourceCollectionRef,
 } from '../../../shared/kml-resource-collection.js'
 import {
   computeSpatialScope,
@@ -42,6 +46,13 @@ const DEFAULT_SETTINGS = Object.freeze({
     maxFeaturesPerKml: 50000,
     maxFeaturesPerUser: 200000,
     trashRetentionDays: 30,
+  },
+  resourceCollection: {
+    maxCollectionsPerUser: 1000,
+    maxItemsPerCollection: 10000,
+    maxCollectionBytesPerUser: 100 * 1024 * 1024,
+    maxBatchItemsPerRequest: 100,
+    publicCollectionReadRateLimit: 300,
   },
   share: {
     publicAccessPolicy: 'inherit_site_access',
@@ -114,8 +125,20 @@ const KML_SYNC_ERROR_SUGGESTIONS = Object.freeze({
   DEFAULT_KML_PROTECTED: '请先将另一个 KML 设为默认文件后重试。',
   KML_CREATE_REPLAY_DELETED: '请刷新 KML 列表；若要重新创建副本，请使用新的本地同步标识。',
   KML_DELETE_CONFIRMATION_REQUIRED: '请在确认删除后重试，未确认的文件不会移入回收站。',
+  KML_RESOURCE_COLLECTION_REF_UNSUPPORTED: '当前客户端不支持安全编辑资源集合引用，请升级客户端；如需解除绑定，请显式提交 resourceCollectionRef:null。',
   QUOTA_EXCEEDED: '请减少文件或要素数量，或联系管理员调整配额。',
   FILE_TOO_LARGE: '请压缩或拆分 KML 文件后再保存。',
+})
+
+const RESOURCE_COLLECTION_MAX_ITEMS = 10000
+const RESOURCE_COLLECTION_MAX_BYTES = 20 * 1024 * 1024
+const RESOURCE_COLLECTION_MAX_BATCH_OPERATIONS = 100
+const RESOURCE_COLLECTION_EXPORT_MAX_BYTES = 64 * 1024 * 1024
+const RESOURCE_COLLECTION_SORT_FIELDS = Object.freeze({
+  name: 'name',
+  createdAt: 'created_at',
+  updatedAt: 'updated_at',
+  itemCount: 'item_count',
 })
 
 function parseJson (value, fallback) {
@@ -159,6 +182,50 @@ function normalizeOrder (value, fallback = 'desc') {
     throw createHttpError('排序方向只支持 asc 或 desc', 400, 'VALIDATION_FAILED')
   }
   return normalized
+}
+
+function normalizeResourceCollectionListQuery (input = {}) {
+  const { page, limit } = normalizePage(input)
+  const status = String(input.status || 'active').toLowerCase()
+  if (!['active', 'trashed', 'all'].includes(status)) {
+    throw createHttpError('资源集合状态筛选值不正确', 400, 'VALIDATION_FAILED')
+  }
+  const visibility = String(input.visibility || 'all').toLowerCase()
+  if (!['private', 'public', 'all'].includes(visibility)) {
+    throw createHttpError('资源集合公开状态筛选值不正确', 400, 'VALIDATION_FAILED')
+  }
+  const sort = String(input.sort || 'updatedAt')
+  if (!Object.hasOwn(RESOURCE_COLLECTION_SORT_FIELDS, sort)) {
+    throw createHttpError('资源集合排序字段不正确', 400, 'VALIDATION_FAILED')
+  }
+  const order = normalizeOrder(input.order, 'desc')
+  const search = normalizeText(input.search, { maxLength: 100 })
+  return { page, limit, status, visibility, sort, order, search }
+}
+
+function normalizeResourceCollectionRevision (value, options = {}) {
+  if (value === undefined || value === null || value === '') {
+    if (options.optional) return null
+    throw createHttpError('资源集合 revision 格式不正确', 400, 'VALIDATION_FAILED')
+  }
+  const revision = Number(value)
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw createHttpError('资源集合 revision 格式不正确', 400, 'VALIDATION_FAILED')
+  }
+  return revision
+}
+
+function normalizeResourceCollectionRuntimeSettings (input, fallback = DEFAULT_SETTINGS.resourceCollection) {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const result = { ...fallback }
+  for (const key of Object.keys(fallback)) {
+    const value = Number(source[key])
+    if (Number.isSafeInteger(value) && value > 0) result[key] = value
+  }
+  if (result.maxBatchItemsPerRequest > result.maxItemsPerCollection) {
+    result.maxBatchItemsPerRequest = result.maxItemsPerCollection
+  }
+  return result
 }
 
 function normalizeSyncClientId (value) {
@@ -417,7 +484,12 @@ export function normalizeKmlFeatures (value) {
         throw createHttpError('点位图标不受支持', 400, 'VALIDATION_FAILED')
       }
       if (markerIcon) normalized.markerIcon = markerIcon
-      if (feature.resourceCollection !== undefined && feature.resourceCollection !== null) {
+      const hasInlineCollection = feature.resourceCollection !== undefined && feature.resourceCollection !== null
+      const hasCollectionRef = feature.resourceCollectionRef !== undefined && feature.resourceCollectionRef !== null
+      if (hasInlineCollection && hasCollectionRef) {
+        throw createHttpError('点位不能同时绑定内嵌资源集合和资源集合引用', 400, 'VALIDATION_FAILED')
+      }
+      if (hasInlineCollection) {
         try {
           normalized.resourceCollection = normalizeKmlResourceCollection(feature.resourceCollection, {
             createId: () => randomId('res'),
@@ -425,24 +497,81 @@ export function normalizeKmlFeatures (value) {
         } catch (error) {
           throw createHttpError(error.message || '资源集合格式不正确', 400, 'VALIDATION_FAILED')
         }
+      } else if (hasCollectionRef) {
+        try {
+          normalized.resourceCollectionRef = normalizeKmlResourceCollectionRef(feature.resourceCollectionRef)
+        } catch (error) {
+          throw createHttpError(error.message || '资源集合引用格式不正确', 400, 'VALIDATION_FAILED')
+        }
+      } else if (feature.resourceCollectionStatus !== undefined && feature.resourceCollectionStatus !== null) {
+        const status = requireObject(feature.resourceCollectionStatus, '资源集合状态格式不正确')
+        if (Number(status.version || 1) !== 1 || status.sourceType !== 'personal' || !['private', 'missing', 'trashed'].includes(status.accessState)) {
+          throw createHttpError('资源集合状态格式不正确', 400, 'VALIDATION_FAILED')
+        }
+        normalized.resourceCollectionStatus = {
+          version: 1,
+          sourceType: 'personal',
+          accessState: status.accessState,
+        }
       }
     }
     return normalized
   })
 }
 
-function sanitizePublishedKmlFeatures (value) {
+function sanitizePublishedKmlFeatures (value, options = {}) {
   return (Array.isArray(value) ? value : []).map(rawFeature => {
     if (!rawFeature || typeof rawFeature !== 'object' || Array.isArray(rawFeature)) return rawFeature
     const feature = { ...rawFeature }
     if (feature.type !== 'Point') {
       delete feature.resourceCollection
+      delete feature.resourceCollectionRef
+      delete feature.resourceCollectionStatus
       return feature
     }
-    if (feature.resourceCollection === undefined || feature.resourceCollection === null) return feature
-    const result = tryNormalizeKmlResourceCollection(feature.resourceCollection)
-    if (result.value) feature.resourceCollection = result.value
-    else delete feature.resourceCollection
+    const hasInline = feature.resourceCollection !== undefined && feature.resourceCollection !== null
+    const hasRef = feature.resourceCollectionRef !== undefined && feature.resourceCollectionRef !== null
+    if (hasInline && hasRef) delete feature.resourceCollectionRef
+    if (hasInline) {
+      const result = tryNormalizeKmlResourceCollection(feature.resourceCollection)
+      if (result.value) feature.resourceCollection = result.value
+      else delete feature.resourceCollection
+      delete feature.resourceCollectionStatus
+      return feature
+    }
+    if (hasRef) {
+      const result = tryNormalizeKmlResourceCollectionRef(feature.resourceCollectionRef)
+      if (!result.value) {
+        delete feature.resourceCollectionRef
+        return feature
+      }
+      feature.resourceCollectionRef = result.value
+      delete feature.resourceCollectionStatus
+      if (options.publicProjection === true && result.value.sourceType === 'personal') {
+        const accessState = typeof options.resourceCollectionAccessResolver === 'function'
+          ? options.resourceCollectionAccessResolver(result.value)
+          : 'missing'
+        if (accessState !== 'public') {
+          delete feature.resourceCollectionRef
+          feature.resourceCollectionStatus = {
+            version: 1,
+            sourceType: 'personal',
+            accessState: ['private', 'trashed'].includes(accessState) ? accessState : 'missing',
+          }
+        }
+      }
+      return feature
+    }
+    if (feature.resourceCollectionStatus) {
+      try {
+        const status = requireObject(feature.resourceCollectionStatus, '资源集合状态格式不正确')
+        if (Number(status.version || 1) === 1 && status.sourceType === 'personal' && ['private', 'missing', 'trashed'].includes(status.accessState)) {
+          feature.resourceCollectionStatus = { version: 1, sourceType: 'personal', accessState: status.accessState }
+        } else delete feature.resourceCollectionStatus
+      } catch {
+        delete feature.resourceCollectionStatus
+      }
+    }
     return feature
   })
 }
@@ -573,11 +702,37 @@ export function parseKmlText (value) {
     const rawResourceCollection = type === 'Point'
       ? readExtendedDataValueFromXml(source, 'map-service:resource-collection')
       : ''
+    const rawResourceCollectionRef = type === 'Point'
+      ? readExtendedDataValueFromXml(source, 'map-service:resource-collection-ref')
+      : ''
+    const rawResourceCollectionStatus = type === 'Point'
+      ? readExtendedDataValueFromXml(source, 'map-service:resource-collection-status')
+      : ''
     const parsedResourceCollection = rawResourceCollection
       ? tryNormalizeKmlResourceCollection(rawResourceCollection, { createId: () => randomId('res') })
       : { value: null, error: null }
     if (parsedResourceCollection.error) {
       warnings.push(`第 ${features.length + 1} 个标注的资源集合已忽略：${parsedResourceCollection.error.message}`)
+    }
+    const parsedResourceCollectionRef = rawResourceCollectionRef
+      ? tryNormalizeKmlResourceCollectionRef(rawResourceCollectionRef)
+      : { value: null, error: null }
+    if (parsedResourceCollectionRef.error) {
+      warnings.push(`第 ${features.length + 1} 个标注的资源集合引用已忽略：${parsedResourceCollectionRef.error.message}`)
+    }
+    let parsedResourceCollectionStatus = null
+    if (rawResourceCollectionStatus && !parsedResourceCollection.value && !parsedResourceCollectionRef.value) {
+      try {
+        const status = JSON.parse(rawResourceCollectionStatus)
+        if (status && status.version === 1 && status.sourceType === 'personal' && ['private', 'missing', 'trashed'].includes(status.accessState)) {
+          parsedResourceCollectionStatus = { version: 1, sourceType: 'personal', accessState: status.accessState }
+        }
+      } catch {
+        warnings.push(`第 ${features.length + 1} 个标注的资源集合状态已忽略：格式不正确`)
+      }
+    }
+    if (parsedResourceCollection.value && parsedResourceCollectionRef.value) {
+      warnings.push(`第 ${features.length + 1} 个标注同时包含内嵌资源集合和资源集合引用，已忽略引用`)
     }
     features.push({
       id: randomId('feat'),
@@ -588,6 +743,8 @@ export function parseKmlText (value) {
       ...(readXmlElement(source, 'styleUrl') ? { styleUrl: readXmlElement(source, 'styleUrl') } : {}),
       ...(markerIcon ? { markerIcon } : {}),
       ...(parsedResourceCollection.value ? { resourceCollection: parsedResourceCollection.value } : {}),
+      ...(!parsedResourceCollection.value && parsedResourceCollectionRef.value ? { resourceCollectionRef: parsedResourceCollectionRef.value } : {}),
+      ...(!parsedResourceCollection.value && !parsedResourceCollectionRef.value && parsedResourceCollectionStatus ? { resourceCollectionStatus: parsedResourceCollectionStatus } : {}),
     })
   }
   return {
@@ -599,6 +756,7 @@ export function parseKmlText (value) {
 }
 
 export function generateKmlText (name, features, description = '') {
+  const options = arguments[3] || {}
   const normalizedFeatures = normalizeKmlFeatures(features)
   const parts = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -616,7 +774,29 @@ export function generateKmlText (name, features, description = '') {
     const resourceCollection = feature.type === 'Point' && feature.resourceCollection
       ? normalizeKmlResourceCollection(feature.resourceCollection, { createId: () => randomId('res') })
       : null
-    if (markerIcon || resourceCollection) {
+    let resourceCollectionRef = feature.type === 'Point' && feature.resourceCollectionRef
+      ? normalizeKmlResourceCollectionRef(feature.resourceCollectionRef)
+      : null
+    let resourceCollectionStatus = feature.type === 'Point' && feature.resourceCollectionStatus
+      ? feature.resourceCollectionStatus
+      : null
+    if (resourceCollection && resourceCollectionRef) resourceCollectionRef = null
+    if (resourceCollectionRef && options.publicProjection === true && resourceCollectionRef.sourceType === 'personal') {
+      const accessState = typeof options.resourceCollectionAccessResolver === 'function'
+        ? options.resourceCollectionAccessResolver(resourceCollectionRef)
+        : 'missing'
+      if (accessState !== 'public') {
+        resourceCollectionStatus = { version: 1, sourceType: 'personal', accessState: ['private', 'trashed'].includes(accessState) ? accessState : 'missing' }
+        resourceCollectionRef = null
+      }
+    }
+    if (resourceCollectionStatus && (!resourceCollectionRef || options.publicProjection === true)) {
+      const state = String(resourceCollectionStatus.accessState || '')
+      if (!['private', 'missing', 'trashed'].includes(state)) resourceCollectionStatus = null
+    } else {
+      resourceCollectionStatus = null
+    }
+    if (markerIcon || resourceCollection || resourceCollectionRef || resourceCollectionStatus) {
       parts.push('      <ExtendedData>')
       if (markerIcon) {
         parts.push('        <Data name="map-service:marker-icon">')
@@ -626,6 +806,16 @@ export function generateKmlText (name, features, description = '') {
       if (resourceCollection) {
         parts.push('        <Data name="map-service:resource-collection">')
         parts.push(`          <value>${escapeXml(serializeKmlResourceCollection(resourceCollection))}</value>`)
+        parts.push('        </Data>')
+      }
+      if (resourceCollectionRef) {
+        parts.push('        <Data name="map-service:resource-collection-ref">')
+        parts.push(`          <value>${escapeXml(serializeKmlResourceCollectionRef(resourceCollectionRef))}</value>`)
+        parts.push('        </Data>')
+      }
+      if (resourceCollectionStatus) {
+        parts.push('        <Data name="map-service:resource-collection-status">')
+        parts.push(`          <value>${escapeXml(JSON.stringify({ version: 1, sourceType: 'personal', accessState: resourceCollectionStatus.accessState }))}</value>`)
         parts.push('        </Data>')
       }
       parts.push('      </ExtendedData>')
@@ -650,6 +840,86 @@ export function generateKmlText (name, features, description = '') {
   parts.push('  </Document>')
   parts.push('</kml>')
   return parts.join('\n')
+}
+
+function resourceCollectionRefFingerprint (value) {
+  const result = tryNormalizeKmlResourceCollectionRef(value)
+  return result.value ? JSON.stringify(result.value) : ''
+}
+
+function resourceCollectionRefCapabilityVersion (input = {}) {
+  const value = input.resourceCollectionRefVersion ?? input.capabilities?.resourceCollectionRefVersion
+  return Number.isSafeInteger(Number(value)) && Number(value) === 1 ? 1 : 0
+}
+
+// A pre-reference client serializes a complete feature array without knowing
+// how to preserve the new field. Merge omitted references for capable clients
+// and reject destructive/ambiguous writes from older clients.
+function prepareKmlResourceCollectionRefUpdate (input, currentFeatures) {
+  if (input?.features === undefined) return { input, changedFeatureIds: new Set() }
+  if (!Array.isArray(input.features)) return { input, changedFeatureIds: new Set() }
+  const capable = resourceCollectionRefCapabilityVersion(input) === 1
+  const currentById = new Map(
+    (Array.isArray(currentFeatures) ? currentFeatures : [])
+      .filter(feature => feature && typeof feature === 'object' && feature.resourceCollectionRef)
+      .map(feature => [String(feature.id || ''), feature])
+      .filter(([id]) => id),
+  )
+  const incomingIds = new Set()
+  const changedFeatureIds = new Set()
+  const mergedFeatures = input.features.map(rawFeature => {
+    if (!rawFeature || typeof rawFeature !== 'object' || Array.isArray(rawFeature)) return rawFeature
+    const id = String(rawFeature.id || '')
+    if (id) incomingIds.add(id)
+    const current = currentById.get(id)
+    if (!current) {
+      if (Object.hasOwn(rawFeature, 'resourceCollectionRef') && rawFeature.resourceCollectionRef !== null) changedFeatureIds.add(id)
+      return rawFeature
+    }
+    const currentFingerprint = resourceCollectionRefFingerprint(current.resourceCollectionRef)
+    const hasRefField = Object.hasOwn(rawFeature, 'resourceCollectionRef') && rawFeature.resourceCollectionRef !== undefined
+    if (!hasRefField) {
+      if (!capable) {
+        throw createHttpError(
+          '当前客户端不支持安全编辑资源集合引用，请升级客户端后重试',
+          409,
+          'KML_RESOURCE_COLLECTION_REF_UNSUPPORTED',
+        )
+      }
+      return { ...rawFeature, resourceCollectionRef: clone(current.resourceCollectionRef) }
+    }
+    if (rawFeature.resourceCollectionRef === null) {
+      // An explicit null is an intentional, backwards-compatible unbind.
+      // Capability negotiation is only required for implicit deletion or
+      // replacing a reference with a different source.
+      return rawFeature
+    }
+    const incomingFingerprint = resourceCollectionRefFingerprint(rawFeature.resourceCollectionRef)
+    if (!capable && incomingFingerprint !== currentFingerprint) {
+      throw createHttpError(
+        '当前客户端不支持替换资源集合引用，请升级客户端后重试',
+        409,
+        'KML_RESOURCE_COLLECTION_REF_UNSUPPORTED',
+      )
+    }
+    if (incomingFingerprint !== currentFingerprint) changedFeatureIds.add(id)
+    return rawFeature
+  })
+  if (!capable) {
+    for (const [id] of currentById) {
+      if (!incomingIds.has(id)) {
+        throw createHttpError(
+          '当前客户端不支持安全编辑资源集合引用，请升级客户端后重试',
+          409,
+          'KML_RESOURCE_COLLECTION_REF_UNSUPPORTED',
+        )
+      }
+    }
+  }
+  return {
+    input: { ...input, features: mergedFeatures },
+    changedFeatureIds,
+  }
 }
 
 function normalizeKmlInput (input = {}, current = {}) {
@@ -961,6 +1231,11 @@ export class UserContentService {
     this.sharePasswordLimiter = new AttemptLimiter(options.sharePasswordLimit || SHARE_PASSWORD_LIMIT, this.clock)
     this.shareTileLimiter = new FixedWindowLimiter(options.shareTileRateLimit || SHARE_TILE_RATE_LIMIT, this.clock)
     this.shareManifestLimiter = new FixedWindowLimiter(options.shareManifestRateLimit || SHARE_MANIFEST_RATE_LIMIT, this.clock)
+    this.publicCollectionReadLimiter = new FixedWindowLimiter({
+      maxRequests: options.publicCollectionReadRateLimit || 300,
+      windowMs: 60000,
+      maxEntries: 10000,
+    }, this.clock)
     this.useRuntimeTileRateLimit = options.shareTileRateLimit === undefined
     this.useRuntimeManifestRateLimit = options.shareManifestRateLimit === undefined
     this.shareSecretEncryptionKey = String(options.shareSecretEncryptionKey || 'map-service-dev-share-secret')
@@ -1051,6 +1326,10 @@ export class UserContentService {
     const settings = this.settingsProvider() || {}
     return {
       quota: normalizeStoredQuotaSettings(settings.quota, DEFAULT_SETTINGS.quota),
+      resourceCollection: normalizeResourceCollectionRuntimeSettings(
+        settings.resourceCollection || settings.resourceCollections?.settings,
+        DEFAULT_SETTINGS.resourceCollection,
+      ),
       share: {
         ...DEFAULT_SETTINGS.share,
         ...(settings.share || {}),
@@ -1128,6 +1407,31 @@ export class UserContentService {
       if (error?.code === errorCode) this.recordShareRuntimeMetric(shareId, `${kind}_rate_limited`)
       throw error
     }
+  }
+
+  publicCollectionRateLimitSettings () {
+    const configured = Number(this.getSettings().resourceCollection?.publicCollectionReadRateLimit)
+    return {
+      maxRequests: Number.isSafeInteger(configured) && configured > 0 ? configured : 300,
+      windowMs: 60 * 1000,
+      maxEntries: 10000,
+    }
+  }
+
+  consumePublicCollectionRateLimit (key, context = {}) {
+    const settings = this.publicCollectionRateLimitSettings()
+    this.publicCollectionReadLimiter.configure(settings)
+    const clientKey = hashToken([
+      this.sharePrivacySecret,
+      String(context.ip || '').slice(0, 120),
+      String(context.userAgent || '').slice(0, 255),
+      String(context.visitorId || '').slice(0, 160),
+    ].join('|')).slice(0, 24)
+    this.publicCollectionReadLimiter.consume(
+      `${String(key || '').slice(0, 180)}:${clientKey}`,
+      '公开资源集合读取过于频繁，请稍后再试',
+      'RESOURCE_COLLECTION_RATE_LIMITED',
+    )
   }
 
   spatialSettings (settings = this.getSettings()) {
@@ -1580,6 +1884,12 @@ export class UserContentService {
     if (permissions.includes(permission) || permissions.includes('system.super_admin')) return true
     if (permission === 'kml.own.read' && permissions.includes('kml.own.write')) return true
     if (permission === 'kml.any.read' && permissions.includes('kml.any.manage')) return true
+    if (permission === 'resource_collection.own.read' && (
+      permissions.includes('resource_collection.own.write') ||
+      permissions.includes('resource_collection.own.manage')
+    )) return true
+    if (permission === 'resource_collection.own.write' && permissions.includes('resource_collection.own.manage')) return true
+    if (permission === 'resource_collection.any.read' && permissions.includes('resource_collection.any.manage')) return true
     return false
   }
 
@@ -2263,6 +2573,7 @@ export class UserContentService {
       throw createHttpError('KML 目录不存在', 404, 'KML_DIRECTORY_NOT_FOUND')
     }
     const sourceType = normalizeEnum(input.sourceType, KML_SOURCE_TYPES, options.sourceType || 'created', 'KML 来源类型不正确')
+    this.validateResourceCollectionReferences(ownerId, normalized.features, { allowUnresolved: sourceType === 'imported' || sourceType === 'migrated' })
     const isDefault = Boolean(input.isDefault)
     const now = this.nowIso()
     const id = randomId('kml')
@@ -2316,6 +2627,7 @@ export class UserContentService {
           ) VALUES (?, ?, ?, ?, NULL)
         `).run(ownerId, syncClientId, id, now)
       }
+      this.syncResourceCollectionBindings(id, normalized.features)
     })
     return this.kmlViewFromRow(this.database.prepare('SELECT * FROM kml_documents WHERE id = ?').get(id), { includeFeatures: true })
   }
@@ -2376,7 +2688,7 @@ export class UserContentService {
       params.push(status)
     }
     if (input.search) {
-      where.push('(name LIKE ? OR description LIKE ?)')
+      where.push("(name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')")
       const search = `%${String(input.search).slice(0, 200)}%`
       params.push(search, search)
     }
@@ -2416,6 +2728,1180 @@ export class UserContentService {
     return this.listKml(actor, input)
   }
 
+  resourceCollectionView (row, options = {}) {
+    if (!row) return null
+    const collectionRevision = Number(row.revision || 1)
+    const itemsRevision = Number(row.items_revision || 1)
+    if (options.public === true) {
+      return {
+        id: row.id,
+        name: row.name,
+        viewMode: row.view_mode,
+        itemCount: Number(row.item_count || 0),
+        byteSize: Number(row.byte_size || 0),
+        collectionRevision,
+        itemsRevision,
+        // Keep the historical field as an alias for clients that only know
+        // one revision, while exposing the two independent clocks explicitly.
+        revision: collectionRevision,
+        updatedAt: row.updated_at,
+      }
+    }
+    const result = {
+      id: row.id,
+      name: row.name,
+      description: row.description || '',
+      visibility: row.visibility,
+      status: row.status,
+      viewMode: row.view_mode,
+      isPublic: row.visibility === 'public',
+      itemCount: Number(row.item_count || 0),
+      byteSize: Number(row.byte_size || 0),
+      collectionRevision,
+      itemsRevision,
+      revision: collectionRevision,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      deletedAt: row.deleted_at || null,
+    }
+    const references = this.resourceCollectionReferenceStats(row.id)
+    result.referenceCount = references.referenceCount
+    result.publicReferenceCount = references.publicReferenceCount
+    if (options.includeItems) result.items = this.listResourceCollectionItems({ user: { id: row.owner_id, permissions: ['resource_collection.own.read'] } }, row.id, options)
+    return result
+  }
+
+  resourceCollectionReferenceStats (collectionId) {
+    const referenceCount = Number(this.database.prepare("SELECT COUNT(*) AS count FROM resource_collection_bindings WHERE collection_id=? AND status='active'").get(collectionId)?.count || 0)
+    const visibility = this.database.prepare('SELECT visibility FROM resource_collections WHERE id=?').get(collectionId)?.visibility
+    return { referenceCount, publicReferenceCount: visibility === 'public' ? referenceCount : 0 }
+  }
+
+  resourceCollectionHasLiveReference (collectionId) {
+    const bindings = this.database.prepare(`
+      SELECT * FROM resource_collection_bindings
+      WHERE collection_id=?
+    `).all(String(collectionId || ''))
+    for (const binding of bindings) {
+      // Binding status is a derived index. Check the source payload as well so
+      // a collection moved to the recycle bin cannot be deleted while a KML
+      // or published snapshot still contains the reference.
+      if (this.resourceCollectionBindingSource(binding).matches) return true
+    }
+    return false
+  }
+
+  syncResourceCollectionBindings (kmlId, features) {
+    const now = this.nowIso()
+    const refs = []
+    for (const feature of Array.isArray(features) ? features : []) {
+      const ref = tryNormalizeKmlResourceCollectionRef(feature?.resourceCollectionRef)
+      if (ref.value?.sourceType === 'personal') refs.push({ collectionId: ref.value.collectionId, featureId: feature.id })
+    }
+    this.database.prepare("UPDATE resource_collection_bindings SET status='stale',updated_at=? WHERE kml_id=? AND source_scope='owner_kml' AND status='active'").run(now, kmlId)
+    for (const ref of refs) {
+      // Imported/migrated KML may intentionally retain an unresolved personal
+      // reference. The binding table is a derived index with a foreign key;
+      // skip missing or trashed collections instead of rejecting the KML write.
+      const collection = this.database.prepare("SELECT status FROM resource_collections WHERE id=?").get(ref.collectionId)
+      if (!collection || collection.status !== 'active') continue
+      this.database.prepare(`
+        INSERT INTO resource_collection_bindings(
+          id,collection_id,kml_id,feature_id,source_scope,status,created_at,updated_at
+        ) VALUES (?,?,?,?,'owner_kml','active',?,?)
+        ON CONFLICT(collection_id,kml_id,feature_id,source_scope)
+        DO UPDATE SET status='active',updated_at=?
+      `).run(randomId('rcb'), ref.collectionId, kmlId, String(ref.featureId || ''), now, now, now)
+    }
+  }
+
+  markPublishedResourceCollectionBindingsStale (shareId) {
+    const itemIds = this.database.prepare('SELECT id FROM kml_share_items WHERE share_id=?').all(shareId).map(row => String(row.id))
+    if (!itemIds.length) return
+    const now = this.nowIso()
+    const update = this.database.prepare("UPDATE resource_collection_bindings SET status='stale',updated_at=? WHERE source_scope='published_share' AND status='active' AND feature_id LIKE ?")
+    itemIds.forEach(itemId => update.run(now, `${itemId}::%`))
+  }
+
+  syncPublishedResourceCollectionBindings (shareId, items) {
+    const now = this.nowIso()
+    for (const item of Array.isArray(items) ? items : []) {
+      const itemId = String(item.id || '')
+      if (!itemId) continue
+      const features = Array.isArray(item.publishedSnapshot?.features)
+        ? item.publishedSnapshot.features
+        : Array.isArray(item.features) ? item.features : []
+      for (const feature of features) {
+        const ref = tryNormalizeKmlResourceCollectionRef(feature?.resourceCollectionRef)
+        if (ref.value?.sourceType !== 'personal') continue
+        const collection = this.database.prepare("SELECT status FROM resource_collections WHERE id=?").get(ref.value.collectionId)
+        if (!collection || collection.status !== 'active') continue
+        const featureId = `${itemId}::${String(feature.id || '')}`
+        if (featureId.length > 320) continue
+        this.database.prepare(`
+          INSERT INTO resource_collection_bindings(
+            id,collection_id,kml_id,feature_id,source_scope,status,created_at,updated_at
+          ) VALUES (?,?,?,?,'published_share','active',?,?)
+          ON CONFLICT(collection_id,kml_id,feature_id,source_scope)
+          DO UPDATE SET status='active',updated_at=?
+        `).run(randomId('rcb'), ref.value.collectionId, String(item.kmlId || ''), featureId, now, now, now)
+      }
+    }
+  }
+
+  normalizeResourceItem (input = {}, current = {}) {
+    const result = tryNormalizeKmlResourceCollection({
+      version: 1,
+      viewMode: 'grid',
+      items: [{
+        title: input.title ?? current.title ?? '',
+        url: input.url ?? current.url ?? '',
+        type: input.type ?? current.type ?? 'auto',
+        coverUrl: input.coverUrl ?? current.coverUrl ?? current.cover_url ?? '',
+      }],
+    })
+    if (!result.value) throw createHttpError(result.error?.message || '资源项格式不正确', 400, 'RESOURCE_COLLECTION_ITEM_INVALID')
+    const item = result.value.items[0]
+    return { title: item.title, url: item.url, type: item.type, coverUrl: item.coverUrl || '' }
+  }
+
+  resourceCollectionSettings () {
+    return normalizeResourceCollectionRuntimeSettings(
+      this.getSettings().resourceCollection,
+      DEFAULT_SETTINGS.resourceCollection,
+    )
+  }
+
+  collectionPage (input = {}, fallbackLimit = 40) {
+    const rawPage = input.page === undefined ? 1 : Number(input.page)
+    const rawLimit = input.limit === undefined ? fallbackLimit : Number(input.limit)
+    if (!Number.isSafeInteger(rawPage) || rawPage < 1 || !Number.isSafeInteger(rawLimit) || rawLimit < 1) {
+      throw createHttpError('资源集合分页参数不正确', 400, 'VALIDATION_FAILED')
+    }
+    return { page: Math.min(rawPage, 1000000), limit: Math.min(rawLimit, 100) }
+  }
+
+  collectionItemsFromRows (rows) {
+    return rows.map(row => ({
+      id: row.id,
+      position: Number(row.position),
+      title: row.title,
+      url: row.url,
+      type: row.type,
+      coverUrl: row.cover_url ?? row.coverUrl ?? '',
+      createdAt: row.created_at ?? row.createdAt,
+      updatedAt: row.updated_at ?? row.updatedAt,
+    }))
+  }
+
+  collectionByteSize (items, viewMode = 'grid') {
+    return Buffer.byteLength(JSON.stringify({ version: 1, viewMode, items }), 'utf8')
+  }
+
+  assertResourceCollectionCapacity (ownerId, collectionId, itemCount, byteSize, options = {}) {
+    const settings = this.resourceCollectionSettings()
+    const maxItems = Math.min(settings.maxItemsPerCollection, 1000000)
+    if (itemCount > maxItems) {
+      throw createHttpError(`资源集合最多包含 ${maxItems} 项`, 409, 'RESOURCE_COLLECTION_QUOTA_EXCEEDED')
+    }
+    const maxBytes = settings.maxCollectionBytesPerUser
+    if (byteSize > maxBytes) {
+      throw createHttpError('资源集合数据超过每用户容量限制', 409, 'RESOURCE_COLLECTION_QUOTA_EXCEEDED')
+    }
+    const otherBytes = Number(this.database.prepare(`
+      SELECT COALESCE(SUM(byte_size), 0) AS bytes
+      FROM resource_collections
+      WHERE owner_id = ? AND status = 'active' AND id <> ?
+    `).get(ownerId, collectionId || '')?.bytes || 0)
+    if (otherBytes + byteSize > maxBytes) {
+      throw createHttpError('资源集合数据超过每用户容量限制', 409, 'RESOURCE_COLLECTION_QUOTA_EXCEEDED')
+    }
+    if (options.transportBytes !== undefined && Number(options.transportBytes) > RESOURCE_COLLECTION_EXPORT_MAX_BYTES) {
+      throw createHttpError('资源集合请求超过安全大小限制', 413, 'RESOURCE_COLLECTION_PAYLOAD_TOO_LARGE')
+    }
+  }
+
+  normalizeInitialCollectionItems (value) {
+    if (value === undefined) return []
+    if (!Array.isArray(value)) throw createHttpError('资源集合 items 必须是数组', 400, 'RESOURCE_COLLECTION_ITEM_INVALID')
+    const settings = this.resourceCollectionSettings()
+    if (value.length > settings.maxItemsPerCollection || value.length > 1000000) {
+      throw createHttpError('资源集合项数超过配额', 409, 'RESOURCE_COLLECTION_QUOTA_EXCEEDED')
+    }
+    const seen = new Set()
+    return value.map((raw, index) => {
+      const item = this.normalizeResourceItem(raw)
+      if (seen.has(item.url)) throw createHttpError(`第 ${index + 1} 项与已有资源地址重复`, 409, 'RESOURCE_COLLECTION_DUPLICATE_URL')
+      seen.add(item.url)
+      return { ...item, id: randomId('rci'), position: index }
+    })
+  }
+
+  listResourceCollections (actor, input = {}) {
+    this.assertPermission(actor, 'resource_collection.own.read')
+    const ownerId = this.actorUser(actor).id
+    const query = normalizeResourceCollectionListQuery(input)
+    const where = ['owner_id = ?']
+    const params = [ownerId]
+    if (query.status !== 'all') { where.push('status = ?'); params.push(query.status) }
+    if (query.visibility !== 'all') { where.push('visibility = ?'); params.push(query.visibility) }
+    if (query.search) {
+      where.push("(name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')")
+      const search = `%${query.search.replace(/[\\%_]/g, '\\$&')}%`
+      params.push(search, search)
+    }
+    const clause = where.join(' AND ')
+    const total = Number(this.database.prepare(`SELECT COUNT(*) AS count FROM resource_collections WHERE ${clause}`).get(...params)?.count || 0)
+    const sortColumn = RESOURCE_COLLECTION_SORT_FIELDS[query.sort]
+    const order = query.order.toUpperCase()
+    const rows = this.database.prepare(`
+      SELECT * FROM resource_collections WHERE ${clause}
+      ORDER BY ${sortColumn} ${order}, id ASC
+      LIMIT ? OFFSET ?
+    `).all(...params, query.limit, (query.page - 1) * query.limit)
+    return {
+      items: rows.map(row => this.resourceCollectionView(row)),
+      page: query.page,
+      limit: query.limit,
+      pageCount: Math.max(1, Math.ceil(total / query.limit)),
+      total,
+    }
+  }
+
+  createResourceCollection (actor, input = {}, context = {}) {
+    this.assertPermission(actor, 'resource_collection.own.write')
+    requireObject(input)
+    const ownerId = this.actorUser(actor).id
+    const name = normalizeText(input.name, { minLength: 1, maxLength: 200 })
+    const description = sanitizeRichText(input.description || '', 5000)
+    const visibility = input.visibility === undefined && input.isPublic === undefined
+      ? 'private'
+      : input.visibility === 'public' || input.isPublic === true ? 'public' : input.visibility === 'private' || input.isPublic === false ? 'private' : null
+    if (!visibility) throw createHttpError('资源集合公开状态不正确', 400, 'VALIDATION_FAILED')
+    const viewMode = input.viewMode === undefined ? 'grid' : String(input.viewMode)
+    if (!['grid', 'list'].includes(viewMode)) throw createHttpError('资源集合视图不正确', 400, 'VALIDATION_FAILED')
+    const items = this.normalizeInitialCollectionItems(input.items)
+    const byteSize = this.collectionByteSize(items, viewMode)
+    const settings = this.resourceCollectionSettings()
+    const activeCount = Number(this.database.prepare("SELECT COUNT(*) AS count FROM resource_collections WHERE owner_id=? AND status='active'").get(ownerId)?.count || 0)
+    if (activeCount >= settings.maxCollectionsPerUser) throw createHttpError('活动资源集合数量超过配额', 409, 'RESOURCE_COLLECTION_QUOTA_EXCEEDED')
+    const id = randomId('rc')
+    const now = this.nowIso()
+    this.database.transaction(() => {
+      this.assertResourceCollectionCapacity(ownerId, id, items.length, byteSize, { transportBytes: Buffer.byteLength(JSON.stringify(input), 'utf8') })
+      this.database.prepare(`
+        INSERT INTO resource_collections(
+          id,owner_id,name,description,visibility,status,view_mode,
+          revision,items_revision,item_count,byte_size,created_at,updated_at
+        ) VALUES (?,?,?,?,?,'active','?',1,1,?,?,?,?)
+      `.replace("'?'", '?')).run(id, ownerId, name, description, visibility, viewMode, items.length, byteSize, now, now)
+      const insert = this.database.prepare(`
+        INSERT INTO resource_collection_items(
+          id,collection_id,position,title,url,type,cover_url,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?)
+      `)
+      items.forEach(item => insert.run(item.id, id, item.position, item.title, item.url, item.type, item.coverUrl, now, now))
+      this.insertAudit({ actorUserId: ownerId, action: 'resource-collection.create', targetType: 'resource-collection', targetId: id, metadata: { itemCount: items.length, visibility }, ipSummary: context.ip })
+    })
+    return this.getResourceCollection(actor, id)
+  }
+
+  requireOwnedResourceCollection (actor, id, mode = 'read', options = {}) {
+    this.assertPermission(actor, mode === 'read' ? 'resource_collection.own.read' : 'resource_collection.own.write')
+    const ownerId = this.actorUser(actor).id
+    const row = this.database.prepare('SELECT * FROM resource_collections WHERE id = ? AND owner_id = ?').get(String(id), ownerId)
+    if (!row) throw createHttpError('资源集合不存在', 404, 'RESOURCE_NOT_FOUND')
+    if (options.activeOnly && row.status !== 'active') throw createHttpError('资源集合已移入回收站', 409, 'RESOURCE_COLLECTION_TRASHED')
+    return row
+  }
+
+  refreshResourceCollectionStats (id, now = this.nowIso(), options = {}) {
+    const collection = this.database.prepare('SELECT owner_id,view_mode FROM resource_collections WHERE id=?').get(id)
+    if (!collection) throw createHttpError('资源集合不存在', 404, 'RESOURCE_NOT_FOUND')
+    const rows = this.database.prepare('SELECT id,position,title,url,type,cover_url AS coverUrl FROM resource_collection_items WHERE collection_id=? ORDER BY position,id').all(id)
+    const byteSize = this.collectionByteSize(rows, collection.view_mode)
+    if (options.validate !== false) this.assertResourceCollectionCapacity(collection.owner_id, id, rows.length, byteSize)
+    this.database.prepare('UPDATE resource_collections SET item_count=?, byte_size=?, updated_at=? WHERE id=?').run(rows.length, byteSize, now, id)
+    return { itemCount: rows.length, byteSize }
+  }
+
+  assertItemsRevision (row, input = {}) {
+    const candidate = input.itemsRevision ?? input.items_revision ?? input.revision
+    const revision = normalizeResourceCollectionRevision(candidate, { optional: true })
+    if (revision !== null && revision !== Number(row.items_revision)) {
+      throw createHttpError('资源集合项已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+    }
+    return revision
+  }
+
+  getResourceCollection (actor, id) { return this.resourceCollectionView(this.requireOwnedResourceCollection(actor, id, 'read')) }
+
+  requireAdminResourceCollection (actor, id, mode = 'read') {
+    this.assertPermission(actor, mode === 'read' ? 'resource_collection.any.read' : 'resource_collection.any.manage')
+    const row = this.database.prepare('SELECT * FROM resource_collections WHERE id = ?').get(String(id || ''))
+    if (!row) throw createHttpError('资源集合不存在', 404, 'RESOURCE_NOT_FOUND')
+    return row
+  }
+
+  resourceCollectionAdminView (row) {
+    if (!row) return null
+    const owner = this.database.prepare(`
+      SELECT id, username_display, display_name, status
+      FROM users WHERE id = ?
+    `).get(row.owner_id)
+    const view = this.resourceCollectionView(row)
+    view.owner = owner
+      ? {
+          id: owner.id,
+          username: owner.username_display || '',
+          displayName: owner.display_name || '',
+          status: owner.status || 'unknown',
+        }
+      : { id: row.owner_id, username: '', displayName: '', status: 'missing' }
+    view.ownerId = row.owner_id
+    view.bindingSummary = this.database.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN status = 'stale' THEN 1 ELSE 0 END) AS stale,
+        SUM(CASE WHEN status = 'trashed' THEN 1 ELSE 0 END) AS trashed,
+        SUM(CASE WHEN status = 'missing' THEN 1 ELSE 0 END) AS missing
+      FROM resource_collection_bindings WHERE collection_id = ?
+    `).get(row.id) || {}
+    view.bindingSummary = Object.fromEntries(Object.entries(view.bindingSummary).map(([key, value]) => [key, Number(value || 0)]))
+    return view
+  }
+
+  listAdminResourceCollections (actor, input = {}) {
+    this.assertPermission(actor, 'resource_collection.any.read')
+    const query = normalizeResourceCollectionListQuery(input)
+    const where = []
+    const params = []
+    if (input.ownerId !== undefined && input.ownerId !== '') {
+      const ownerId = normalizeText(input.ownerId, { minLength: 1, maxLength: 160, message: '用户 ID 格式不正确' })
+      where.push('c.owner_id = ?')
+      params.push(ownerId)
+    }
+    if (query.status !== 'all') { where.push('c.status = ?'); params.push(query.status) }
+    if (query.visibility !== 'all') { where.push('c.visibility = ?'); params.push(query.visibility) }
+    if (query.search) {
+      where.push("(c.name LIKE ? ESCAPE '\\' OR c.description LIKE ? ESCAPE '\\')")
+      const search = `%${query.search.replace(/[\\%_]/g, '\\$&')}%`
+      params.push(search, search)
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    const total = Number(this.database.prepare(`SELECT COUNT(*) AS count FROM resource_collections c ${clause}`).get(...params)?.count || 0)
+    const sortColumn = `c.${RESOURCE_COLLECTION_SORT_FIELDS[query.sort]}`
+    const order = query.order.toUpperCase()
+    const rows = this.database.prepare(`
+      SELECT c.*, u.username_display AS owner_username, u.display_name AS owner_display_name, u.status AS owner_status
+      FROM resource_collections c
+      LEFT JOIN users u ON u.id = c.owner_id
+      ${clause}
+      ORDER BY ${sortColumn} ${order}, c.id ASC
+      LIMIT ? OFFSET ?
+    `).all(...params, query.limit, (query.page - 1) * query.limit)
+    return {
+      items: rows.map(row => this.resourceCollectionAdminView(row)),
+      page: query.page,
+      limit: query.limit,
+      pageCount: Math.max(1, Math.ceil(total / query.limit)),
+      total,
+    }
+  }
+
+  getAdminResourceCollection (actor, id) {
+    return this.resourceCollectionAdminView(this.requireAdminResourceCollection(actor, id, 'read'))
+  }
+
+  listAdminResourceCollectionItems (actor, id, input = {}) {
+    const row = this.requireAdminResourceCollection(actor, id, 'read')
+    const { page, limit } = this.collectionPage(input, 40)
+    const total = Number(this.database.prepare('SELECT COUNT(*) AS count FROM resource_collection_items WHERE collection_id=?').get(row.id)?.count || 0)
+    const rows = this.database.prepare(`
+      SELECT id,position,title,url,type,cover_url,created_at,updated_at
+      FROM resource_collection_items WHERE collection_id=?
+      ORDER BY position,id LIMIT ? OFFSET ?
+    `).all(row.id, limit, (page - 1) * limit)
+    const pageCount = Math.max(1, Math.ceil(total / limit))
+    return {
+      collection: this.resourceCollectionAdminView(row),
+      collectionId: row.id,
+      items: this.collectionItemsFromRows(rows),
+      page,
+      limit,
+      total,
+      pageCount,
+      hasNext: page < pageCount,
+      collectionRevision: Number(row.revision || 1),
+      itemsRevision: Number(row.items_revision || 1),
+      // Read payloads use the historical `revision` alias for the collection
+      // metadata clock. Item concurrency uses the explicit itemsRevision.
+      revision: Number(row.revision || 1),
+      updatedAt: row.updated_at,
+    }
+  }
+
+  trashAdminResourceCollection (actor, id, context = {}) {
+    const row = this.requireAdminResourceCollection(actor, id, 'manage')
+    if (row.status === 'trashed') return this.resourceCollectionAdminView(row)
+    const now = this.nowIso()
+    this.database.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE resource_collections
+        SET status='trashed', visibility='private', deleted_at=?, revision=revision+1, updated_at=?
+        WHERE id=? AND status='active'
+      `).run(now, now, row.id)
+      if (Number(result.changes) !== 1) throw createHttpError('资源集合已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+      this.database.prepare("UPDATE resource_collection_bindings SET status='trashed',updated_at=? WHERE collection_id=? AND status='active'").run(now, row.id)
+      this.insertAudit({
+        actorUserId: this.actorUser(actor).id,
+        action: 'admin.resource-collection.trash',
+        targetType: 'resource-collection',
+        targetId: row.id,
+        metadata: { ownerId: row.owner_id, visibilityBefore: row.visibility },
+        ipSummary: context.ip,
+      })
+    })
+    return this.resourceCollectionAdminView(this.database.prepare('SELECT * FROM resource_collections WHERE id=?').get(row.id))
+  }
+
+  restoreAdminResourceCollection (actor, id, context = {}) {
+    const row = this.requireAdminResourceCollection(actor, id, 'manage')
+    if (row.status === 'active') return this.resourceCollectionAdminView(row)
+    const now = this.nowIso()
+    const trashTimestamp = String(row.deleted_at || '')
+    this.database.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE resource_collections
+        SET status='active', visibility='private', deleted_at=NULL, revision=revision+1, updated_at=?
+        WHERE id=? AND status='trashed'
+      `).run(now, row.id)
+      if (Number(result.changes) !== 1) throw createHttpError('资源集合已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+      // Only revive bindings that this collection-trash operation marked. A
+      // stale/trashed binding from an earlier repair must remain untouched.
+      this.database.prepare("UPDATE resource_collection_bindings SET status='active',updated_at=? WHERE collection_id=? AND status='trashed' AND updated_at=?").run(now, row.id, trashTimestamp)
+      this.insertAudit({
+        actorUserId: this.actorUser(actor).id,
+        action: 'admin.resource-collection.restore',
+        targetType: 'resource-collection',
+        targetId: row.id,
+        metadata: { ownerId: row.owner_id },
+        ipSummary: context.ip,
+      })
+    })
+    return this.resourceCollectionAdminView(this.database.prepare('SELECT * FROM resource_collections WHERE id=?').get(row.id))
+  }
+
+  permanentlyDeleteAdminResourceCollection (actor, id, context = {}) {
+    const row = this.requireAdminResourceCollection(actor, id, 'manage')
+    if (row.status !== 'trashed') throw createHttpError('资源集合必须先移入回收站', 409, 'RESOURCE_COLLECTION_NOT_TRASHED')
+    this.database.transaction(() => {
+      // Keep the source-payload check and DELETE under the same SQLite write
+      // lock. Otherwise a concurrent KML/share update can add a reference
+      // after the check and before the destructive delete.
+      const current = this.database.prepare('SELECT * FROM resource_collections WHERE id=?').get(row.id)
+      if (!current) throw createHttpError('资源集合不存在', 404, 'RESOURCE_NOT_FOUND')
+      if (current.status !== 'trashed') throw createHttpError('资源集合必须先移入回收站', 409, 'RESOURCE_COLLECTION_NOT_TRASHED')
+      if (this.resourceCollectionHasLiveReference(current.id)) throw createHttpError('资源集合仍被 KML 或分享引用，请先解除绑定', 409, 'RESOURCE_COLLECTION_DELETE_REFERENCED')
+      const result = this.database.prepare("DELETE FROM resource_collections WHERE id=? AND status='trashed'").run(current.id)
+      if (Number(result.changes) !== 1) throw createHttpError('资源集合不存在', 404, 'RESOURCE_NOT_FOUND')
+      this.insertAudit({
+        actorUserId: this.actorUser(actor).id,
+        action: 'admin.resource-collection.permanent-delete',
+        targetType: 'resource-collection',
+        targetId: current.id,
+        metadata: { ownerId: current.owner_id, itemCount: current.item_count },
+        ipSummary: context.ip,
+      })
+    })
+    return { id: row.id, deleted: true, status: 'deleted' }
+  }
+
+  // Backward-compatible aliases for callers that use the "ForAdmin" naming.
+  listResourceCollectionsForAdmin (actor, input = {}) { return this.listAdminResourceCollections(actor, input) }
+  getResourceCollectionForAdmin (actor, id) { return this.getAdminResourceCollection(actor, id) }
+  listResourceCollectionItemsForAdmin (actor, id, input = {}) { return this.listAdminResourceCollectionItems(actor, id, input) }
+  trashResourceCollectionForAdmin (actor, id, context = {}) { return this.trashAdminResourceCollection(actor, id, context) }
+  restoreResourceCollectionForAdmin (actor, id, context = {}) { return this.restoreAdminResourceCollection(actor, id, context) }
+  permanentlyDeleteResourceCollectionForAdmin (actor, id, context = {}) { return this.permanentlyDeleteAdminResourceCollection(actor, id, context) }
+
+  updateResourceCollection (actor, id, input = {}, context = {}) {
+    const row = this.requireOwnedResourceCollection(actor, id, 'write', { activeOnly: true })
+    requireObject(input)
+    const revision = normalizeResourceCollectionRevision(input.revision)
+    if (revision !== Number(row.revision)) throw createHttpError('资源集合已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+    const name = normalizeText(input.name, { fallback: row.name, minLength: 1, maxLength: 200 })
+    const description = sanitizeRichText(input.description ?? row.description, 5000)
+    let visibility = row.visibility
+    if (input.visibility !== undefined || input.isPublic !== undefined) {
+      visibility = input.visibility === 'public' || input.isPublic === true ? 'public' : input.visibility === 'private' || input.isPublic === false ? 'private' : null
+      if (!visibility) throw createHttpError('资源集合公开状态不正确', 400, 'VALIDATION_FAILED')
+    }
+    const viewMode = input.viewMode === undefined ? row.view_mode : String(input.viewMode)
+    if (!['grid', 'list'].includes(viewMode)) throw createHttpError('资源集合视图不正确', 400, 'VALIDATION_FAILED')
+    const now = this.nowIso()
+    this.database.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE resource_collections
+        SET name=?,description=?,visibility=?,view_mode=?,revision=revision+1,updated_at=?
+        WHERE id=? AND owner_id=? AND status='active' AND revision=?
+      `).run(name, description, visibility, viewMode, now, row.id, row.owner_id, revision)
+      if (Number(result.changes) !== 1) throw createHttpError('资源集合已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+      this.insertAudit({ actorUserId: row.owner_id, action: visibility !== row.visibility ? 'resource-collection.visibility.update' : 'resource-collection.update', targetType: 'resource-collection', targetId: row.id, metadata: { visibilityBefore: row.visibility, visibilityAfter: visibility }, ipSummary: context.ip })
+    })
+    return this.getResourceCollection(actor, id)
+  }
+
+  listResourceCollectionItems (actor, id, input = {}) {
+    const row = this.requireOwnedResourceCollection(actor, id, 'read')
+    const { page, limit } = this.collectionPage(input, 40)
+    const total = Number(this.database.prepare('SELECT COUNT(*) AS count FROM resource_collection_items WHERE collection_id=?').get(row.id)?.count || 0)
+    const rows = this.database.prepare(`
+      SELECT id,position,title,url,type,cover_url,created_at,updated_at
+      FROM resource_collection_items WHERE collection_id=?
+      ORDER BY position,id LIMIT ? OFFSET ?
+    `).all(row.id, limit, (page - 1) * limit)
+    const collectionRevision = Number(row.revision || 1)
+    const itemsRevision = Number(row.items_revision || 1)
+    return {
+      collectionId: row.id,
+      items: this.collectionItemsFromRows(rows),
+      page,
+      limit,
+      total,
+      pageCount: Math.max(1, Math.ceil(total / limit)),
+      hasNext: page < Math.max(1, Math.ceil(total / limit)),
+      collectionRevision,
+      itemsRevision,
+      revision: collectionRevision,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  listPublicResourceCollectionItems (row, input = {}) {
+    const { page, limit } = this.collectionPage(input, 40)
+    const total = Number(this.database.prepare('SELECT COUNT(*) AS count FROM resource_collection_items WHERE collection_id=?').get(row.id)?.count || 0)
+    const rows = this.database.prepare(`
+      SELECT id,position,title,url,type,cover_url,created_at,updated_at
+      FROM resource_collection_items WHERE collection_id=?
+      ORDER BY position,id LIMIT ? OFFSET ?
+    `).all(row.id, limit, (page - 1) * limit)
+    const pageCount = Math.max(1, Math.ceil(total / limit))
+    return {
+      sourceType: 'personal',
+      collection: this.resourceCollectionView(row, { public: true }),
+      items: this.collectionItemsFromRows(rows),
+      pagination: { page, limit, total, pageCount, hasNext: page < pageCount },
+      page,
+      limit,
+      total,
+      pageCount,
+      hasNext: page < pageCount,
+      collectionRevision: Number(row.revision || 1),
+      itemsRevision: Number(row.items_revision || 1),
+      revision: Number(row.revision || 1),
+      updatedAt: row.updated_at,
+    }
+  }
+
+  getResourceCollectionItem (actor, id, itemId) {
+    this.requireOwnedResourceCollection(actor, id, 'read')
+    const row = this.database.prepare('SELECT id,position,title,url,type,cover_url,created_at,updated_at FROM resource_collection_items WHERE collection_id=? AND id=?').get(id, itemId)
+    if (!row) throw createHttpError('资源项不存在', 404, 'RESOURCE_NOT_FOUND')
+    return this.collectionItemsFromRows([row])[0]
+  }
+
+  createResourceCollectionItem (actor, id, input = {}, context = {}) {
+    const collection = this.requireOwnedResourceCollection(actor, id, 'write', { activeOnly: true })
+    const item = this.normalizeResourceItem(input)
+    const now = this.nowIso()
+    const itemId = randomId('rci')
+    let result
+    this.database.transaction(() => {
+      const current = this.database.prepare('SELECT * FROM resource_collections WHERE id=? AND owner_id=? AND status=\'active\'').get(id, collection.owner_id)
+      if (!current) throw createHttpError('资源集合不存在或已移入回收站', 409, 'RESOURCE_COLLECTION_TRASHED')
+      this.assertItemsRevision(current, input)
+      if (this.database.prepare('SELECT 1 FROM resource_collection_items WHERE collection_id=? AND url=? LIMIT 1').get(id, item.url)) throw createHttpError('资源集合中已存在相同地址', 409, 'RESOURCE_COLLECTION_DUPLICATE_URL')
+      const existing = this.database.prepare('SELECT title,url,type,cover_url AS coverUrl FROM resource_collection_items WHERE collection_id=? ORDER BY position,id').all(id)
+      const nextItems = [...existing, item]
+      const byteSize = this.collectionByteSize(nextItems, current.view_mode)
+      this.assertResourceCollectionCapacity(current.owner_id, id, nextItems.length, byteSize)
+      const position = existing.length
+      this.database.prepare('INSERT INTO resource_collection_items(id,collection_id,position,title,url,type,cover_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').run(itemId, id, position, item.title, item.url, item.type, item.coverUrl, now, now)
+      const updated = this.database.prepare('UPDATE resource_collections SET items_revision=items_revision+1,revision=revision+1,item_count=?,byte_size=?,updated_at=? WHERE id=? AND items_revision=?').run(nextItems.length, byteSize, now, id, current.items_revision)
+      if (Number(updated.changes) !== 1) throw createHttpError('资源集合项已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+      this.insertAudit({ actorUserId: current.owner_id, action: 'resource-collection.item.create', targetType: 'resource-collection', targetId: id, metadata: { itemId }, ipSummary: context.ip })
+      result = { ...item, id: itemId, position, collectionRevision: Number(current.revision) + 1, itemsRevision: Number(current.items_revision) + 1, revision: Number(current.items_revision) + 1 }
+    })
+    return result
+  }
+
+  updateResourceCollectionItem (actor, id, itemId, input = {}, context = {}) {
+    const collection = this.requireOwnedResourceCollection(actor, id, 'write', { activeOnly: true })
+    let result
+    this.database.transaction(() => {
+      const current = this.database.prepare('SELECT * FROM resource_collections WHERE id=? AND owner_id=? AND status=\'active\'').get(id, collection.owner_id)
+      if (!current) throw createHttpError('资源集合不存在或已移入回收站', 409, 'RESOURCE_COLLECTION_TRASHED')
+      this.assertItemsRevision(current, input)
+      const row = this.database.prepare('SELECT * FROM resource_collection_items WHERE collection_id=? AND id=?').get(id, itemId)
+      if (!row) throw createHttpError('资源项不存在', 404, 'RESOURCE_NOT_FOUND')
+      const item = this.normalizeResourceItem(input, row)
+      if (this.database.prepare('SELECT 1 FROM resource_collection_items WHERE collection_id=? AND url=? AND id<>? LIMIT 1').get(id, item.url, itemId)) throw createHttpError('资源集合中已存在相同地址', 409, 'RESOURCE_COLLECTION_DUPLICATE_URL')
+      const rows = this.database.prepare('SELECT id,title,url,type,cover_url AS coverUrl FROM resource_collection_items WHERE collection_id=? ORDER BY position,id').all(id)
+      const nextItems = rows.map(candidate => candidate.id === itemId ? { ...candidate, ...item } : candidate)
+      const byteSize = this.collectionByteSize(nextItems, current.view_mode)
+      this.assertResourceCollectionCapacity(current.owner_id, id, nextItems.length, byteSize)
+      const now = this.nowIso()
+      const updated = this.database.prepare('UPDATE resource_collection_items SET title=?,url=?,type=?,cover_url=?,updated_at=? WHERE collection_id=? AND id=?').run(item.title, item.url, item.type, item.coverUrl, now, id, itemId)
+      if (Number(updated.changes) !== 1) throw createHttpError('资源项不存在', 404, 'RESOURCE_NOT_FOUND')
+      const bumped = this.database.prepare('UPDATE resource_collections SET items_revision=items_revision+1,revision=revision+1,byte_size=?,updated_at=? WHERE id=? AND items_revision=?').run(byteSize, now, id, current.items_revision)
+      if (Number(bumped.changes) !== 1) throw createHttpError('资源集合项已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+      this.insertAudit({ actorUserId: current.owner_id, action: 'resource-collection.item.update', targetType: 'resource-collection', targetId: id, metadata: { itemId }, ipSummary: context.ip })
+      result = { ...item, id: itemId, position: Number(row.position), collectionRevision: Number(current.revision) + 1, itemsRevision: Number(current.items_revision) + 1, revision: Number(current.items_revision) + 1 }
+    })
+    return result
+  }
+
+  deleteResourceCollectionItem (actor, id, itemId, input = {}, context = {}) {
+    const collection = this.requireOwnedResourceCollection(actor, id, 'write', { activeOnly: true })
+    let result
+    this.database.transaction(() => {
+      const current = this.database.prepare('SELECT * FROM resource_collections WHERE id=? AND owner_id=? AND status=\'active\'').get(id, collection.owner_id)
+      if (!current) throw createHttpError('资源集合不存在或已移入回收站', 409, 'RESOURCE_COLLECTION_TRASHED')
+      this.assertItemsRevision(current, input)
+      const deleted = this.database.prepare('DELETE FROM resource_collection_items WHERE collection_id=? AND id=?').run(id, itemId)
+      if (!deleted.changes) throw createHttpError('资源项不存在', 404, 'RESOURCE_NOT_FOUND')
+      const rows = this.database.prepare('SELECT id,title,url,type,cover_url AS coverUrl FROM resource_collection_items WHERE collection_id=? ORDER BY position,id').all(id)
+      const byteSize = this.collectionByteSize(rows, current.view_mode)
+      const now = this.nowIso()
+      rows.forEach((row, position) => this.database.prepare('UPDATE resource_collection_items SET position=?,updated_at=? WHERE collection_id=? AND id=?').run(position, now, id, row.id))
+      const bumped = this.database.prepare('UPDATE resource_collections SET item_count=?,byte_size=?,items_revision=items_revision+1,revision=revision+1,updated_at=? WHERE id=? AND items_revision=?').run(rows.length, byteSize, now, id, current.items_revision)
+      if (Number(bumped.changes) !== 1) throw createHttpError('资源集合项已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+      this.insertAudit({ actorUserId: current.owner_id, action: 'resource-collection.item.delete', targetType: 'resource-collection', targetId: id, metadata: { itemId }, ipSummary: context.ip })
+      result = { deleted: true, collectionRevision: Number(current.revision) + 1, itemsRevision: Number(current.items_revision) + 1, revision: Number(current.items_revision) + 1 }
+    })
+    return result
+  }
+
+  reorderResourceCollectionItems (actor, id, input = {}, context = {}) {
+    const collection = this.requireOwnedResourceCollection(actor, id, 'write', { activeOnly: true })
+    let result
+    this.database.transaction(() => {
+      const current = this.database.prepare('SELECT * FROM resource_collections WHERE id=? AND owner_id=? AND status=\'active\'').get(id, collection.owner_id)
+      if (!current) throw createHttpError('资源集合不存在或已移入回收站', 409, 'RESOURCE_COLLECTION_TRASHED')
+      this.assertItemsRevision(current, input)
+      const itemIds = input.itemIds ?? input.ids
+      if (!Array.isArray(itemIds)) throw createHttpError('itemIds 必须是数组', 400, 'RESOURCE_COLLECTION_ORDER_INVALID')
+      const rows = this.database.prepare('SELECT id FROM resource_collection_items WHERE collection_id=? ORDER BY position,id').all(id)
+      const existing = new Set(rows.map(row => String(row.id)))
+      const ids = itemIds.map(value => String(value))
+      if (ids.length !== existing.size || new Set(ids).size !== ids.length || ids.some(value => !existing.has(value))) throw createHttpError('资源项顺序不完整', 400, 'RESOURCE_COLLECTION_ORDER_INVALID')
+      const now = this.nowIso()
+      ids.forEach((itemId, position) => this.database.prepare('UPDATE resource_collection_items SET position=?,updated_at=? WHERE collection_id=? AND id=?').run(position, now, id, itemId))
+      const bumped = this.database.prepare('UPDATE resource_collections SET items_revision=items_revision+1,revision=revision+1,updated_at=? WHERE id=? AND items_revision=?').run(now, id, current.items_revision)
+      if (Number(bumped.changes) !== 1) throw createHttpError('资源集合项已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+      this.insertAudit({ actorUserId: current.owner_id, action: 'resource-collection.item.reorder', targetType: 'resource-collection', targetId: id, metadata: { itemCount: ids.length }, ipSummary: context.ip })
+      result = this.listResourceCollectionItems(actor, id, { page: 1, limit: Math.min(100, Math.max(1, ids.length)) })
+    })
+    return result
+  }
+
+  trashResourceCollection (actor, id, context = {}) {
+    const row = this.requireOwnedResourceCollection(actor, id, 'write')
+    if (row.status === 'trashed') return this.resourceCollectionView(row)
+    const now = this.nowIso()
+    this.database.transaction(() => {
+      const result = this.database.prepare("UPDATE resource_collections SET status='trashed',visibility='private',deleted_at=?,revision=revision+1,updated_at=? WHERE id=? AND owner_id=? AND status='active'").run(now, now, row.id, row.owner_id)
+      if (Number(result.changes) !== 1) return
+      this.database.prepare("UPDATE resource_collection_bindings SET status='trashed',updated_at=? WHERE collection_id=? AND status='active'").run(now, row.id)
+      this.insertAudit({ actorUserId: row.owner_id, action: 'resource-collection.trash', targetType: 'resource-collection', targetId: row.id, metadata: { visibilityBefore: row.visibility, visibilityAfter: 'private' }, ipSummary: context.ip })
+    })
+    return this.getResourceCollection(actor, id)
+  }
+
+  restoreResourceCollection (actor, id, context = {}) {
+    const row = this.requireOwnedResourceCollection(actor, id, 'write')
+    if (row.status === 'active') return this.resourceCollectionView(row)
+    const now = this.nowIso()
+    const trashTimestamp = String(row.deleted_at || '')
+    this.database.transaction(() => {
+      const result = this.database.prepare("UPDATE resource_collections SET status='active',visibility='private',deleted_at=NULL,revision=revision+1,updated_at=? WHERE id=? AND owner_id=? AND status='trashed'").run(now, row.id, row.owner_id)
+      if (Number(result.changes) !== 1) return
+      // Do not resurrect bindings that were already trashed for an unrelated
+      // reason before the collection entered the recycle bin.
+      this.database.prepare("UPDATE resource_collection_bindings SET status='active',updated_at=? WHERE collection_id=? AND status='trashed' AND updated_at=?").run(now, row.id, trashTimestamp)
+      this.insertAudit({ actorUserId: row.owner_id, action: 'resource-collection.restore', targetType: 'resource-collection', targetId: row.id, metadata: { visibilityAfter: 'private' }, ipSummary: context.ip })
+    })
+    return this.getResourceCollection(actor, id)
+  }
+
+  permanentlyDeleteResourceCollection (actor, id, context = {}) {
+    const row = this.requireOwnedResourceCollection(actor, id, 'write')
+    if (row.status !== 'trashed') throw createHttpError('资源集合必须先移入回收站', 409, 'RESOURCE_COLLECTION_NOT_TRASHED')
+    this.database.transaction(() => {
+      // See the admin path above: the reference scan must share the delete's
+      // BEGIN IMMEDIATE lock so no writer can create a new live source between
+      // the scan and the destructive DELETE.
+      const current = this.database.prepare('SELECT * FROM resource_collections WHERE id=? AND owner_id=?').get(row.id, row.owner_id)
+      if (!current) throw createHttpError('资源集合不存在', 404, 'RESOURCE_NOT_FOUND')
+      if (current.status !== 'trashed') throw createHttpError('资源集合必须先移入回收站', 409, 'RESOURCE_COLLECTION_NOT_TRASHED')
+      if (this.resourceCollectionHasLiveReference(current.id)) throw createHttpError('资源集合仍被 KML 或分享引用，请先解除绑定', 409, 'RESOURCE_COLLECTION_DELETE_REFERENCED')
+      const result = this.database.prepare("DELETE FROM resource_collections WHERE id=? AND owner_id=? AND status='trashed'").run(current.id, current.owner_id)
+      if (Number(result.changes) !== 1) throw createHttpError('资源集合不存在', 404, 'RESOURCE_NOT_FOUND')
+      this.insertAudit({ actorUserId: current.owner_id, action: 'resource-collection.permanent-delete', targetType: 'resource-collection', targetId: current.id, metadata: { itemCount: current.item_count }, ipSummary: context.ip })
+    })
+    return { id: row.id, deleted: true, status: 'deleted' }
+  }
+
+  getPublicResourceCollection (id, input = {}, context = {}) {
+    this.consumePublicCollectionRateLimit(String(id || ''), context)
+    const row = this.database.prepare("SELECT * FROM resource_collections WHERE id=? AND status='active' AND visibility='public'").get(String(id))
+    if (!row) throw createHttpError('资源集合不存在或未公开', 404, 'RESOURCE_NOT_FOUND')
+    const result = this.resourceCollectionView(row, { public: true })
+    if (String(input.include || '').toLowerCase() === 'firstpage') {
+      const page = this.listPublicResourceCollectionItems(row, input)
+      result.items = page.items
+      result.pagination = page.pagination
+      result.collectionRevision = page.collectionRevision
+      result.itemsRevision = page.itemsRevision
+    }
+    return result
+  }
+
+  getPublicResourceCollectionItems (id, input = {}, context = {}) {
+    this.consumePublicCollectionRateLimit(String(id || ''), context)
+    const row = this.database.prepare("SELECT * FROM resource_collections WHERE id=? AND status='active' AND visibility='public'").get(String(id))
+    if (!row) throw createHttpError('资源集合不存在或未公开', 404, 'RESOURCE_NOT_FOUND')
+    return this.listPublicResourceCollectionItems(row, input)
+  }
+
+  batchResourceCollectionItems (actor, id, input = {}, context = {}) {
+    const collection = this.requireOwnedResourceCollection(actor, id, 'write', { activeOnly: true })
+    requireObject(input)
+    const operations = Array.isArray(input.operations) ? input.operations : []
+    const maxOperations = Math.min(this.resourceCollectionSettings().maxBatchItemsPerRequest, RESOURCE_COLLECTION_MAX_BATCH_OPERATIONS)
+    if (!operations.length) throw createHttpError('批量操作不能为空', 400, 'VALIDATION_FAILED')
+    if (operations.length > maxOperations) throw createHttpError(`单批最多处理 ${maxOperations} 项`, 413, 'RESOURCE_COLLECTION_PAYLOAD_TOO_LARGE')
+    let result
+    this.database.transaction(() => {
+      const current = this.database.prepare('SELECT * FROM resource_collections WHERE id=? AND owner_id=? AND status=\'active\'').get(id, collection.owner_id)
+      if (!current) throw createHttpError('资源集合不存在或已移入回收站', 409, 'RESOURCE_COLLECTION_TRASHED')
+      this.assertItemsRevision(current, input)
+      const rows = this.database.prepare('SELECT * FROM resource_collection_items WHERE collection_id=? ORDER BY position,id').all(id)
+      const byId = new Map(rows.map(row => [String(row.id), {
+        id: row.id,
+        position: Number(row.position),
+        title: row.title,
+        url: row.url,
+        type: row.type,
+        coverUrl: row.cover_url || '',
+        createdAt: row.created_at,
+      }]))
+      const results = []
+      const seenUrls = new Set(Array.from(byId.values(), row => row.url))
+      let nextPosition = byId.size
+      for (const operation of operations) {
+        const action = String(operation?.action || '')
+        if (action === 'create') {
+          const item = this.normalizeResourceItem(operation.item || operation)
+          if (seenUrls.has(item.url)) throw createHttpError('资源集合中已存在相同地址', 409, 'RESOURCE_COLLECTION_DUPLICATE_URL')
+          const itemId = randomId('rci')
+          const value = { ...item, id: itemId, position: nextPosition++, createdAt: this.nowIso() }
+          byId.set(itemId, value); seenUrls.add(item.url)
+          results.push({ action, clientId: String(operation.clientId || ''), item: { ...value } })
+        } else if (action === 'update') {
+          const itemId = String(operation.itemId || '')
+          const currentItem = byId.get(itemId)
+          if (!currentItem) throw createHttpError('资源项不存在', 404, 'RESOURCE_NOT_FOUND')
+          const item = this.normalizeResourceItem(operation.item || operation, currentItem)
+          if (seenUrls.has(item.url) && item.url !== currentItem.url) throw createHttpError('资源集合中已存在相同地址', 409, 'RESOURCE_COLLECTION_DUPLICATE_URL')
+          seenUrls.delete(currentItem.url); seenUrls.add(item.url)
+          const value = { ...currentItem, ...item }
+          byId.set(itemId, value)
+          results.push({ action, itemId, item: { ...value } })
+        } else if (action === 'delete') {
+          const itemId = String(operation.itemId || '')
+          const currentItem = byId.get(itemId)
+          if (!currentItem) throw createHttpError('资源项不存在', 404, 'RESOURCE_NOT_FOUND')
+          byId.delete(itemId); seenUrls.delete(currentItem.url)
+          results.push({ action, itemId, deleted: true })
+        } else if (action === 'reorder') {
+          const ids = operation.itemIds || operation.ids
+          if (!Array.isArray(ids)) throw createHttpError('itemIds 必须是数组', 400, 'RESOURCE_COLLECTION_ORDER_INVALID')
+          const normalizedIds = ids.map(value => String(value))
+          if (normalizedIds.length !== byId.size || new Set(normalizedIds).size !== normalizedIds.length || normalizedIds.some(value => !byId.has(value))) throw createHttpError('资源项顺序不完整', 400, 'RESOURCE_COLLECTION_ORDER_INVALID')
+          normalizedIds.forEach((itemId, position) => { byId.get(itemId).position = position })
+          results.push({ action, itemIds: normalizedIds })
+        } else {
+          throw createHttpError('批量操作类型不正确', 400, 'VALIDATION_FAILED')
+        }
+      }
+      const ordered = Array.from(byId.values()).sort((left, right) => left.position - right.position || String(left.id).localeCompare(String(right.id)))
+      ordered.forEach((item, position) => { item.position = position })
+      const normalizedItems = ordered.map(item => ({ title: item.title, url: item.url, type: item.type, coverUrl: item.coverUrl }))
+      const byteSize = this.collectionByteSize(normalizedItems, current.view_mode)
+      this.assertResourceCollectionCapacity(current.owner_id, id, ordered.length, byteSize, { transportBytes: Buffer.byteLength(JSON.stringify(input), 'utf8') })
+      const existingIds = new Set(rows.map(row => String(row.id)))
+      const nextIds = new Set(ordered.map(item => String(item.id)))
+      rows.filter(row => !nextIds.has(String(row.id))).forEach(row => this.database.prepare('DELETE FROM resource_collection_items WHERE collection_id=? AND id=?').run(id, row.id))
+      const now = this.nowIso()
+      for (const item of ordered) {
+        if (existingIds.has(String(item.id))) {
+          this.database.prepare('UPDATE resource_collection_items SET position=?,title=?,url=?,type=?,cover_url=?,updated_at=? WHERE collection_id=? AND id=?').run(item.position, item.title, item.url, item.type, item.coverUrl, now, id, item.id)
+        } else {
+          this.database.prepare('INSERT INTO resource_collection_items(id,collection_id,position,title,url,type,cover_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').run(item.id, id, item.position, item.title, item.url, item.type, item.coverUrl, item.createdAt || now, now)
+        }
+      }
+      const bumped = this.database.prepare('UPDATE resource_collections SET item_count=?,byte_size=?,items_revision=items_revision+1,revision=revision+1,updated_at=? WHERE id=? AND items_revision=?').run(ordered.length, byteSize, now, id, current.items_revision)
+      if (Number(bumped.changes) !== 1) throw createHttpError('资源集合项已被其他客户端更新，请重新加载', 409, 'RESOURCE_COLLECTION_REVISION_CONFLICT')
+      this.insertAudit({ actorUserId: current.owner_id, action: 'resource-collection.item.batch', targetType: 'resource-collection', targetId: id, metadata: { operationCount: operations.length, itemCount: ordered.length }, ipSummary: context.ip })
+      result = {
+        results,
+        collectionRevision: Number(current.revision) + 1,
+        itemsRevision: Number(current.items_revision) + 1,
+        revision: Number(current.items_revision) + 1,
+        itemCount: ordered.length,
+        byteSize,
+        items: ordered.map(item => ({ id: item.id, position: item.position, title: item.title, url: item.url, type: item.type, coverUrl: item.coverUrl || '' })),
+      }
+    })
+    return result
+  }
+
+  listResourceCollectionReferences (actor, id, input = {}) {
+    const collection = this.requireOwnedResourceCollection(actor, id, 'read')
+    const { page, limit } = this.collectionPage(input, 20)
+    const ownRows = this.database.prepare(`
+      SELECT b.kml_id AS kmlId, b.feature_id AS featureId, b.source_scope AS sourceScope,
+             b.status, b.updated_at AS updatedAt, k.name AS kmlName, k.owner_id AS kmlOwnerId
+      FROM resource_collection_bindings b
+      JOIN kml_documents k ON k.id=b.kml_id
+      WHERE b.collection_id=? AND b.status='active' AND b.source_scope='owner_kml' AND k.owner_id=?
+      ORDER BY b.updated_at DESC, b.id DESC
+    `).all(collection.id, collection.owner_id)
+    const ownShareRows = this.database.prepare(`
+      SELECT b.kml_id AS kmlId, b.feature_id AS featureId, b.source_scope AS sourceScope,
+             b.status, b.updated_at AS updatedAt, s.public_id AS publicId, s.status AS shareStatus,
+             s.owner_id AS shareOwnerId
+      FROM resource_collection_bindings b
+      JOIN kml_share_items si ON si.kml_id=b.kml_id AND b.feature_id LIKE si.id || '::%'
+      JOIN kml_shares s ON s.id=si.share_id
+      WHERE b.collection_id=? AND b.status='active' AND b.source_scope='published_share' AND s.owner_id=?
+      ORDER BY b.updated_at DESC, b.id DESC
+    `).all(collection.id, collection.owner_id)
+    const foreignCount = Number(this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM resource_collection_bindings b
+      LEFT JOIN kml_documents k ON k.id=b.kml_id AND b.source_scope='owner_kml'
+      LEFT JOIN kml_share_items si ON b.source_scope='published_share' AND b.feature_id LIKE si.id || '::%'
+      LEFT JOIN kml_shares s ON s.id=si.share_id
+      WHERE b.collection_id=? AND b.status='active' AND ((b.source_scope='owner_kml' AND (k.owner_id IS NULL OR k.owner_id<>?)) OR (b.source_scope='published_share' AND (s.owner_id IS NULL OR s.owner_id<>?)))
+    `).get(collection.id, collection.owner_id, collection.owner_id)?.count || 0)
+    const items = [
+      ...ownRows.map(row => ({ kmlId: row.kmlId, featureId: row.featureId, sourceScope: row.sourceScope, kmlName: row.kmlName, status: row.status, updatedAt: row.updatedAt })),
+      ...ownShareRows.map(row => ({ sourceScope: row.sourceScope, publicId: row.publicId, shareStatus: row.shareStatus, shareItemId: String(row.featureId).split('::')[0], status: row.status, updatedAt: row.updatedAt })),
+    ]
+    if (foreignCount > 0) items.push({ sourceScope: 'other', referenceCount: foreignCount })
+    const total = items.length
+    return { collectionId: collection.id, items: items.slice((page - 1) * limit, page * limit), page, limit, total, pageCount: Math.max(1, Math.ceil(total / limit)), hasNext: page < Math.max(1, Math.ceil(total / limit)) }
+  }
+
+  listAdminResourceCollectionReferences (actor, id, input = {}) {
+    const collection = this.requireAdminResourceCollection(actor, id, 'read')
+    const { page, limit } = this.collectionPage(input, 20)
+    const status = input.status === undefined || input.status === '' ? 'all' : String(input.status)
+    const sourceScope = input.sourceScope === undefined || input.sourceScope === '' ? 'all' : String(input.sourceScope)
+    if (!['all', 'active', 'stale', 'missing', 'trashed'].includes(status)) {
+      throw createHttpError('引用状态不正确', 400, 'VALIDATION_FAILED')
+    }
+    if (!['all', 'owner_kml', 'published_share'].includes(sourceScope)) {
+      throw createHttpError('引用来源不正确', 400, 'VALIDATION_FAILED')
+    }
+    const where = ['b.collection_id = ?']
+    const params = [collection.id]
+    if (status !== 'all') {
+      where.push('b.status = ?')
+      params.push(status)
+    }
+    if (sourceScope !== 'all') {
+      where.push('b.source_scope = ?')
+      params.push(sourceScope)
+    }
+    const clause = where.join(' AND ')
+    const total = Number(this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM resource_collection_bindings b
+      WHERE ${clause}
+    `).get(...params)?.count || 0)
+    const rows = this.database.prepare(`
+      SELECT
+        b.id AS binding_id,
+        b.collection_id,
+        b.kml_id,
+        b.feature_id,
+        b.source_scope,
+        b.status,
+        b.created_at,
+        b.updated_at,
+        k.name AS kml_name,
+        k.owner_id AS kml_owner_id,
+        k.status AS kml_status,
+        si.id AS share_item_id,
+        s.public_id AS share_public_id,
+        s.owner_id AS share_owner_id,
+        s.status AS share_status
+      FROM resource_collection_bindings b
+      LEFT JOIN kml_documents k
+        ON b.source_scope = 'owner_kml' AND k.id = b.kml_id
+      LEFT JOIN kml_share_items si
+        ON b.source_scope = 'published_share' AND b.feature_id LIKE si.id || '::%'
+      LEFT JOIN kml_shares s ON s.id = si.share_id
+      WHERE ${clause}
+      ORDER BY b.updated_at DESC, b.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, (page - 1) * limit)
+    const items = rows.map(row => {
+      const rawFeatureId = String(row.feature_id || '')
+      const separator = rawFeatureId.indexOf('::')
+      const featureId = row.source_scope === 'published_share' && separator >= 0
+        ? rawFeatureId.slice(separator + 2)
+        : rawFeatureId
+      return {
+        bindingId: row.binding_id,
+        collectionId: row.collection_id,
+        sourceScope: row.source_scope,
+        status: row.status,
+        kmlId: row.kml_id || null,
+        kmlName: row.kml_name || '',
+        kmlOwnerId: row.kml_owner_id || null,
+        kmlStatus: row.kml_status || 'missing',
+        featureId,
+        shareItemId: row.share_item_id || (separator >= 0 ? rawFeatureId.slice(0, separator) : null),
+        sharePublicId: row.share_public_id || null,
+        shareOwnerId: row.share_owner_id || null,
+        shareStatus: row.share_status || 'missing',
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }
+    })
+    return {
+      collectionId: collection.id,
+      items,
+      page,
+      limit,
+      total,
+      pageCount: Math.max(1, Math.ceil(total / limit)),
+      hasNext: page < Math.max(1, Math.ceil(total / limit)),
+    }
+  }
+
+  resourceCollectionBindingSource (binding) {
+    if (!binding) return { matches: false, reason: 'missing' }
+    if (binding.source_scope === 'owner_kml') {
+      const kml = this.database.prepare('SELECT * FROM kml_documents WHERE id=?').get(binding.kml_id)
+      if (!kml) return { matches: false, reason: 'missing' }
+      const features = parseJson(kml.features_json, [])
+      const feature = features.find(item => String(item?.id || '') === String(binding.feature_id || ''))
+      const ref = tryNormalizeKmlResourceCollectionRef(feature?.resourceCollectionRef)
+      return {
+        matches: ref.value?.sourceType === 'personal' && ref.value.collectionId === binding.collection_id,
+        reason: feature ? 'stale' : 'missing',
+        kml,
+        features,
+        feature,
+      }
+    }
+    if (binding.source_scope === 'published_share') {
+      const rawFeatureId = String(binding.feature_id || '')
+      const separator = rawFeatureId.indexOf('::')
+      if (separator < 1) return { matches: false, reason: 'missing' }
+      const shareItemId = rawFeatureId.slice(0, separator)
+      const featureId = rawFeatureId.slice(separator + 2)
+      const shareItem = this.database.prepare('SELECT * FROM kml_share_items WHERE id=?').get(shareItemId)
+      if (!shareItem) return { matches: false, reason: 'missing' }
+      const snapshot = parseJson(shareItem.published_snapshot_json, {})
+      const features = Array.isArray(snapshot.features) ? snapshot.features : []
+      const feature = features.find(item => String(item?.id || '') === featureId)
+      const ref = tryNormalizeKmlResourceCollectionRef(feature?.resourceCollectionRef)
+      return {
+        matches: ref.value?.sourceType === 'personal' && ref.value.collectionId === binding.collection_id,
+        reason: feature ? 'stale' : 'missing',
+        shareItem,
+        share: this.database.prepare('SELECT * FROM kml_shares WHERE id=?').get(shareItem.share_id),
+        snapshot,
+        features,
+        feature,
+        shareItemId,
+        featureId,
+      }
+    }
+    return { matches: false, reason: 'missing' }
+  }
+
+  repairAdminResourceCollectionReference (actor, collectionId, bindingId, context = {}) {
+    this.requireAdminResourceCollection(actor, collectionId, 'manage')
+    const binding = this.database.prepare('SELECT * FROM resource_collection_bindings WHERE id=? AND collection_id=?').get(String(bindingId || ''), String(collectionId || ''))
+    if (!binding) throw createHttpError('资源集合引用不存在', 404, 'RESOURCE_NOT_FOUND')
+    const source = this.resourceCollectionBindingSource(binding)
+    if (source.matches) throw createHttpError('该引用仍存在于来源数据，不能仅修复索引', 409, 'RESOURCE_COLLECTION_REFERENCE_STILL_ACTIVE')
+    const status = source.reason === 'missing' ? 'missing' : 'stale'
+    const now = this.nowIso()
+    this.database.prepare('UPDATE resource_collection_bindings SET status=?,updated_at=? WHERE id=?').run(status, now, binding.id)
+    this.insertAudit({
+      actorUserId: this.actorUser(actor).id,
+      action: 'admin.resource-collection-reference.repair',
+      targetType: 'resource-collection-binding',
+      targetId: binding.id,
+      metadata: { collectionId: binding.collection_id, sourceScope: binding.source_scope, status },
+      ipSummary: context.ip,
+    })
+    return { bindingId: binding.id, collectionId: binding.collection_id, repaired: true, status }
+  }
+
+  detachAdminResourceCollectionReference (actor, collectionId, bindingId, input = {}, context = {}) {
+    this.requireAdminResourceCollection(actor, collectionId, 'manage')
+    const binding = this.database.prepare('SELECT * FROM resource_collection_bindings WHERE id=? AND collection_id=?').get(String(bindingId || ''), String(collectionId || ''))
+    if (!binding) throw createHttpError('资源集合引用不存在', 404, 'RESOURCE_NOT_FOUND')
+    const source = this.resourceCollectionBindingSource(binding)
+    if (!source.matches) throw createHttpError('资源集合引用来源已发生变化，请先刷新引用列表并执行索引修复', 409, 'RESOURCE_COLLECTION_REFERENCE_STALE')
+    const now = this.nowIso()
+    let result
+    this.database.transaction(() => {
+      if (binding.source_scope === 'owner_kml') {
+        const currentView = this.kmlViewFromRow(source.kml, { includeFeatures: true })
+        const nextFeatures = source.features.map(feature => {
+          if (String(feature?.id || '') !== String(binding.feature_id || '')) return feature
+          const next = { ...feature }
+          delete next.resourceCollectionRef
+          delete next.resourceCollectionStatus
+          return next
+        })
+        const normalized = normalizeKmlInput({
+          name: currentView.name,
+          description: currentView.description,
+          coordCorrection: currentView.coordCorrection,
+          theme: currentView.theme,
+          color: currentView.color,
+          lockDrag: currentView.lockDrag,
+          enabled: currentView.enabled,
+          isLiveTrack: currentView.isLiveTrack,
+          features: nextFeatures,
+        }, currentView)
+        const updated = this.database.prepare(`
+          UPDATE kml_documents SET
+            name=?,description=?,coord_correction=?,theme=?,color=?,lock_drag=?,enabled=?,is_live_track=?,
+            features_json=?,feature_count=?,bounds_json=?,byte_size=?,revision=revision+1,updated_at=?
+          WHERE id=? AND revision=?
+        `).run(
+          normalized.name,
+          normalized.description,
+          normalized.coordCorrection,
+          normalized.theme,
+          normalized.color,
+          normalized.lockDrag ? 1 : 0,
+          normalized.enabled ? 1 : 0,
+          normalized.isLiveTrack ? 1 : 0,
+          JSON.stringify(normalized.features),
+          normalized.featureCount,
+          JSON.stringify(normalized.bounds),
+          normalized.byteSize,
+          now,
+          source.kml.id,
+          Number(source.kml.revision),
+        )
+        if (Number(updated.changes) !== 1) throw createHttpError('KML 已被其他客户端更新，请重新加载', 409, 'KML_REVISION_CONFLICT')
+        this.syncResourceCollectionBindings(source.kml.id, normalized.features)
+        result = { bindingId: binding.id, collectionId: binding.collection_id, sourceScope: binding.source_scope, detached: true, kmlId: source.kml.id, featureId: binding.feature_id, revision: Number(source.kml.revision) + 1 }
+      } else {
+        const nextFeatures = source.features.map(feature => {
+          if (String(feature?.id || '') !== source.featureId) return feature
+          const next = { ...feature }
+          delete next.resourceCollectionRef
+          delete next.resourceCollectionStatus
+          return next
+        })
+        const nextPublishedRevision = Number(source.shareItem.published_revision || source.snapshot.revision || 0) + 1
+        const nextSnapshot = {
+          ...source.snapshot,
+          features: sanitizePublishedKmlFeatures(nextFeatures),
+          revision: nextPublishedRevision,
+          updatedAt: now,
+        }
+        const updated = this.database.prepare(`
+          UPDATE kml_share_items SET published_revision=?,published_snapshot_json=?,published_at=?
+          WHERE id=? AND published_revision=? AND published_snapshot_json=?
+        `).run(nextPublishedRevision, JSON.stringify(nextSnapshot), now, source.shareItem.id, Number(source.shareItem.published_revision || 0), source.shareItem.published_snapshot_json)
+        if (Number(updated.changes) !== 1) throw createHttpError('分享内容已被其他客户端更新，请重新加载', 409, 'SHARE_REVISION_CONFLICT')
+        this.markPublishedResourceCollectionBindingsStale(source.share.id)
+        const shareItems = this.database.prepare('SELECT id,kml_id,published_revision,published_snapshot_json,published_at FROM kml_share_items WHERE share_id=?').all(source.share.id).map(item => ({
+          id: item.id,
+          kmlId: item.kml_id,
+          revision: Number(item.published_revision || 0),
+          publishedRevision: Number(item.published_revision || 0),
+          publishedAt: item.published_at,
+          publishedSnapshot: parseJson(item.published_snapshot_json, {}),
+        }))
+        this.syncPublishedResourceCollectionBindings(source.share.id, shareItems)
+        this.database.prepare('UPDATE kml_shares SET content_revision=content_revision+1,revision=revision+1,updated_at=? WHERE id=?').run(now, source.share.id)
+        result = { bindingId: binding.id, collectionId: binding.collection_id, sourceScope: binding.source_scope, detached: true, shareItemId: source.shareItemId, featureId: source.featureId }
+      }
+      this.insertAudit({
+        actorUserId: this.actorUser(actor).id,
+        action: 'admin.resource-collection-reference.detach',
+        targetType: 'resource-collection-binding',
+        targetId: binding.id,
+        metadata: { collectionId: binding.collection_id, sourceScope: binding.source_scope, kmlId: binding.kml_id, featureId: binding.feature_id },
+        ipSummary: context.ip,
+      })
+    })
+    return result
+  }
+
+  exportResourceCollection (actor, id) {
+    const row = this.requireOwnedResourceCollection(actor, id, 'read')
+    const rows = this.database.prepare('SELECT id,position,title,url,type,cover_url,created_at,updated_at FROM resource_collection_items WHERE collection_id=? ORDER BY position,id').all(id)
+    const payload = {
+      version: 1,
+      collection: this.resourceCollectionView(row, { public: true }),
+      items: this.collectionItemsFromRows(rows),
+    }
+    const content = JSON.stringify(payload, null, 2)
+    if (Buffer.byteLength(content, 'utf8') > RESOURCE_COLLECTION_EXPORT_MAX_BYTES) throw createHttpError('资源集合导出内容超过安全大小限制', 413, 'RESOURCE_COLLECTION_PAYLOAD_TOO_LARGE')
+    const safeName = String(row.name || 'resource-collection').replace(/[\\/:*?"<>|]/g, '_').slice(0, 100) || 'resource-collection'
+    return { filename: `${safeName}.json`, contentType: 'application/json; charset=utf-8', content }
+  }
+
+  resourceCollectionAccessState (ref) {
+    const result = tryNormalizeKmlResourceCollectionRef(ref)
+    if (!result.value || result.value.sourceType !== 'personal') return result.value?.sourceType === 'external' ? 'public' : 'missing'
+    const row = this.database.prepare('SELECT status, visibility FROM resource_collections WHERE id = ?').get(result.value.collectionId)
+    if (!row) return 'missing'
+    if (row.status === 'trashed') return 'trashed'
+    return row.visibility === 'public' ? 'public' : 'private'
+  }
+
+  validateResourceCollectionReferences (ownerId, features, options = {}) {
+    const allowUnresolved = options.allowUnresolved === true
+    for (const feature of Array.isArray(features) ? features : []) {
+      const ref = tryNormalizeKmlResourceCollectionRef(feature?.resourceCollectionRef)
+      if (!ref.value || ref.value.sourceType !== 'personal') continue
+      const row = this.database.prepare('SELECT owner_id, status, visibility FROM resource_collections WHERE id = ?').get(ref.value.collectionId)
+      if (!row) {
+        if (allowUnresolved) continue
+        throw createHttpError('个人资源集合不存在', 404, 'RESOURCE_NOT_FOUND')
+      }
+      if (row.status !== 'active') {
+        if (allowUnresolved) continue
+        throw createHttpError('个人资源集合已移入回收站', 409, 'RESOURCE_COLLECTION_UNAVAILABLE')
+      }
+      if (row.owner_id !== ownerId && row.visibility !== 'public') {
+        if (allowUnresolved) continue
+        throw createHttpError('没有绑定该个人资源集合的权限', 403, 'PERMISSION_DENIED')
+      }
+    }
+  }
+
   getKml (actor, kmlId) {
     const row = this.requireKmlAccess(actor, kmlId, 'read')
     return this.kmlViewFromRow(row, { includeFeatures: true })
@@ -2436,7 +3922,21 @@ export class UserContentService {
     `).get(requestedDirectoryId, row.owner_id)) {
       throw createHttpError('KML 目录不存在', 404, 'KML_DIRECTORY_NOT_FOUND')
     }
-    const normalized = normalizeKmlInput(input, current)
+    const preparedRefUpdate = prepareKmlResourceCollectionRefUpdate(input, current.features)
+    const normalized = normalizeKmlInput(preparedRefUpdate.input, current)
+    if (preparedRefUpdate.changedFeatureIds.size > 0 || normalized.features.some(feature => feature?.resourceCollectionRef)) {
+      const currentRefsById = new Map(
+        (Array.isArray(current.features) ? current.features : [])
+          .filter(feature => feature && typeof feature === 'object' && feature.resourceCollectionRef)
+          .map(feature => [String(feature.id || ''), resourceCollectionRefFingerprint(feature.resourceCollectionRef)]),
+      )
+      const changedFeatures = normalized.features.filter(feature => {
+        if (!feature?.resourceCollectionRef) return false
+        const id = String(feature.id || '')
+        return preparedRefUpdate.changedFeatureIds.has(id) || !currentRefsById.has(id)
+      })
+      this.validateResourceCollectionReferences(row.owner_id, changedFeatures)
+    }
     const sourceDirectoryId = row.directory_id || null
     let repairedPosition = null
     let directoryMove = null
@@ -2526,6 +4026,7 @@ export class UserContentService {
         }
         this.writeKmlDirectoryOrder(row.owner_id, directoryMove.requestedDirectoryId, directoryMove.ids, { excludeId: row.id })
       }
+      this.syncResourceCollectionBindings(row.id, normalized.features)
     })
     return this.getKml(actor, row.id)
   }
@@ -3432,6 +4933,7 @@ export class UserContentService {
         )
       }
     })
+    this.markPublishedResourceCollectionBindingsStale(shareId)
     this.database.prepare('DELETE FROM kml_share_items WHERE share_id = ?').run(shareId)
     const insert = this.database.prepare(`
       INSERT INTO kml_share_items(
@@ -3453,6 +4955,7 @@ export class UserContentService {
         Number(item.sourcePosition || 0)
       )
     })
+    this.syncPublishedResourceCollectionBindings(shareId, preparedItems)
   }
 
   createShare (actor, input = {}) {
@@ -3874,6 +5377,7 @@ export class UserContentService {
           directory_id = ?, source_directory_id = ?, directory_name = ?, source_position = ?
         WHERE id = ? AND share_id = ?
       `)
+      this.markPublishedResourceCollectionBindingsStale(row.id)
       items.forEach(item => {
         updateSnapshot.run(
           item.revision,
@@ -3887,6 +5391,7 @@ export class UserContentService {
           row.id
         )
       })
+      this.syncPublishedResourceCollectionBindings(row.id, items)
       this.database.prepare(`
         UPDATE kml_shares SET
           spatial_scope_json = ?, spatial_scope_revision = ?, spatial_status = ?,
@@ -3997,6 +5502,7 @@ export class UserContentService {
     ).get(row.id)?.count || 0)
     const ownerId = row.owner_id
     this.database.transaction(() => {
+      this.markPublishedResourceCollectionBindingsStale(row.id)
       this.insertAudit({
         actorUserId: this.actorUser(actor).id,
         action,
@@ -4554,7 +6060,148 @@ export class UserContentService {
     if (!item) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
     return {
       ...this.publicItemSummary(item),
-      features: sanitizePublishedKmlFeatures(item.snapshot?.features),
+      features: sanitizePublishedKmlFeatures(item.snapshot?.features, {
+        publicProjection: true,
+        resourceCollectionAccessResolver: ref => this.resourceCollectionAccessState(ref),
+      }),
+    }
+  }
+
+  resolvePublicShareFeatureResourceCollection (publicId, shareItemId, featureId, context = {}) {
+    const row = this.publicShareRow(publicId)
+    const current = this.assertPublicShareAccess(row, context)
+    const item = this.publicShareItems(current.id, {
+      validateInteraction: true,
+      requireShareIds: true,
+      sharePublicId: current.public_id,
+    }).find(candidate => candidate.share_item_id === String(shareItemId || ''))
+    if (!item) throw createHttpError('分享文件不存在', 404, 'RESOURCE_NOT_FOUND')
+    const feature = (item.snapshot?.features || []).find(candidate => String(candidate?.id || '') === String(featureId || ''))
+    const refResult = tryNormalizeKmlResourceCollectionRef(feature?.resourceCollectionRef)
+    if (!refResult.value) throw createHttpError('该点位没有可读取的资源集合', 404, 'RESOURCE_NOT_FOUND')
+    return { ref: refResult.value, collection: null, share: current, item }
+  }
+
+  publicShareResourceCollectionRateLimitKey (publicId, context = {}) {
+    return `share:${String(publicId)}:${hashToken([
+      this.sharePrivacySecret,
+      String(context.ip || '').slice(0, 120),
+      String(context.userAgent || '').slice(0, 255),
+      String(context.visitorId || '').slice(0, 160),
+    ].join('|')).slice(0, 24)}`
+  }
+
+  getPublicShareFeatureResourceCollection (publicId, shareItemId, featureId, context = {}) {
+    this.consumePublicCollectionRateLimit(this.publicShareResourceCollectionRateLimitKey(publicId, context), context)
+    const { ref } = this.resolvePublicShareFeatureResourceCollection(publicId, shareItemId, featureId, context)
+    if (ref.sourceType === 'external') {
+      return {
+        sourceType: 'external',
+        accessState: 'external',
+        dataUrl: ref.dataUrl,
+        ref,
+        collectionRevision: null,
+        itemsRevision: null,
+        updatedAt: null,
+      }
+    }
+    const accessState = this.resourceCollectionAccessState(ref)
+    if (accessState !== 'public') {
+      return {
+        sourceType: 'personal',
+        accessState: accessState === 'trashed' ? 'missing' : accessState,
+        collectionRevision: null,
+        itemsRevision: null,
+        updatedAt: null,
+      }
+    }
+    const collection = this.database.prepare("SELECT * FROM resource_collections WHERE id=? AND status='active' AND visibility='public'").get(ref.collectionId)
+    if (!collection) {
+      return {
+        sourceType: 'personal',
+        accessState: 'missing',
+        collectionRevision: null,
+        itemsRevision: null,
+        updatedAt: null,
+      }
+    }
+    const summary = this.resourceCollectionView(collection, { public: true })
+    return {
+      sourceType: 'personal',
+      accessState: 'public',
+      ref,
+      collection: summary,
+      id: summary.id,
+      name: summary.name,
+      viewMode: summary.viewMode,
+      itemCount: summary.itemCount,
+      byteSize: summary.byteSize,
+      collectionRevision: summary.collectionRevision,
+      itemsRevision: summary.itemsRevision,
+      revision: summary.collectionRevision,
+      updatedAt: summary.updatedAt,
+    }
+  }
+
+  getPublicShareFeatureResourceCollectionItems (publicId, shareItemId, featureId, input = {}, context = {}) {
+    this.consumePublicCollectionRateLimit(this.publicShareResourceCollectionRateLimitKey(publicId, context), context)
+    const { ref } = this.resolvePublicShareFeatureResourceCollection(publicId, shareItemId, featureId, context)
+    if (ref.sourceType === 'external') {
+      return {
+        sourceType: 'external',
+        accessState: 'external',
+        dataUrl: ref.dataUrl,
+        ref,
+        items: [],
+        pagination: { page: 1, limit: 0, total: null, pageCount: null, hasNext: false },
+        collectionRevision: null,
+        itemsRevision: null,
+        updatedAt: null,
+      }
+    }
+    const accessState = this.resourceCollectionAccessState(ref)
+    if (accessState !== 'public') {
+      return {
+        sourceType: 'personal',
+        accessState: accessState === 'trashed' ? 'missing' : accessState,
+        items: [],
+        pagination: { page: 1, limit: 0, total: null, pageCount: null, hasNext: false },
+        collectionRevision: null,
+        itemsRevision: null,
+        updatedAt: null,
+      }
+    }
+    const collection = this.database.prepare("SELECT * FROM resource_collections WHERE id=? AND status='active' AND visibility='public'").get(ref.collectionId)
+    if (!collection) {
+      return {
+        sourceType: 'personal',
+        accessState: 'missing',
+        items: [],
+        pagination: { page: 1, limit: 0, total: null, pageCount: null, hasNext: false },
+        collectionRevision: null,
+        itemsRevision: null,
+        updatedAt: null,
+      }
+    }
+    const page = this.listPublicResourceCollectionItems(collection, input)
+    const summary = this.resourceCollectionView(collection, { public: true })
+    return {
+      sourceType: 'personal',
+      accessState: 'public',
+      ref,
+      collection: summary,
+      collectionId: collection.id,
+      items: page.items,
+      pagination: page.pagination,
+      page: page.page,
+      limit: page.limit,
+      total: page.total,
+      pageCount: page.pageCount,
+      hasNext: page.hasNext,
+      collectionRevision: summary.collectionRevision,
+      itemsRevision: summary.itemsRevision,
+      revision: summary.collectionRevision,
+      updatedAt: summary.updatedAt,
     }
   }
 
@@ -4568,7 +6215,10 @@ export class UserContentService {
     return {
       filename: `${document.name.replace(/[\\/:*?"<>|]/g, '_') || 'map'}.kml`,
       contentType: 'application/vnd.google-earth.kml+xml; charset=utf-8',
-      content: generateKmlText(document.name, document.features, document.description),
+      content: generateKmlText(document.name, document.features, document.description, {
+        publicProjection: true,
+        resourceCollectionAccessResolver: ref => this.resourceCollectionAccessState(ref),
+      }),
     }
   }
 

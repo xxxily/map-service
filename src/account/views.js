@@ -19,6 +19,7 @@ import { getFeatureDescriptionText } from '../../shared/kml-content.js'
 const TAB_ITEMS = [
   ['profile', '个人资料'],
   ['kml', '我的 KML'],
+  ['collections', '资源集合'],
   ['favorites', '位置收藏'],
   ['shares', '我的分享'],
   ['security', '登录与安全'],
@@ -302,6 +303,32 @@ function renderFavorites (state) {
   `
 }
 
+function renderCollections (state) {
+  const caps = getAccountCapabilities(state.auth.user)
+  const collections = state.collections || { items: [], search: '', status: 'active', selected: null, itemResult: null }
+  const selected = collections.selected
+  const canWrite = caps.canWriteCollections
+  const totalPages = Math.max(1, Math.ceil(Number(collections.total || 0) / Math.max(1, Number(collections.limit || 20))))
+  const itemPage = Math.max(1, Number(collections.itemPage || 1))
+  const itemLimit = Math.max(1, Number(collections.itemLimit || 40))
+  const itemTotal = Number(collections.itemResult?.total ?? collections.itemResult?.pagination?.total ?? collections.itemTotal ?? 0)
+  const itemTotalPages = Math.max(1, Math.ceil(itemTotal / itemLimit))
+  const collectionItems = collections.itemResult?.items || []
+  const renderItem = (item, offset) => {
+    const position = Number.isSafeInteger(Number(item.position)) ? Number(item.position) : ((itemPage - 1) * itemLimit + offset)
+    const total = itemTotal || Number(selected?.itemCount || 0)
+    const canMoveUp = position > 0
+    const canMoveDown = total > 0 && position < total - 1
+    return `<article class="account-card account-collection-item"><div class="account-card-heading"><div><span class="account-eyebrow">资源 ${position + 1}</span><h4>${escapeHtml(item.title || '未命名资源')}</h4></div><span class="account-badge is-muted">${escapeHtml(item.type || 'auto')}</span></div><p class="account-collection-item-url">${escapeHtml(item.url || '')}</p>${item.coverUrl ? `<small class="account-collection-item-cover">封面：${escapeHtml(item.coverUrl)}</small>` : ''}${canWrite ? `<div class="account-card-actions"><button type="button" data-account-action="move-collection-item" data-id="${escapeHtml(selected.id)}" data-item-id="${escapeHtml(item.id)}" data-direction="up" ${canMoveUp ? '' : 'disabled'} aria-label="上移资源" title="上移资源">↑</button><button type="button" data-account-action="move-collection-item" data-id="${escapeHtml(selected.id)}" data-item-id="${escapeHtml(item.id)}" data-direction="down" ${canMoveDown ? '' : 'disabled'} aria-label="下移资源" title="下移资源">↓</button><button type="button" data-account-action="edit-collection-item" data-id="${escapeHtml(selected.id)}" data-item-id="${escapeHtml(item.id)}">编辑</button><button type="button" class="is-danger" data-account-action="delete-collection-item" data-id="${escapeHtml(selected.id)}" data-item-id="${escapeHtml(item.id)}">删除</button></div>` : ''}</article>`
+  }
+  const renderCollection = item => `<article class="account-card"><div class="account-card-heading"><div><h3>${escapeHtml(item.name || '未命名集合')}</h3><p>${escapeHtml(item.description || '暂无描述')}</p></div><span class="account-badge ${item.isPublic || item.public ? '' : 'is-muted'}">${item.isPublic || item.public ? '公开' : '私有'}</span></div><div class="account-row-meta"><span>${Number(item.itemCount || item.resourceCount || 0).toLocaleString()} 项</span><span>${formatDateTime(item.updatedAt)}</span></div><div class="account-card-actions"><button type="button" data-account-action="open-collection" data-id="${escapeHtml(item.id)}">查看资源</button>${canWrite ? `<button type="button" data-account-action="edit-collection" data-id="${escapeHtml(item.id)}">编辑</button>${collections.status === 'trashed' ? `<button type="button" data-account-action="restore-collection" data-id="${escapeHtml(item.id)}">恢复</button><button type="button" class="is-danger" data-account-action="permanent-delete-collection" data-id="${escapeHtml(item.id)}">永久删除</button>` : `<button type="button" class="is-danger" data-account-action="trash-collection" data-id="${escapeHtml(item.id)}">移入回收站</button>`}</div>` : '</div>'}</article>`
+  const selectedView = selected ? `<div class="account-card account-collection-editor"><div class="account-card-heading"><div><h3>${escapeHtml(selected.name || '资源集合')}</h3><p>${escapeHtml(selected.description || '暂无描述')} · ${selected.isPublic || selected.public ? '公开' : '私有'}</p></div><div class="account-card-actions">${canWrite ? `<button type="button" data-account-action="edit-collection" data-id="${escapeHtml(selected.id)}">编辑</button>` : ''}<button type="button" data-account-action="close-collection">返回列表</button></div></div>${canWrite ? `<div class="account-collection-batch"><textarea rows="3" data-collection-batch placeholder="粘贴一个或多个 HTTPS 地址"></textarea><div class="account-card-actions"><button type="button" class="account-secondary-button" data-account-action="batch-add-collection-items" data-id="${escapeHtml(selected.id)}">批量添加</button><button type="button" data-account-action="add-collection-item" data-id="${escapeHtml(selected.id)}">添加资源</button></div></div>` : ''}${collectionItems.length ? `<div class="account-card-list">${collectionItems.map(renderItem).join('')}</div><div class="account-card-actions"><button type="button" data-account-action="collection-item-page" data-id="${escapeHtml(selected.id)}" data-page="${Math.max(1, itemPage - 1)}" ${itemPage <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${itemPage} 页${itemTotal ? `，共 ${itemTotalPages} 页` : '，总数未知'}</span><button type="button" data-account-action="collection-item-page" data-id="${escapeHtml(selected.id)}" data-page="${itemPage + 1}" ${itemTotal && itemPage >= itemTotalPages ? 'disabled' : ''}>下一页</button></div>` : '<div class="account-empty is-compact"><p>暂无资源项。</p></div>'}</div>` : ''
+  const listView = collections.items.length ? `<div class="account-card-list">${collections.items.map(renderCollection).join('')}</div><div class="account-card-actions"><button type="button" data-account-action="collection-page" data-page="${Math.max(1, collections.page - 1)}" ${collections.page <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${collections.page} 页，共 ${totalPages} 页</span><button type="button" data-account-action="collection-page" data-page="${collections.page + 1}" ${collections.page >= totalPages ? 'disabled' : ''}>下一页</button></div>` : '<div class="account-empty"><strong>暂无资源集合</strong><p>创建集合后即可在 KML 点位中按 ID 引用。</p></div>'
+  return `<section class="account-panel-section"><div class="account-section-heading"><div><p class="account-eyebrow">个人数据</p><h2>资源集合</h2><p>独立维护可被多个 KML 点位引用的资源。默认私有，公开后可通过集合 ID 读取。</p></div>${canWrite ? '<button type="button" class="account-primary-button" data-account-action="create-collection">新建集合</button>' : ''}</div>
+    <form data-account-form="collection-filter" class="account-search-form"><input name="search" value="${escapeHtml(collections.search || '')}" placeholder="搜索集合名称"><select name="status"><option value="active" ${collections.status !== 'trashed' ? 'selected' : ''}>使用中</option><option value="trashed" ${collections.status === 'trashed' ? 'selected' : ''}>回收站</option></select><select name="sort"><option value="updatedAt" ${collections.sort === 'updatedAt' ? 'selected' : ''}>最近更新</option><option value="name" ${collections.sort === 'name' ? 'selected' : ''}>名称</option><option value="itemCount" ${collections.sort === 'itemCount' ? 'selected' : ''}>资源数量</option></select><select name="order"><option value="desc" ${collections.order !== 'asc' ? 'selected' : ''}>降序</option><option value="asc" ${collections.order === 'asc' ? 'selected' : ''}>升序</option></select><button type="submit">查询</button></form>
+    ${selectedView || listView}</section>`
+}
+
 function renderShares (state) {
   const capabilities = getAccountCapabilities(state.auth.user)
   const analyticsPolicy = state.auth.config?.analytics?.sharePolicy || {}
@@ -367,6 +394,7 @@ function renderSecurity (state) {
 function renderActivePanel (state) {
   if (state.loading) return renderLoading()
   if (state.activeTab === 'kml') return renderKml(state)
+  if (state.activeTab === 'collections') return renderCollections(state)
   if (state.activeTab === 'favorites') return renderFavorites(state)
   if (state.activeTab === 'shares') return renderShares(state)
   if (state.activeTab === 'security') return renderSecurity(state)

@@ -3,8 +3,11 @@ import test from 'node:test'
 
 import {
   createKmlFileViewportScheduler,
+  getKmlFileViewportBounds,
   rankKmlFilesForViewport,
+  shouldRenderKmlFileInViewport,
 } from '../src/map/kml-file-viewport-loading.js'
+import { wgs84ToGcj02 } from '../src/map/coord-transform.js'
 
 const bounds = (west, south = 0, east = west + 1, north = south + 1) => ({
   version: 1,
@@ -43,6 +46,77 @@ test('rankKmlFilesForViewport unwraps map options and orders inside files by dis
   assert.deepEqual(ranked.map(item => item.id), ['near-inside', 'fallback'])
   assert.equal(ranked[0].inside, true)
   assert.equal(ranked[1].hasBounds, false)
+})
+
+test('viewport matching uses display coordinates when a KML file applies GCJ-02 correction', () => {
+  const storedPoint = [111.38209788, 22.23462543]
+  const displayPoint = wgs84ToGcj02(storedPoint)
+  const correctedFile = file('corrected', storedPoint[0] - 0.0002, {
+    coordCorrection: 'wgs84-to-gcj02',
+    bounds: {
+      version: 1,
+      status: 'ready',
+      bbox: [storedPoint[0] - 0.0002, storedPoint[1] - 0.0002, storedPoint[0] + 0.0002, storedPoint[1] + 0.0002],
+      crossesAntimeridian: false,
+      featureCount: 1,
+    },
+  })
+  const viewport = {
+    south: displayPoint[1] - 0.0001,
+    west: displayPoint[0] - 0.0001,
+    north: displayPoint[1] + 0.0001,
+    east: displayPoint[0] + 0.0001,
+    zoom: 19.5,
+    center: { lat: displayPoint[1], lng: displayPoint[0] },
+  }
+
+  const displayBounds = getKmlFileViewportBounds(correctedFile)
+  assert.ok(displayBounds)
+  assert.equal(shouldRenderKmlFileInViewport(correctedFile, viewport), true)
+  assert.deepEqual(rankKmlFilesForViewport([correctedFile], viewport).map(item => item.id), ['corrected'])
+})
+
+test('display bounds use loaded feature coordinates without mutating the WGS84 summary', () => {
+  const storedBounds = {
+    version: 1,
+    status: 'ready',
+    bbox: [111.162, 22.403, 111.163, 22.404],
+    crossesAntimeridian: false,
+    featureCount: 2,
+  }
+  const source = JSON.parse(JSON.stringify(storedBounds))
+  const correctedFile = file('loaded-corrected', 111.162, {
+    contentLoaded: true,
+    coordCorrection: 'wgs84-to-gcj02',
+    bounds: storedBounds,
+    featureCount: 2,
+    features: [{
+      type: 'LineString',
+      coordinates: [[111.162, 22.403], [111.163, 22.404]],
+    }],
+  })
+  const display = getKmlFileViewportBounds(correctedFile)
+  assert.ok(display)
+  assert.equal(display.status, 'ready')
+  assert.ok(display.bbox[0] > storedBounds.bbox[0])
+  assert.ok(display.bbox[2] > storedBounds.bbox[2])
+  assert.deepEqual(storedBounds, source)
+})
+
+test('none correction keeps summary coordinates and antimeridian semantics', () => {
+  const correctedFile = file('raw-crossing', 179.8, {
+    coordCorrection: 'none',
+    bounds: {
+      version: 1,
+      status: 'ready',
+      bbox: [179.8, -1, -179.7, 1],
+      crossesAntimeridian: true,
+      featureCount: 2,
+    },
+  })
+  const display = getKmlFileViewportBounds(correctedFile)
+  assert.deepEqual(display.bbox, [179.8, -1, -179.7, 1])
+  assert.equal(display.crossesAntimeridian, true)
 })
 
 test('scheduler enforces concurrency and does not let a delayed retry block ready work', async () => {

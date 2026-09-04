@@ -433,6 +433,100 @@ const service = {
     return userContent.listKmlFiles(actor, input)
   },
 
+  listUserResourceCollections (actor, input) {
+    return userContent.listResourceCollections(actor, input)
+  },
+
+  createUserResourceCollection (actor, input, context) {
+    return userContent.createResourceCollection(actor, input, context)
+  },
+
+  getUserResourceCollection (actor, id) {
+    return userContent.getResourceCollection(actor, id)
+  },
+
+  updateUserResourceCollection (actor, id, input, context) {
+    return userContent.updateResourceCollection(actor, id, input, context)
+  },
+
+  trashUserResourceCollection (actor, id, context) {
+    return userContent.trashResourceCollection(actor, id, context)
+  },
+
+  restoreUserResourceCollection (actor, id, context) {
+    return userContent.restoreResourceCollection(actor, id, context)
+  },
+
+  permanentlyDeleteUserResourceCollection (actor, id, context) {
+    return userContent.permanentlyDeleteResourceCollection(actor, id, context)
+  },
+
+  listUserResourceCollectionItems (actor, id, input) {
+    return userContent.listResourceCollectionItems(actor, id, input)
+  },
+
+  createUserResourceCollectionItem (actor, id, input, context) {
+    return userContent.createResourceCollectionItem(actor, id, input, context)
+  },
+
+  updateUserResourceCollectionItem (actor, id, itemId, input, context) {
+    return userContent.updateResourceCollectionItem(actor, id, itemId, input, context)
+  },
+
+  deleteUserResourceCollectionItem (actor, id, itemId, input, context) {
+    return userContent.deleteResourceCollectionItem(actor, id, itemId, input || {}, context)
+  },
+
+  reorderUserResourceCollectionItems (actor, id, input, context) {
+    return userContent.reorderResourceCollectionItems(actor, id, input, context)
+  },
+
+  batchUserResourceCollectionItems (actor, id, input, context) { return userContent.batchResourceCollectionItems(actor, id, input, context) },
+  listUserResourceCollectionReferences (actor, id, input) { return userContent.listResourceCollectionReferences(actor, id, input) },
+  exportUserResourceCollection (actor, id) { return userContent.exportResourceCollection(actor, id) },
+
+  getPublicUserResourceCollection (id, input, context) {
+    return userContent.getPublicResourceCollection(id, input, context)
+  },
+  getPublicUserResourceCollectionItems (id, input, context) { return userContent.getPublicResourceCollectionItems(id, input, context) },
+
+  listAdminResourceCollections (actor, input) {
+    return userContent.listAdminResourceCollections(actor, input)
+  },
+  getAdminResourceCollection (actor, id) {
+    return userContent.getAdminResourceCollection(actor, id)
+  },
+  listAdminResourceCollectionItems (actor, id, input) {
+    return userContent.listAdminResourceCollectionItems(actor, id, input)
+  },
+  listAdminResourceCollectionReferences (actor, id, input) {
+    return userContent.listAdminResourceCollectionReferences(actor, id, input)
+  },
+  repairAdminResourceCollectionReference (actor, collectionId, bindingId, context) {
+    return userContent.repairAdminResourceCollectionReference(actor, collectionId, bindingId, context)
+  },
+  detachAdminResourceCollectionReference (actor, collectionId, bindingId, input, context) {
+    return userContent.detachAdminResourceCollectionReference(actor, collectionId, bindingId, input, context)
+  },
+  trashAdminResourceCollection (actor, id, context) {
+    return userContent.trashAdminResourceCollection(actor, id, context)
+  },
+  restoreAdminResourceCollection (actor, id, context) {
+    return userContent.restoreAdminResourceCollection(actor, id, context)
+  },
+  permanentlyDeleteAdminResourceCollection (actor, id, context) {
+    return userContent.permanentlyDeleteAdminResourceCollection(actor, id, context)
+  },
+  listResourceCollectionsForAdmin (actor, input) { return userContent.listResourceCollectionsForAdmin(actor, input) },
+  getResourceCollectionForAdmin (actor, id) { return userContent.getResourceCollectionForAdmin(actor, id) },
+  listResourceCollectionItemsForAdmin (actor, id, input) { return userContent.listResourceCollectionItemsForAdmin(actor, id, input) },
+  listResourceCollectionReferencesForAdmin (actor, id, input) { return userContent.listAdminResourceCollectionReferences(actor, id, input) },
+  repairResourceCollectionReferenceForAdmin (actor, collectionId, bindingId, context) { return userContent.repairAdminResourceCollectionReference(actor, collectionId, bindingId, context) },
+  detachResourceCollectionReferenceForAdmin (actor, collectionId, bindingId, input, context) { return userContent.detachAdminResourceCollectionReference(actor, collectionId, bindingId, input, context) },
+  trashResourceCollectionForAdmin (actor, id, context) { return userContent.trashResourceCollectionForAdmin(actor, id, context) },
+  restoreResourceCollectionForAdmin (actor, id, context) { return userContent.restoreResourceCollectionForAdmin(actor, id, context) },
+  permanentlyDeleteResourceCollectionForAdmin (actor, id, context) { return userContent.permanentlyDeleteResourceCollectionForAdmin(actor, id, context) },
+
   listUserKmlDirectories (actor) {
     return userContent.listKmlDirectories(actor)
   },
@@ -659,6 +753,14 @@ const service = {
 
   getPublicKmlShareFile (publicId, shareItemId, options) {
     return userContent.getPublicShareFile(publicId, shareItemId, options)
+  },
+
+  getPublicKmlShareFeatureResourceCollection (publicId, shareItemId, featureId, options) {
+    return userContent.getPublicShareFeatureResourceCollection(publicId, shareItemId, featureId, options)
+  },
+
+  getPublicKmlShareFeatureResourceCollectionItems (publicId, shareItemId, featureId, input, options) {
+    return userContent.getPublicShareFeatureResourceCollectionItems(publicId, shareItemId, featureId, input, options)
   },
 
   exportPublicKmlShareFile (publicId, shareItemId, options) {

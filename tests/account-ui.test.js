@@ -543,6 +543,12 @@ test('用户中心 KML 与分享管理使用统一 Dialog 并具备完整编辑�
   assert.match(appSource, /for \(const item of selection\.eligible\)/)
   assert.match(appSource, /accountApi\.batchMoveKml\(\{ ids, directoryId: targetId \}\)/)
   assert.match(apiSource, /batchMoveKml: body => apiRequest\('\/kml\/files\/batch-move'/)
+  assert.match(apiSource, /batchResourceCollectionItems: \(id, body\) => apiRequest\(`\/resource-collections\/\$\{pathId\(id\)\}\/items\/batch`/)
+  assert.match(apiSource, /reorderResourceCollectionItems: \(id, body\) => apiRequest\(`\/resource-collections\/\$\{pathId\(id\)\}\/items\/reorder`/)
+  assert.match(viewSource, /data-collection-batch/)
+  assert.match(viewSource, /data-account-action="move-collection-item"/)
+  assert.match(appSource, /resourceCollectionRefVersion|loadAllCollectionItems/)
+  assert.match(appSource, /coverUrl: values\.coverUrl\?\.trim\(\) \|\| ''/)
   assert.match(appSource, /name: 'color', label: '主题色', type: 'color'/)
   assert.match(appSource, /passwordlessSharingEnabled: passwordlessSharingEnabled\(\)/)
   assert.match(appSource, /spatialUnrestrictedTileMaxZoom: spatialTileZoomMax\(\)/)
@@ -654,6 +660,66 @@ test('KML 回收站条目显示删除时间和原目录', () => {
   assert.match(html, /原目录：未分类/)
   assert.match(html, /data-account-action="restore-kml"/)
   assert.match(html, /data-account-action="delete-kml"/)
+})
+
+test('个人资源集合详情提供封面、批量添加和跨页排序入口', () => {
+  const html = renderAccountShell({
+    auth: {
+      user: {
+        username: 'collection-owner',
+        displayName: '集合用户',
+        permissions: ['account.self.read', 'resource_collection.own.read', 'resource_collection.own.write'],
+      },
+      config: {},
+    },
+    activeTab: 'collections',
+    loading: false,
+    busy: false,
+    notice: '',
+    error: '',
+    collections: {
+      items: [],
+      search: '',
+      status: 'active',
+      page: 1,
+      limit: 20,
+      sort: 'updatedAt',
+      order: 'desc',
+      total: 0,
+      itemPage: 2,
+      itemLimit: 2,
+      itemTotal: 4,
+      selected: {
+        id: 'rc_collection',
+        name: '公开素材',
+        description: '可复用资源',
+        isPublic: true,
+        itemCount: 4,
+        itemsRevision: 3,
+      },
+      itemResult: {
+        items: [{
+          id: 'rci_3',
+          position: 2,
+          title: '第三项',
+          url: 'https://cdn.example.com/3.jpg',
+          coverUrl: 'https://cdn.example.com/3-cover.jpg',
+          type: 'image',
+        }],
+        total: 4,
+      },
+    },
+    kml: { items: [], directories: { items: [], uncategorized: { name: '未分类' } }, selected: new Set(), usage: {} },
+    favorites: { items: [], search: '' },
+    shares: { items: [], search: '', status: '' },
+    sessions: [],
+  })
+
+  assert.match(html, /data-collection-batch/)
+  assert.match(html, /data-account-action="batch-add-collection-items"/)
+  assert.match(html, /data-account-action="move-collection-item"[^>]*data-direction="up"/)
+  assert.match(html, /封面：https:\/\/cdn\.example\.com\/3-cover\.jpg/)
+  assert.match(html, /第 2 页，共 2 页/)
 })
 
 test('KML 配额只显示使用中占用并单列回收站物理存储', () => {

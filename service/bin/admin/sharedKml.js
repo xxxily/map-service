@@ -2,7 +2,7 @@ import { AdminStore } from './store.js'
 import { buildFeatureContentView } from './kmlContent.js'
 import { normalizeKmlMarkerIcon } from '../../../shared/kml-marker-icons.js'
 import { computeKmlBounds, normalizeKmlBounds } from '../../../shared/kml-spatial.js'
-import { tryNormalizeKmlResourceCollection } from '../../../shared/kml-resource-collection.js'
+import { tryNormalizeKmlResourceCollection, tryNormalizeKmlResourceCollectionRef } from '../../../shared/kml-resource-collection.js'
 
 function normalizeFeatureMarkerIcons (features) {
   return (Array.isArray(features) ? features : []).map(feature => {
@@ -10,6 +10,7 @@ function normalizeFeatureMarkerIcons (features) {
     if (normalized.type !== 'Point') {
       delete normalized.markerIcon
       delete normalized.resourceCollection
+      delete normalized.resourceCollectionRef
       return normalized
     }
     const markerIcon = normalizeKmlMarkerIcon(normalized.markerIcon)
@@ -30,8 +31,19 @@ function normalizeFeatureMarkerIcons (features) {
         throw error
       }
       normalized.resourceCollection = result.value
+      delete normalized.resourceCollectionRef
     } else {
       delete normalized.resourceCollection
+      if (normalized.resourceCollectionRef !== undefined && normalized.resourceCollectionRef !== null) {
+        const refResult = tryNormalizeKmlResourceCollectionRef(normalized.resourceCollectionRef)
+        if (refResult.error) {
+          const error = new Error(refResult.error.message)
+          error.statusCode = 400
+          error.code = 'VALIDATION_FAILED'
+          throw error
+        }
+        normalized.resourceCollectionRef = refResult.value
+      } else delete normalized.resourceCollectionRef
     }
     return normalized
   })
@@ -88,11 +100,15 @@ function parseKml (kmlText) {
     const markerIconMatch = /<Data\b[^>]*\bname\s*=\s*["']map-service:marker-icon["'][^>]*>([\s\S]*?)<\/Data\s*>/i.exec(placemarkContent)
     const markerIcon = normalizeKmlMarkerIcon(markerIconMatch ? extractTagContent(markerIconMatch[1], 'value') : '')
     const collectionMatch = /<Data\b[^>]*\bname\s*=\s*["']map-service:resource-collection["'][^>]*>([\s\S]*?)<\/Data\s*>/i.exec(placemarkContent)
+    const collectionRefMatch = /<Data\b[^>]*\bname\s*=\s*["']map-service:resource-collection-ref["'][^>]*>([\s\S]*?)<\/Data\s*>/i.exec(placemarkContent)
     const collectionValue = collectionMatch ? extractTagContent(collectionMatch[1], 'value') : ''
     const collectionResult = collectionValue ? tryNormalizeKmlResourceCollection(decodeXmlEntities(collectionValue)) : { value: null, error: null }
     if (collectionResult.error) {
       warnings.push(`第 ${i} 个标注的资源集合已忽略：${collectionResult.error.message}`)
     }
+    const collectionRefValue = collectionRefMatch ? extractTagContent(collectionRefMatch[1], 'value') : ''
+    const collectionRefResult = collectionRefValue ? tryNormalizeKmlResourceCollectionRef(decodeXmlEntities(collectionRefValue)) : { value: null, error: null }
+    if (collectionRefResult.error) warnings.push(`第 ${i} 个标注的资源集合引用已忽略：${collectionRefResult.error.message}`)
 
     const name = rawName ? decodeXmlEntities(rawName) : `未命名要素 ${i}`
     const description = rawDesc ? decodeXmlEntities(rawDesc) : ''
@@ -138,6 +154,7 @@ function parseKml (kmlText) {
         ...(styleUrl ? { styleUrl } : {}),
         ...(markerIcon ? { markerIcon } : {}),
         ...(collectionResult.value ? { resourceCollection: collectionResult.value } : {}),
+        ...(!collectionResult.value && collectionRefResult.value ? { resourceCollectionRef: collectionRefResult.value } : {}),
         coordinates,
       })
     }

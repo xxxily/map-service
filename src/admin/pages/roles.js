@@ -7,6 +7,12 @@ export const ADMIN_PERMISSION_CATALOG = Object.freeze([
   ['session.self.manage', '管理个人会话'],
   ['kml.own.read', '查看个人 KML'],
   ['kml.own.write', '管理个人 KML'],
+  ['resource_collection.own.read', '查看个人资源集合'],
+  ['resource_collection.own.write', '编辑个人资源集合'],
+  ['resource_collection.own.manage', '管理个人资源集合'],
+  ['resource_collection.any.read', '读取任意用户资源集合'],
+  ['resource_collection.any.manage', '管理任意用户资源集合'],
+  ['resource_collection.public.read', '读取公开资源集合'],
   ['share.own.manage', '管理个人分享'],
   ['favorite.own.manage', '管理个人收藏'],
   ['admin.overview.read', '查看后台概览'],
@@ -34,7 +40,7 @@ export const ADMIN_PERMISSION_CATALOG = Object.freeze([
 
 function permissionGroup (code) {
   if (code.startsWith('admin.')) return '后台管理'
-  if (code.startsWith('kml.any.')) return '跨用户数据'
+  if (code.startsWith('kml.any.') || code.startsWith('resource_collection.any.') || code === 'resource_collection.public.read') return '跨用户数据'
   return '个人能力'
 }
 

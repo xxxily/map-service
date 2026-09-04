@@ -50,6 +50,13 @@ const DEFAULT_SETTINGS = Object.freeze({
     maxFeaturesPerUser: 200000,
     trashRetentionDays: 30,
   },
+  resourceCollection: {
+    maxCollectionsPerUser: 1000,
+    maxItemsPerCollection: 10000,
+    maxCollectionBytesPerUser: 100 * 1024 * 1024,
+    maxBatchItemsPerRequest: 100,
+    publicCollectionReadRateLimit: 300,
+  },
   kml: {
     batchDownloadEnabled: false,
     pointClustering: {
@@ -189,6 +196,29 @@ function normalizeQuotaSettings (input, fallback = {}) {
   })
   assertKmlTransportLimit(next)
   assertQuotaRelationships(next)
+  return next
+}
+
+const RESOURCE_COLLECTION_SETTING_LABELS = Object.freeze({
+  maxCollectionsPerUser: '每用户活动资源集合数',
+  maxItemsPerCollection: '单个资源集合项数',
+  maxCollectionBytesPerUser: '每用户资源集合字节数',
+  maxBatchItemsPerRequest: '资源集合单批操作数',
+  publicCollectionReadRateLimit: '公开资源集合读取限流值',
+})
+
+function normalizeResourceCollectionSettings (input, fallback = DEFAULT_SETTINGS.resourceCollection) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw createHttpError('资源集合设置格式不正确', 400, 'VALIDATION_FAILED')
+  }
+  const next = { ...fallback }
+  Object.entries(RESOURCE_COLLECTION_SETTING_LABELS).forEach(([key, label]) => {
+    if (!Object.hasOwn(input, key)) return
+    next[key] = normalizePositiveIntegerSetting(input[key], fallback[key], label)
+  })
+  if (next.maxBatchItemsPerRequest > next.maxItemsPerCollection) {
+    throw createHttpError('资源集合单批操作数不能大于单个集合项数上限', 400, 'VALIDATION_FAILED')
+  }
   return next
 }
 
@@ -582,6 +612,7 @@ export class UserSystemService {
     const row = this.database.prepare('SELECT value_json FROM user_system_settings WHERE key = ?').get('user-system')
     const saved = parseJson(row?.value_json, {})
     return {
+      resourceCollectionRefVersion: 1,
       registration: {
         ...DEFAULT_SETTINGS.registration,
         ...(saved.registration || {}),
@@ -591,10 +622,18 @@ export class UserSystemService {
         ...(saved.session || {}),
       },
       quota: normalizeStoredQuotaSettings(saved.quota, DEFAULT_SETTINGS.quota),
+      resourceCollection: normalizeResourceCollectionSettings(
+        saved.resourceCollection || saved.resourceCollections?.settings || {},
+        DEFAULT_SETTINGS.resourceCollection,
+      ),
       kml: {
         ...DEFAULT_SETTINGS.kml,
         ...(saved.kml || {}),
         pointClustering: normalizeStoredKmlPointClusteringSettings(saved.kml?.pointClustering),
+      },
+      resourceCollections: {
+        refVersion: 1,
+        pageSize: 40,
       },
       share: {
         ...DEFAULT_SETTINGS.share,
@@ -611,6 +650,7 @@ export class UserSystemService {
   getPublicConfig () {
     const settings = this.getSettings()
     return {
+      resourceCollectionRefVersion: Number(settings.resourceCollectionRefVersion || 1),
       registration: {
         mode: settings.registration.mode,
         enabled: settings.registration.mode === 'open',
@@ -632,6 +672,9 @@ export class UserSystemService {
         maxFilesPerShare: Number(settings.share.maxFilesPerShare),
         passwordlessSharingEnabled: settings.share.passwordlessSharingEnabled === true,
         spatialUnrestrictedTileMaxZoom: Number(settings.share.spatialUnrestrictedTileMaxZoom),
+      },
+      resourceCollection: {
+        maxBatchItemsPerRequest: Number(settings.resourceCollection.maxBatchItemsPerRequest),
       },
       analytics: publicAnalyticsConfig(settings.analytics),
     }
@@ -709,6 +752,14 @@ export class UserSystemService {
     if (input.quota !== undefined) {
       this.assertPermission(actor, 'admin.security.manage')
       next.quota = normalizeQuotaSettings(input.quota, current.quota)
+    }
+
+    if (input.resourceCollection !== undefined) {
+      this.assertPermission(actor, 'admin.security.manage')
+      next.resourceCollection = normalizeResourceCollectionSettings(
+        input.resourceCollection,
+        current.resourceCollection,
+      )
     }
 
     if (input.kml !== undefined) {
@@ -826,7 +877,7 @@ export class UserSystemService {
       next.analytics = normalizeAnalyticsSettings(input.analytics, current.analytics, { allowCustomScriptChange })
     }
 
-    if (['registration', 'session', 'quota', 'kml', 'share', 'analytics'].some(section => Object.hasOwn(input, section))) {
+    if (['registration', 'session', 'quota', 'resourceCollection', 'kml', 'share', 'analytics'].some(section => Object.hasOwn(input, section))) {
       this.assertRecentReauth(actor)
     }
 
@@ -952,6 +1003,12 @@ export class UserSystemService {
     if (permission === 'account.self.read' && permissions.includes('account.self.update')) return true
     if (permission === 'kml.own.read' && permissions.includes('kml.own.write')) return true
     if (permission === 'kml.any.read' && permissions.includes('kml.any.manage')) return true
+    if (permission === 'resource_collection.own.read' && (
+      permissions.includes('resource_collection.own.write') ||
+      permissions.includes('resource_collection.own.manage')
+    )) return true
+    if (permission === 'resource_collection.own.write' && permissions.includes('resource_collection.own.manage')) return true
+    if (permission === 'resource_collection.any.read' && permissions.includes('resource_collection.any.manage')) return true
     return false
   }
 

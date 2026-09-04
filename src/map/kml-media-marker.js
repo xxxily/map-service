@@ -74,6 +74,7 @@ function getMarkerSignature (feature) {
     styleUrl: String(feature?.styleUrl || ''),
     description: String(feature?.description || ''),
     resourceCollection: feature?.resourceCollection || null,
+    resourceCollectionRef: feature?.resourceCollectionRef || null,
   }
 }
 
@@ -82,7 +83,8 @@ function markerSignaturesEqual (left, right) {
     left.markerIcon === right.markerIcon &&
     left.styleUrl === right.styleUrl &&
     left.description === right.description &&
-    left.resourceCollection === right.resourceCollection
+    left.resourceCollection === right.resourceCollection &&
+    left.resourceCollectionRef === right.resourceCollectionRef
 }
 
 function buildMarkerModel (feature) {
@@ -100,7 +102,7 @@ function buildMarkerModel (feature) {
       : null
   }
 
-  if (Array.isArray(feature?.resourceCollection?.items)) {
+  if (Array.isArray(feature?.resourceCollection?.items) || feature?.resourceCollectionRef) {
     const definition = getKmlMarkerIconDefinition('collection')
     return {
       type: 'collection',

@@ -6,6 +6,8 @@ export const KML_RESOURCE_COLLECTION_MAX_URL_LENGTH = 4096
 export const KML_RESOURCE_COLLECTION_VIEW_MODES = Object.freeze(['grid', 'list'])
 export const KML_RESOURCE_COLLECTION_ITEM_TYPES = Object.freeze(['auto', 'image', 'video', 'audio', 'iframe'])
 export const KML_RESOURCE_COLLECTION_PAGE_SIZE = 40
+export const KML_RESOURCE_COLLECTION_REF_VERSION = 1
+export const KML_RESOURCE_COLLECTION_REF_MAX_BYTES = 16 * 1024
 
 // Resource collection URLs are persisted in personal KML and may be copied
 // into public share snapshots. Keep ordinary view parameters (for example
@@ -38,6 +40,94 @@ const SENSITIVE_URL_QUERY_KEYS = new Set([
 
 const VIEW_MODES = new Set(KML_RESOURCE_COLLECTION_VIEW_MODES)
 const ITEM_TYPES = new Set(KML_RESOURCE_COLLECTION_ITEM_TYPES)
+
+function isPrivateHost (hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') ||
+      host === 'metadata.google.internal' || host.endsWith('.metadata.google.internal') ||
+      host === 'instance-data' || host.endsWith('.instance-data')) return true
+  const ipv4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)
+  if (ipv4) {
+    const octets = ipv4.slice(1).map(Number)
+    if (octets.some(value => value > 255)) return true
+    const [a, b] = octets
+    return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 ||
+      a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31
+  }
+  if (host.includes(':')) {
+    // Literal IPv6 private, loopback, link-local and IPv4-mapped addresses.
+    if (host === '::' || host === '::1' || host.startsWith('::ffff:')) {
+      if (host.startsWith('::ffff:')) return isPrivateHost(host.slice(7))
+      return true
+    }
+    const first = host.split(':').find(Boolean) || ''
+    const prefix = Number.parseInt(first.slice(0, 4), 16)
+    if (Number.isFinite(prefix)) {
+      if ((prefix & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
+      if ((prefix & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
+      if (prefix === 0) return true
+    }
+  }
+  return false
+}
+
+export function normalizeKmlResourceCollectionRef (value) {
+  let input = value
+  if (typeof input === 'string') {
+    if (byteLength(input) > KML_RESOURCE_COLLECTION_REF_MAX_BYTES) throw new KmlResourceCollectionError('资源集合引用过大', { code: 'RESOURCE_COLLECTION_REF_TOO_LARGE' })
+    try { input = JSON.parse(input) } catch { throw new KmlResourceCollectionError('资源集合引用不是有效 JSON', { code: 'RESOURCE_COLLECTION_REF_JSON_INVALID' }) }
+  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new KmlResourceCollectionError('资源集合引用格式不正确', { code: 'RESOURCE_COLLECTION_REF_INVALID' })
+  const version = Number(input.version ?? KML_RESOURCE_COLLECTION_REF_VERSION)
+  if (version !== KML_RESOURCE_COLLECTION_REF_VERSION) throw new KmlResourceCollectionError(`暂不支持资源集合引用版本 ${version}`, { code: 'RESOURCE_COLLECTION_REF_VERSION_UNSUPPORTED', path: 'version' })
+  const sourceType = String(input.sourceType || '').trim().toLowerCase()
+  if (!['personal', 'external'].includes(sourceType)) throw new KmlResourceCollectionError('资源集合引用来源不受支持', { code: 'RESOURCE_COLLECTION_REF_SOURCE_INVALID', path: 'sourceType' })
+  const resolution = String(input.resolution || 'live').trim().toLowerCase()
+  if (resolution !== 'live') throw new KmlResourceCollectionError('资源集合引用当前仅支持 live', { code: 'RESOURCE_COLLECTION_REF_RESOLUTION_INVALID', path: 'resolution' })
+  const displayName = input.displayName === undefined || input.displayName === null
+    ? ''
+    : normalizeText(input.displayName, 200, 'displayName')
+  const viewMode = input.viewMode === undefined || input.viewMode === null || input.viewMode === ''
+    ? ''
+    : String(input.viewMode).trim().toLowerCase()
+  if (viewMode && !VIEW_MODES.has(viewMode)) throw new KmlResourceCollectionError('资源集合引用视图只支持 grid 或 list', { code: 'RESOURCE_COLLECTION_REF_VIEW_MODE_INVALID', path: 'viewMode' })
+  if (sourceType === 'personal') {
+    const collectionId = normalizeText(input.collectionId, 200, 'collectionId')
+    if (!collectionId) throw new KmlResourceCollectionError('个人资源集合引用缺少 collectionId', { code: 'RESOURCE_COLLECTION_REF_COLLECTION_REQUIRED', path: 'collectionId' })
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(collectionId)) throw new KmlResourceCollectionError('个人资源集合引用标识格式不正确', { code: 'RESOURCE_COLLECTION_REF_COLLECTION_INVALID', path: 'collectionId' })
+    const normalized = { version, sourceType, resolution, collectionId, ...(displayName ? { displayName } : {}), ...(viewMode ? { viewMode } : {}) }
+    if (byteLength(JSON.stringify(normalized)) > KML_RESOURCE_COLLECTION_REF_MAX_BYTES) throw new KmlResourceCollectionError('资源集合引用过大', { code: 'RESOURCE_COLLECTION_REF_TOO_LARGE' })
+    return normalized
+  }
+  const dataUrl = normalizeItemUrl(input.dataUrl, 'dataUrl')
+  const parsed = new URL(dataUrl)
+  if (isPrivateHost(parsed.hostname)) throw new KmlResourceCollectionError('外部资源集合地址不允许访问内网主机', { code: 'RESOURCE_COLLECTION_REF_HOST_BLOCKED', path: 'dataUrl' })
+  if (parsed.port && parsed.port !== '443') throw new KmlResourceCollectionError('外部资源集合地址不允许非默认端口', { code: 'RESOURCE_COLLECTION_REF_PORT_BLOCKED', path: 'dataUrl' })
+  const normalized = { version, sourceType, resolution, dataUrl, ...(displayName ? { displayName } : {}), ...(viewMode ? { viewMode } : {}) }
+  if (byteLength(JSON.stringify(normalized)) > KML_RESOURCE_COLLECTION_REF_MAX_BYTES) throw new KmlResourceCollectionError('资源集合引用过大', { code: 'RESOURCE_COLLECTION_REF_TOO_LARGE' })
+  return normalized
+}
+
+export function tryNormalizeKmlResourceCollectionRef (value) {
+  try { return { value: normalizeKmlResourceCollectionRef(value), error: null } } catch (error) {
+    return { value: null, error: error instanceof KmlResourceCollectionError ? error : new KmlResourceCollectionError(error?.message || '资源集合引用格式不正确') }
+  }
+}
+
+export function serializeKmlResourceCollectionRef (value) {
+  return JSON.stringify(normalizeKmlResourceCollectionRef(value))
+}
+
+export function sanitizeKmlResourceCollectionRef (value, options = {}) {
+  const normalized = normalizeKmlResourceCollectionRef(value)
+  if (normalized.sourceType === 'external') return normalized
+  if (options.accessState && options.accessState !== 'public') return { version: normalized.version, sourceType: 'personal', resolution: normalized.resolution, accessState: options.accessState }
+  return normalized
+}
+
+export function isKmlResourceCollectionRef (value) {
+  return Boolean(tryNormalizeKmlResourceCollectionRef(value).value)
+}
 
 export function getKmlResourceCollectionPage (items, requestedPage, pageSize = KML_RESOURCE_COLLECTION_PAGE_SIZE) {
   const source = Array.isArray(items) ? items : []
@@ -107,6 +197,12 @@ function normalizeItemUrl (value, path) {
   if (parsed.protocol !== 'https:') {
     throw new KmlResourceCollectionError(`${path}仅支持 HTTPS 地址`, {
       code: 'RESOURCE_COLLECTION_URL_PROTOCOL',
+      path,
+    })
+  }
+  if (isPrivateHost(parsed.hostname)) {
+    throw new KmlResourceCollectionError(`${path}不能指向内网主机`, {
+      code: 'RESOURCE_COLLECTION_URL_HOST_BLOCKED',
       path,
     })
   }

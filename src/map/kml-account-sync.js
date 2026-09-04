@@ -309,7 +309,10 @@ function dispatchSettledSyncState (state, detail = {}) {
 }
 
 function serializableKml (file) {
+  const features = cloneValue(Array.isArray(file.features) ? file.features : [])
+  const hasResourceCollectionRef = features.some(feature => feature?.resourceCollectionRef)
   return {
+    ...(hasResourceCollectionRef ? { resourceCollectionRefVersion: 1 } : {}),
     name: String(file.name || '未命名 KML'),
     description: String(file.description || ''),
     isDefault: Boolean(file.isDefault),
@@ -325,7 +328,7 @@ function serializableKml (file) {
       : 0,
     // A snapshot is a historical value. Clone the feature graph so map edits
     // cannot mutate the base through a shared reference.
-    features: cloneValue(Array.isArray(file.features) ? file.features : []),
+    features,
   }
 }
 

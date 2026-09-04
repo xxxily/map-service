@@ -1,5 +1,5 @@
 import { getTrustedKmlShareEmbed, resolveKnownKmlShareLink } from './kml-share-links.js'
-import { tryNormalizeKmlResourceCollection } from './kml-resource-collection.js'
+import { tryNormalizeKmlResourceCollection, tryNormalizeKmlResourceCollectionRef } from './kml-resource-collection.js'
 import { createStableInteractionId, normalizeInteractionFeatureId } from './interaction-resource-id.js'
 
 const URL_LIMIT = 50
@@ -587,6 +587,22 @@ export function buildResourceCollectionContentView (resourceCollection, options 
   }
 }
 
+export function buildResourceCollectionRefPlaceholder (resourceCollectionRef, options = {}) {
+  const result = tryNormalizeKmlResourceCollectionRef(resourceCollectionRef)
+  if (!result.value) return { ok: false, error: result.error }
+  const ref = result.value
+  return {
+    ok: true,
+    ref,
+    featureId: String(options.featureId || ''),
+    groups: [],
+    contentSummary: { imageCount: 0, videoCount: 0, audioCount: 0, iframeCount: 0, linkCount: 0, hasRichContent: false },
+    sourceSummary: { bindings: 0, libraries: 0, descriptionLinks: 0, collectionItems: 0, rejected: 0, truncated: false, collectionRef: ref.sourceType },
+    rejected: [],
+    needsLoad: true,
+  }
+}
+
 function getEmbeddedShareSourceUrls (references) {
   return new Set(references.flatMap(reference => {
     const trusted = getTrustedKmlShareEmbed(reference.url)
@@ -609,6 +625,7 @@ function getFeatureContentViewCacheKey (feature, options = {}) {
     description: String(feature?.description || ''),
     styleUrl: String(feature?.styleUrl || ''),
     resourceCollection: feature?.resourceCollection || null,
+    resourceCollectionRef: feature?.resourceCollectionRef || null,
     includeResourceCollections: options.includeResourceCollections !== false,
     allowlist,
     limit: Number.isInteger(options.limit) ? options.limit : URL_LIMIT,
@@ -621,6 +638,7 @@ function isFeatureContentViewCacheKeyEqual (left, right) {
     left.description === right.description &&
     left.styleUrl === right.styleUrl &&
     left.resourceCollection === right.resourceCollection &&
+    left.resourceCollectionRef === right.resourceCollectionRef &&
     left.includeResourceCollections === right.includeResourceCollections &&
     left.allowlist === right.allowlist &&
     left.limit === right.limit
@@ -702,6 +720,36 @@ function buildFeatureContentViewUncached (feature, options = {}) {
     mediaOccurrences.set(sourceKey, occurrence + 1)
     groupMap.get(item.type)?.items.push(attachInteractionMediaId(feature?.id, item, occurrence))
   })
+
+  const collectionRef = options.includeResourceCollections === false ? null : feature?.resourceCollectionRef
+  const refResult = collectionRef ? tryNormalizeKmlResourceCollectionRef(collectionRef) : null
+  if (refResult?.value) {
+    const contentSummary = {
+      imageCount: groupMap.get('image').items.length,
+      videoCount: groupMap.get('video').items.length,
+      audioCount: groupMap.get('audio').items.length,
+      iframeCount: groupMap.get('iframe').items.length,
+      linkCount: groupMap.get('link').items.length,
+    }
+    contentSummary.hasRichContent = CONTENT_GROUP_ORDER.some(type => groupMap.get(type).items.length > 0)
+    return {
+      featureId: String(feature?.id || ''),
+      groups,
+      contentSummary,
+      sourceSummary: {
+        bindings: 0,
+        libraries: 0,
+        descriptionLinks: references.length,
+        collectionItems: 0,
+        collectionRef: refResult.value.sourceType,
+        rejected: rejected.length,
+        truncated,
+      },
+      rejected,
+      collectionRef: refResult.value,
+      needsCollectionLoad: true,
+    }
+  }
 
   const contentSummary = {
     imageCount: groupMap.get('image').items.length,

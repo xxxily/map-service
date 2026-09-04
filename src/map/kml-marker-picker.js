@@ -134,5 +134,7 @@ export function normalizeKmlFeatureMarkerIcon (feature) {
   }
   delete normalized.markerIcon
   delete normalized.resourceCollection
+  delete normalized.resourceCollectionRef
+  delete normalized.resourceCollectionStatus
   return normalized
 }

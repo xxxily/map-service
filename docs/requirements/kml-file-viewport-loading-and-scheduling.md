@@ -45,6 +45,7 @@
 ```
 
 - `bbox` 顺序固定为 `[west, south, east, north]`，经纬度为 WGS84 十进制度。
+- `bounds` 始终按 WGS84 持久化；客户端进行文件级视口筛选、渲染显隐和摘要定位时，必须按文件的 `coordCorrection` 计算显示坐标边界，再与地图视口比较，不得直接将 WGS84 摘要与 GCJ-02 视口混用。
 - `status` 取 `ready`、`empty`、`missing`。`ready` 必须有合法 bbox；`empty` 表示没有有效坐标；`missing` 仅用于兼容旧记录或计算失败。
 - `crossesAntimeridian=true` 时允许 `west > east`，表示区间跨越 ±180 度；不得把该区间展开为全球范围。
 - `featureCount` 是摘要生成时的要素数量，仅用于诊断，不替代文件列表中的计数。

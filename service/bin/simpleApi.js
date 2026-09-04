@@ -665,6 +665,85 @@ async function sendMaskedShareTile (req, res, classification) {
 
 const userApiRoutes = [
   {
+    path: '/resource-collections', method: 'get', describe: '列出个人资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.listUserResourceCollections(requireUser(req, 'resource_collection.own.read'), req.query || {})) },
+  },
+  {
+    path: '/resource-collections', method: 'post', describe: '新建个人资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.status(201).jsonSuc(service.createUserResourceCollection(requireUser(req, 'resource_collection.own.write'), req.body || {}, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id', method: 'get', describe: '获取个人资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.getUserResourceCollection(requireUser(req, 'resource_collection.own.read'), req.params.id)) },
+  },
+  {
+    path: '/resource-collections/:id', method: 'put', describe: '更新个人资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.updateUserResourceCollection(requireUser(req, 'resource_collection.own.write'), req.params.id, req.body || {}, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id', method: 'delete', describe: '删除个人资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.trashUserResourceCollection(requireUser(req, 'resource_collection.own.write'), req.params.id, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id/restore', method: 'post', describe: '恢复个人资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.restoreUserResourceCollection(requireUser(req, 'resource_collection.own.write'), req.params.id, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id/permanent', method: 'delete', describe: '永久删除个人资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      const session = requireUser(req, 'resource_collection.own.write')
+      const password = typeof req.body?.password === 'string' ? req.body.password : ''
+      if (!password) throw createHttpError('永久删除前必须验证当前登录密码', 400, 'REAUTH_REQUIRED')
+      await service.reauthenticateUser(session, password, requestContext(req))
+      res.jsonSuc(service.permanentlyDeleteUserResourceCollection(session, req.params.id, requestContext(req)))
+    },
+  },
+  {
+    path: '/resource-collections/:id/items', method: 'get', describe: '分页读取资源集合项', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.listUserResourceCollectionItems(requireUser(req, 'resource_collection.own.read'), req.params.id, req.query || {})) },
+  },
+  {
+    path: '/resource-collections/:id/items', method: 'post', describe: '新增资源集合项', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.status(201).jsonSuc(service.createUserResourceCollectionItem(requireUser(req, 'resource_collection.own.write'), req.params.id, req.body || {}, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id/items/batch', method: 'post', describe: '批量操作资源集合项', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.batchUserResourceCollectionItems(requireUser(req, 'resource_collection.own.write'), req.params.id, req.body || {}, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id/items/reorder', method: 'post', describe: '调整资源集合项顺序', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.reorderUserResourceCollectionItems(requireUser(req, 'resource_collection.own.write'), req.params.id, req.body || {}, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id/items/:itemId', method: 'put', describe: '更新资源集合项', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.updateUserResourceCollectionItem(requireUser(req, 'resource_collection.own.write'), req.params.id, req.params.itemId, req.body || {}, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id/items/:itemId', method: 'delete', describe: '删除资源集合项', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.deleteUserResourceCollectionItem(requireUser(req, 'resource_collection.own.write'), req.params.id, req.params.itemId, req.body || {}, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/public/:id', method: 'get', describe: '读取公开资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.getPublicUserResourceCollection(req.params.id, req.query || {}, requestContext(req))) },
+  },
+  {
+    path: '/public/resource-collections/:id', method: 'get', describe: '读取公开资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.getPublicUserResourceCollection(req.params.id, req.query || {}, requestContext(req))) },
+  },
+  {
+    path: '/public/resource-collections/:id/items', method: 'get', describe: '分页读取公开资源集合项', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.getPublicUserResourceCollectionItems(req.params.id, req.query || {}, requestContext(req))) },
+  },
+  {
+    path: '/resource-collections/:id/references', method: 'get', describe: '查看资源集合引用', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.listUserResourceCollectionReferences(requireUser(req, 'resource_collection.own.read'), req.params.id, req.query || {})) },
+  },
+  {
+    path: '/resource-collections/:id/export', method: 'get', describe: '导出资源集合', tags: ['resource-collections'],
+    handler: async (req, res) => { noStore(res); res.jsonSuc(service.exportUserResourceCollection(requireUser(req, 'resource_collection.own.read'), req.params.id)) },
+  },
+  {
     path: '/auth/config',
     method: 'get',
     describe: '获取用户系统公开配置',
@@ -1497,6 +1576,36 @@ const userApiRoutes = [
     },
   },
   {
+    path: '/public/kml-shares/:publicId/files/:shareItemId/features/:featureId/resource-collection',
+    method: 'get',
+    describe: '读取公开分享点位的资源集合',
+    tags: ['shares', 'resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(await service.getPublicKmlShareFeatureResourceCollection(
+        req.params.publicId,
+        req.params.shareItemId,
+        req.params.featureId,
+        await publicShareContext(req, res)
+      ))
+    },
+  },
+  {
+    path: '/public/kml-shares/:publicId/files/:shareItemId/features/:featureId/resource-collection/items',
+    method: 'get',
+    describe: '分页读取公开分享点位的资源集合项',
+    tags: ['shares', 'resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      const context = await publicShareContext(req, res)
+      res.jsonSuc(await service.getPublicKmlShareFeatureResourceCollectionItems(
+        req.params.publicId, req.params.shareItemId, req.params.featureId,
+        req.query || {},
+        context,
+      ))
+    },
+  },
+  {
     path: '/public/kml-shares/:publicId/comments/policy',
     method: 'get',
     describe: '获取公开分享留言策略摘要',
@@ -1608,6 +1717,133 @@ const userApiRoutes = [
     handler: async (req, res) => {
       noStore(res)
       res.jsonSuc(service.getUserSessionView(requireAdmin(req, false)))
+    },
+  },
+  {
+    path: '/admin/resource-collections',
+    method: 'get',
+    describe: '跨用户资源集合列表',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.listAdminResourceCollections(
+        requireAdmin(req, 'resource_collection.any.read'),
+        req.query || {},
+      ))
+    },
+  },
+  {
+    path: '/admin/resource-collections/:id',
+    method: 'get',
+    describe: '跨用户资源集合详情',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.getAdminResourceCollection(
+        requireAdmin(req, 'resource_collection.any.read'),
+        req.params.id,
+      ))
+    },
+  },
+  {
+    path: '/admin/resource-collections/:id/items',
+    method: 'get',
+    describe: '跨用户分页读取资源集合项',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.listAdminResourceCollectionItems(
+        requireAdmin(req, 'resource_collection.any.read'),
+        req.params.id,
+        req.query || {},
+      ))
+    },
+  },
+  {
+    path: '/admin/resource-collections/:id/references',
+    method: 'get',
+    describe: '查看资源集合引用（管理员）',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.listAdminResourceCollectionReferences(
+        requireAdmin(req, 'resource_collection.any.read'),
+        req.params.id,
+        req.query || {},
+      ))
+    },
+  },
+  {
+    path: '/admin/resource-collections/:id/references/:bindingId/repair',
+    method: 'post',
+    describe: '修复资源集合引用索引（管理员）',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.repairAdminResourceCollectionReference(
+        requireAdmin(req, 'resource_collection.any.manage'),
+        req.params.id,
+        req.params.bindingId,
+        requestContext(req),
+      ))
+    },
+  },
+  {
+    path: '/admin/resource-collections/:id/references/:bindingId',
+    method: 'delete',
+    describe: '解除资源集合引用（管理员）',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.detachAdminResourceCollectionReference(
+        requireAdmin(req, 'resource_collection.any.manage'),
+        req.params.id,
+        req.params.bindingId,
+        req.body || {},
+        requestContext(req),
+      ))
+    },
+  },
+  {
+    path: '/admin/resource-collections/:id',
+    method: 'delete',
+    describe: '管理员将资源集合移入回收站',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.trashAdminResourceCollection(
+        requireAdmin(req, 'resource_collection.any.manage'),
+        req.params.id,
+        requestContext(req),
+      ))
+    },
+  },
+  {
+    path: '/admin/resource-collections/:id/restore',
+    method: 'post',
+    describe: '管理员恢复资源集合',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      res.jsonSuc(service.restoreAdminResourceCollection(
+        requireAdmin(req, 'resource_collection.any.manage'),
+        req.params.id,
+        requestContext(req),
+      ))
+    },
+  },
+  {
+    path: '/admin/resource-collections/:id/permanent',
+    method: 'delete',
+    describe: '管理员永久删除资源集合（需二次验证密码）',
+    tags: ['admin-resource-collections'],
+    handler: async (req, res) => {
+      noStore(res)
+      const session = requireAdmin(req, 'resource_collection.any.manage')
+      const password = typeof req.body?.password === 'string' ? req.body.password : ''
+      if (!password) throw createHttpError('永久删除前必须验证当前登录密码', 400, 'REAUTH_REQUIRED')
+      await service.reauthenticateUser(session, password, requestContext(req))
+      res.jsonSuc(service.permanentlyDeleteAdminResourceCollection(session, req.params.id, requestContext(req)))
     },
   },
   {

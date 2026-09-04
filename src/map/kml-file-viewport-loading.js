@@ -1,11 +1,13 @@
 import {
   expandKmlViewportForFiles,
+  computeKmlBounds,
   isKmlBoundsReady,
   kmlBoundsCenter,
   kmlBoundsIntersectsViewport,
   normalizeKmlBounds,
   wrappedLongitudeDistance,
 } from '../../shared/kml-spatial.js'
+import { normalizeLongitude, wgs84ToGcj02, wgs84ToGcj02Deep } from './coord-transform.js'
 
 export const KML_FILE_VIEWPORT_DEFAULTS = Object.freeze({
   concurrency: 3,
@@ -23,6 +25,143 @@ function fileId (file) {
 
 function isEnabled (file) {
   return Boolean(file && file.enabled !== false && file.status !== 'trashed')
+}
+
+const displayBoundsCache = new WeakMap()
+const DISPLAY_BOUNDS_FULL_LONGITUDE_THRESHOLD = 180 - 1e-7
+// The margin covers the maximum local GCJ-02 offset and extrema between the
+// finite summary samples. It is only used before details are loaded.
+const DISPLAY_BOUNDS_SAFETY_PADDING = 0.0125
+
+function correctionEnabled (file) {
+  // Keep this in lockstep with the renderer: every mode except the explicit
+  // `none` value uses the WGS84 -> GCJ-02 display transform.
+  return file?.coordCorrection !== 'none'
+}
+
+function boundsCacheSignature (value) {
+  if (!value || typeof value !== 'object') return ''
+  const bbox = Array.isArray(value.bbox) ? value.bbox.join(',') : ''
+  return [value.version, value.status, bbox, value.crossesAntimeridian, value.featureCount].join('|')
+}
+
+function featureCountForBounds (file, normalized, features) {
+  const value = normalized?.featureCount ?? file?.featureCount ?? features.length
+  return Number.isSafeInteger(Number(value)) && Number(value) >= 0
+    ? Number(value)
+    : features.length
+}
+
+function withFeatureCount (bounds, featureCount) {
+  if (!bounds) return null
+  return normalizeKmlBounds({ ...bounds, featureCount }, { featureCount }) || { ...bounds, featureCount }
+}
+
+function computeFeatureBounds (file, features, featureCount, transform = false) {
+  if (file?.contentLoaded === false || !features.length) return null
+  const sourceFeatures = transform
+    ? features.map(feature => ({ coordinates: wgs84ToGcj02Deep(feature?.coordinates) }))
+    : features
+  const computed = computeKmlBounds(sourceFeatures)
+  return computed?.status === 'ready' ? withFeatureCount(computed, featureCount) : null
+}
+
+function summarySampleCoordinates (summary) {
+  if (!summary?.bbox) return []
+  const [west, south, east, north] = summary.bbox
+  const width = summary.crossesAntimeridian ? east + 360 - west : east - west
+  if (!Number.isFinite(width) || width < 0 || width > 360 + 1e-7) return []
+  const longitudes = [west, west + width / 2, west + width].map(normalizeLongitude)
+  const latitudes = [south, (south + north) / 2, north]
+  return latitudes.flatMap(latitude => longitudes.map(longitude => [longitude, latitude]))
+}
+
+function computeDisplaySummaryBounds (summary, featureCount) {
+  const samples = summarySampleCoordinates(summary)
+  if (!samples.length) return null
+  const transformed = samples.map(wgs84ToGcj02)
+  const computed = computeKmlBounds([{ coordinates: transformed }])
+  if (computed?.status !== 'ready' || !computed.bbox) return null
+
+  // A summary wider than half the globe is intentionally conservative. The
+  // shortest-arc algorithm used by computeKmlBounds would otherwise select the
+  // complement of the original rectangle and could hide valid files.
+  const [west, south, east, north] = summary.bbox
+  const width = summary.crossesAntimeridian ? east + 360 - west : east - west
+  const bbox = width >= DISPLAY_BOUNDS_FULL_LONGITUDE_THRESHOLD
+    ? [-180, computed.bbox[1], 180, computed.bbox[3]]
+    : computed.bbox
+  const sampledBounds = withFeatureCount({
+    ...computed,
+    bbox,
+    crossesAntimeridian: bbox[0] > bbox[2],
+  }, featureCount)
+  if (!sampledBounds?.bbox) return sampledBounds
+
+  const [sampledWest, sampledSouth, sampledEast, sampledNorth] = sampledBounds.bbox
+  const sampledWidth = sampledBounds.crossesAntimeridian
+    ? sampledEast + 360 - sampledWest
+    : sampledEast - sampledWest
+  if (sampledWidth + DISPLAY_BOUNDS_SAFETY_PADDING * 2 >= 360 - 1e-7) {
+    return withFeatureCount({
+      ...sampledBounds,
+      bbox: [
+        -180,
+        Math.max(-90, sampledSouth - DISPLAY_BOUNDS_SAFETY_PADDING),
+        180,
+        Math.min(90, sampledNorth + DISPLAY_BOUNDS_SAFETY_PADDING),
+      ],
+      crossesAntimeridian: false,
+    }, featureCount)
+  }
+
+  const paddedWest = normalizeLongitude(sampledWest - DISPLAY_BOUNDS_SAFETY_PADDING)
+  const paddedEast = normalizeLongitude(
+    (sampledBounds.crossesAntimeridian ? sampledEast + 360 : sampledEast) + DISPLAY_BOUNDS_SAFETY_PADDING,
+  )
+  return withFeatureCount({
+    ...sampledBounds,
+    bbox: [
+      paddedWest,
+      Math.max(-90, sampledSouth - DISPLAY_BOUNDS_SAFETY_PADDING),
+      paddedEast,
+      Math.min(90, sampledNorth + DISPLAY_BOUNDS_SAFETY_PADDING),
+    ],
+    crossesAntimeridian: paddedWest > paddedEast,
+  }, featureCount)
+}
+
+/**
+ * Return a file's bounds in the coordinates used by the map renderer.
+ * API/share summaries are WGS84, while the default map display is GCJ-02.
+ * The original `file.bounds` object is never mutated.
+ */
+export function getKmlFileViewportBounds (file) {
+  if (!file || typeof file !== 'object') return null
+  const features = Array.isArray(file.features) ? file.features : []
+  const rawBounds = file.bounds
+  const normalized = normalizeKmlBounds(rawBounds, { featureCount: file.featureCount ?? features.length })
+  const correction = correctionEnabled(file)
+  const featureCount = featureCountForBounds(file, normalized, features)
+  const signature = `${correction ? 'corrected' : 'raw'}|${file.contentLoaded !== false ? 'loaded' : 'summary'}|${boundsCacheSignature(rawBounds)}|${features.length}|${featureCount}`
+  const cached = displayBoundsCache.get(file)
+  if (cached && cached.signature === signature && cached.features === features) return cached.value
+
+  let value = null
+  if (!correction) {
+    value = computeFeatureBounds(file, features, featureCount) || normalized
+    if (value) value = withFeatureCount(value, featureCount)
+  } else {
+    value = computeFeatureBounds(file, features, featureCount, true)
+    if (!value && normalized?.status === 'ready') value = computeDisplaySummaryBounds(normalized, featureCount)
+    // A failed coordinate conversion must take the compatibility path. Using
+    // the raw WGS84 rectangle here would reintroduce the same coordinate-space
+    // mismatch this helper is intended to prevent.
+    if (!value && normalized?.status !== 'ready') value = normalized
+  }
+
+  displayBoundsCache.set(file, { signature, features, value })
+  return value
 }
 
 function viewportBounds (viewport) {
@@ -59,7 +198,7 @@ function viewportCenter (viewport) {
 }
 
 function candidateDistance (file, center) {
-  const bounds = normalizeKmlBounds(file?.bounds, { featureCount: file?.featureCount })
+  const bounds = getKmlFileViewportBounds(file)
   const point = kmlBoundsCenter(bounds)
   if (!point || !center) return Number.POSITIVE_INFINITY
   const latDistance = Math.abs(point.lat - center.lat)
@@ -84,7 +223,7 @@ export function rankKmlFilesForViewport (files, viewport, options = {}) {
     .map(file => {
       const id = fileId(file)
       if (!id || !isEnabled(file) || file.contentLoaded !== false) return null
-      const bounds = normalizeKmlBounds(file.bounds, { featureCount: file.featureCount })
+      const bounds = getKmlFileViewportBounds(file)
       const hasBounds = isKmlBoundsReady(bounds)
       const inside = hasBounds && Boolean(boundsViewport && kmlBoundsIntersectsViewport(bounds, boundsViewport))
       const inBuffer = hasBounds && Boolean(expanded && kmlBoundsIntersectsViewport(bounds, expanded))
@@ -121,7 +260,7 @@ export function rankKmlFilesForViewport (files, viewport, options = {}) {
 
 export function shouldRenderKmlFileInViewport (file, viewport, options = {}) {
   if (!isEnabled(file)) return false
-  const bounds = normalizeKmlBounds(file?.bounds, { featureCount: file?.featureCount })
+  const bounds = getKmlFileViewportBounds(file)
   if (!isKmlBoundsReady(bounds) || !viewport) return true
   const zoom = Number(viewport.zoom)
   if (Number.isFinite(zoom) && zoom <= Number(options.loadAllZoom ?? KML_FILE_VIEWPORT_DEFAULTS.loadAllZoom)) return true

@@ -1,5 +1,6 @@
 import {
   buildFeatureContentView,
+  buildResourceCollectionRefPlaceholder,
   formatContentSummary,
   getFeatureDescriptionText,
 } from '../../shared/kml-content.js'
@@ -11,12 +12,14 @@ import {
 } from './kml-media-gallery.js'
 import { getKmlFeatureDisplayName } from './kml-feature-name.js'
 import { openMediaPreview } from '../ui/media-preview.js'
+import { showAlert } from '../ui/dialog.js'
 import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
 import {
   getKmlResourceCollectionItemCount,
   isKmlResourceCollectionFeature,
   openKmlResourceCollectionPanel,
 } from './kml-resource-collection.js'
+import { tryNormalizeKmlResourceCollection } from '../../shared/kml-resource-collection.js'
 import {
   bindFavoriteActionButtons,
   renderFavoriteActionButton,
@@ -32,7 +35,10 @@ const BUILD_IFRAME_ALLOWLIST = String(typeof import.meta.env === 'object' ? (imp
   .filter(Boolean)
 
 let activeContentRequest = null
+let activeContentRequestSequence = 0
 const popupMediaBindings = new WeakMap()
+const RESOURCE_COLLECTION_FETCH_MAX_BYTES = 2 * 1024 * 1024
+const RESOURCE_COLLECTION_FETCH_TIMEOUT_MS = 15000
 
 function escapeHtml (value) {
   return String(value ?? '')
@@ -128,12 +134,15 @@ function renderPopupMediaItem (item) {
 }
 
 export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
-  const isCollection = isKmlResourceCollectionFeature(feature)
+  const isCollection = isKmlResourceCollectionFeature(feature) || Boolean(feature?.resourceCollectionRef)
+  const collectionCount = isKmlResourceCollectionFeature(feature)
+    ? getKmlResourceCollectionItemCount(feature)
+    : '?'
   const preview = isCollection
     ? { items: [], total: 0, remaining: 0, overflowItem: null, contentSummary: {} }
     : getKmlFeaturePopupMedia(feature, { contentOptions: getKmlContentOptions() })
   const contentSummary = isCollection
-    ? `资源集合 · ${getKmlResourceCollectionItemCount(feature)} 项`
+    ? `资源集合 · ${collectionCount} 项`
     : formatContentSummary(preview.contentSummary)
   const description = getFeatureDescriptionText(feature)
   const favoriteAction = renderFavoriteActionButton(kmlFile, feature)
@@ -155,7 +164,7 @@ export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
   const previewHtml = isCollection
     ? `
       <section class="kml-popup-media kml-popup-resource-collection" aria-label="资源集合">
-        <div class="kml-popup-media-heading"><span>资源集合</span><small>${getKmlResourceCollectionItemCount(feature)} 项</small></div>
+        <div class="kml-popup-media-heading"><span>资源集合</span><small>${collectionCount} 项</small></div>
         <button type="button" class="kml-popup-collection-launch" data-kml-resource-collection aria-label="浏览资源集合">浏览资源</button>
       </section>
     `
@@ -211,6 +220,7 @@ export function hasKmlFeaturePreviewMedia (feature) {
   if (isKmlResourceCollectionFeature(feature)) {
     return getKmlResourceCollectionItemCount(feature) > 0
   }
+  if (feature?.type === 'Point' && feature?.resourceCollectionRef) return true
   return getKmlFeaturePopupMedia(feature, {
     contentOptions: getKmlContentOptions(),
   }).total > 0
@@ -252,8 +262,12 @@ export function openKmlFeatureMediaPreview (kmlFile, feature, options = {}) {
     return openKmlResourceCollectionPanel(kmlFile, feature, {
       trigger,
       contentOptions: getKmlContentOptions(),
+      onClose: options.onClose,
       onActiveItemChange,
     })
+  }
+  if (feature?.type === 'Point' && feature?.resourceCollectionRef) {
+    return openKmlFeatureContentPanel(kmlFile, feature)
   }
   const items = buildPreviewItems(kmlFile, feature, view)
   if (!items.length) return false
@@ -348,6 +362,7 @@ function ensurePanel () {
 }
 
 function closePanel () {
+  activeContentRequestSequence += 1
   activeContentRequest?.abort()
   activeContentRequest = null
   const panel = document.getElementById('kml-feature-content-panel')
@@ -521,9 +536,436 @@ function renderPanelContent (panel, kmlFile, feature, view, errorMessage = '') {
   bindMediaPreviewActions(panel, kmlFile, feature, view)
 }
 
+function unwrapCollectionPayload (payload) {
+  if (payload && typeof payload === 'object' && payload.result !== undefined) return unwrapCollectionPayload(payload.result)
+  if (payload && typeof payload === 'object' && payload.data !== undefined) return unwrapCollectionPayload(payload.data)
+  return payload && typeof payload === 'object' ? payload : {}
+}
+
+function collectionErrorState (error) {
+  const status = Number(error?.status || 0)
+  if (error?.name === 'AbortError') return 'cancelled'
+  if (status === 401) return 'unauthorized'
+  if (status === 403) return 'forbidden'
+  if (status === 404) return 'not_found'
+  if (status === 408 || error?.code === 'TIMEOUT') return 'timeout'
+  if (status === 429) return 'rate_limited'
+  if (status >= 500) return 'server_error'
+  if (error?.code === 'TOO_LARGE') return 'too_large'
+  if (error?.code === 'BLOCKED_BY_POLICY') return 'blocked_by_policy'
+  if (error?.code === 'INVALID_SCHEMA') return 'invalid_schema'
+  if (error?.code === 'REVISION_CHANGED') return 'revision_changed'
+  if (error?.name === 'TypeError' || error?.code === 'NETWORK_ERROR') return 'network_error'
+  return 'unauthorized'
+}
+
+function collectionErrorMessage (error) {
+  const state = collectionErrorState(error)
+  return {
+    unauthorized: '资源集合未授权跨域读取或当前会话无权访问。',
+    forbidden: '资源集合拒绝了当前访问。',
+    not_found: '资源集合不存在或已被移除。',
+    timeout: '资源集合读取超时，请稍后重试。',
+    rate_limited: '资源集合请求过于频繁，请稍后重试。',
+    server_error: '资源集合服务暂时不可用，请稍后重试。',
+    too_large: '资源集合响应超过安全大小限制。',
+    blocked_by_policy: '资源集合地址未通过安全策略。',
+    invalid_schema: '资源集合返回的数据格式不受支持。',
+    revision_changed: '资源集合在读取期间发生变化，请重试。',
+    network_error: '资源集合网络请求失败，可能未授权跨域读取。',
+  }[state] || error?.message || '资源集合加载失败，请稍后重试。'
+}
+
+export function normalizeCollectionFetchError (error, requestOptions = {}) {
+  if (!error || typeof error !== 'object') return error
+  // Browsers surface `redirect: 'error'` as a generic TypeError. Distinguish
+  // messages that explicitly identify a redirect from ordinary CORS/network
+  // failures so the UI can report the policy decision accurately.
+  if (requestOptions.redirect === 'error' && error.name === 'TypeError') {
+    const detail = `${error.message || ''} ${error.type || ''} ${error.code || ''}`.toLowerCase()
+    if (/redirect|opaqueredirect|disallowed\s+redirect|redirected/.test(detail)) {
+      error.code = 'BLOCKED_BY_POLICY'
+    } else if (!error.code) {
+      error.code = 'NETWORK_ERROR'
+    }
+  }
+  return error
+}
+
+async function readJsonResponseBounded (response, signal) {
+  const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase()
+  if (contentType && !contentType.includes('application/json') && !contentType.includes('+json')) {
+    const error = new Error('资源集合响应不是 JSON')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  const length = Number(response.headers?.get?.('content-length') || 0)
+  if (length > RESOURCE_COLLECTION_FETCH_MAX_BYTES) {
+    const error = new Error('资源集合响应过大')
+    error.code = 'TOO_LARGE'
+    throw error
+  }
+  if (typeof response.body?.getReader === 'function') {
+    const reader = response.body.getReader()
+    const chunks = []
+    let size = 0
+    try {
+      while (true) {
+        const next = await reader.read()
+        if (next.done) break
+        size += next.value?.byteLength || next.value?.length || 0
+        if (size > RESOURCE_COLLECTION_FETCH_MAX_BYTES) {
+          await reader.cancel().catch(() => {})
+          const error = new Error('资源集合响应过大')
+          error.code = 'TOO_LARGE'
+          throw error
+        }
+        chunks.push(next.value)
+      }
+    } finally {
+      reader.releaseLock?.()
+    }
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    chunks.forEach(chunk => { bytes.set(chunk, offset); offset += chunk.byteLength || chunk.length || 0 })
+    const text = new TextDecoder().decode(bytes)
+    try { return JSON.parse(text) } catch {
+      const error = new Error('资源集合响应不是有效 JSON')
+      error.code = 'INVALID_SCHEMA'
+      throw error
+    }
+  }
+  const text = await response.text()
+  if (new TextEncoder().encode(text).byteLength > RESOURCE_COLLECTION_FETCH_MAX_BYTES) {
+    const error = new Error('资源集合响应过大')
+    error.code = 'TOO_LARGE'
+    throw error
+  }
+  try { return JSON.parse(text) } catch {
+    const error = new Error('资源集合响应不是有效 JSON')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+}
+
+function buildExternalCollectionUrl (dataUrl) {
+  try {
+    const url = new URL(dataUrl)
+    if (!url.searchParams.has('page')) url.searchParams.set('page', '1')
+    if (!url.searchParams.has('limit')) url.searchParams.set('limit', '40')
+    return url.toString()
+  } catch {
+    const error = new Error('外部资源集合地址不正确')
+    error.code = 'BLOCKED_BY_POLICY'
+    throw error
+  }
+}
+
+function buildInternalCollectionPageUrl (path, page, limit = 40) {
+  const url = new URL(path, window.location.origin)
+  url.searchParams.set('page', String(page))
+  url.searchParams.set('limit', String(limit))
+  return `${url.pathname}${url.search}`
+}
+
+export function validateCollectionPagePayload (data, expectedPage, fallbackLimit = 40, options = {}) {
+  const pagination = data?.pagination && typeof data.pagination === 'object' && !Array.isArray(data.pagination)
+    ? data.pagination
+    : null
+  const rawPage = pagination?.page ?? data?.page ?? expectedPage
+  const page = Number(rawPage)
+  if (!Number.isSafeInteger(page) || page < 1 || page !== Number(expectedPage)) {
+    const error = new Error('资源集合当前页码不一致')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  const rawLimit = pagination?.limit ?? data?.limit ?? fallbackLimit
+  const limit = Number(rawLimit)
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    const error = new Error('资源集合分页信息不合法')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  const rawTotal = pagination?.total ?? data?.total
+  const total = rawTotal === null || rawTotal === undefined ? null : Number(rawTotal)
+  if (total !== null && (!Number.isSafeInteger(total) || total < 0)) {
+    const error = new Error('资源集合总数不合法')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  const rawPageCount = pagination?.pageCount ?? data?.pageCount
+  const pageCount = rawPageCount === null || rawPageCount === undefined
+    ? (total === null ? null : Math.max(1, Math.ceil(total / limit)))
+    : Number(rawPageCount)
+  if (pageCount !== null && (!Number.isSafeInteger(pageCount) || pageCount < 1)) {
+    const error = new Error('资源集合页数不合法')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  if (total === null && pageCount !== null) {
+    const error = new Error('资源集合总数未知时不能提供固定页数')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  if (total !== null && pageCount !== Math.max(1, Math.ceil(total / limit))) {
+    const error = new Error('资源集合总数与页数不一致')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  if (pageCount !== null && page > pageCount) {
+    const error = new Error('资源集合当前页超出总页数')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  const rawHasNext = pagination?.hasNext ?? data?.hasNext
+  const hasNext = rawHasNext === undefined
+    ? (pageCount === null ? (Array.isArray(data?.items) && data.items.length >= limit) : page < pageCount)
+    : rawHasNext === true
+  if (rawHasNext !== undefined && typeof rawHasNext !== 'boolean') {
+    const error = new Error('资源集合下一页标记不合法')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  if (pageCount !== null && rawHasNext !== undefined && rawHasNext !== (page < pageCount)) {
+    const error = new Error('资源集合下一页标记与页数不一致')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  if (options.requireItems !== false && !Array.isArray(data?.items)) {
+    const error = new Error('资源集合缺少 items 数组')
+    error.code = 'INVALID_SCHEMA'
+    throw error
+  }
+  if (Array.isArray(data?.items) && data.items.length > limit) {
+    const error = new Error('资源集合当前页超过请求上限')
+    error.code = 'TOO_LARGE'
+    throw error
+  }
+  return {
+    pagination: { page, limit, total, pageCount, hasNext },
+    page,
+    limit,
+    total,
+    pageCount,
+    hasNext,
+  }
+}
+
+async function loadResourceCollectionReference (kmlFile, feature, signal, page = 1) {
+  const ref = feature?.resourceCollectionRef
+  const normalized = buildResourceCollectionRefPlaceholder(ref).ref
+  const isShare = Boolean(kmlFile?.isShare && kmlFile?.sharePublicId && kmlFile?.shareItemId)
+  const isPublicKml = Boolean(kmlFile?.isPublic && !isShare)
+  let endpoint
+  let requestOptions
+  if (normalized.sourceType === 'personal') {
+    endpoint = isShare
+      ? `/api/v1/public/kml-shares/${encodeURIComponent(kmlFile.sharePublicId)}/files/${encodeURIComponent(kmlFile.shareItemId)}/features/${encodeURIComponent(feature.id)}/resource-collection`
+      : isPublicKml
+        ? `/api/v1/public/resource-collections/${encodeURIComponent(normalized.collectionId)}`
+        : `/api/v1/resource-collections/${encodeURIComponent(normalized.collectionId)}`
+    requestOptions = { credentials: isPublicKml ? 'omit' : 'same-origin', redirect: 'error' }
+  } else {
+    endpoint = buildExternalCollectionUrl(normalized.dataUrl)
+    const externalUrl = new URL(endpoint)
+    externalUrl.searchParams.set('page', String(page))
+    externalUrl.searchParams.set('limit', '40')
+    endpoint = externalUrl.toString()
+    requestOptions = {
+      mode: 'cors',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      redirect: 'error',
+      headers: { Accept: 'application/vnd.map-service.resource-collection+json;version=1, application/json' },
+    }
+  }
+  const requestController = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => requestController.abort()
+  if (signal?.aborted) requestController.abort()
+  else signal?.addEventListener?.('abort', abortFromCaller, { once: true })
+  const timeout = setTimeout(() => { timedOut = true; requestController.abort() }, RESOURCE_COLLECTION_FETCH_TIMEOUT_MS)
+  const fetchPage = async (pageEndpoint) => {
+    let response
+    try {
+      response = await window.fetch(pageEndpoint, { ...requestOptions, signal: requestController.signal })
+    } catch (error) {
+      throw normalizeCollectionFetchError(error, requestOptions)
+    }
+    let payload = null
+    try { payload = await readJsonResponseBounded(response, signal) } catch (error) {
+      if (response.ok) throw error
+    }
+    if (!response.ok) {
+      const error = new Error(payload?.error?.message || payload?.message || `资源集合读取失败（HTTP ${response.status}）`)
+      error.status = response.status
+      error.code = `HTTP_${response.status}`
+      throw error
+    }
+    return unwrapCollectionPayload(payload)
+  }
+  try {
+    let data
+    let metadata = null
+    if (normalized.sourceType === 'personal') {
+      metadata = await fetchPage(endpoint)
+      if (metadata.accessState) return { accessState: String(metadata.accessState), ref: normalized }
+      if (metadata.version !== undefined && Number(metadata.version) !== 1) {
+        const error = new Error('资源集合版本不受支持')
+        error.code = 'INVALID_SCHEMA'
+        throw error
+      }
+      const itemsEndpoint = isShare
+        ? `${endpoint}/items`
+        : isPublicKml
+          ? `/api/v1/public/resource-collections/${encodeURIComponent(normalized.collectionId)}/items`
+          : `/api/v1/resource-collections/${encodeURIComponent(normalized.collectionId)}/items`
+      data = await fetchPage(buildInternalCollectionPageUrl(itemsEndpoint, page, 40))
+      if (data.accessState) return { accessState: String(data.accessState), ref: normalized }
+      if (data.version !== undefined && Number(data.version) !== 1) {
+        const error = new Error('资源集合版本不受支持')
+        error.code = 'INVALID_SCHEMA'
+        throw error
+      }
+    } else {
+      data = await fetchPage(endpoint)
+      if (data.accessState) return { accessState: String(data.accessState), ref: normalized }
+      if (data.version !== undefined && Number(data.version) !== 1) {
+        const error = new Error('资源集合版本不受支持')
+        error.code = 'INVALID_SCHEMA'
+        throw error
+      }
+    }
+    const pageInfo = validateCollectionPagePayload(data, page, 40)
+    const collection = data.collection && typeof data.collection === 'object'
+      ? data.collection
+      : metadata?.collection && typeof metadata.collection === 'object'
+        ? metadata.collection
+        : data
+    const normalizedCollection = tryNormalizeKmlResourceCollection({
+      version: 1,
+      viewMode: data.viewMode || collection.viewMode || metadata?.viewMode || normalized.viewMode || 'grid',
+      items: data.items,
+    })
+    if (!normalizedCollection.value) {
+      const error = normalizedCollection.error || new Error('资源集合项格式不正确')
+      error.code = 'INVALID_SCHEMA'
+      throw error
+    }
+    return {
+      ref: normalized,
+      collection: normalizedCollection.value,
+      metadata: collection,
+      pagination: pageInfo.pagination,
+      page: pageInfo.page,
+      pageCount: pageInfo.pageCount,
+      revision: data.itemsRevision ?? data.revision ?? metadata?.itemsRevision ?? metadata?.revision ?? null,
+    }
+  } catch (error) {
+    if (timedOut && error?.name === 'AbortError') {
+      const timeoutError = new Error('资源集合读取超时')
+      timeoutError.code = 'TIMEOUT'
+      throw timeoutError
+    }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener?.('abort', abortFromCaller)
+  }
+}
+
+function renderCollectionLoadState (kmlFile, feature, message, options = {}) {
+  const panel = ensurePanel()
+  panel.hidden = false
+  const featureName = getKmlFeatureDisplayName(feature)
+  panel.innerHTML = `
+    <header class="kml-content-header"><div><span class="kml-content-kicker">资源集合</span>${featureName ? `<h2>${escapeHtml(featureName)}</h2>` : ''}</div><div class="kml-content-header-actions"><button type="button" class="kml-content-close" data-kml-content-close aria-label="关闭">×</button></div></header>
+    <div class="kml-content-body"><div class="kml-content-error">${escapeHtml(message)}</div><div class="kml-content-actions"><button type="button" class="kml-popup-btn primary" data-kml-collection-retry>重试</button></div></div>
+  `
+  panel.querySelector('[data-kml-content-close]')?.addEventListener('click', closePanel)
+  panel.querySelector('[data-kml-collection-retry]')?.addEventListener('click', () => openKmlFeatureContentPanel(kmlFile, feature))
+  return options.state || ''
+}
+
+function bindRemoteCollectionPager (kmlFile, feature, loaded) {
+  const panel = document.getElementById('kml-resource-collection-panel')
+  if (!panel || !loaded) return
+  const localPager = panel.querySelector('footer:not(.kml-resource-collection-remote-pager)')
+  if (localPager) localPager.hidden = true
+  const page = Number(loaded.page || 1)
+  const pageCount = loaded.pageCount == null ? null : Number(loaded.pageCount)
+  const pagination = loaded.pagination || {}
+  const total = pagination.total
+  const totalLabel = Number.isSafeInteger(Number(total)) ? `${total} 项` : '总数未知'
+  const hasNext = pagination.hasNext === true || (pageCount !== null && page < pageCount)
+  const footer = document.createElement('footer')
+  footer.className = 'kml-resource-collection-remote-pager'
+  footer.innerHTML = `<button type="button" data-remote-page="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${page} 页${pageCount !== null ? ` / ${pageCount} 页` : ''} · ${totalLabel}</span><button type="button" data-remote-page="next" ${hasNext ? '' : 'disabled'}>下一页</button>`
+  panel.querySelectorAll('.kml-resource-collection-remote-pager').forEach(node => node.remove())
+  panel.appendChild(footer)
+  footer.addEventListener('click', async event => {
+    const direction = event.target?.dataset?.remotePage
+    if (!direction) return
+    const nextPage = direction === 'next' ? page + 1 : page - 1
+    if (nextPage < 1 || (pageCount !== null && nextPage > pageCount) || (direction === 'next' && !hasNext)) return
+    activeContentRequest?.abort()
+    const controller = new AbortController()
+    activeContentRequest = controller
+    const sequence = ++activeContentRequestSequence
+    try {
+      const next = await loadResourceCollectionReference(kmlFile, feature, controller.signal, nextPage)
+      if (sequence !== activeContentRequestSequence || controller.signal.aborted) return
+      openKmlFeatureMediaPreview(kmlFile, { ...feature, resourceCollection: next.collection, resourceCollectionRef: null }, {
+        keepInitialFeaturePopup: true,
+        onClose: () => {
+          activeContentRequestSequence += 1
+          activeContentRequest?.abort()
+          activeContentRequest = null
+        },
+      })
+      bindRemoteCollectionPager(kmlFile, feature, next)
+    } catch (error) {
+      if (error?.name !== 'AbortError' && sequence === activeContentRequestSequence) renderCollectionLoadState(kmlFile, feature, collectionErrorMessage(error), { state: collectionErrorState(error) })
+    } finally { if (activeContentRequest === controller) activeContentRequest = null }
+  })
+}
+
 export async function openKmlFeatureContentPanel (kmlFile, feature) {
   if (isKmlResourceCollectionFeature(feature)) {
     openKmlFeatureMediaPreview(kmlFile, feature, { keepInitialFeaturePopup: true })
+    return
+  }
+  if (feature?.type === 'Point' && feature?.resourceCollectionRef) {
+    const refResult = buildResourceCollectionRefPlaceholder(feature.resourceCollectionRef)
+    if (refResult.ok) {
+      activeContentRequest?.abort()
+      const controller = new AbortController()
+      activeContentRequest = controller
+      const requestSequence = ++activeContentRequestSequence
+      try {
+        const loaded = await loadResourceCollectionReference(kmlFile, feature, controller.signal)
+        if (requestSequence !== activeContentRequestSequence || controller.signal.aborted) return
+        if (loaded.accessState) {
+          renderCollectionLoadState(kmlFile, feature, loaded.accessState === 'private' ? '该资源集合未公开，当前分享无法读取。' : '该资源集合暂不可用。')
+          return
+        }
+        openKmlFeatureMediaPreview(kmlFile, { ...feature, resourceCollection: loaded.collection, resourceCollectionRef: null }, {
+          keepInitialFeaturePopup: true,
+          onClose: () => {
+            activeContentRequestSequence += 1
+            activeContentRequest?.abort()
+            activeContentRequest = null
+          },
+        })
+        bindRemoteCollectionPager(kmlFile, feature, loaded)
+      } catch (error) {
+        if (error?.name !== 'AbortError' && requestSequence === activeContentRequestSequence) renderCollectionLoadState(kmlFile, feature, collectionErrorMessage(error), { state: collectionErrorState(error) })
+      } finally {
+        if (activeContentRequest === controller) activeContentRequest = null
+      }
+      return
+    }
+    renderCollectionLoadState(kmlFile, feature, refResult.error?.message || '资源集合引用格式不正确')
     return
   }
   const panel = ensurePanel()

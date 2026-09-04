@@ -3,7 +3,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import rootPath from '../rootPath.js'
 
-export const USER_DATABASE_VERSION = 12
+export const USER_DATABASE_VERSION = 13
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -257,6 +257,55 @@ CREATE INDEX IF NOT EXISTS idx_share_access_token
   ON share_access_sessions(share_id, token_hash);
 CREATE INDEX IF NOT EXISTS idx_share_access_expires
   ON share_access_sessions(share_id, expires_at);
+`
+
+const SCHEMA_V13 = `
+CREATE TABLE IF NOT EXISTS resource_collections (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'trashed')),
+  view_mode TEXT NOT NULL DEFAULT 'grid' CHECK (view_mode IN ('grid', 'list')),
+  revision INTEGER NOT NULL DEFAULT 1,
+  items_revision INTEGER NOT NULL DEFAULT 1,
+  item_count INTEGER NOT NULL DEFAULT 0,
+  byte_size INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT,
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS resource_collection_items (
+  id TEXT PRIMARY KEY,
+  collection_id TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'auto' CHECK (type IN ('auto', 'image', 'video', 'audio', 'iframe')),
+  cover_url TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (collection_id) REFERENCES resource_collections(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_resource_collections_owner ON resource_collections(owner_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_resource_collection_items_order ON resource_collection_items(collection_id, position, id);
+CREATE TABLE IF NOT EXISTS resource_collection_bindings (
+  id TEXT PRIMARY KEY,
+  collection_id TEXT NOT NULL,
+  kml_id TEXT NOT NULL,
+  feature_id TEXT NOT NULL,
+  source_scope TEXT NOT NULL DEFAULT 'owner_kml' CHECK (source_scope IN ('owner_kml', 'published_share')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'missing', 'trashed', 'stale')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(collection_id, kml_id, feature_id, source_scope),
+  FOREIGN KEY (collection_id) REFERENCES resource_collections(id) ON DELETE CASCADE,
+  FOREIGN KEY (kml_id) REFERENCES kml_documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_resource_collection_bindings_collection ON resource_collection_bindings(collection_id, status, source_scope);
+CREATE INDEX IF NOT EXISTS idx_resource_collection_bindings_kml ON resource_collection_bindings(kml_id, feature_id, status);
 `
 
 export class UserDatabase {
@@ -691,6 +740,18 @@ export class UserDatabase {
         ensureKmlBoundsColumn()
       })
     }
+
+    if (current < 13) {
+      this.transaction(() => {
+        this.database.exec(SCHEMA_V13)
+        this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(13, new Date().toISOString())
+      })
+    }
+
+    // Keep the v13 resource-collection schema idempotent for databases that
+    // recorded the migration before a process restart completed all DDL.
+    this.database.exec(SCHEMA_V13)
 
     const finalVersion = Number(this.database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get()?.version || 0)
     if (finalVersion !== USER_DATABASE_VERSION) {

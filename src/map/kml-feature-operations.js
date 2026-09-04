@@ -89,6 +89,9 @@ export function transferKmlFeature (files, options = {}) {
   if (patch && Object.hasOwn(patch, 'resourceCollection') && patch.resourceCollection == null) {
     delete editedFeature.resourceCollection
   }
+  if (patch && Object.hasOwn(patch, 'resourceCollectionRef') && patch.resourceCollectionRef == null) {
+    delete editedFeature.resourceCollectionRef
+  }
 
   if (!isSameFile && mode === 'move' && findFeatureIndex(nextTarget, featureId) >= 0) {
     throw new Error('目标 KML 已存在相同 ID 的要素，不能直接移动')

@@ -1186,6 +1186,68 @@ button:disabled {
   gap: 9px;
 }
 
+.account-collection-batch {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #dce8e6;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.account-collection-batch textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid #bfced0;
+  border-radius: 7px;
+  padding: 8px 9px;
+  color: #102528;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+}
+
+.account-collection-batch textarea:focus-visible {
+  outline: none;
+  border-color: #0f766e;
+  box-shadow: 0 0 0 3px #0f766e24;
+}
+
+.account-collection-item {
+  padding: 15px;
+}
+
+.account-collection-item .account-card-heading {
+  margin-bottom: 8px;
+}
+
+.account-collection-item .account-card-heading h4 {
+  margin: 2px 0 0;
+  color: #18383a;
+  font-size: 14px;
+}
+
+.account-collection-item-url,
+.account-collection-item-cover {
+  overflow-wrap: anywhere;
+  color: #607476;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-collection-item-url {
+  margin: 0 0 4px;
+}
+
+.account-collection-item-cover {
+  display: block;
+  color: #8b989a;
+  font-size: 10px;
+}
+
 .account-favorite-card {
   padding: 17px;
 }

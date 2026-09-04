@@ -13,6 +13,9 @@ const USER_PERMISSIONS = [
   'kml.own.write',
   'favorite.own.manage',
   'share.own.manage',
+  'resource_collection.own.read',
+  'resource_collection.own.write',
+  'resource_collection.own.manage',
 ]
 
 test('KML point clustering configuration normalizes and rejects unsafe ranges', () => {
@@ -1402,6 +1405,333 @@ test('personal KML resource collections preserve safe query parameters and rejec
         }],
       }),
       error => error.code === 'VALIDATION_FAILED' && /敏感查询参数/.test(error.message)
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('独立资源集合引用保护旧客户端并保留/解除绑定语义', () => {
+  const harness = createHarness()
+  try {
+    const collection = harness.service.createResourceCollection(harness.one, {
+      name: '独立集合',
+      items: [{ title: '一', url: 'https://cdn.example.com/1.jpg', type: 'image' }],
+    })
+    const ref = { version: 1, sourceType: 'personal', resolution: 'live', collectionId: collection.id }
+    const document = harness.service.createKml(harness.one, {
+      name: '引用文件',
+      features: [{ ...point('ref-point'), resourceCollectionRef: ref }],
+    })
+
+    assert.throws(
+      () => harness.service.updateKml(harness.one, document.id, {
+        revision: document.revision,
+        features: [{ ...point('ref-point'), name: '旧客户端编辑' }],
+      }),
+      error => error.statusCode === 409 && error.code === 'KML_RESOURCE_COLLECTION_REF_UNSUPPORTED',
+    )
+    const afterRejected = harness.service.getKml(harness.one, document.id)
+    assert.deepEqual(afterRejected.features[0].resourceCollectionRef, ref)
+
+    const capable = harness.service.updateKml(harness.one, document.id, {
+      revision: afterRejected.revision,
+      resourceCollectionRefVersion: 1,
+      features: [{ ...point('ref-point'), name: '新版编辑' }],
+    })
+    assert.deepEqual(capable.features[0].resourceCollectionRef, ref)
+
+    const unbound = harness.service.updateKml(harness.one, document.id, {
+      revision: capable.revision,
+      resourceCollectionRefVersion: 1,
+      features: [{ ...point('ref-point'), resourceCollectionRef: null }],
+    })
+    assert.equal(Object.hasOwn(unbound.features[0], 'resourceCollectionRef'), false)
+
+    assert.throws(
+      () => harness.service.updateKml(harness.one, document.id, {
+        revision: unbound.revision,
+        resourceCollectionRefVersion: 1,
+        features: [{ ...point('ref-point'), resourceCollectionRef: { ...ref, collectionId: 'rc-missing' } }],
+      }),
+      error => error.statusCode === 404 && error.code === 'RESOURCE_NOT_FOUND',
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('导入的未解析资源集合引用在普通编辑、重排时不会丢失', () => {
+  const harness = createHarness()
+  try {
+    const unresolvedRef = { version: 1, sourceType: 'personal', resolution: 'live', collectionId: 'rc-unresolved' }
+    const document = harness.service.createKml(harness.one, {
+      name: '导入引用',
+      sourceType: 'imported',
+      features: [
+        { ...point('unresolved-a'), resourceCollectionRef: unresolvedRef },
+        point('unresolved-b', 113.3, 23.2),
+      ],
+    })
+    const edited = harness.service.updateKml(harness.one, document.id, {
+      revision: document.revision,
+      resourceCollectionRefVersion: 1,
+      name: '导入引用已编辑',
+      features: [
+        { ...point('unresolved-a'), name: '改名' },
+        point('unresolved-b', 113.3, 23.2),
+      ],
+    })
+    assert.deepEqual(edited.features[0].resourceCollectionRef, unresolvedRef)
+    const reordered = harness.service.updateKml(harness.one, document.id, {
+      revision: edited.revision,
+      resourceCollectionRefVersion: 1,
+      features: [edited.features[1], edited.features[0]],
+    })
+    assert.deepEqual(reordered.features.find(feature => feature.id === 'unresolved-a').resourceCollectionRef, unresolvedRef)
+  } finally {
+    harness.close()
+  }
+})
+
+test('公开资源集合只返回元数据，项接口分页并执行读取限流', () => {
+  const harness = createHarness()
+  try {
+    harness.settings.resourceCollection = { publicCollectionReadRateLimit: 1 }
+    const collection = harness.service.createResourceCollection(harness.one, {
+      name: '公开集合',
+      visibility: 'public',
+      items: [
+        { title: '一', url: 'https://cdn.example.com/1.jpg', type: 'image' },
+        { title: '二', url: 'https://cdn.example.com/2.jpg', type: 'image' },
+        { title: '三', url: 'https://cdn.example.com/3.jpg', type: 'image' },
+      ],
+    })
+    const metadata = harness.service.getPublicResourceCollection(collection.id, {}, { ip: 'public-test' })
+    assert.equal(Object.hasOwn(metadata, 'items'), false)
+    assert.equal(metadata.collectionRevision, 1)
+    const page = harness.service.getPublicResourceCollectionItems(collection.id, { page: 2, limit: 2 }, { ip: 'items-test' })
+    assert.deepEqual(page.items.map(item => item.title), ['三'])
+    assert.equal(page.pagination.total, 3)
+    assert.equal(page.itemsRevision, 1)
+    assert.throws(
+      () => harness.service.getPublicResourceCollectionItems(collection.id, {}, { ip: 'items-test' }),
+      error => error.statusCode === 429 && error.code === 'RESOURCE_COLLECTION_RATE_LIMITED',
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('分享资源集合引用按需返回元数据和分页项并携带 revision', () => {
+  const harness = createHarness()
+  try {
+    const collection = harness.service.createResourceCollection(harness.one, {
+      name: '分享公开集合',
+      visibility: 'public',
+      items: [
+        { title: '一', url: 'https://cdn.example.com/share-1.jpg', type: 'image' },
+        { title: '二', url: 'https://cdn.example.com/share-2.jpg', type: 'image' },
+      ],
+    })
+    const document = harness.service.createKml(harness.one, {
+      name: '分享引用文件',
+      features: [{ ...point('share-ref'), resourceCollectionRef: { version: 1, sourceType: 'personal', collectionId: collection.id } }],
+    })
+    const share = harness.service.createShare(harness.one, { title: '引用分享', items: [{ kmlId: document.id }] })
+    const shareItemId = share.items[0].id
+    const metadata = harness.service.getPublicShareFeatureResourceCollection(share.publicId, shareItemId, 'share-ref', { ip: 'share-test' })
+    assert.equal(metadata.sourceType, 'personal')
+    assert.equal(Object.hasOwn(metadata.collection, 'items'), false)
+    assert.equal(metadata.collectionRevision, collection.revision)
+    const items = harness.service.getPublicShareFeatureResourceCollectionItems(share.publicId, shareItemId, 'share-ref', { page: 1, limit: 1 }, { ip: 'share-items-test' })
+    assert.equal(items.items.length, 1)
+    assert.equal(items.pagination.total, 2)
+    assert.equal(items.collectionRevision, collection.revision)
+    assert.equal(items.itemsRevision, collection.itemsRevision)
+  } finally {
+    harness.close()
+  }
+})
+
+test('管理员可跨用户查询并管理资源集合，active binding 阻止永久删除而 stale binding 不阻止', () => {
+  const harness = createHarness()
+  const admin = actor('usr_admin', ['resource_collection.any.read', 'resource_collection.any.manage'])
+  try {
+    const collection = harness.service.createResourceCollection(harness.one, { name: '管理员集合' })
+    const listed = harness.service.listAdminResourceCollections(admin, { ownerId: 'usr_one' })
+    assert.equal(listed.total, 1)
+    assert.equal(listed.items[0].ownerId, 'usr_one')
+    assert.equal(harness.service.getAdminResourceCollection(admin, collection.id).owner.id, 'usr_one')
+    assert.equal(harness.service.listAdminResourceCollectionItems(admin, collection.id).total, 0)
+
+    const document = harness.service.createKml(harness.one, {
+      name: '管理员绑定文件',
+      features: [{ ...point('admin-binding'), resourceCollectionRef: { version: 1, sourceType: 'personal', collectionId: collection.id } }],
+    })
+    harness.database.prepare("UPDATE resource_collections SET status='trashed', visibility='private' WHERE id=?").run(collection.id)
+    assert.throws(
+      () => harness.service.permanentlyDeleteAdminResourceCollection(admin, collection.id),
+      error => error.statusCode === 409 && error.code === 'RESOURCE_COLLECTION_DELETE_REFERENCED',
+    )
+    // A stale index is deletable only after the source payload no longer
+    // contains the collection reference.
+    const current = harness.service.getKml(harness.one, document.id)
+    harness.service.updateKml(harness.one, document.id, {
+      revision: current.revision,
+      resourceCollectionRefVersion: 1,
+      features: [{ ...point('admin-binding'), resourceCollectionRef: null }],
+    })
+    assert.deepEqual(harness.service.permanentlyDeleteAdminResourceCollection(admin, collection.id), { id: collection.id, deleted: true, status: 'deleted' })
+
+    const lifecycle = harness.service.createResourceCollection(harness.one, { name: '生命周期集合' })
+    assert.equal(harness.service.trashAdminResourceCollection(admin, lifecycle.id).status, 'trashed')
+    assert.equal(harness.service.restoreAdminResourceCollection(admin, lifecycle.id).status, 'active')
+  } finally {
+    harness.close()
+  }
+})
+
+test('集合移入回收站后仍被 KML 引用时禁止所有者永久删除', () => {
+  const harness = createHarness()
+  try {
+    const collection = harness.service.createResourceCollection(harness.one, { name: '回收站引用保护' })
+    harness.service.createKml(harness.one, {
+      name: '回收站引用文件',
+      features: [{ ...point('trashed-binding'), resourceCollectionRef: { version: 1, sourceType: 'personal', collectionId: collection.id } }],
+    })
+    assert.equal(harness.service.trashResourceCollection(harness.one, collection.id).status, 'trashed')
+    assert.throws(
+      () => harness.service.permanentlyDeleteResourceCollection(harness.one, collection.id),
+      error => error.statusCode === 409 && error.code === 'RESOURCE_COLLECTION_DELETE_REFERENCED',
+    )
+  } finally {
+    harness.close()
+  }
+})
+
+test('资源集合永久删除在同一写事务内复查引用，避免检查与删除竞态', () => {
+  const harness = createHarness()
+  const admin = actor('usr_admin', ['resource_collection.any.manage'])
+  try {
+    const ownerCollection = harness.service.createResourceCollection(harness.one, { name: '事务复查集合' })
+    harness.service.trashResourceCollection(harness.one, ownerCollection.id)
+    const adminCollection = harness.service.createResourceCollection(harness.one, { name: '管理员事务复查集合' })
+    harness.service.trashResourceCollection(harness.one, adminCollection.id)
+
+    const originalCheck = harness.service.resourceCollectionHasLiveReference.bind(harness.service)
+    const transactionDepths = []
+    harness.service.resourceCollectionHasLiveReference = collectionId => {
+      transactionDepths.push(harness.database.transactionDepth)
+      return originalCheck(collectionId)
+    }
+    try {
+      assert.deepEqual(harness.service.permanentlyDeleteResourceCollection(harness.one, ownerCollection.id), {
+        id: ownerCollection.id,
+        deleted: true,
+        status: 'deleted',
+      })
+      assert.deepEqual(harness.service.permanentlyDeleteAdminResourceCollection(admin, adminCollection.id), {
+        id: adminCollection.id,
+        deleted: true,
+        status: 'deleted',
+      })
+    } finally {
+      harness.service.resourceCollectionHasLiveReference = originalCheck
+    }
+    assert.deepEqual(transactionDepths, [1, 1])
+  } finally {
+    harness.close()
+  }
+})
+
+test('管理员资源集合引用列表支持分页、索引修复和来源解除', () => {
+  const harness = createHarness()
+  const admin = actor('usr_admin', ['resource_collection.any.read', 'resource_collection.any.manage'])
+  try {
+    const collection = harness.service.createResourceCollection(harness.one, { name: '引用治理集合' })
+    const document = harness.service.createKml(harness.one, {
+      name: '待解除引用',
+      features: [{ ...point('governance-point'), resourceCollectionRef: { version: 1, sourceType: 'personal', collectionId: collection.id } }],
+    })
+    const binding = harness.database.prepare("SELECT * FROM resource_collection_bindings WHERE collection_id=? AND source_scope='owner_kml'").get(collection.id)
+    const listed = harness.service.listAdminResourceCollectionReferences(admin, collection.id, { limit: 1 })
+    assert.equal(listed.total, 1)
+    assert.equal(listed.items[0].bindingId, binding.id)
+    assert.equal(listed.items[0].kmlName, document.name)
+
+    const detached = harness.service.detachAdminResourceCollectionReference(admin, collection.id, binding.id, {}, { ip: 'admin-test' })
+    assert.equal(detached.detached, true)
+    assert.equal(harness.service.getKml(harness.one, document.id).features[0].resourceCollectionRef, undefined)
+    assert.equal(harness.database.prepare('SELECT status FROM resource_collection_bindings WHERE id=?').get(binding.id).status, 'stale')
+
+    const repairBinding = harness.database.prepare("SELECT * FROM resource_collection_bindings WHERE collection_id=? AND source_scope='owner_kml'").get(collection.id)
+    assert.ok(repairBinding)
+    harness.database.prepare("UPDATE resource_collection_bindings SET status='active' WHERE id=?").run(repairBinding.id)
+    const repaired = harness.service.repairAdminResourceCollectionReference(admin, collection.id, repairBinding.id, { ip: 'admin-test' })
+    assert.deepEqual(repaired, { bindingId: repairBinding.id, collectionId: collection.id, repaired: true, status: 'stale' })
+  } finally {
+    harness.close()
+  }
+})
+
+test('资源集合恢复只恢复本次回收产生的绑定', () => {
+  const harness = createHarness()
+  try {
+    const collection = harness.service.createResourceCollection(harness.one, { name: '绑定生命周期' })
+    harness.service.createKml(harness.one, {
+      name: '生命周期引用',
+      features: [{ ...point('lifecycle-point'), resourceCollectionRef: { version: 1, sourceType: 'personal', collectionId: collection.id } }],
+    })
+    const binding = harness.database.prepare('SELECT * FROM resource_collection_bindings WHERE collection_id=?').get(collection.id)
+    harness.database.prepare("UPDATE resource_collection_bindings SET status='trashed',updated_at=? WHERE id=?").run('2026-08-05T07:00:00.000Z', binding.id)
+    assert.equal(harness.service.trashResourceCollection(harness.one, collection.id).status, 'trashed')
+    assert.equal(harness.service.restoreResourceCollection(harness.one, collection.id).status, 'active')
+    assert.equal(harness.database.prepare('SELECT status FROM resource_collection_bindings WHERE id=?').get(binding.id).status, 'trashed')
+  } finally {
+    harness.close()
+  }
+})
+
+test('管理员解除已发布分享中的资源集合引用并重建分享绑定索引', () => {
+  const harness = createHarness()
+  const admin = actor('usr_admin', ['resource_collection.any.read', 'resource_collection.any.manage'])
+  try {
+    const collection = harness.service.createResourceCollection(harness.one, { name: '分享治理集合', visibility: 'public' })
+    const document = harness.service.createKml(harness.one, {
+      name: '分享治理文件',
+      features: [{ ...point('share-governance-point'), resourceCollectionRef: { version: 1, sourceType: 'personal', collectionId: collection.id } }],
+    })
+    const share = harness.service.createShare(harness.one, { title: '分享治理', items: [{ kmlId: document.id }] })
+    const binding = harness.database.prepare("SELECT * FROM resource_collection_bindings WHERE collection_id=? AND source_scope='published_share'").get(collection.id)
+    assert.ok(binding)
+    const before = harness.service.getPublicShareFile(share.publicId, share.items[0].id, { ip: 'public-before' })
+    const detached = harness.service.detachAdminResourceCollectionReference(admin, collection.id, binding.id, {}, { ip: 'admin-test' })
+    assert.equal(detached.detached, true)
+    const publicFile = harness.service.getPublicShareFile(share.publicId, share.items[0].id, { ip: 'public-test' })
+    assert.equal(Object.hasOwn(publicFile.features[0], 'resourceCollectionRef'), false)
+    assert.equal(publicFile.revision, before.revision + 1)
+    assert.equal(JSON.parse(harness.database.prepare('SELECT published_snapshot_json FROM kml_share_items WHERE id=?').get(share.items[0].id)?.published_snapshot_json || '{}').revision, publicFile.revision)
+    assert.equal(harness.database.prepare('SELECT status FROM resource_collection_bindings WHERE id=?').get(binding.id).status, 'stale')
+  } finally {
+    harness.close()
+  }
+})
+
+test('管理员解除来源已变化的资源集合引用返回明确冲突而不是伪装为修复', () => {
+  const harness = createHarness()
+  const admin = actor('usr_admin', ['resource_collection.any.read', 'resource_collection.any.manage'])
+  try {
+    const collection = harness.service.createResourceCollection(harness.one, { name: '来源变化集合' })
+    const document = harness.service.createKml(harness.one, {
+      name: '来源变化文件',
+      features: [{ ...point('changed-source'), resourceCollectionRef: { version: 1, sourceType: 'personal', collectionId: collection.id } }],
+    })
+    const binding = harness.database.prepare("SELECT * FROM resource_collection_bindings WHERE collection_id=? AND source_scope='owner_kml'").get(collection.id)
+    harness.service.updateKml(harness.one, document.id, { revision: document.revision, resourceCollectionRefVersion: 1, features: [{ ...point('changed-source'), resourceCollectionRef: null }] })
+    assert.throws(
+      () => harness.service.detachAdminResourceCollectionReference(admin, collection.id, binding.id, {}, { ip: 'admin-test' }),
+      error => error.statusCode === 409 && error.code === 'RESOURCE_COLLECTION_REFERENCE_STALE',
     )
   } finally {
     harness.close()
