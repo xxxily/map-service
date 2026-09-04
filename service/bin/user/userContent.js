@@ -2979,6 +2979,7 @@ export class UserContentService {
       page: query.page,
       limit: query.limit,
       pageCount: Math.max(1, Math.ceil(total / query.limit)),
+      hasNext: query.page < Math.max(1, Math.ceil(total / query.limit)),
       total,
     }
   }
@@ -3121,6 +3122,7 @@ export class UserContentService {
       page: query.page,
       limit: query.limit,
       pageCount: Math.max(1, Math.ceil(total / query.limit)),
+      hasNext: query.page < Math.max(1, Math.ceil(total / query.limit)),
       total,
     }
   }

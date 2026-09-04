@@ -6,6 +6,7 @@ import {
   getKmlMarkerIconDefinition,
   normalizeKmlMarkerIcon,
 } from '../../shared/kml-marker-icons.js'
+import { isKmlResourceCollectionStatus } from '../../shared/kml-resource-collection.js'
 
 const TYPE_LABELS = {
   image: '包含图片',
@@ -75,6 +76,7 @@ function getMarkerSignature (feature) {
     description: String(feature?.description || ''),
     resourceCollection: feature?.resourceCollection || null,
     resourceCollectionRef: feature?.resourceCollectionRef || null,
+    resourceCollectionStatus: String(feature?.resourceCollectionStatus?.accessState || ''),
   }
 }
 
@@ -84,7 +86,8 @@ function markerSignaturesEqual (left, right) {
     left.styleUrl === right.styleUrl &&
     left.description === right.description &&
     left.resourceCollection === right.resourceCollection &&
-    left.resourceCollectionRef === right.resourceCollectionRef
+    left.resourceCollectionRef === right.resourceCollectionRef &&
+    left.resourceCollectionStatus === right.resourceCollectionStatus
 }
 
 function buildMarkerModel (feature) {
@@ -102,7 +105,7 @@ function buildMarkerModel (feature) {
       : null
   }
 
-  if (Array.isArray(feature?.resourceCollection?.items) || feature?.resourceCollectionRef) {
+  if (Array.isArray(feature?.resourceCollection?.items) || feature?.resourceCollectionRef || isKmlResourceCollectionStatus(feature)) {
     const definition = getKmlMarkerIconDefinition('collection')
     return {
       type: 'collection',

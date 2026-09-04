@@ -17,9 +17,14 @@ import { isTouchFirstEnvironment } from '../ui/touch-environment.js'
 import {
   getKmlResourceCollectionItemCount,
   isKmlResourceCollectionFeature,
+  isKmlResourceCollectionStatusFeature,
   openKmlResourceCollectionPanel,
 } from './kml-resource-collection.js'
-import { tryNormalizeKmlResourceCollection } from '../../shared/kml-resource-collection.js'
+import {
+  getKmlResourceCollectionAccessState,
+  tryNormalizeKmlResourceCollection,
+  normalizeKmlResourceCollectionStatus,
+} from '../../shared/kml-resource-collection.js'
 import {
   bindFavoriteActionButtons,
   renderFavoriteActionButton,
@@ -103,6 +108,24 @@ function getMediaTypeIcon (type) {
   }[type] || '◫'
 }
 
+function getResourceCollectionStatusLabel (value) {
+  const accessState = getKmlResourceCollectionAccessState(value)
+  return {
+    private: '未公开',
+    missing: '不存在',
+    trashed: '已移除',
+  }[accessState] || '不可用'
+}
+
+function getResourceCollectionStatusMessage (value) {
+  const accessState = getKmlResourceCollectionAccessState(value)
+  return {
+    private: '该资源集合未公开，当前分享无法读取。',
+    missing: '该资源集合不存在或已被移除。',
+    trashed: '该资源集合已移入回收站，当前无法读取。',
+  }[accessState] || '该资源集合当前不可用。'
+}
+
 function getPopupFeatureName (feature) {
   return getKmlFeatureDisplayName({ type: feature?.type || 'Point', name: feature?.name })
 }
@@ -134,15 +157,18 @@ function renderPopupMediaItem (item) {
 }
 
 export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
-  const isCollection = isKmlResourceCollectionFeature(feature) || Boolean(feature?.resourceCollectionRef)
+  const collectionStatus = normalizeKmlResourceCollectionStatus(feature?.resourceCollectionStatus)
+  const isCollection = isKmlResourceCollectionFeature(feature) || Boolean(feature?.resourceCollectionRef) || Boolean(collectionStatus)
   const collectionCount = isKmlResourceCollectionFeature(feature)
     ? getKmlResourceCollectionItemCount(feature)
-    : '?'
+    : collectionStatus ? getResourceCollectionStatusLabel(collectionStatus) : '?'
   const preview = isCollection
     ? { items: [], total: 0, remaining: 0, overflowItem: null, contentSummary: {} }
     : getKmlFeaturePopupMedia(feature, { contentOptions: getKmlContentOptions() })
   const contentSummary = isCollection
-    ? `资源集合 · ${collectionCount} 项`
+    ? collectionStatus
+      ? `资源集合 · ${getResourceCollectionStatusLabel(collectionStatus)}`
+      : `资源集合 · ${collectionCount} 项`
     : formatContentSummary(preview.contentSummary)
   const description = getFeatureDescriptionText(feature)
   const favoriteAction = renderFavoriteActionButton(kmlFile, feature)
@@ -161,7 +187,14 @@ export function renderKmlFeaturePopupContent (kmlFile, feature, isEditable) {
         <button type="button" class="kml-popup-btn primary kml-detail-btn" data-kml-id="${escapeHtml(kmlFile?.id)}" data-feature-id="${escapeHtml(feature?.id)}">查看详情</button>
       </div>
     `
-  const previewHtml = isCollection
+  const previewHtml = collectionStatus
+    ? `
+      <section class="kml-popup-media kml-popup-resource-collection is-unavailable" aria-label="资源集合状态">
+        <div class="kml-popup-media-heading"><span>资源集合</span><small>${escapeHtml(getResourceCollectionStatusLabel(collectionStatus))}</small></div>
+        <p class="kml-popup-collection-status">${escapeHtml(getResourceCollectionStatusMessage(collectionStatus))}</p>
+      </section>
+    `
+    : isCollection
     ? `
       <section class="kml-popup-media kml-popup-resource-collection" aria-label="资源集合">
         <div class="kml-popup-media-heading"><span>资源集合</span><small>${collectionCount} 项</small></div>
@@ -220,6 +253,7 @@ export function hasKmlFeaturePreviewMedia (feature) {
   if (isKmlResourceCollectionFeature(feature)) {
     return getKmlResourceCollectionItemCount(feature) > 0
   }
+  if (isKmlResourceCollectionStatusFeature(feature)) return true
   if (feature?.type === 'Point' && feature?.resourceCollectionRef) return true
   return getKmlFeaturePopupMedia(feature, {
     contentOptions: getKmlContentOptions(),
@@ -258,6 +292,9 @@ export function openKmlFeatureMediaPreview (kmlFile, feature, options = {}) {
     window.activateKmlFeatureForMedia?.(item)
   }
 
+  if (isKmlResourceCollectionStatusFeature(feature)) {
+    return openKmlFeatureContentPanel(kmlFile, feature)
+  }
   if (isKmlResourceCollectionFeature(feature)) {
     return openKmlResourceCollectionPanel(kmlFile, feature, {
       trigger,
@@ -611,8 +648,24 @@ async function readJsonResponseBounded (response, signal) {
     let size = 0
     try {
       while (true) {
-        const next = await reader.read()
+        if (signal?.aborted) {
+          await reader.cancel().catch(() => {})
+          const error = new DOMException('The operation was aborted', 'AbortError')
+          throw error
+        }
+        let next
+        try {
+          next = await reader.read()
+        } catch (error) {
+          if (signal?.aborted) await reader.cancel().catch(() => {})
+          throw error
+        }
         if (next.done) break
+        if (signal?.aborted) {
+          await reader.cancel().catch(() => {})
+          const error = new DOMException('The operation was aborted', 'AbortError')
+          throw error
+        }
         size += next.value?.byteLength || next.value?.length || 0
         if (size > RESOURCE_COLLECTION_FETCH_MAX_BYTES) {
           await reader.cancel().catch(() => {})
@@ -635,7 +688,15 @@ async function readJsonResponseBounded (response, signal) {
       throw error
     }
   }
+  if (signal?.aborted) {
+    const error = new DOMException('The operation was aborted', 'AbortError')
+    throw error
+  }
   const text = await response.text()
+  if (signal?.aborted) {
+    const error = new DOMException('The operation was aborted', 'AbortError')
+    throw error
+  }
   if (new TextEncoder().encode(text).byteLength > RESOURCE_COLLECTION_FETCH_MAX_BYTES) {
     const error = new Error('资源集合响应过大')
     error.code = 'TOO_LARGE'
@@ -793,7 +854,7 @@ async function loadResourceCollectionReference (kmlFile, feature, signal, page =
       throw normalizeCollectionFetchError(error, requestOptions)
     }
     let payload = null
-    try { payload = await readJsonResponseBounded(response, signal) } catch (error) {
+    try { payload = await readJsonResponseBounded(response, requestController.signal) } catch (error) {
       if (response.ok) throw error
     }
     if (!response.ok) {
@@ -874,16 +935,60 @@ async function loadResourceCollectionReference (kmlFile, feature, signal, page =
   }
 }
 
+function getSafeExternalCollectionUrl (feature) {
+  const refResult = buildResourceCollectionRefPlaceholder(feature?.resourceCollectionRef)
+  if (!refResult.ok || refResult.ref?.sourceType !== 'external') return ''
+  try {
+    const url = new URL(refResult.ref.dataUrl)
+    if (url.protocol !== 'https:') return ''
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
+async function copyExternalCollectionUrl (url, statusNode) {
+  if (!url) return
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url)
+    else {
+      const input = document.createElement('textarea')
+      input.value = url
+      input.setAttribute('readonly', '')
+      input.style.position = 'fixed'
+      input.style.opacity = '0'
+      document.body.appendChild(input)
+      input.select()
+      document.execCommand('copy')
+      input.remove()
+    }
+    if (statusNode) statusNode.textContent = '地址已复制'
+  } catch {
+    if (statusNode) statusNode.textContent = '复制失败，请手动复制'
+  }
+}
+
 function renderCollectionLoadState (kmlFile, feature, message, options = {}) {
   const panel = ensurePanel()
   panel.hidden = false
   const featureName = getKmlFeatureDisplayName(feature)
+  const externalUrl = options.externalUrl || getSafeExternalCollectionUrl(feature)
+  const externalActions = externalUrl
+    ? '<div class="kml-content-actions kml-content-external-actions"><button type="button" class="kml-popup-btn" data-kml-collection-open-external>打开原地址</button><button type="button" class="kml-popup-btn" data-kml-collection-copy-external>复制地址</button><span class="kml-content-action-status" data-kml-collection-external-status aria-live="polite"></span></div>'
+    : ''
   panel.innerHTML = `
     <header class="kml-content-header"><div><span class="kml-content-kicker">资源集合</span>${featureName ? `<h2>${escapeHtml(featureName)}</h2>` : ''}</div><div class="kml-content-header-actions"><button type="button" class="kml-content-close" data-kml-content-close aria-label="关闭">×</button></div></header>
-    <div class="kml-content-body"><div class="kml-content-error">${escapeHtml(message)}</div><div class="kml-content-actions"><button type="button" class="kml-popup-btn primary" data-kml-collection-retry>重试</button></div></div>
+    <div class="kml-content-body"><div class="kml-content-error${options.state ? ` is-${escapeHtml(options.state)}` : ''}">${escapeHtml(message)}</div>${options.retry === false ? '' : '<div class="kml-content-actions"><button type="button" class="kml-popup-btn primary" data-kml-collection-retry>重试</button></div>'}${externalActions}</div>
   `
   panel.querySelector('[data-kml-content-close]')?.addEventListener('click', closePanel)
   panel.querySelector('[data-kml-collection-retry]')?.addEventListener('click', () => openKmlFeatureContentPanel(kmlFile, feature))
+  panel.querySelector('[data-kml-collection-open-external]')?.addEventListener('click', () => {
+    window.open(externalUrl, '_blank', 'noopener,noreferrer')
+  })
+  panel.querySelector('[data-kml-collection-copy-external]')?.addEventListener('click', event => {
+    copyExternalCollectionUrl(externalUrl, panel.querySelector('[data-kml-collection-external-status]'))
+    event.currentTarget.blur?.()
+  })
   return options.state || ''
 }
 
@@ -935,6 +1040,10 @@ export async function openKmlFeatureContentPanel (kmlFile, feature) {
     openKmlFeatureMediaPreview(kmlFile, feature, { keepInitialFeaturePopup: true })
     return
   }
+  if (isKmlResourceCollectionStatusFeature(feature)) {
+    renderCollectionLoadState(kmlFile, feature, getResourceCollectionStatusMessage(feature.resourceCollectionStatus), { retry: false, state: 'unavailable' })
+    return
+  }
   if (feature?.type === 'Point' && feature?.resourceCollectionRef) {
     const refResult = buildResourceCollectionRefPlaceholder(feature.resourceCollectionRef)
     if (refResult.ok) {
@@ -946,7 +1055,7 @@ export async function openKmlFeatureContentPanel (kmlFile, feature) {
         const loaded = await loadResourceCollectionReference(kmlFile, feature, controller.signal)
         if (requestSequence !== activeContentRequestSequence || controller.signal.aborted) return
         if (loaded.accessState) {
-          renderCollectionLoadState(kmlFile, feature, loaded.accessState === 'private' ? '该资源集合未公开，当前分享无法读取。' : '该资源集合暂不可用。')
+          renderCollectionLoadState(kmlFile, feature, getResourceCollectionStatusMessage({ version: 1, sourceType: 'personal', accessState: loaded.accessState }), { retry: false, state: 'unavailable' })
           return
         }
         openKmlFeatureMediaPreview(kmlFile, { ...feature, resourceCollection: loaded.collection, resourceCollectionRef: null }, {

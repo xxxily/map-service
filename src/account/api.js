@@ -51,6 +51,7 @@ export const accountApi = {
   updateResourceCollectionItem: (id, itemId, body) => apiRequest(`/resource-collections/${pathId(id)}/items/${pathId(itemId)}`, { method: 'PUT', body }),
   deleteResourceCollectionItem: (id, itemId, body = {}) => apiRequest(`/resource-collections/${pathId(id)}/items/${pathId(itemId)}`, { method: 'DELETE', body }),
   reorderResourceCollectionItems: (id, body) => apiRequest(`/resource-collections/${pathId(id)}/items/reorder`, { method: 'POST', body }),
+  listResourceCollectionReferences: (id, query, options = {}) => apiRequest(`/resource-collections/${pathId(id)}/references`, { ...options, query }),
   createFavorite: body => apiRequest('/favorites', { method: 'POST', body }),
   updateFavorite: (id, body) => apiRequest(`/favorites/${pathId(id)}`, { method: 'PUT', body }),
   deleteFavorite: id => apiRequest(`/favorites/${pathId(id)}`, { method: 'DELETE' }),

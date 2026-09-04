@@ -1186,20 +1186,416 @@ button:disabled {
   gap: 9px;
 }
 
-.account-collection-batch {
-  display: grid;
-  gap: 8px;
-  margin: 0 0 14px;
-  padding: 12px;
-  border: 1px solid #dce8e6;
-  border-radius: 8px;
-  background: #f8fbfa;
+/* Resource collections use a compact workbench instead of nested generic
+ * cards. The detail view follows a stable summary -> tools -> list rhythm. */
+.account-collections-panel {
+  --collection-line: rgba(19, 62, 61, 0.11);
 }
 
-.account-collection-batch textarea {
+.account-collection-filter {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(4, minmax(104px, 0.34fr)) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding: 10px;
+  border: 1px solid rgba(19, 62, 61, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.account-collection-filter input,
+.account-collection-filter select,
+.account-collection-filter button {
+  min-width: 0;
+}
+
+.account-collection-card-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-collection-card-list > :only-child {
+  grid-column: 1 / -1;
+}
+
+.account-collection-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 10px;
+  box-shadow: 0 5px 18px rgba(19, 54, 54, 0.045);
+}
+
+.account-collection-card.is-trashed {
+  background: #fbfcfb;
+}
+
+.account-collection-card-heading {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+
+.account-collection-card-title {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.account-collection-mark {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  background: #e4f4f0;
+  color: #0f766e;
+  font-size: 18px;
+}
+
+.account-collection-card-title > div {
+  min-width: 0;
+}
+
+.account-collection-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.account-collection-card h3 {
+  overflow: hidden;
+  margin: 0;
+  color: #18383a;
+  font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-collection-card-heading > p {
+  overflow: hidden;
+  min-height: 2.9em;
+  margin: 0;
+  color: #718286;
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.account-collection-stats,
+.account-collection-detail-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.account-collection-stats div,
+.account-collection-detail-stats div {
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid #edf2f1;
+}
+
+.account-collection-stats dt,
+.account-collection-detail-stats dt {
+  color: #8a999a;
+  font-size: 10px;
+}
+
+.account-collection-stats dd,
+.account-collection-detail-stats dd {
+  overflow: hidden;
+  margin: 3px 0 0;
+  color: #2b5051;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-collection-card-actions,
+.account-collection-editor-actions,
+.account-collection-tool-actions,
+.account-collection-items-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.account-collection-card-actions {
+  margin-top: auto;
+}
+
+.account-collection-card-actions button,
+.account-collection-editor-actions button,
+.account-collection-tool-actions button,
+.account-collection-items-actions > button,
+.account-collection-batch summary {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.account-collection-card-actions button:not(.account-primary-button),
+.account-collection-editor-actions button:not(.account-primary-button),
+.account-collection-items-actions > button:not(.account-primary-button),
+.account-collection-item-actions button {
+  border: 1px solid rgba(18, 66, 64, 0.13);
+  background: #fff;
+  color: #315254;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.account-collection-card-actions button:not(.account-primary-button):hover:not(:disabled),
+.account-collection-card-actions button:not(.account-primary-button):focus-visible,
+.account-collection-editor-actions button:not(.account-primary-button):hover:not(:disabled),
+.account-collection-editor-actions button:not(.account-primary-button):focus-visible,
+.account-collection-items-actions > button:not(.account-primary-button):hover:not(:disabled),
+.account-collection-items-actions > button:not(.account-primary-button):focus-visible,
+.account-collection-item-actions button:hover:not(:disabled),
+.account-collection-item-actions button:focus-visible {
+  border-color: rgba(15, 118, 110, 0.45);
+  background: #eff8f6;
+  color: #0f766e;
+  outline: none;
+}
+
+.account-collection-card-actions button.is-danger,
+.account-collection-editor-actions button.is-danger,
+.account-collection-item-actions button.is-danger {
+  color: #b34640;
+}
+
+.account-collection-card-actions button.is-danger:hover:not(:disabled),
+.account-collection-card-actions button.is-danger:focus-visible,
+.account-collection-editor-actions button.is-danger:hover:not(:disabled),
+.account-collection-editor-actions button.is-danger:focus-visible,
+.account-collection-item-actions button.is-danger:hover:not(:disabled),
+.account-collection-item-actions button.is-danger:focus-visible {
+  border-color: rgba(179, 70, 64, 0.25);
+  background: #fff1f0;
+  color: #a33f38;
+  outline: none;
+}
+
+.account-collection-editor {
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.account-collection-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--collection-line);
+}
+
+.account-collection-editor-copy {
+  min-width: 0;
+}
+
+.account-collection-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 10px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.account-collection-title-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.account-collection-title-line h3 {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  margin: 0;
+  color: #143436;
+  font-size: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-collection-editor-heading p {
+  max-width: 680px;
+  margin: 7px 0 0;
+  color: #718286;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.account-collection-detail-stats {
+  margin: 18px 0 22px;
+  padding: 14px 0 16px;
+  border-top: 1px solid var(--collection-line);
+  border-bottom: 1px solid var(--collection-line);
+}
+
+.account-collection-items-section {
+  min-width: 0;
+}
+
+.account-collection-items-heading {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+  padding: 0 0 11px;
+  border-bottom: 1px solid var(--collection-line);
+}
+
+.account-collection-items-heading-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.account-collection-section-kicker {
+  color: #0f766e;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.account-collection-items-heading-copy > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.account-collection-items-heading h4 {
+  margin: 0;
+  color: #1b3f40;
+  font-size: 15px;
+}
+
+.account-collection-items-heading span {
+  color: #849294;
+  font-size: 11px;
+}
+
+.account-collection-items-actions {
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.account-collection-batch {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.account-collection-batch summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(18, 66, 64, 0.13);
+  background: #fff;
+  color: #315254;
+  list-style: none;
+  cursor: pointer;
+}
+
+.account-collection-batch summary::-webkit-details-marker {
+  display: none;
+}
+
+.account-collection-batch summary::before {
+  color: #0f766e;
+  content: '+';
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.account-collection-batch[open] summary::before {
+  content: '−';
+}
+
+.account-collection-batch summary span {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.account-collection-batch summary small {
+  color: #849294;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.account-collection-batch summary:hover,
+.account-collection-batch summary:focus-visible {
+  border-color: rgba(15, 118, 110, 0.45);
+  background: #eff8f6;
+  color: #0f766e;
+  outline: none;
+}
+
+.account-collection-batch-body {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 5;
+  display: grid;
+  width: min(420px, calc(100vw - 48px));
+  gap: 7px;
+  box-sizing: border-box;
+  padding: 13px;
+  border: 1px solid #d5e5e2;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 14px 30px rgba(19, 54, 54, .14);
+}
+
+.account-collection-batch-body label {
+  color: #315657;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.account-collection-batch-body small {
+  color: #7c8e90;
+  font-size: 11px;
+}
+
+.account-collection-batch-body textarea {
   box-sizing: border-box;
   width: 100%;
-  min-height: 72px;
+  min-height: 84px;
   resize: vertical;
   border: 1px solid #bfced0;
   border-radius: 7px;
@@ -1210,42 +1606,134 @@ button:disabled {
   font-size: 12px;
 }
 
-.account-collection-batch textarea:focus-visible {
+.account-collection-batch-body textarea:focus-visible {
   outline: none;
   border-color: #0f766e;
   box-shadow: 0 0 0 3px #0f766e24;
 }
 
-.account-collection-item {
-  padding: 15px;
+.account-collection-tool-actions {
+  margin-top: 2px;
 }
 
-.account-collection-item .account-card-heading {
-  margin-bottom: 8px;
-}
-
-.account-collection-item .account-card-heading h4 {
-  margin: 2px 0 0;
-  color: #18383a;
-  font-size: 14px;
-}
-
-.account-collection-item-url,
-.account-collection-item-cover {
-  overflow-wrap: anywhere;
-  color: #607476;
+.account-collection-readonly-note {
+  margin: 0 0 20px;
+  border: 1px solid #e7ecea;
+  border-radius: 8px;
+  padding: 11px 13px;
+  background: #fafcfb;
+  color: #718286;
   font-size: 12px;
-  line-height: 1.5;
+}
+
+.account-collection-item-list {
+  overflow: hidden;
+  border: 1px solid var(--collection-line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.account-collection-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 13px;
+  align-items: center;
+  min-width: 0;
+  padding: 14px 12px;
+  border-bottom: 1px solid #edf2f1;
+}
+
+.account-collection-item:last-child {
+  border-bottom: 0;
+}
+
+.account-collection-item-index {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 7px;
+  background: #f0f5f3;
+  color: #698083;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-collection-item-main {
+  min-width: 0;
+}
+
+.account-collection-item-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.account-collection-item-heading h4 {
+  overflow: hidden;
+  margin: 0;
+  color: #244849;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .account-collection-item-url {
-  margin: 0 0 4px;
+  display: block;
+  overflow-wrap: anywhere;
+  margin: 5px 0 0;
+  color: #607779;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.account-collection-item-url:hover {
+  color: #0f766e;
+  text-decoration: underline;
 }
 
 .account-collection-item-cover {
   display: block;
+  overflow-wrap: anywhere;
+  margin-top: 3px;
   color: #8b989a;
-  font-size: 10px;
+}
+
+.account-collection-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.account-collection-item-actions button {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0 7px;
+  border-radius: 6px;
+}
+
+.account-collection-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+  color: #718286;
+  font-size: 11px;
+}
+
+.account-collection-pagination button {
+  min-height: 32px;
+  border: 1px solid rgba(18, 66, 64, 0.13);
+  border-radius: 7px;
+  padding: 0 10px;
+  background: #fff;
+  color: #315254;
+  font-size: 11px;
+  cursor: pointer;
 }
 
 .account-favorite-card {
@@ -1673,6 +2161,134 @@ button:disabled {
   padding: 0 9px;
 }
 
+.app-dialog.account-collection-references-dialog {
+  width: min(680px, 100%);
+  padding: 0;
+  overflow: hidden;
+}
+
+.account-collection-references-dialog .account-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 16px;
+  border-bottom: 1px solid #e7edeb;
+  background: #f8fbfa;
+}
+
+.account-dialog-heading h2 {
+  margin: 0;
+  color: #173638;
+  font-size: 19px;
+}
+
+.account-dialog-heading p:not(.account-eyebrow) {
+  margin: 5px 0 0;
+  color: #708184;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.account-dialog-close {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #d9e2df;
+  border-radius: 7px;
+  background: #fff;
+  color: #496264;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.account-collection-references-body {
+  min-height: 190px;
+  padding: 14px 20px 18px;
+}
+
+.account-reference-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #e9efed;
+}
+
+.account-reference-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid #e9efed;
+}
+
+.account-reference-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.account-reference-row strong {
+  overflow-wrap: anywhere;
+  color: #254648;
+  font-size: 12px;
+}
+
+.account-reference-row p,
+.account-reference-row time {
+  margin: 0;
+  color: #708184;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.account-reference-row time {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.account-reference-row.is-aggregate > span {
+  flex: 0 0 auto;
+  color: #315254;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.account-reference-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+  color: #607577;
+  font-size: 11px;
+}
+
+.account-reference-footer button {
+  min-height: 30px;
+  padding: 0 9px;
+}
+
+.account-dialog-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 120px;
+  color: #a33f38;
+  font-size: 12px;
+}
+
+.account-dialog-error button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 10px;
+}
+
 [data-account-analytics-custom-field] textarea {
   min-height: 78px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -1965,9 +2581,48 @@ body.account-view .app-dialog:not(.account-share-dialog) {
   .account-share-kml-editor {
     grid-template-columns: 1fr;
   }
+
+  /* Collection cards need enough width for their metadata and commands. */
+  .account-collection-card-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .account-collection-filter {
+    grid-template-columns: minmax(0, 1fr) repeat(2, minmax(118px, 0.42fr));
+  }
+
+  .account-collection-filter input {
+    grid-column: 1 / -1;
+  }
+
+  .account-collection-filter button {
+    min-width: 82px;
+  }
 }
 
 @media (max-width: 720px) {
+  .account-collection-references-dialog .account-dialog-heading {
+    padding: 16px;
+  }
+
+  .account-collection-references-body {
+    padding: 12px 16px 16px;
+  }
+
+  .account-reference-row {
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .account-reference-row time {
+    white-space: normal;
+  }
+
+  .account-reference-footer {
+    flex-wrap: wrap;
+    text-align: center;
+  }
+
   .account-kml-directory-heading {
     align-items: center;
     gap: 6px;
@@ -2046,7 +2701,7 @@ body.account-view .app-dialog:not(.account-share-dialog) {
   }
 
   .account-sidebar {
-    overflow-x: auto;
+    overflow-x: hidden;
     position: sticky;
     z-index: 4;
     top: 62px;
@@ -2065,14 +2720,19 @@ body.account-view .app-dialog:not(.account-share-dialog) {
   }
 
   .account-sidebar nav {
-    flex-direction: row;
-    width: max-content;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    gap: 4px;
   }
 
   .account-sidebar nav a {
+    justify-content: center;
+    min-width: 0;
     min-height: 35px;
-    padding: 0 11px;
-    white-space: nowrap;
+    padding: 4px 6px;
+    text-align: center;
+    white-space: normal;
   }
 
   .account-content {
@@ -2188,6 +2848,108 @@ body.account-view .app-dialog:not(.account-share-dialog) {
     align-items: stretch;
     flex-direction: column;
   }
+
+  .account-collection-filter {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    margin-bottom: 16px;
+  }
+
+  .account-collection-filter input,
+  .account-collection-filter button {
+    grid-column: 1 / -1;
+  }
+
+  .account-collection-filter select,
+  .account-collection-filter button {
+    width: 100%;
+  }
+
+  .account-collection-detail-stats,
+  .account-collection-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
+  }
+
+  .account-collection-editor-heading {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .account-collection-editor-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .account-collection-editor-actions button {
+    flex: 0 1 auto;
+  }
+
+  .account-collection-items-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .account-collection-items-actions {
+    align-items: flex-start;
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .account-collection-items-actions > .account-primary-button,
+  .account-collection-batch {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .account-collection-items-actions > .account-primary-button,
+  .account-collection-batch summary {
+    box-sizing: border-box;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .account-collection-items-actions > .account-primary-button,
+  .account-collection-batch {
+    align-self: flex-start;
+  }
+
+  .account-collection-batch summary small {
+    display: none;
+  }
+
+  .account-collection-batch-body {
+    position: static;
+    width: 100%;
+    margin-top: 7px;
+  }
+
+  .account-collection-batch[open] {
+    flex-basis: 100%;
+  }
+
+  .account-collection-item {
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .account-collection-item-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .account-collection-pagination {
+    flex-wrap: wrap;
+    row-gap: 7px;
+  }
+}
+
+@media (max-width: 360px) {
+  .account-sidebar nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 420px) {
@@ -2248,6 +3010,51 @@ body.account-view .app-dialog:not(.account-share-dialog) {
   .account-share-dialog-columns,
   .account-share-view-grid {
     grid-template-columns: 1fr;
+  }
+
+  .account-collection-filter {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .account-collection-filter input,
+  .account-collection-filter select,
+  .account-collection-filter button {
+    grid-column: auto;
+  }
+
+  .account-collection-filter input,
+  .account-collection-filter select,
+  .account-collection-filter button {
+    width: 100%;
+  }
+
+  .account-collection-card {
+    padding: 15px;
+  }
+
+  .account-collection-card-actions,
+  .account-collection-tool-actions,
+  .account-collection-items-actions {
+    justify-content: stretch;
+  }
+
+  .account-collection-card-actions button,
+  .account-collection-tool-actions button,
+  .account-collection-items-actions > .account-primary-button,
+  .account-collection-batch summary {
+    flex: 1 1 120px;
+  }
+
+  .account-collection-title-line h3 {
+    max-width: 100%;
+    font-size: 21px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .account-collection-pagination span {
+    max-width: 100%;
+    text-align: center;
   }
 
   .account-share-kml-item {

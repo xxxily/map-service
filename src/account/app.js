@@ -1,6 +1,13 @@
 import './account.css'
 import { accountApi, saveDownload } from './api.js'
-import { showAccountPasswordDialog, showAccountShareAccessEventsDialog, showAccountShareDialog, showAccountShareUrlDialog } from './dialogs.js'
+import {
+  showAccountPasswordDialog,
+  showAccountShareAccessEventsDialog,
+  showAccountShareDialog,
+  showAccountShareUrlDialog,
+  closeAccountDialogs,
+  showResourceCollectionReferencesDialog,
+} from './dialogs.js'
 import {
   buildShareItems,
   groupKmlDocumentsByDirectory,
@@ -11,6 +18,7 @@ import {
   normalizeKmlSort,
   normalizeKmlDirectoryCatalog,
   normalizePagedResult,
+  normalizeResourceCollectionItemsPage,
   parseLocalKmlFiles,
   parseTags,
   partitionKmlTrashSelection,
@@ -64,7 +72,7 @@ const SHARE_ACTIONS = new Set([
 ])
 const FAVORITE_ACTIONS = new Set(['edit-favorite', 'cancel-favorite-edit', 'delete-favorite'])
 const SESSION_ACTIONS = new Set(['revoke-session', 'logout-other-sessions'])
-const COLLECTION_READ_ACTIONS = new Set(['open-collection', 'close-collection', 'collection-page', 'collection-item-page'])
+const COLLECTION_READ_ACTIONS = new Set(['open-collection', 'close-collection', 'collection-page', 'collection-item-page', 'collection-references'])
 const COLLECTION_WRITE_ACTIONS = new Set(['create-collection', 'edit-collection', 'trash-collection', 'restore-collection', 'permanent-delete-collection', 'add-collection-item', 'edit-collection-item', 'delete-collection-item', 'batch-add-collection-items', 'move-collection-item'])
 
 const KML_FILE_DRAG_MIME = 'application/x-map-service-kml-file'
@@ -92,7 +100,7 @@ const state = {
     trashCount: 0,
   },
   favorites: { items: [], search: '' },
-  collections: { items: [], search: '', status: 'active', page: 1, limit: 20, sort: 'updatedAt', order: 'desc', total: 0, selected: null, itemResult: null, itemPage: 1, itemLimit: 40, itemTotal: 0 },
+  collections: { items: [], search: '', status: 'active', visibility: 'all', page: 1, limit: 20, sort: 'updatedAt', order: 'desc', total: 0, selected: null, itemResult: null, itemPage: 1, itemLimit: 40, itemTotal: 0, itemPageCount: 1, itemHasNext: false, batchText: '' },
   favoriteDraft: null,
   shares: { items: [], search: '', status: '' },
   sessions: [],
@@ -113,13 +121,14 @@ function setMessage (notice = '', error = '') {
 }
 
 function clearPrivateState () {
+  closeAccountDialogs()
   state.profile = null
   state.kml.items = []
   state.kml.directories = { items: [], uncategorized: { id: null, name: '未分类' } }
   state.kml.usage = {}
   state.kml.selected.clear()
   state.favorites.items = []
-  state.collections = { items: [], search: '', status: 'active', page: 1, limit: 20, sort: 'updatedAt', order: 'desc', total: 0, selected: null, itemResult: null, itemPage: 1, itemLimit: 40, itemTotal: 0 }
+  state.collections = { items: [], search: '', status: 'active', visibility: 'all', page: 1, limit: 20, sort: 'updatedAt', order: 'desc', total: 0, selected: null, itemResult: null, itemPage: 1, itemLimit: 40, itemTotal: 0, itemPageCount: 1, itemHasNext: false, batchText: '' }
   state.favoriteDraft = null
   state.shares.items = []
   state.sessions = []
@@ -181,9 +190,7 @@ async function handleApiError (error) {
       else if (conflict.resource === 'shares') await loadShares()
       else {
         await loadCollections()
-        if (state.collections.selected?.id) {
-          try { await openCollection(state.collections.selected.id) } catch {}
-        }
+        if (state.collections.selected?.id) await openCollection(state.collections.selected.id)
       }
       setMessage(conflict.success, '')
     } catch (reloadError) {
@@ -379,13 +386,61 @@ async function loadFavorites () {
   state.favorites.items = result.items
 }
 
-function collectionPayload (result) { return result?.data || result }
+function collectionPayload (result) {
+  if (result?.data && typeof result.data === 'object' && !Array.isArray(result.data)) return result.data
+  return result
+}
+
+function normalizeResourceCollectionListPayload (value, requestedPage, requestedLimit) {
+  const result = collectionPayload(value)
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.items)) {
+    throw Object.assign(new Error('资源集合列表响应不完整，请刷新后重试'), { code: 'RESOURCE_COLLECTION_SCHEMA_INVALID' })
+  }
+  const readField = (key) => {
+    const top = result[key]
+    const nested = result.pagination?.[key]
+    if (top !== undefined && nested !== undefined && String(top) !== String(nested)) {
+      throw Object.assign(new Error('资源集合列表分页信息不一致，请刷新后重试'), { code: 'RESOURCE_COLLECTION_SCHEMA_INVALID' })
+    }
+    return top !== undefined ? top : nested
+  }
+  const page = Number(readField('page'))
+  const limit = Number(readField('limit'))
+  const total = Number(readField('total'))
+  const pageCount = Number(readField('pageCount'))
+  const hasNext = readField('hasNext')
+  if (!Number.isSafeInteger(page) || page !== Number(requestedPage) || page < 1 ||
+      !Number.isSafeInteger(limit) || limit !== Number(requestedLimit) || limit < 1 || limit > 100 ||
+      !Number.isSafeInteger(total) || total < 0 ||
+      !Number.isSafeInteger(pageCount) || pageCount < 1 ||
+      pageCount !== Math.max(1, Math.ceil(total / limit)) || page > pageCount ||
+      typeof hasNext !== 'boolean' || hasNext !== (page < pageCount)) {
+    throw Object.assign(new Error('资源集合列表分页信息不完整，请刷新后重试'), { code: 'RESOURCE_COLLECTION_SCHEMA_INVALID' })
+  }
+  const expectedCount = Math.min(limit, Math.max(0, total - (page - 1) * limit))
+  if (result.items.length !== expectedCount || result.items.some(item => {
+    return !item || typeof item !== 'object' || Array.isArray(item) || !String(item.id || '').trim()
+  })) {
+    throw Object.assign(new Error('资源集合列表条目不完整，请刷新后重试'), { code: 'RESOURCE_COLLECTION_SCHEMA_INVALID' })
+  }
+  return { ...result, items: result.items, page, limit, total, pageCount, hasNext }
+}
 
 function extractCollectionHttpsUrls (value) {
   const matches = String(value || '').match(/https:\/\/[^\s<>"']+/gi) || []
-  return [...new Set(matches
+  const normalized = matches
     .map(url => url.replace(/[),.;:!?，。；！？、]+$/g, ''))
-    .filter(Boolean))]
+    .filter(Boolean)
+    .map(url => {
+      try { return new URL(url).toString() } catch { return url }
+    })
+  return [...new Set(normalized)]
+}
+
+function normalizeCollectionItemUrlForComparison (value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  try { return new URL(raw).toString() } catch { return raw }
 }
 
 async function loadAllCollectionItems (collectionId) {
@@ -396,70 +451,184 @@ async function loadAllCollectionItems (collectionId) {
   let total = null
   let pageCount = null
   let itemsRevision = null
+  let completed = false
   for (let requestCount = 0; requestCount < 10000; requestCount += 1) {
-    const result = collectionPayload(await accountApi.listResourceCollectionItems(collectionId, { page, limit }))
-    const pageItems = Array.isArray(result?.items) ? result.items : []
-    if (itemsRevision === null && Number.isSafeInteger(Number(result?.itemsRevision))) itemsRevision = Number(result.itemsRevision)
-    const reportedTotal = Number(result?.total ?? result?.pagination?.total)
-    if (Number.isSafeInteger(reportedTotal) && reportedTotal >= 0) total = reportedTotal
-    const reportedPageCount = Number(result?.pageCount ?? result?.pagination?.pageCount)
-    if (Number.isSafeInteger(reportedPageCount) && reportedPageCount >= 1) pageCount = reportedPageCount
+    const result = normalizeResourceCollectionItemsPage(
+      collectionPayload(await accountApi.listResourceCollectionItems(collectionId, { page, limit })),
+      { page, limit },
+    )
+    const revisionValue = result.itemsRevision
+    if (itemsRevision === null) itemsRevision = revisionValue
+    else if (itemsRevision !== revisionValue) {
+      throw Object.assign(new Error('资源集合项在读取期间发生变化，请刷新后重试'), { code: 'RESOURCE_COLLECTION_REVISION_CONFLICT' })
+    }
+    const reportedTotal = result.total
+    if (total === null) total = reportedTotal
+    else if (total !== reportedTotal) throw new Error('资源集合项总数在读取期间发生变化，请刷新后重试')
+    pageCount = result.pageCount
+    const pageItems = result.items
     for (const item of pageItems) {
       const itemId = String(item?.id || '')
-      if (!itemId || seenIds.has(itemId)) throw new Error('资源集合项列表存在重复标识，请刷新后重试')
+      if (!itemId || seenIds.has(itemId)) throw new Error('资源集合项列表存在无效或重复标识，请刷新后重试')
       seenIds.add(itemId)
       items.push(item)
     }
-    const hasNext = result?.hasNext ?? result?.pagination?.hasNext
-    if (total !== null && items.length >= total) break
-    if (pageCount !== null && page >= pageCount) break
-    if (hasNext === false) break
-    if (hasNext === undefined && pageItems.length < limit) break
-    if (!pageItems.length) break
+    const hasNext = result.hasNext
+    if (!hasNext) {
+      if (items.length !== total) throw new Error('资源集合项列表加载不完整，请刷新后重试')
+      completed = true
+      break
+    }
     page += 1
   }
-  if (total !== null && items.length < total) throw new Error('资源集合项列表加载不完整，请刷新后重试')
+  if (!completed || total === null || items.length !== total) throw new Error('资源集合项列表加载不完整，请刷新后重试')
   return { items, itemsRevision }
 }
 
 async function loadCollections () {
-  const result = collectionPayload(await accountApi.listResourceCollections({ page: state.collections.page, limit: state.collections.limit, search: state.collections.search, status: state.collections.status, sort: state.collections.sort, order: state.collections.order }))
-  state.collections.items = Array.isArray(result) ? result : (result?.items || [])
-  state.collections.total = Number(result?.total || state.collections.items.length)
+  const requestedPage = state.collections.page
+  const requestedLimit = state.collections.limit
+  const result = normalizeResourceCollectionListPayload(await accountApi.listResourceCollections({
+    page: requestedPage,
+    limit: requestedLimit,
+    search: state.collections.search,
+    status: state.collections.status,
+    visibility: state.collections.visibility || 'all',
+    sort: state.collections.sort,
+    order: state.collections.order,
+  }), requestedPage, requestedLimit)
+  state.collections.items = result.items
+  state.collections.total = result.total
+
+  // Keep an opened collection usable even when its summary is refreshed by a
+  // different filter/page. The detail payload is the authoritative revision.
+  const selectedId = String(state.collections.selected?.id || '')
+  const summary = selectedId
+    ? state.collections.items.find(item => String(item?.id || '') === selectedId)
+    : null
+  if (summary && state.collections.selected) {
+    state.collections.selected = { ...state.collections.selected, ...summary }
+  }
 }
 async function openCollection (id) {
   const detail = collectionPayload(await accountApi.getResourceCollection(id))
-  state.collections.selected = detail?.collection || detail
+  const selected = detail?.collection || detail
+  if (!selected?.id) throw new Error('资源集合详情响应不完整，请刷新后重试')
+  state.collections.selected = selected
+  writeCollectionLocation(selected.id)
   const limit = state.collections.itemLimit || 40
   let page = state.collections.itemPage || 1
   let itemResult = collectionPayload(await accountApi.listResourceCollectionItems(id, { page, limit }))
-  const total = Number(itemResult?.total ?? itemResult?.pagination?.total)
-  const pageCount = Number(itemResult?.pageCount ?? itemResult?.pagination?.pageCount) || (Number.isSafeInteger(total) && total >= 0 ? Math.max(1, Math.ceil(total / limit)) : null)
-  if (pageCount && page > pageCount) {
-    page = pageCount
-    state.collections.itemPage = page
-    itemResult = collectionPayload(await accountApi.listResourceCollectionItems(id, { page, limit }))
-  } else if (!Array.isArray(itemResult?.items) || (!itemResult.items.length && page > 1 && total === 0)) {
-    page = 1
-    state.collections.itemPage = page
-    itemResult = collectionPayload(await accountApi.listResourceCollectionItems(id, { page, limit }))
+  const readPageState = value => {
+    const totalValue = value?.total ?? value?.pagination?.total
+    const pageCountValue = value?.pageCount ?? value?.pagination?.pageCount
+    const hasNextValue = value?.hasNext ?? value?.pagination?.hasNext
+    const total = Number.isSafeInteger(Number(totalValue)) && Number(totalValue) >= 0 ? Number(totalValue) : null
+    const pageCount = Number.isSafeInteger(Number(pageCountValue)) && Number(pageCountValue) >= 1
+      ? Number(pageCountValue)
+      : (total === null ? null : Math.max(1, Math.ceil(total / limit)))
+    const hasNext = typeof hasNextValue === 'boolean'
+      ? hasNextValue
+      : pageCount !== null ? page < pageCount : Array.isArray(value?.items) && value.items.length >= limit
+    return { total, pageCount, hasNext }
   }
-  state.collections.itemResult = itemResult
-  state.collections.itemTotal = Number(itemResult?.total ?? itemResult?.pagination?.total ?? itemResult?.items?.length ?? 0)
+  let pageState = readPageState(itemResult)
+  if (pageState.pageCount && page > pageState.pageCount) {
+    page = pageState.pageCount
+    state.collections.itemPage = page
+    itemResult = collectionPayload(await accountApi.listResourceCollectionItems(id, { page, limit }))
+    pageState = readPageState(itemResult)
+  }
+  const normalizedItems = normalizeResourceCollectionItemsPage(itemResult, { page, limit })
+  state.collections.itemPage = normalizedItems.page
+  state.collections.itemResult = normalizedItems
+  state.collections.itemTotal = normalizedItems.total
+  state.collections.itemPageCount = normalizedItems.pageCount
+  state.collections.itemHasNext = normalizedItems.hasNext
+  state.collections.selected.itemsRevision = normalizedItems.itemsRevision
+  state.collections.selected.revision = normalizedItems.collectionRevision
+}
+
+function showCollectionReferences (id) {
+  const collection = state.collections.selected && String(state.collections.selected.id) === String(id)
+    ? state.collections.selected
+    : state.collections.items.find(item => String(item?.id || '') === String(id))
+  if (!collection) return
+  showResourceCollectionReferencesDialog({
+    collection,
+    onLoad: (query, options) => accountApi.listResourceCollectionReferences(id, query, options),
+  })
 }
 async function editCollection (id = null) {
-  const item = id ? state.collections.items.find(entry => String(entry.id) === String(id)) || state.collections.selected : null
-  const values = await showEditDialog({ title: item ? '编辑资源集合' : '新建资源集合', fields: [{ name: 'name', label: '集合名称' }, { name: 'description', label: '描述', type: 'textarea', required: false }, { name: 'isPublic', label: '公开状态', type: 'select', options: [{ label: '私有', value: 'false' }, { label: '公开', value: 'true' }] }], values: { name: item?.name || '', description: item?.description || '', isPublic: String(Boolean(item?.isPublic || item?.public)) }, confirmText: item ? '保存' : '创建' })
+  const selected = state.collections.selected
+  const item = id
+    ? (selected && String(selected.id) === String(id)
+        ? selected
+        : state.collections.items.find(entry => String(entry.id) === String(id)))
+    : null
+  const values = await showEditDialog({
+    title: item ? '编辑资源集合' : '新建资源集合',
+    fields: [
+      { name: 'name', label: '集合名称' },
+      { name: 'description', label: '描述', type: 'textarea', required: false },
+      { name: 'viewMode', label: '默认展示', type: 'select', options: [{ label: '卡片', value: 'grid' }, { label: '列表', value: 'list' }] },
+      { name: 'isPublic', label: '公开状态', type: 'select', options: [{ label: '私有', value: 'false' }, { label: '公开', value: 'true' }] },
+    ],
+    values: {
+      name: item?.name || '',
+      description: item?.description || '',
+      viewMode: item?.viewMode || 'grid',
+      isPublic: String(Boolean(item?.isPublic || item?.public || item?.visibility === 'public')),
+    },
+    confirmText: item ? '保存' : '创建',
+  })
   if (!values?.name?.trim()) return
-  const body = { name: values.name.trim(), description: values.description || '', isPublic: values.isPublic === 'true', ...(item?.revision != null ? { revision: item.revision } : {}) }
+  const wasPublic = Boolean(item?.isPublic || item?.public || item?.visibility === 'public')
+  const willBePublic = values.isPublic === 'true'
+  if (!wasPublic && willBePublic) {
+    const confirmed = await showConfirm('公开后，任何持有集合 ID 或分享链接的访问者都可能读取集合名称、描述、资源项标题、资源地址及当前内容；改回私有后，已有分享会立即无法访问。', {
+      title: '开启公开读取',
+      confirmText: '确认公开',
+    })
+    if (!confirmed) return
+  }
+  const body = {
+    name: values.name.trim(),
+    description: values.description || '',
+    viewMode: values.viewMode || 'grid',
+    isPublic: willBePublic,
+    ...(item?.revision != null ? { revision: item.revision } : {}),
+  }
   const result = await runAction(() => item ? accountApi.updateResourceCollection(item.id, body) : accountApi.createResourceCollection(body), { progress: item ? '正在保存集合…' : '正在创建集合…', success: item ? '集合已更新' : '集合已创建' })
   if (result) { await loadCollections(); if (item) await openCollection(item.id) }
 }
 async function editCollectionItem (collectionId, itemId = null) {
+  const collection = state.collections.selected
+  if (!collection || String(collection.id) !== String(collectionId)) return
+  if (collection.status !== 'active') {
+    await showAlert('回收站中的集合不能编辑资源项。')
+    return
+  }
   const item = (state.collections.itemResult?.items || []).find(entry => String(entry.id) === String(itemId))
-  const values = await showEditDialog({ title: item ? '编辑资源项' : '添加资源', fields: [{ name: 'title', label: '标题' }, { name: 'url', label: '资源地址' }, { name: 'coverUrl', label: '封面地址', required: false }, { name: 'type', label: '类型', type: 'select', options: [{ value: 'auto', label: '自动识别' }, { value: 'image', label: '图片' }, { value: 'video', label: '视频' }, { value: 'audio', label: '音频' }, { value: 'iframe', label: '页面' }] }], values: { title: item?.title || '', url: item?.url || '', coverUrl: item?.coverUrl || '', type: item?.type || 'auto' }, confirmText: item ? '保存' : '添加' })
-  if (!values?.title?.trim() || !values?.url?.trim()) return
-  const body = { title: values.title.trim(), url: values.url.trim(), coverUrl: values.coverUrl?.trim() || '', type: values.type, ...(state.collections.selected?.itemsRevision != null ? { itemsRevision: state.collections.selected.itemsRevision } : {}) }
+  const values = await showEditDialog({
+    title: item ? '编辑资源项' : '添加资源',
+    fields: [
+      { name: 'title', label: '标题', required: false },
+      { name: 'url', label: '资源地址', inputType: 'url', placeholder: 'https://', required: true },
+      { name: 'coverUrl', label: '封面地址', inputType: 'url', placeholder: 'https://（可选）', required: false },
+      { name: 'type', label: '类型', type: 'select', options: [{ value: 'auto', label: '自动识别' }, { value: 'image', label: '图片' }, { value: 'video', label: '视频' }, { value: 'audio', label: '音频' }, { value: 'iframe', label: '页面' }] },
+    ],
+    values: { title: item?.title || '', url: item?.url || '', coverUrl: item?.coverUrl || '', type: item?.type || 'auto' },
+    confirmText: item ? '保存' : '添加',
+  })
+  if (!values) return
+  const title = String(values.title || '').trim()
+  const url = String(values.url || '').trim()
+  if (!url) {
+    await showAlert('请填写资源地址。', { title: '无法保存资源项' })
+    return
+  }
+  const body = { title, url, coverUrl: values.coverUrl?.trim() || '', type: values.type || 'auto', ...(collection.itemsRevision != null ? { itemsRevision: collection.itemsRevision } : {}) }
   const result = await runAction(() => item ? accountApi.updateResourceCollectionItem(collectionId, item.id, body) : accountApi.createResourceCollectionItem(collectionId, body), { progress: '正在保存资源项…', success: item ? '资源项已更新' : '资源项已添加' })
   if (result) await openCollection(collectionId)
 }
@@ -467,7 +636,8 @@ async function editCollectionItem (collectionId, itemId = null) {
 async function batchAddCollectionItems (collectionId, trigger) {
   const editor = trigger.closest('.account-collection-editor')
   const input = editor?.querySelector('[data-collection-batch]')
-  const urls = extractCollectionHttpsUrls(input?.value)
+  const rawValue = state.collections.batchText || input?.value || ''
+  const urls = extractCollectionHttpsUrls(rawValue)
   if (!urls.length) {
     setMessage('', '请输入至少一个 HTTPS 资源地址')
     render()
@@ -475,29 +645,43 @@ async function batchAddCollectionItems (collectionId, trigger) {
   }
   const loaded = await runAction(() => loadAllCollectionItems(collectionId), { progress: '正在检查资源地址…' })
   if (!loaded) return
-  const existing = new Set(loaded.items.map(item => String(item?.url || '').trim()))
-  const additions = urls.filter(url => !existing.has(url))
+  const existing = new Set(loaded.items.map(item => normalizeCollectionItemUrlForComparison(item?.url)))
+  const additions = urls.filter(url => !existing.has(normalizeCollectionItemUrlForComparison(url)))
   if (!additions.length) {
     setMessage('输入的地址已全部存在，未新增资源', '')
     render()
     return
   }
-  const operations = additions.map(url => ({
-    action: 'create',
-    item: { title: '', url, type: 'auto' },
-  }))
-  const revision = loaded.itemsRevision ?? state.collections.selected?.itemsRevision
-  const result = await runAction(() => accountApi.batchResourceCollectionItems(collectionId, {
-    operations,
-    ...(revision !== undefined && revision !== null ? { itemsRevision: revision } : {}),
-  }), { progress: `正在添加 ${additions.length} 项资源…`, success: `已添加 ${additions.length} 项资源` })
-  if (!result) return
-  if (input) input.value = ''
-  state.collections.itemPage = Math.max(1, Math.ceil((loaded.items.length + additions.length) / state.collections.itemLimit))
+  // The service caps one transaction at 100 operations. Split large pastes
+  // while carrying the returned itemsRevision into the next transaction.
+  const chunks = []
+  for (let index = 0; index < additions.length; index += 100) chunks.push(additions.slice(index, index + 100))
+  let revision = loaded.itemsRevision ?? state.collections.selected?.itemsRevision
+  let addedCount = 0
+  for (const chunk of chunks) {
+    const operations = chunk.map(url => ({ action: 'create', item: { title: '', url, type: 'auto' } }))
+    const result = await runAction(() => accountApi.batchResourceCollectionItems(collectionId, {
+      operations,
+      ...(revision !== undefined && revision !== null ? { itemsRevision: revision } : {}),
+    }), { progress: `正在添加 ${Math.min(additions.length, addedCount + chunk.length)}/${additions.length} 项资源…` })
+    if (!result) {
+      if (addedCount) setMessage(`已添加 ${addedCount} 项资源，剩余内容未完成。`, '')
+      return
+    }
+    addedCount += chunk.length
+    revision = result.itemsRevision ?? (revision == null ? revision : Number(revision) + 1)
+  }
+  state.collections.batchText = ''
+  state.collections.itemPage = Math.max(1, Math.ceil((loaded.items.length + addedCount) / state.collections.itemLimit))
+  setMessage(`已添加 ${addedCount} 项资源`, '')
   await openCollection(collectionId)
 }
 
 async function moveCollectionItem (collectionId, itemId, direction) {
+  if (state.collections.selected?.status !== 'active') {
+    await showAlert('回收站中的集合不能调整资源顺序。')
+    return
+  }
   const loaded = await runAction(() => loadAllCollectionItems(collectionId), { progress: '正在读取资源顺序…' })
   if (!loaded) return
   const index = loaded.items.findIndex(item => String(item?.id) === String(itemId))
@@ -527,6 +711,31 @@ async function loadSessions () {
   state.sessions = Array.isArray(result) ? result : (result?.items || [])
 }
 
+function readAccountLocation () {
+  const hash = String(window.location.hash || '').replace(/^#/, '')
+  const hashParts = hash.split('/').filter(Boolean)
+  const query = new URLSearchParams(window.location.search)
+  const pathParts = String(window.location.pathname || '').split('/').filter(Boolean)
+  const pathTab = pathParts[0] === 'account' ? pathParts[1] : ''
+  let hashTab = hashParts[0] || ''
+  let collectionId = ''
+  if (hashTab === 'collections' && hashParts[1]) {
+    try { collectionId = decodeURIComponent(hashParts.slice(1).join('/')) } catch { collectionId = hashParts.slice(1).join('/') }
+  }
+  if (!hashTab) hashTab = query.get('tab') || pathTab
+  if (!collectionId && hashTab === 'collections') collectionId = String(query.get('collectionId') || '')
+  return {
+    tab: normalizeAccountTab(hashTab || 'profile'),
+    collectionId: collectionId.trim(),
+  }
+}
+
+function writeCollectionLocation (id = '') {
+  const normalizedId = String(id || '').trim()
+  const suffix = normalizedId ? `/${encodeURIComponent(normalizedId)}` : ''
+  window.history.replaceState(null, '', `#collections${suffix}`)
+}
+
 async function loadActivePanel () {
   if (!state.auth.authenticated) return
   if (state.auth.user?.mustChangePassword && state.activeTab !== 'security') {
@@ -534,12 +743,23 @@ async function loadActivePanel () {
     window.history.replaceState(null, '', '#security')
   }
   state.activeTab = normalizeAccountTab(state.activeTab, state.auth.user)
-  window.history.replaceState(null, '', `#${state.activeTab}`)
+  const locationState = readAccountLocation()
+  const routeCollectionId = state.activeTab === 'collections' ? locationState.collectionId : ''
+  window.history.replaceState(null, '', state.activeTab === 'collections' && routeCollectionId
+    ? `#collections/${encodeURIComponent(routeCollectionId)}`
+    : `#${state.activeTab}`)
   state.loading = true
   render()
   try {
     if (state.activeTab === 'kml') await loadKml()
-    else if (state.activeTab === 'collections') await loadCollections()
+    else if (state.activeTab === 'collections') {
+      await loadCollections()
+      if (routeCollectionId) {
+        state.collections.itemPage = 1
+        state.collections.batchText = ''
+        await openCollection(routeCollectionId)
+      }
+    }
     else if (state.activeTab === 'favorites') await loadFavorites()
     else if (state.activeTab === 'shares') await loadShares()
     else if (state.activeTab === 'security') {
@@ -555,8 +775,37 @@ async function loadActivePanel () {
   }
 }
 
+let locationChangeInFlight = false
+
+async function handleAccountLocationChange () {
+  if (!state.root || !state.auth.authenticated || locationChangeInFlight) return
+  const next = readAccountLocation()
+  const currentCollectionId = String(state.collections.selected?.id || '')
+  const needsCollectionReset = next.tab !== 'collections' || next.collectionId !== currentCollectionId
+  if (next.tab === state.activeTab && !needsCollectionReset) return
+  locationChangeInFlight = true
+  try {
+    state.activeTab = next.tab
+    if (needsCollectionReset) {
+      state.collections.selected = null
+      state.collections.itemResult = null
+      state.collections.itemPage = 1
+      state.collections.batchText = ''
+    }
+    await loadActivePanel()
+  } finally {
+    locationChangeInFlight = false
+  }
+}
+
 function writeActiveTab (tab) {
   state.activeTab = normalizeAccountTab(tab, state.auth.user)
+  if (state.activeTab === 'collections') {
+    state.collections.selected = null
+    state.collections.itemResult = null
+    state.collections.itemPage = 1
+    state.collections.batchText = ''
+  }
   window.history.replaceState(null, '', `#${state.activeTab}`)
 }
 
@@ -690,6 +939,7 @@ async function handleSubmit (event) {
   if (type === 'collection-filter') {
     state.collections.search = form.elements.search.value.trim()
     state.collections.status = form.elements.status.value
+    state.collections.visibility = form.elements.visibility?.value || 'all'
     state.collections.page = 1
     state.collections.sort = form.elements.sort?.value || 'updatedAt'
     state.collections.order = form.elements.order?.value || 'desc'
@@ -1318,18 +1568,33 @@ async function handleClick (event) {
     await loadCollections()
   } else if (action === 'open-collection') {
     state.collections.itemPage = 1
+    state.collections.batchText = ''
     await runAction(() => openCollection(id), { progress: '正在读取资源集合…' })
   } else if (action === 'close-collection') {
     state.collections.selected = null
     state.collections.itemResult = null
     state.collections.itemPage = 1
+    state.collections.itemTotal = 0
+    state.collections.itemPageCount = 1
+    state.collections.itemHasNext = false
+    state.collections.batchText = ''
+    writeCollectionLocation()
+  } else if (action === 'collection-references') {
+    showCollectionReferences(id)
   } else if (action === 'edit-collection') {
     await editCollection(id)
     await loadCollections()
   } else if (action === 'trash-collection') {
     if (!(await showConfirm('移入回收站后，引用该集合的点位将暂时无法读取。', { title: '移入回收站' }))) return
     const result = await runAction(() => accountApi.trashResourceCollection(id), { progress: '正在移入回收站…', success: '集合已移入回收站' })
-    if (result) await loadCollections()
+    if (result) {
+      if (String(state.collections.selected?.id || '') === String(id)) {
+        state.collections.selected = null
+        state.collections.itemResult = null
+        writeCollectionLocation()
+      }
+      await loadCollections()
+    }
   } else if (action === 'restore-collection') {
     const result = await runAction(() => accountApi.restoreResourceCollection(id), { progress: '正在恢复集合…', success: '集合已恢复' })
     if (result) await loadCollections()
@@ -1338,6 +1603,10 @@ async function handleClick (event) {
   } else if (action === 'edit-collection-item') {
     await editCollectionItem(id, target.dataset.itemId)
   } else if (action === 'delete-collection-item') {
+    if (state.collections.selected?.status !== 'active') {
+      await showAlert('回收站中的集合不能删除资源项。')
+      return
+    }
     if (!(await showConfirm('确定删除此资源项吗？', { title: '删除资源项' }))) return
     const result = await runAction(() => accountApi.deleteResourceCollectionItem(id, target.dataset.itemId, state.collections.selected?.itemsRevision != null ? { itemsRevision: state.collections.selected.itemsRevision } : {}), { progress: '正在删除资源项…', success: '资源项已删除' })
     if (result) await openCollection(id)
@@ -1346,10 +1615,24 @@ async function handleClick (event) {
   } else if (action === 'move-collection-item') {
     await moveCollectionItem(id, target.dataset.itemId, target.dataset.direction)
   } else if (action === 'permanent-delete-collection') {
+    const latest = await runAction(() => accountApi.getResourceCollection(id), { progress: '正在核对集合引用…' })
+    if (!latest) return
+    const latestPayload = collectionPayload(latest)
+    const latestCollection = latestPayload?.collection || latestPayload
+    const referenceCount = Number(latestCollection?.referenceCount)
+    if (!latestCollection?.id || !Number.isSafeInteger(referenceCount) || referenceCount < 0) {
+      setMessage('', '集合引用信息读取不完整，未执行永久删除')
+      render()
+      return
+    }
+    const impactMessage = referenceCount > 0
+      ? `当前仍有 ${referenceCount.toLocaleString()} 处 KML 或分享引用该集合。永久删除后这些点位将无法读取，且集合内容不可恢复；服务端会在删除时再次校验引用。`
+      : '当前没有检测到活动引用。永久删除后集合及其资源项将不可恢复。'
+    if (!(await showConfirm(impactMessage, { title: '确认永久删除', confirmText: '继续删除' }))) return
     const password = await showAccountPasswordDialog({ title: '验证密码后永久删除', message: '请输入当前登录密码，确认永久删除该资源集合。', autocomplete: 'current-password' })
     if (!password) return
     const result = await runAction(() => accountApi.permanentlyDeleteResourceCollection(id, password), { progress: '正在永久删除集合…', success: '集合已永久删除' })
-    if (result) { state.collections.selected = null; await loadCollections() }
+    if (result) { state.collections.selected = null; state.collections.itemResult = null; writeCollectionLocation(); await loadCollections() }
   } else if (action === 'collection-page') {
     state.collections.page = Math.max(1, Number(target.dataset.page || 1)); await loadCollections()
   } else if (action === 'collection-item-page') {
@@ -1548,6 +1831,11 @@ function handleChange (event) {
   }
 }
 
+function handleInput (event) {
+  const batch = event.target.closest?.('[data-collection-batch]')
+  if (batch) state.collections.batchText = batch.value
+}
+
 function clearKmlDragState (root) {
   root?.querySelectorAll('.is-account-kml-dragging, .is-account-kml-drop-target').forEach(element => {
     element.classList.remove('is-account-kml-dragging', 'is-account-kml-drop-target')
@@ -1686,11 +1974,13 @@ export async function initAccountApp () {
   if (!state.root) throw new Error('缺少用户中心根节点')
   state.root.hidden = false
   bindKmlOrganizationEvents(state.root)
-  const pathTab = window.location.pathname.split('/').filter(Boolean)[1]
-  state.activeTab = normalizeAccountTab(window.location.hash || pathTab)
+  state.activeTab = readAccountLocation().tab
   state.root.addEventListener('submit', handleSubmit)
   state.root.addEventListener('click', handleClick)
   state.root.addEventListener('change', handleChange)
+  state.root.addEventListener('input', handleInput)
+  window.addEventListener('hashchange', handleAccountLocationChange)
+  window.addEventListener('popstate', handleAccountLocationChange)
   subscribeAuth(auth => {
     state.auth = auth
     if (!auth.authenticated) clearPrivateState()

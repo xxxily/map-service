@@ -231,12 +231,13 @@ export function showEditDialog (options = {}) {
               return `
                 <label style="display: block; margin-bottom: 12px;">
                   <span style="display: block; font-size: 13px; margin-bottom: 4px; color: #4b5563; font-weight: 500;">${escapeHtml(field.label)}</span>
-                  <select name="${escapeHtml(field.name)}" style="width: 100%; height: 36px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-size: 13px; outline: none; background: #fff;">
+                  <select name="${escapeHtml(field.name)}" ${field.required ? 'required' : ''} style="width: 100%; height: 36px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-size: 13px; outline: none; background: #fff;">
                     ${(field.options || []).map(option => {
                       const optionValue = typeof option === 'object' ? option.value : option
                       const optionLabel = typeof option === 'object' ? option.label : option
                       const selected = String(values[field.name] ?? '') === String(optionValue) ? 'selected' : ''
-                      return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(optionLabel)}</option>`
+                      const disabled = typeof option === 'object' && option.disabled ? 'disabled' : ''
+                      return `<option value="${escapeHtml(optionValue)}" ${selected} ${disabled}>${escapeHtml(optionLabel)}</option>`
                     }).join('')}
                   </select>
                   ${field.hint ? `<small style="display: block; margin-top: 4px; color: #6b7280; line-height: 1.45;">${escapeHtml(field.hint)}</small>` : ''}
@@ -273,10 +274,17 @@ export function showEditDialog (options = {}) {
                 </label>
                 `
             }
+            const inputType = ['text', 'url', 'email', 'number', 'password'].includes(String(field.inputType || ''))
+              ? String(field.inputType)
+              : 'text'
+            const placeholder = field.placeholder ? ` placeholder="${escapeHtml(field.placeholder)}"` : ''
+            const maxlength = Number.isSafeInteger(Number(field.maxlength)) && Number(field.maxlength) > 0
+              ? ` maxlength="${Number(field.maxlength)}"`
+              : ''
             return `
               <label style="display: block; margin-bottom: 12px;">
                 <span style="display: block; font-size: 13px; margin-bottom: 4px; color: #4b5563; font-weight: 500;">${escapeHtml(field.label)}</span>
-                <input type="text" name="${escapeHtml(field.name)}" value="${val}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-size: 13px; outline: none;"${field.required === false ? '' : ' required'}>
+                <input type="${inputType}" name="${escapeHtml(field.name)}" value="${val}"${placeholder}${maxlength} style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-size: 13px; outline: none;"${field.required === false ? '' : ' required'}>
                 ${field.hint ? `<small style="display: block; margin-top: 4px; color: #6b7280; line-height: 1.45;">${escapeHtml(field.hint)}</small>` : ''}
               </label>
             `
@@ -523,6 +531,8 @@ export function showChoiceDialog (options = {}) {
   const cancelText = options.cancelText || '取消'
   const dismissible = options.dismissible !== false
   const dialogClassName = getDialogClassName(options.dialogClassName)
+  const stackedChoices = options.choiceLayout === 'stacked'
+  const choiceActionsClass = stackedChoices ? ' app-dialog-choice-actions is-stacked' : ''
 
   root.hidden = false
   root.innerHTML = `
@@ -530,11 +540,13 @@ export function showChoiceDialog (options = {}) {
       <section class="app-dialog${dialogClassName ? ` ${dialogClassName}` : ''}" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
         <h2 id="app-dialog-title">${escapeHtml(title)}</h2>
         ${trustedMessageHtml ? `<div class="app-dialog-message app-dialog-message-rich">${trustedMessageHtml}</div>` : `<p>${escapeHtml(message)}</p>`}
-        <div class="app-dialog-actions" style="flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px;">
+        <div class="app-dialog-actions${choiceActionsClass}">
           ${choices.map(choice => `
-            <button type="button" class="${choice.class || 'app-dialog-secondary'}" data-choice-action="${escapeHtml(choice.value)}">${escapeHtml(choice.text)}</button>
+            <button type="button" class="${getDialogClassName(choice.class || 'app-dialog-secondary')}${stackedChoices ? ` app-dialog-choice${choice.selected ? ' is-selected' : ''}` : ''}" data-choice-action="${escapeHtml(choice.value)}">
+              ${stackedChoices ? `<span class="app-dialog-choice-icon" aria-hidden="true">${escapeHtml(choice.icon || '')}</span><span class="app-dialog-choice-copy"><strong>${escapeHtml(choice.text)}</strong>${choice.description ? `<small>${escapeHtml(choice.description)}</small>` : ''}</span>` : escapeHtml(choice.text)}
+            </button>
           `).join('')}
-          ${dismissible ? `<button type="button" class="app-dialog-secondary" data-dialog-action="cancel">${escapeHtml(cancelText)}</button>` : ''}
+          ${dismissible ? `<button type="button" class="app-dialog-secondary app-dialog-choice-cancel" data-dialog-action="cancel">${escapeHtml(cancelText)}</button>` : ''}
         </div>
       </section>
     </div>

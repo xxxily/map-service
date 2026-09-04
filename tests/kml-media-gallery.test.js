@@ -133,6 +133,36 @@ test('KML popup renders a first-click media preview and keeps details as a separ
   assert.equal(preview.items[0].type, 'image')
 })
 
+test('分享中的个人资源集合不可用时保留明确状态且点击链路打开状态面板', () => {
+  const feature = {
+    ...createFeature('collection-private', '私有集合', ''),
+    resourceCollectionStatus: { version: 1, sourceType: 'personal', accessState: 'private' },
+  }
+  const html = renderKmlFeaturePopupContent({ id: 'share-kml', isPublic: true }, feature, false)
+  const panelSource = readFileSync(new URL('../src/map/kml-content-panel.js', import.meta.url), 'utf8')
+
+  assert.equal(hasKmlFeaturePreviewMedia(feature), true)
+  assert.match(html, /资源集合 · 未公开/)
+  assert.match(html, /该资源集合未公开，当前分享无法读取。/)
+  assert.match(panelSource, /if \(isKmlResourceCollectionStatusFeature\(feature\)\) \{\s*return openKmlFeatureContentPanel\(kmlFile, feature\)/)
+})
+
+test('external collection failures expose safe HTTPS source actions', () => {
+  const panelSource = readFileSync(new URL('../src/map/kml-content-panel.js', import.meta.url), 'utf8')
+  assert.match(panelSource, /getSafeExternalCollectionUrl\s*\(feature\)/)
+  assert.match(panelSource, /url\.protocol !== 'https:'/)
+  assert.match(panelSource, /data-kml-collection-open-external/)
+  assert.match(panelSource, /data-kml-collection-copy-external/)
+  assert.match(panelSource, /navigator\.clipboard\?\.writeText/)
+  assert.match(panelSource, /window\.open\(externalUrl, '_blank', 'noopener,noreferrer'\)/)
+})
+
+test('resource collection streaming reads honor request AbortSignal', () => {
+  const panelSource = readFileSync(new URL('../src/map/kml-content-panel.js', import.meta.url), 'utf8')
+  assert.match(panelSource, /readJsonResponseBounded\(response, requestController\.signal\)/)
+  assert.match(panelSource, /if \(signal\?\.aborted\) \{[\s\S]*?await reader\.cancel\(\)\.catch\(\(\) => \{\}\)/)
+})
+
 test('public share popup exposes interaction actions even when a point has no media', () => {
   const feature = createFeature('feature-empty', '无媒体点位', '')
   const html = renderKmlFeaturePopupContent({

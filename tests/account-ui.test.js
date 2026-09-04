@@ -34,6 +34,7 @@ import {
   normalizeCompletePagedResult,
   normalizeAccountTab,
   normalizeKmlSort,
+  normalizeResourceCollectionItemsPage,
   selectedActiveKmlIdsInDisplayOrder,
   normalizeSpatialAccess,
   passwordAccessLabel,
@@ -225,6 +226,46 @@ test('用户中心按自定义角色权限裁剪页签和 KML 写能力', () => 
     permissions: ['kml.own.read', 'share.own.manage'],
   }
   assert.deepEqual(getAvailableAccountTabs(shareUser), ['kml', 'shares', 'security'])
+
+  const collectionManager = {
+    permissions: ['resource_collection.own.manage'],
+  }
+  assert.equal(getAccountCapabilities(collectionManager).canReadCollections, true)
+  assert.equal(getAccountCapabilities(collectionManager).canWriteCollections, true)
+  assert.deepEqual(getAvailableAccountTabs(collectionManager), ['collections', 'security'])
+})
+
+test('资源集合项分页响应严格校验分页、版本和资源地址', () => {
+  const valid = normalizeResourceCollectionItemsPage({
+    collectionId: 'rc_1',
+    items: [
+      { id: 'item-2', url: 'https://cdn.example.com/2.jpg', title: '第二项' },
+      { id: 'item-3', url: 'https://cdn.example.com/3.jpg', title: '第三项' },
+    ],
+    pagination: { page: 2, limit: 2, total: 4, pageCount: 2, hasNext: false },
+    collectionRevision: 7,
+    revision: 7,
+    itemsRevision: 4,
+  }, { page: 2, limit: 2 })
+  assert.equal(valid.page, 2)
+  assert.equal(valid.total, 4)
+  assert.equal(valid.collectionRevision, 7)
+  assert.equal(valid.itemsRevision, 4)
+
+  const invalidCases = [
+    ['missing pagination', { items: valid.items, collectionRevision: 7, itemsRevision: 4 }],
+    ['wrong page count', { ...valid, page: 2, limit: 2, total: 4, pageCount: 3, hasNext: false }],
+    ['wrong item count', { ...valid, items: valid.items.slice(0, 1) }],
+    ['duplicate item id', { ...valid, items: [valid.items[0], { ...valid.items[1], id: valid.items[0].id }] }],
+    ['unsafe item url', { ...valid, items: [valid.items[0], { ...valid.items[1], url: 'http://cdn.example.com/3.jpg' }] }],
+    ['missing revision', { ...valid, itemsRevision: 0 }],
+  ]
+  for (const [label, payload] of invalidCases) {
+    assert.throws(() => normalizeResourceCollectionItemsPage(payload, { page: 2, limit: 2 }), error => {
+      assert.equal(error.code, 'RESOURCE_COLLECTION_SCHEMA_INVALID', label)
+      return true
+    })
+  }
 })
 
 test('多 KML 分享构造保留全部所选活跃文件，由后台配置限制最终数量', () => {
@@ -717,9 +758,80 @@ test('个人资源集合详情提供封面、批量添加和跨页排序入口',
 
   assert.match(html, /data-collection-batch/)
   assert.match(html, /data-account-action="batch-add-collection-items"/)
+  assert.match(html, /<details class="account-collection-batch">/)
+  assert.match(html, /data-account-action="batch-add-collection-items"[^>]*>开始添加/)
+  assert.equal((html.match(/data-account-action="add-collection-item"/g) || []).length, 1)
   assert.match(html, /data-account-action="move-collection-item"[^>]*data-direction="up"/)
   assert.match(html, /封面：https:\/\/cdn\.example\.com\/3-cover\.jpg/)
-  assert.match(html, /第 2 页，共 2 页/)
+  assert.match(html, /第 2 页，共 2 页 · 共 4 项/)
+})
+
+test('资源集合回收站详情只读，空集合保留添加入口', () => {
+  const base = {
+    auth: {
+      user: {
+        username: 'collection-owner',
+        displayName: '集合用户',
+        permissions: ['account.self.read', 'resource_collection.own.read', 'resource_collection.own.write'],
+      },
+      config: {},
+    },
+    activeTab: 'collections',
+    loading: false,
+    busy: false,
+    notice: '',
+    error: '',
+    kml: { items: [], directories: { items: [], uncategorized: { name: '未分类' } }, selected: new Set(), usage: {} },
+    favorites: { items: [], search: '' },
+    shares: { items: [], search: '', status: '' },
+    sessions: [],
+  }
+  const trashed = renderAccountShell({
+    ...base,
+    collections: {
+      items: [], search: '', status: 'trashed', visibility: 'all', page: 1, limit: 20, sort: 'updatedAt', order: 'desc', total: 0,
+      selected: { id: 'rc-trashed', name: '已归档集合', status: 'trashed', visibility: 'private', itemCount: 1, revision: 3, itemsRevision: 2 },
+      itemResult: { items: [{ id: 'item-1', position: 0, title: '只读资源', url: 'https://example.com/a', type: 'image' }], total: 1 },
+      itemPage: 1, itemLimit: 40, itemTotal: 1, itemPageCount: 1, itemHasNext: false, batchText: '',
+    },
+  })
+  assert.match(trashed, /data-account-action="restore-collection"/)
+  assert.doesNotMatch(trashed, /data-account-action="batch-add-collection-items"/)
+  assert.doesNotMatch(trashed, /data-account-action="edit-collection-item"/)
+  assert.doesNotMatch(trashed, /data-account-action="delete-collection-item"/)
+
+  const empty = renderAccountShell({
+    ...base,
+    collections: {
+      items: [], search: '', status: 'active', visibility: 'all', page: 1, limit: 20, sort: 'updatedAt', order: 'desc', total: 0,
+      selected: { id: 'rc-empty', name: '待维护集合', status: 'active', visibility: 'private', itemCount: 0, revision: 1, itemsRevision: 1 },
+      itemResult: { items: [], total: 0 },
+      itemPage: 1, itemLimit: 40, itemTotal: 0, itemPageCount: 1, itemHasNext: false, batchText: '',
+    },
+  })
+  assert.match(empty, /添加第一项/)
+  assert.match(empty, /data-account-action="batch-add-collection-items"/)
+  assert.match(empty, /data-account-action="add-collection-item"/)
+})
+
+test('资源集合来源选择器使用纵向选项布局，资源项标题可选而地址必填', () => {
+  const source = fs.readFileSync(path.join(projectRoot, 'src/map/resource-collection-source.js'), 'utf8')
+  const dialogSource = fs.readFileSync(path.join(projectRoot, 'src/ui/dialog.js'), 'utf8')
+  const appSource = fs.readFileSync(path.join(projectRoot, 'src/account/app.js'), 'utf8')
+  const accountDialogSource = fs.readFileSync(path.join(projectRoot, 'src/account/dialogs.js'), 'utf8')
+  const cssSource = fs.readFileSync(path.join(projectRoot, 'src/account/account.css'), 'utf8')
+  assert.match(source, /choiceLayout: 'stacked'/)
+  assert.match(source, /dataUrl/)
+  assert.match(appSource, /name: 'title', label: '标题', required: false/)
+  assert.match(appSource, /name: 'url', label: '资源地址', inputType: 'url', placeholder: 'https:\/\/', required: true/)
+  assert.match(dialogSource, /const inputType = \['text', 'url', 'email', 'number', 'password'\]/)
+  assert.match(accountDialogSource, /let closed = false/)
+  assert.match(accountDialogSource, /closed = true[\s\S]*requestSequence \+= 1/)
+  assert.match(accountDialogSource, /new AbortController\(\)/)
+  assert.match(accountDialogSource, /requestController\?\.abort\(\)/)
+  assert.match(accountDialogSource, /if \(closed \|\| sequence !== requestSequence\) return/)
+  assert.match(cssSource, /\.account-collection-card-list\s*\{[\s\S]*grid-template-columns: repeat\(2/)
+  assert.match(cssSource, /@media \(max-width: 720px\)[\s\S]*\.account-collection-card-list|@media \(max-width: 980px\)[\s\S]*\.account-collection-card-list/)
 })
 
 test('KML 配额只显示使用中占用并单列回收站物理存储', () => {

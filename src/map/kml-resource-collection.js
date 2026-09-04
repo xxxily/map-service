@@ -5,6 +5,7 @@ import {
   KML_RESOURCE_COLLECTION_MAX_ITEMS,
   KML_RESOURCE_COLLECTION_PAGE_SIZE,
   getKmlResourceCollectionPage,
+  isKmlResourceCollectionStatus,
   normalizeKmlResourceCollection,
   tryNormalizeKmlResourceCollection,
 } from '../../shared/kml-resource-collection.js'
@@ -289,6 +290,16 @@ export function isKmlResourceCollectionFeature (feature) {
   return feature?.type === 'Point' && Array.isArray(feature?.resourceCollection?.items)
 }
 
+export function isKmlResourceCollectionStatusFeature (feature) {
+  return feature?.type === 'Point' && isKmlResourceCollectionStatus(feature)
+}
+
+export function isKmlResourceCollectionFeatureLike (feature) {
+  return isKmlResourceCollectionFeature(feature) ||
+    Boolean(feature?.type === 'Point' && feature?.resourceCollectionRef) ||
+    isKmlResourceCollectionStatusFeature(feature)
+}
+
 export function getKmlResourceCollectionItemCount (feature) {
   return isKmlResourceCollectionFeature(feature) ? feature.resourceCollection.items.length : 0
 }
@@ -363,10 +374,13 @@ export async function showKmlResourceCollectionEditor (value, options = {}) {
               </div>
               <button type="button" data-resource-action="add">添加资源</button>
             </div>
-            <div class="kml-resource-batch">
-              <textarea rows="3" data-resource-batch placeholder="粘贴一个或多个 HTTPS 地址">${escapeHtml(batchInput)}</textarea>
-              <button type="button" data-resource-action="batch-add">批量添加</button>
-            </div>
+            <details class="kml-resource-batch"${batchInput ? ' open' : ''}>
+              <summary><span>批量添加</span><small>一次粘贴多个 HTTPS 地址</small></summary>
+              <div class="kml-resource-batch-body">
+                <textarea rows="3" data-resource-batch placeholder="粘贴一个或多个 HTTPS 地址">${escapeHtml(batchInput)}</textarea>
+                <button type="button" data-resource-action="batch-add">开始添加</button>
+              </div>
+            </details>
             <div class="kml-resource-editor-status"><span>${draft.items.length} / ${KML_RESOURCE_COLLECTION_MAX_ITEMS}</span><span>第 ${page} / ${pageCount} 页</span></div>
             <div class="kml-resource-editor-list is-${escapeHtml(draft.viewMode)}">
               ${visibleItems.map((item, offset) => renderEditorItem(item, start + offset, draft.items.length, draft.viewMode, validation)).join('') || '<div class="kml-resource-editor-empty">暂无资源</div>'}

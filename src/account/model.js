@@ -21,6 +21,11 @@ function userHasPermission (user, permission) {
   if (permissions.includes('system.super_admin') || permissions.includes(permission)) return true
   if (permission === 'account.self.read' && permissions.includes('account.self.update')) return true
   if (permission === 'kml.own.read' && permissions.includes('kml.own.write')) return true
+  if (permission === 'resource_collection.own.read' && (
+    permissions.includes('resource_collection.own.write') ||
+    permissions.includes('resource_collection.own.manage')
+  )) return true
+  if (permission === 'resource_collection.own.write' && permissions.includes('resource_collection.own.manage')) return true
   return false
 }
 
@@ -135,6 +140,77 @@ export function normalizeCompletePagedResult (result, options = {}) {
     fail('KML 文件列表包含无效文件，已停止加载')
   }
   return { ...result, items: result.items, page, limit, total }
+}
+
+/**
+ * Validate a personal resource-collection item page before it reaches the UI.
+ * The item endpoint is a live, revisioned contract; silently filling missing
+ * pagination fields would make a partial response look like an empty page.
+ */
+export function normalizeResourceCollectionItemsPage (value, options = {}) {
+  const requestedPage = Number(options.page ?? 1)
+  const requestedLimit = Number(options.limit ?? 40)
+  const fail = message => {
+    throw Object.assign(new Error(message), { code: 'RESOURCE_COLLECTION_SCHEMA_INVALID' })
+  }
+  if (!Number.isSafeInteger(requestedPage) || requestedPage < 1 ||
+      !Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
+    fail('资源集合项分页参数不正确，请刷新后重试')
+  }
+
+  let result = value
+  if (result?.result && typeof result.result === 'object' && !Array.isArray(result.result)) result = result.result
+  if (result?.data && typeof result.data === 'object' && !Array.isArray(result.data)) result = result.data
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.items)) {
+    fail('资源集合项列表响应不完整，请刷新后重试')
+  }
+
+  const readField = key => {
+    const top = result[key]
+    const nested = result.pagination?.[key]
+    if (top !== undefined && nested !== undefined && String(top) !== String(nested)) {
+      fail('资源集合项列表分页信息不一致，请刷新后重试')
+    }
+    return top !== undefined ? top : nested
+  }
+  const page = Number(readField('page'))
+  const limit = Number(readField('limit'))
+  const total = Number(readField('total'))
+  const pageCount = Number(readField('pageCount'))
+  const hasNext = readField('hasNext')
+  const collectionRevisionValue = readField('collectionRevision')
+  const revisionAlias = readField('revision')
+  if (collectionRevisionValue !== undefined && revisionAlias !== undefined &&
+      String(collectionRevisionValue) !== String(revisionAlias)) {
+    fail('资源集合版本信息不一致，请刷新后重试')
+  }
+  const collectionRevision = Number(collectionRevisionValue ?? revisionAlias)
+  const itemsRevision = Number(readField('itemsRevision'))
+  const expectedPageCount = Math.max(1, Math.ceil(total / limit))
+  const expectedItems = Math.min(limit, Math.max(0, total - (page - 1) * limit))
+  if (!Number.isSafeInteger(page) || page !== requestedPage || page < 1 ||
+      !Number.isSafeInteger(limit) || limit !== requestedLimit || limit < 1 || limit > 100 ||
+      !Number.isSafeInteger(total) || total < 0 ||
+      !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount !== expectedPageCount || page > pageCount ||
+      typeof hasNext !== 'boolean' || hasNext !== (page < pageCount) ||
+      !Number.isSafeInteger(collectionRevision) || collectionRevision < 1 ||
+      !Number.isSafeInteger(itemsRevision) || itemsRevision < 1 ||
+      result.items.length !== expectedItems) {
+    fail('资源集合项列表分页信息不完整，请刷新后重试')
+  }
+
+  const seenIds = new Set()
+  for (const item of result.items) {
+    const itemId = String(item?.id || '').trim()
+    const rawUrl = String(item?.url || '').trim()
+    let validUrl = false
+    try { validUrl = new URL(rawUrl).protocol === 'https:' } catch {}
+    if (!item || typeof item !== 'object' || Array.isArray(item) || !itemId || seenIds.has(itemId) || !validUrl) {
+      fail('资源集合项列表包含无效或重复条目，请刷新后重试')
+    }
+    seenIds.add(itemId)
+  }
+  return { ...result, items: result.items, page, limit, total, pageCount, hasNext, collectionRevision, itemsRevision }
 }
 
 export async function loadCompleteKmlPages (requestPage, options = {}) {

@@ -15,6 +15,7 @@ const SHARE_PASSWORD_DIGITS = '23456789'
 // encoded with encodeURIComponent on the server.
 const SHARE_PASSWORD_SPECIAL_CHARACTERS = '!$*+@'
 const SHARE_PASSWORD_ALPHABET = `${SHARE_PASSWORD_UPPERCASE}${SHARE_PASSWORD_LOWERCASE}${SHARE_PASSWORD_DIGITS}${SHARE_PASSWORD_SPECIAL_CHARACTERS}`
+const activeAccountDialogClosers = new Set()
 
 export function getShareDirectorySelectionState (fileIds, selectedItems) {
   const ids = Array.from(fileIds || [], id => String(id || '')).filter(Boolean)
@@ -75,6 +76,7 @@ function scriptDescriptorToText (script) {
 }
 
 function ensureAccountDialogRoot () {
+  for (const close of [...activeAccountDialogClosers]) close()
   let root = document.getElementById('app-dialog-root')
   if (!root) {
     root = document.createElement('div')
@@ -82,6 +84,15 @@ function ensureAccountDialogRoot () {
     document.body.appendChild(root)
   }
   return root
+}
+
+export function closeAccountDialogs () {
+  for (const close of [...activeAccountDialogClosers]) close()
+  const root = document.getElementById('app-dialog-root')
+  if (root) {
+    root.innerHTML = ''
+    root.hidden = true
+  }
 }
 
 export function showAccountPasswordDialog (options = {}) {
@@ -335,6 +346,172 @@ export function showAccountShareAccessEventsDialog (options = {}) {
   document.addEventListener('keydown', onKeydown)
   loadPage()
   return () => { if (!closed) cleanup() }
+}
+
+/**
+ * Show the redacted places where a personal resource collection is used.
+ * The server owns the reference index; this dialog deliberately exposes only
+ * navigable owner KML/share identifiers and an aggregate for other owners.
+ */
+export function showResourceCollectionReferencesDialog (options = {}) {
+  const root = ensureAccountDialogRoot()
+  const collection = options.collection || {}
+  const load = typeof options.onLoad === 'function'
+    ? options.onLoad
+    : async () => ({ items: [], page: 1, limit: 20, total: 0, pageCount: 1, hasNext: false })
+  let page = 1
+  let payload = { items: [], page: 1, limit: 20, total: 0, pageCount: 1, hasNext: false }
+  let loading = true
+  let errorMessage = ''
+  let requestSequence = 0
+  let closed = false
+  let requestController = null
+  const previousFocus = document.activeElement
+
+  const normalizePayload = value => {
+    let result = value
+    if (result?.result && typeof result.result === 'object') result = result.result
+    if (result?.data && typeof result.data === 'object') result = result.data
+    if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.items)) {
+      throw Object.assign(new Error('引用列表响应不完整，请稍后重试。'), { code: 'RESOURCE_COLLECTION_SCHEMA_INVALID' })
+    }
+    const readField = key => {
+      const top = result[key]
+      const nested = result.pagination?.[key]
+      if (top !== undefined && nested !== undefined && String(top) !== String(nested)) {
+        throw Object.assign(new Error('引用列表分页信息不一致，请稍后重试。'), { code: 'RESOURCE_COLLECTION_SCHEMA_INVALID' })
+      }
+      return top !== undefined ? top : nested
+    }
+    const currentPage = Number(readField('page'))
+    const limit = Number(readField('limit'))
+    const total = Number(readField('total'))
+    const pageCount = Number(readField('pageCount'))
+    const hasNext = readField('hasNext')
+    const expectedPage = page
+    const expectedPageCount = Math.max(1, Math.ceil(total / limit))
+    const expectedItems = Math.min(limit, Math.max(0, total - (currentPage - 1) * limit))
+    if (!Number.isSafeInteger(currentPage) || currentPage !== expectedPage || currentPage < 1 ||
+        !Number.isSafeInteger(limit) || limit < 1 || limit > 100 ||
+        !Number.isSafeInteger(total) || total < 0 ||
+        !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount !== expectedPageCount || currentPage > pageCount ||
+        typeof hasNext !== 'boolean' || hasNext !== (currentPage < pageCount) ||
+        result.items.length !== expectedItems || result.items.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+      throw Object.assign(new Error('引用列表分页信息不完整，请稍后重试。'), { code: 'RESOURCE_COLLECTION_SCHEMA_INVALID' })
+    }
+    return { ...result, items: result.items, page: currentPage, limit, total, pageCount, hasNext }
+  }
+
+  const sourceLabel = item => {
+    if (item?.sourceScope === 'owner_kml') return '我的 KML'
+    if (item?.sourceScope === 'published_share') return '我的分享'
+    return '其他引用'
+  }
+
+  const render = () => {
+    root.hidden = false
+    const total = Number(payload.total || 0)
+    const pageCount = Math.max(1, Number(payload.pageCount || 1))
+    const itemsHtml = payload.items.length
+      ? payload.items.map(item => {
+          if (item?.sourceScope === 'other') {
+            return `<article class="account-reference-row is-aggregate"><div><strong>其他账号的引用</strong><p>已脱敏显示，无法从此处定位来源。</p></div><span>${Number(item.referenceCount || 0).toLocaleString()} 处</span></article>`
+          }
+          const target = item.sourceScope === 'owner_kml'
+            ? item.kmlName || item.kmlId || '未命名 KML'
+            : item.publicId ? `分享 ${item.publicId}` : '未命名分享'
+          const detail = item.sourceScope === 'owner_kml'
+            ? `点位 ${item.featureId || '未知'}${item.kmlId ? ` · ${item.kmlId}` : ''}`
+            : `状态：${item.shareStatus || '未知'}${item.shareItemId ? ` · 文件 ${item.shareItemId}` : ''}`
+          return `<article class="account-reference-row"><div><span class="account-badge is-muted">${escapeHtml(sourceLabel(item))}</span><strong>${escapeHtml(target)}</strong><p>${escapeHtml(detail)}</p></div><time>${escapeHtml(formatDateTime(item.updatedAt))}</time></article>`
+        }).join('')
+      : '<div class="account-empty is-compact"><strong>暂无引用</strong><p>该集合当前没有可显示的 KML 或分享引用。</p></div>'
+    const body = loading
+      ? '<div class="account-loading is-compact" role="status"><span></span><p>正在读取引用…</p></div>'
+      : errorMessage
+        ? `<div class="account-dialog-error" role="alert">${escapeHtml(errorMessage)}<button type="button" class="account-secondary-button" data-resource-reference-action="retry">重试</button></div>`
+        : `<div class="account-reference-list">${itemsHtml}</div><footer class="account-reference-footer"><button type="button" class="account-secondary-button" data-resource-reference-action="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${page} 页，共 ${pageCount} 页 · 共 ${total.toLocaleString()} 处</span><button type="button" class="account-secondary-button" data-resource-reference-action="next" ${payload.hasNext ? '' : 'disabled'}>下一页</button></footer>`
+    root.innerHTML = `
+      <div class="app-dialog-backdrop" data-resource-reference-action="close">
+        <section class="app-dialog account-collection-references-dialog" role="dialog" aria-modal="true" aria-labelledby="resource-reference-title">
+          <header class="account-dialog-heading"><div><p class="account-eyebrow">资源集合引用</p><h2 id="resource-reference-title">${escapeHtml(collection.name || '资源集合')}</h2><p>仅显示你有权查看的来源；其他账号的引用只返回聚合数量。</p></div><button type="button" class="account-dialog-close" data-resource-reference-action="close" aria-label="关闭" title="关闭">×</button></header>
+          <div class="account-collection-references-body">${body}</div>
+        </section>
+      </div>
+    `
+    root.querySelector('[data-resource-reference-action="close"]:not(.app-dialog-backdrop)')?.focus()
+  }
+
+  const cleanup = () => {
+    root.removeEventListener('click', onClick)
+    document.removeEventListener('keydown', onKeydown)
+    if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
+  }
+  const close = () => {
+    if (closed) return
+    closed = true
+    requestSequence += 1
+    requestController?.abort()
+    requestController = null
+    activeAccountDialogClosers.delete(close)
+    cleanup()
+    root.innerHTML = ''
+    root.hidden = true
+  }
+  activeAccountDialogClosers.add(close)
+  const loadPage = async nextPage => {
+    if (closed) return
+    const sequence = ++requestSequence
+    requestController?.abort()
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    requestController = controller
+    loading = true
+    errorMessage = ''
+    page = Math.max(1, Number(nextPage || 1))
+    render()
+    try {
+      const result = normalizePayload(await load({ page, limit: 20 }, controller ? { signal: controller.signal } : {}))
+      if (closed || sequence !== requestSequence) return
+      payload = result
+      page = result.page
+    } catch (error) {
+      if (closed || sequence !== requestSequence) return
+      if (error?.name === 'AbortError') return
+      errorMessage = error?.message || '引用列表加载失败，请稍后重试。'
+    } finally {
+      if (requestController === controller) requestController = null
+      if (!closed && sequence === requestSequence) {
+        loading = false
+        render()
+      }
+    }
+  }
+  const onClick = event => {
+    const target = event.target.closest('[data-resource-reference-action]')
+    if (!target) return
+    if (target.classList.contains('app-dialog-backdrop') && target.querySelector('.account-collection-references-dialog')?.contains(event.target)) return
+    const action = target.dataset.resourceReferenceAction
+    if (action === 'close') {
+      close()
+      return
+    }
+    if (loading) return
+    if (action === 'retry') {
+      void loadPage(page)
+      return
+    }
+    if (action === 'prev' && page > 1) void loadPage(page - 1)
+    if (action === 'next' && payload.hasNext) void loadPage(page + 1)
+  }
+  const onKeydown = event => {
+    if (event.key !== 'Escape') return
+    event.preventDefault()
+    close()
+  }
+  root.addEventListener('click', onClick)
+  document.addEventListener('keydown', onKeydown)
+  render()
+  void loadPage(page)
 }
 
 export function showAccountShareDialog (options = {}) {

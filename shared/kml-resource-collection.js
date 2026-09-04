@@ -8,6 +8,30 @@ export const KML_RESOURCE_COLLECTION_ITEM_TYPES = Object.freeze(['auto', 'image'
 export const KML_RESOURCE_COLLECTION_PAGE_SIZE = 40
 export const KML_RESOURCE_COLLECTION_REF_VERSION = 1
 export const KML_RESOURCE_COLLECTION_REF_MAX_BYTES = 16 * 1024
+export const KML_RESOURCE_COLLECTION_ACCESS_STATES = Object.freeze(['private', 'missing', 'trashed'])
+
+/**
+ * Public KML/share projections intentionally remove a personal collection ID
+ * when the collection cannot be read. Keep the remaining status structured so
+ * clients can still render an explicit, non-actionable unavailable state.
+ */
+export function normalizeKmlResourceCollectionStatus (value) {
+  const input = value?.resourceCollectionStatus ?? value
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const version = Number(input.version ?? 1)
+  const sourceType = String(input.sourceType || '').trim().toLowerCase()
+  const accessState = String(input.accessState || '').trim().toLowerCase()
+  if (version !== 1 || sourceType !== 'personal' || !KML_RESOURCE_COLLECTION_ACCESS_STATES.includes(accessState)) return null
+  return { version: 1, sourceType: 'personal', accessState }
+}
+
+export function getKmlResourceCollectionAccessState (value) {
+  return normalizeKmlResourceCollectionStatus(value)?.accessState || ''
+}
+
+export function isKmlResourceCollectionStatus (value) {
+  return Boolean(normalizeKmlResourceCollectionStatus(value))
+}
 
 // Resource collection URLs are persisted in personal KML and may be copied
 // into public share snapshots. Keep ordinary view parameters (for example

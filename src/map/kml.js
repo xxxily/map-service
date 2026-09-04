@@ -14,7 +14,6 @@ import { invalidateKmlMediaGallery } from './kml-media-gallery.js'
 import { renderKmlFileOverview } from './kml-file-overview.js'
 import { getKmlFeatureDisplayName, getKmlFeatureNamePresentation } from './kml-feature-name.js'
 import { getKmlMediaListIcon, getKmlMediaMarkerDescriptor } from './kml-media-marker.js'
-import { normalizeKmlResourceCollectionRef, tryNormalizeKmlResourceCollectionRef } from '../../shared/kml-resource-collection.js'
 import { isKmlFeatureVisible as isKmlFeatureVisibleValue } from '../../shared/kml-feature-visibility.js'
 import {
   applyKmlMarkerIconSelection,
@@ -105,6 +104,7 @@ import {
   isKmlResourceCollectionFeature,
   showKmlResourceCollectionEditor,
 } from './kml-resource-collection.js'
+import { choosePointResourceCollection } from './resource-collection-source.js'
 import {
   createKmlLineEditor,
   getIsKmlLineEditorActive,
@@ -2474,103 +2474,6 @@ function activateFeatureForMedia (map, item, options = {}) {
   }, delay)
 }
 
-function unwrapResourceCollectionApiResult (value) {
-  if (Array.isArray(value)) return { items: value }
-  if (value && typeof value === 'object') {
-    if (value.result && typeof value.result === 'object') return unwrapResourceCollectionApiResult(value.result)
-    if (value.data && typeof value.data === 'object') return unwrapResourceCollectionApiResult(value.data)
-  }
-  return value || {}
-}
-
-async function choosePointResourceCollection (current = {}) {
-  const source = await showChoiceDialog({
-    title: '资源集合来源',
-    message: '选择该点位要读取的资源来源。',
-    choices: [
-      { text: '内嵌数据', value: 'inline', class: 'app-dialog-primary' },
-      { text: '个人资源集合', value: 'personal' },
-      { text: '外部数据接口', value: 'external' },
-    ],
-  })
-  if (!source || source === 'cancel') return null
-  if (source === 'inline') return { sourceType: 'inline' }
-
-  if (source === 'personal') {
-    let result
-    try {
-      result = unwrapResourceCollectionApiResult(await accountApi.listResourceCollections({ page: 1, limit: 100, status: 'active' }))
-      const totalPages = Math.max(1, Number(result?.pageCount || result?.pagination?.pageCount || 1))
-      for (let page = 2; page <= totalPages; page++) {
-        const next = unwrapResourceCollectionApiResult(await accountApi.listResourceCollections({ page, limit: 100, status: 'active' }))
-        result.items = [...(result.items || []), ...(next.items || [])]
-      }
-    } catch (error) {
-      await showAlert(error?.message || '资源集合列表加载失败')
-      return null
-    }
-    const collections = Array.isArray(result?.items) ? result.items : []
-    if (!collections.length) {
-      await showAlert('当前没有可绑定的个人资源集合，请先在个人空间创建集合。')
-      return null
-    }
-    const options = collections.map(item => ({
-      value: String(item.id),
-      label: `${String(item.name || '未命名集合')}（${Number(item.itemCount || 0).toLocaleString()} 项${item.visibility === 'public' ? '，公开' : ''}）`,
-    }))
-    const initialId = String(current.collectionId || collections[0].id)
-    const values = await showEditDialog({
-      title: '绑定个人资源集合',
-      fields: [
-        { name: 'collectionId', label: '资源集合', type: 'select', options },
-        { name: 'displayName', label: '显示名称', required: false },
-        { name: 'viewMode', label: '展示模式', type: 'select', options: [{ value: '', label: '跟随集合' }, { value: 'grid', label: '卡片' }, { value: 'list', label: '列表' }] },
-      ],
-      values: { collectionId: initialId, displayName: current.displayName || '', viewMode: current.viewMode || '' },
-      confirmText: '绑定',
-    })
-    if (!values) return null
-    try {
-      return normalizeKmlResourceCollectionRef({
-        version: 1,
-        sourceType: 'personal',
-        resolution: 'live',
-        collectionId: values.collectionId,
-        displayName: values.displayName,
-        viewMode: values.viewMode,
-      })
-    } catch (error) {
-      await showAlert(error?.message || '资源集合引用格式不正确')
-      return null
-    }
-  }
-
-  const values = await showEditDialog({
-    title: '绑定外部数据接口',
-    fields: [
-      { name: 'dataUrl', label: '接口地址', required: true, hint: '仅支持 HTTPS；接口需返回约定的 JSON 数据。' },
-      { name: 'displayName', label: '显示名称', required: false },
-      { name: 'viewMode', label: '展示模式', type: 'select', options: [{ value: '', label: '跟随接口' }, { value: 'grid', label: '卡片' }, { value: 'list', label: '列表' }] },
-    ],
-    values: { dataUrl: current.dataUrl || '', displayName: current.displayName || '', viewMode: current.viewMode || '' },
-    confirmText: '绑定',
-  })
-  if (!values) return null
-  try {
-    return normalizeKmlResourceCollectionRef({
-      version: 1,
-      sourceType: 'external',
-      resolution: 'live',
-      dataUrl: values.dataUrl,
-      displayName: values.displayName,
-      viewMode: values.viewMode,
-    })
-  } catch (error) {
-    await showAlert(error?.message || '外部接口地址不符合安全要求')
-    return null
-  }
-}
-
 async function handleEditFeature (map, kmlId, featureId) {
   const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
   if (!kmlFile) return
@@ -2645,9 +2548,12 @@ async function handleEditFeature (map, kmlId, featureId) {
   let resourceCollectionRef = feature.resourceCollectionRef || null
   let descriptionInput = result.description
   if (feature.type === 'Point' && result.pointKind === 'collection') {
-    const selectedSource = await choosePointResourceCollection(resourceCollectionRef || {})
+    const selectedSource = await choosePointResourceCollection(resourceCollectionRef || (resourceCollection ? { sourceType: 'inline' } : {}))
     if (!selectedSource) return
-    if (selectedSource.sourceType === 'inline') {
+    if (selectedSource.sourceType === 'unbind') {
+      resourceCollection = null
+      resourceCollectionRef = null
+    } else if (selectedSource.sourceType === 'inline') {
       resourceCollection = await showKmlResourceCollectionEditor(resourceCollection || { version: 1, viewMode: 'grid', items: [] }, {
         title: result.name?.trim() || '编辑资源集合',
       })
