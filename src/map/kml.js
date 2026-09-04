@@ -2598,8 +2598,8 @@ async function handleEditFeature (map, kmlId, featureId) {
   } else if (feature.type === 'Point') {
     delete editedFeature.resourceCollection
     delete editedFeature.resourceCollectionRef
-    delete editedFeature.resourceCollectionStatus
   }
+  if (feature.type === 'Point') delete editedFeature.resourceCollectionStatus
   if (feature.type === 'Point') applyKmlMarkerIconSelection(editedFeature, result.markerIcon)
   else delete editedFeature.markerIcon
 
@@ -2632,6 +2632,7 @@ async function handleEditFeature (map, kmlId, featureId) {
       featurePatch.markerIcon = editedFeature.markerIcon
       featurePatch.resourceCollection = editedFeature.resourceCollection
       featurePatch.resourceCollectionRef = editedFeature.resourceCollectionRef
+      featurePatch.resourceCollectionStatus = editedFeature.resourceCollectionStatus
     }
 
     try {

@@ -163,6 +163,11 @@ function kmlImportLimitBytes () {
   return values.length ? Math.min(...values) : 10 * 1024 * 1024
 }
 
+function resourceCollectionBatchLimit () {
+  const value = Number(state.auth.config?.resourceCollection?.maxBatchItemsPerRequest)
+  return Number.isSafeInteger(value) && value >= 1 && value <= 100 ? value : 100
+}
+
 function requireCapability (key, message = '当前账号没有执行此操作的权限') {
   if (capabilities()[key]) return true
   setMessage('', message)
@@ -652,10 +657,11 @@ async function batchAddCollectionItems (collectionId, trigger) {
     render()
     return
   }
-  // The service caps one transaction at 100 operations. Split large pastes
-  // while carrying the returned itemsRevision into the next transaction.
+  // Follow the server's published batch ceiling so administrators can lower
+  // the limit without turning a valid paste into a 413 response.
+  const batchLimit = resourceCollectionBatchLimit()
   const chunks = []
-  for (let index = 0; index < additions.length; index += 100) chunks.push(additions.slice(index, index + 100))
+  for (let index = 0; index < additions.length; index += batchLimit) chunks.push(additions.slice(index, index + batchLimit))
   let revision = loaded.itemsRevision ?? state.collections.selected?.itemsRevision
   let addedCount = 0
   for (const chunk of chunks) {

@@ -802,6 +802,26 @@ export function validateCollectionPagePayload (data, expectedPage, fallbackLimit
     error.code = 'TOO_LARGE'
     throw error
   }
+  if (total !== null && Array.isArray(data?.items)) {
+    const expectedItems = Math.min(limit, Math.max(0, total - (page - 1) * limit))
+    if (data.items.length !== expectedItems) {
+      const error = new Error('资源集合当前页条目数量与总数不一致')
+      error.code = 'INVALID_SCHEMA'
+      throw error
+    }
+  }
+  if (options.requireStableItemIds !== false && Array.isArray(data?.items)) {
+    const seenIds = new Set()
+    for (const item of data.items) {
+      const itemId = String(item?.id || '').trim()
+      if (!item || typeof item !== 'object' || Array.isArray(item) || !itemId || seenIds.has(itemId)) {
+        const error = new Error('资源集合项缺少稳定标识或存在重复标识')
+        error.code = 'INVALID_SCHEMA'
+        throw error
+      }
+      seenIds.add(itemId)
+    }
+  }
   return {
     pagination: { page, limit, total, pageCount, hasNext },
     page,

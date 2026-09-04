@@ -39,6 +39,7 @@ import { getKmlMediaBillboard, getKmlMediaListIcon } from '../map/kml-media-mark
 import {
   appendKmlResourceCollectionLinks,
   isKmlResourceCollectionFeature,
+  isKmlResourceCollectionStatusFeature,
   showKmlResourceCollectionEditor,
 } from '../map/kml-resource-collection.js'
 import { isKmlFeatureVisible as isKmlFeatureVisibleValue } from '../../shared/kml-feature-visibility.js'
@@ -1887,7 +1888,7 @@ async function handleEditFeature (kmlId, featureId) {
     fields,
       values: {
       name: feature.name,
-      pointKind: (isKmlResourceCollectionFeature(feature) || feature.resourceCollectionRef) ? 'collection' : 'point',
+      pointKind: (isKmlResourceCollectionFeature(feature) || feature.resourceCollectionRef || isKmlResourceCollectionStatusFeature(feature)) ? 'collection' : 'point',
       markerIcon: getEditableKmlMarkerIcon(feature),
       description: getEditableKmlDescription(feature.description),
       targetKmlId: kmlFile.id,
@@ -1935,6 +1936,7 @@ async function handleEditFeature (kmlId, featureId) {
   else if (feature.type === 'Point') editedFeature.resourceCollection = null
   if (resourceCollectionRef) editedFeature.resourceCollectionRef = resourceCollectionRef
   else if (feature.type === 'Point') delete editedFeature.resourceCollectionRef
+  if (feature.type === 'Point') delete editedFeature.resourceCollectionStatus
   if (feature.type === 'Point') applyKmlMarkerIconSelection(editedFeature, result.markerIcon)
   else delete editedFeature.markerIcon
   const targetKmlId = String(result.targetKmlId || kmlId)
@@ -1962,6 +1964,7 @@ async function handleEditFeature (kmlId, featureId) {
       featurePatch.markerIcon = editedFeature.markerIcon
       featurePatch.resourceCollection = editedFeature.resourceCollection
       featurePatch.resourceCollectionRef = editedFeature.resourceCollectionRef
+      featurePatch.resourceCollectionStatus = editedFeature.resourceCollectionStatus
     }
     try {
       await applyFeatureOperation({

@@ -72,20 +72,23 @@ async function loadResourceCollectionPage (page, search = '') {
 }
 
 function sourceChoice (current) {
+  const hasLiveBinding = current.sourceType === 'personal' || current.sourceType === 'external'
   return showChoiceDialog({
     title: '资源集合来源',
-    message: '选择该点位要读取的资源来源。',
+    message: hasLiveBinding
+      ? '选择该点位要读取的资源来源；如需改为内嵌数据，请先解除当前绑定。'
+      : '选择该点位要读取的资源来源。',
     dialogClassName: 'app-dialog-resource-source',
     choiceLayout: 'stacked',
     choices: [
-      {
+      ...(!hasLiveBinding ? [{
         text: '内嵌数据',
         value: 'inline',
         icon: '▦',
         selected: current.sourceType === 'inline',
         description: '资源随 KML 保存，适合少量且需要随文件导出的内容。',
         class: 'app-dialog-secondary',
-      },
+      }] : []),
       ...(current.sourceType === 'personal' || current.sourceType === 'external'
         ? [{ text: '解除绑定', value: 'unbind', icon: '×', class: 'app-dialog-secondary' }]
         : []),
@@ -138,20 +141,10 @@ export async function choosePointResourceCollection (current = {}) {
       return null
     }
     let page = 1
-    const seenCollectionIds = new Set()
     while (true) {
       let result
       try { result = await loadResourceCollectionPage(page, search) } catch (error) { await showAlert(error?.message || '资源集合列表加载失败'); return null }
       const collections = result.items
-      if (collections.some(item => {
-        const id = String(item?.id || '').trim()
-        if (seenCollectionIds.has(id)) return true
-        seenCollectionIds.add(id)
-        return false
-      })) {
-        await showAlert('资源集合列表包含重复标识，请刷新后重试。')
-        return null
-      }
       if (!collections.length && page === 1) { await showAlert('当前没有可绑定的个人资源集合，请先在个人空间创建集合。'); return null }
       const currentId = String(current.collectionId || '')
       const action = await showChoiceDialog({ title: `绑定个人资源集合（第 ${page} 页）`, message: search ? `搜索：${search}` : '选择要绑定的集合。', choices: [

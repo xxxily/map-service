@@ -30,6 +30,7 @@ import {
   normalizeCollectionFetchError,
   validateCollectionPagePayload,
 } from '../src/map/kml-content-panel.js'
+import { normalizeResourceCollectionPage } from '../src/map/resource-collection-source.js'
 
 test('remote collection pagination rejects inconsistent totals and preserves unknown totals', () => {
   assert.deepEqual(validateCollectionPagePayload({ items: [{ id: 'a' }], pagination: { page: 2, limit: 1, total: null, pageCount: null, hasNext: true } }, 2), {
@@ -47,6 +48,41 @@ test('remote collection pagination rejects inconsistent totals and preserves unk
   assert.throws(
     () => validateCollectionPagePayload({ items: [], pagination: { page: 1, limit: 40, total: 41, pageCount: 1, hasNext: false } }, 1),
     error => error.code === 'INVALID_SCHEMA',
+  )
+  assert.throws(
+    () => validateCollectionPagePayload({ items: [{ title: 'missing id', url: 'https://example.com/a' }], pagination: { page: 1, limit: 40, total: null, pageCount: null, hasNext: false } }, 1),
+    error => error.code === 'INVALID_SCHEMA',
+  )
+  assert.throws(
+    () => validateCollectionPagePayload({ items: [{ id: 'same' }, { id: 'same' }], pagination: { page: 1, limit: 40, total: null, pageCount: null, hasNext: false } }, 1),
+    error => error.code === 'INVALID_SCHEMA',
+  )
+  assert.throws(
+    () => validateCollectionPagePayload({ items: [{ id: 'short-page' }], pagination: { page: 1, limit: 40, total: 80, pageCount: 2, hasNext: true } }, 1),
+    error => error.code === 'INVALID_SCHEMA',
+  )
+})
+
+test('personal collection picker page validation stays strict per response page', () => {
+  const page = normalizeResourceCollectionPage({
+    items: [{ id: 'rc-1', name: '第一页' }],
+    page: 1,
+    limit: 40,
+    total: 1,
+    pageCount: 1,
+    hasNext: false,
+  }, { page: 1, limit: 40 })
+  assert.equal(page.hasNext, false)
+  assert.throws(
+    () => normalizeResourceCollectionPage({
+      items: [{ id: 'rc-1', name: '重复' }, { id: 'rc-1', name: '重复' }],
+      page: 1,
+      limit: 40,
+      total: 2,
+      pageCount: 1,
+      hasNext: false,
+    }, { page: 1, limit: 40 }),
+    error => error.code === 'RESOURCE_COLLECTION_SCHEMA_INVALID',
   )
 })
 

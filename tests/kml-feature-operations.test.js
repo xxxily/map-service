@@ -156,6 +156,24 @@ test('copying a resource collection deep-clones items and null patches remove th
   assert.equal(Object.hasOwn(removed.files[1].features.at(-1), 'resourceCollection'), false)
 })
 
+test('transferring a status-only collection point can explicitly clear its status', () => {
+  const source = files()
+  source[0].features[0].resourceCollectionStatus = { version: 1, sourceType: 'personal', accessState: 'private' }
+  const result = transferKmlFeature(source, {
+    sourceKmlId: 'a',
+    targetKmlId: 'b',
+    featureId: 'one',
+    mode: 'copy',
+    featurePatch: {
+      resourceCollection: null,
+      resourceCollectionRef: null,
+      resourceCollectionStatus: null,
+    },
+    idFactory: () => 'copy-status-cleared',
+  })
+  assert.equal(Object.hasOwn(result.files[1].features.at(-1), 'resourceCollectionStatus'), false)
+})
+
 test('dropping a feature on its file appends it to the end', () => {
   const result = reorderKmlFeature(files(), { kmlId: 'a', featureId: 'one' })
 
