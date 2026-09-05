@@ -75,6 +75,10 @@ npm run build
 应用，通过 `/admin/<tab>` 打开。三维地图源码入口为根目录 `3d.html` 与 `src/3d.js`；
 生产服务通过 `/3d` 提供构建后的 `service/app/3d.html`。
 
+2D 移动端双指旋转的角度连续性和触摸身份处理位于 `src/map/touch-rotation.js`，仅由
+`src/main.js` 安装；不要把这套 Leaflet handler 补丁接入 `src/3d.js`。修改后至少运行
+`tests/touch-rotation.test.js`，并通过移动端浏览器验证捏合缩放与真实旋转均可用。
+
 ### 用户体系与账号 KML 开发
 
 - 用户、角色、会话、个人 KML、收藏和分享的业务规则放在 `service/bin/user/` 服务层；`simpleApi.js` 只负责鉴权、参数读取、服务调用和统一响应。
