@@ -69,3 +69,13 @@ test('KML 线段编辑器保留地图拖拽缩放并提供完整工具栏动作'
     assert.match(indexSource, new RegExp(`data-kml-line-action="${action}"`))
   }
 })
+
+test('KML 线段编辑器不拦截属性弹窗和文本控件的键盘编辑', () => {
+  const editorSource = fs.readFileSync(path.join(projectRoot, 'src/map/kml-line-editor.js'), 'utf8')
+  const keydownSource = editorSource.match(/const onKeyDown = event => \{[\s\S]*?\n  \}/)?.[0] || ''
+
+  assert.match(editorSource, /function isKeyboardOwnedByUi \(target\)/)
+  assert.match(editorSource, /input, textarea, select, \[contenteditable\], \[role="textbox"\], #app-dialog-root/)
+  assert.match(keydownSource, /if \(!active \|\| event\.defaultPrevented \|\| isKeyboardOwnedByUi\(event\.target\)\) return/)
+  assert.ok(keydownSource.indexOf('isKeyboardOwnedByUi(event.target)') < keydownSource.indexOf("event.key === 'Escape'"))
+})

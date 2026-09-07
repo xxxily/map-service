@@ -41,6 +41,12 @@ function getActionTarget (event) {
   return event.target.closest?.('[data-kml-line-action]')
 }
 
+function isKeyboardOwnedByUi (target) {
+  if (!target) return false
+  if (target.isContentEditable) return true
+  return Boolean(target.closest?.('input, textarea, select, [contenteditable], [role="textbox"], #app-dialog-root'))
+}
+
 export function getIsKmlLineEditorActive () {
   return Boolean(window.__mapServiceKmlLineEditorActive)
 }
@@ -262,7 +268,7 @@ export function createKmlLineEditor (map, options = {}) {
   }
 
   const onKeyDown = event => {
-    if (!active) return
+    if (!active || event.defaultPrevented || isKeyboardOwnedByUi(event.target)) return
     if (event.key === 'Escape') {
       event.preventDefault()
       cancel()
