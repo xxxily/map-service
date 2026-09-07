@@ -48,6 +48,7 @@ import {
 import { getKmlLeafletPerformanceOptions } from './map/kml-performance.js'
 import { installStableTrackpadWheelZoom } from './map/trackpad-wheel-zoom.js'
 import { installStableTouchGestures } from './map/touch-rotation.js'
+import { createMapMenuController } from './map/map-menu-controller.js'
 import { loadGlobalAnalytics } from './analytics.js'
 
 installStableTrackpadWheelZoom(L)
@@ -67,6 +68,61 @@ function renderAppVersion () {
   if (versionNode && APP_VERSION) {
     versionNode.textContent = `v${APP_VERSION}`
   }
+}
+
+function navigateToAccount () {
+  const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  window.location.href = `/account?returnTo=${encodeURIComponent(returnTo)}`
+}
+
+function showKmlPanelLoadingState () {
+  const panel = document.getElementById('kml-panel')
+  if (!panel) return
+  panel.dataset.kmlInitializing = 'true'
+  panel.setAttribute('aria-busy', 'true')
+  const list = panel.querySelector('#kml-files-list')
+  if (list && !list.childElementCount) {
+    list.innerHTML = '<div class="kml-empty kml-content-loading" role="status">正在加载 KML 数据…</div>'
+  }
+}
+
+function clearKmlPanelLoadingState () {
+  const panel = document.getElementById('kml-panel')
+  if (!panel) return
+  delete panel.dataset.kmlInitializing
+  panel.removeAttribute('aria-busy')
+  panel.querySelector('#kml-files-list > .kml-content-loading')?.remove()
+}
+
+function toggleKmlPanelShell () {
+  const runtimeToggle = window.toggleKmlPanel
+  if (runtimeToggle instanceof Function) {
+    runtimeToggle()
+    return
+  }
+  const panel = document.getElementById('kml-panel')
+  if (!panel) return
+  panel.hidden = !panel.hidden
+  if (!panel.hidden) showKmlPanelLoadingState()
+}
+
+// index.html 的工具栏是静态 HTML，必须在任何异步地图初始化之前接住点击。
+// 3D 页面使用独立的 src/3d.js，不接入这个控制器。
+const isMapEntry = !isAccountLocation(window.location) && !isAdminLocation(window.location)
+const mapMenuController = isMapEntry
+  ? createMapMenuController({
+      menu: document.getElementById('map-menu'),
+      handlers: {
+        openAccount: navigateToAccount,
+        toggleKmlPanel: toggleKmlPanelShell,
+      },
+    })
+  : null
+
+if (isMapEntry) {
+  initIdentityEntry({
+    button: document.querySelector('[data-action="openAccount"]'),
+  })
 }
 
 async function loadAmap () {
@@ -154,15 +210,59 @@ async function initLeafletMap () {
     readOnly: shareMode,
   })
 
+  const mapMenu = document.getElementById('map-menu')
+  let layerControl = null
+  let toolsExpanded = mapMenuController?.getToolsExpanded() === true
+  let skipNextClick = false
+  const applyToolsExpanded = (expanded) => {
+    toolsExpanded = expanded === true
+    if (layerControl) setLayerControlVisible(layerControl, map, toolsExpanded)
+  }
+
+  // These handlers only depend on the map instance and can be available while
+  // the tile catalog and KML details are still loading.
+  mapMenuController?.setActions({
+    resetBearing: () => {
+      if (map.setBearing) map.setBearing(0)
+    },
+    open3d: () => {
+      if (restrictedShare) return
+      const publicId = getActiveShare()?.publicId
+      if (shareMode && publicId) {
+        const url = new URL(window.location.href)
+        url.pathname = '/3d'
+        url.searchParams.set('share', publicId)
+        window.location.href = `${url.pathname}${url.search}${url.hash}`
+      } else {
+        window.location.href = '/3d' + window.location.search
+      }
+    },
+  })
+
+  if (shareMode) {
+    mapMenu?.querySelector('[data-action="updatePosition"]')?.closest('li')?.setAttribute('hidden', '')
+    mapMenu?.querySelector('[data-action="toggleGuidelineMode"]')?.closest('li')?.setAttribute('hidden', '')
+  }
+  if (restrictedShare) {
+    mapMenu?.querySelector('[data-action="toggleSearchMode"]')?.closest('li')?.setAttribute('hidden', '')
+    mapMenu?.querySelector('[data-action="open3d"]')?.closest('li')?.setAttribute('hidden', '')
+    document.getElementById('map-search-mod')?.setAttribute('hidden', '')
+    document.getElementById('route-mode-panel')?.setAttribute('hidden', '')
+    document.getElementById('location-history-panel')?.setAttribute('hidden', '')
+  }
+
   let amapGeolocation = null
   if (AMap && !restrictedShare) {
     amapGeolocation = initAmapGeolocation(AMap)
   }
   initAmapSearch(map, AMap, amapGeolocation)
+  if (!restrictedShare) {
+    mapMenuController?.setAction('toggleSearchMode', () => toggleSearchMode())
+  }
 
   if (!shareMode) addTargetMarker(map, defaultView.center)
 
-  const layerControl = await initLayerControl(
+  layerControl = await initLayerControl(
     map,
     initialLayerName,
     {
@@ -193,8 +293,11 @@ async function initLeafletMap () {
         : '/api/v1/map/catalog',
     }
   )
+  mapMenuController?.setAction('toggleLayerControl', ({ expanded }) => applyToolsExpanded(expanded))
+  applyToolsExpanded(toolsExpanded)
 
   await initKmlSupport(map, { fitShareView: !useUrlView })
+  clearKmlPanelLoadingState()
   if (!shareMode) {
     initGuidelines(map)
     initLocationHistoryPanel2d()
@@ -234,80 +337,20 @@ async function initLeafletMap () {
     map.fire('rotate')
   }
 
-  const mapMenu = document.getElementById('map-menu')
-  let toolsExpanded = false
-  const setToolsExpanded = (expanded) => {
-    toolsExpanded = expanded
-    mapMenu.classList.toggle('is-expanded', expanded)
-    const moreButton = mapMenu.querySelector('[data-action="toggleLayerControl"]')
-    moreButton?.setAttribute('aria-expanded', String(expanded))
-    setLayerControlVisible(layerControl, map, expanded)
-  }
-
-  const actionMap = {
-    toggleLayerControl: () => setToolsExpanded(!toolsExpanded),
-    toggleKmlPanel: () => {
-      if (window.toggleKmlPanel) {
-        window.toggleKmlPanel()
-      }
-    },
-    toggleGuidelineMode: () => {
-      if (!shareMode) toggleGuidelineMode()
-    },
-    toggleSearchMode: () => {
-      if (restrictedShare) return
-      toggleSearchMode()
-    },
-    updatePosition: () => {
-      if (shareMode) return
-      if (skipNextClick) {
-        skipNextClick = false
-        return
-      }
-      updatePosition(map, amapGeolocation, intervalLocationState.active ? intervalLocationState.zoomLevel : 18, false)
-    },
-    resetBearing: () => {
-      if (map.setBearing) {
-        map.setBearing(0)
-      }
-    },
-    openAccount: () => {
-      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
-      window.location.href = `/account?returnTo=${encodeURIComponent(returnTo)}`
-    },
-    open3d: () => {
-      if (restrictedShare) return
-      const publicId = getActiveShare()?.publicId
-      if (shareMode && publicId) {
-        const url = new URL(window.location.href)
-        url.pathname = '/3d'
-        url.searchParams.set('share', publicId)
-        window.location.href = `${url.pathname}${url.search}${url.hash}`
-      } else {
-        window.location.href = '/3d' + window.location.search
-      }
-    },
-  }
-
-  initIdentityEntry({
-    button: mapMenu.querySelector('[data-action="openAccount"]'),
-  })
-
   // 绑定定位按钮 3s 长按事件
   const positionBtn = mapMenu.querySelector('[data-action="updatePosition"]')
   const guidelineBtn = mapMenu.querySelector('[data-action="toggleGuidelineMode"]')
-  if (shareMode) {
-    positionBtn?.closest('li')?.setAttribute('hidden', '')
-    guidelineBtn?.closest('li')?.setAttribute('hidden', '')
-  }
-  if (restrictedShare) {
-    mapMenu.querySelector('[data-action="toggleSearchMode"]')?.closest('li')?.setAttribute('hidden', '')
-    mapMenu.querySelector('[data-action="open3d"]')?.closest('li')?.setAttribute('hidden', '')
-    document.getElementById('map-search-mod')?.setAttribute('hidden', '')
-    document.getElementById('route-mode-panel')?.setAttribute('hidden', '')
-    document.getElementById('location-history-panel')?.setAttribute('hidden', '')
-  }
-  let skipNextClick = false
+  mapMenuController?.setAction('toggleGuidelineMode', () => {
+    if (!shareMode) toggleGuidelineMode()
+  })
+  mapMenuController?.setAction('updatePosition', () => {
+    if (shareMode) return
+    if (skipNextClick) {
+      skipNextClick = false
+      return
+    }
+    updatePosition(map, amapGeolocation, intervalLocationState.active ? intervalLocationState.zoomLevel : 18, false)
+  })
   if (positionBtn && !shareMode) {
     let longPressTimer = null
     let isLongPressTriggered = false
@@ -514,13 +557,8 @@ async function initLeafletMap () {
     })
   }
 
-  mapMenu.addEventListener('click', (event) => {
-    const actionTarget = event.target.closest('[data-action]')
-    const action = actionTarget?.getAttribute('data-action')
-    if (action && actionMap[action] instanceof Function) {
-      actionMap[action]()
-    }
-  })
+  // 菜单点击已由初始化阶段安装的 controller 统一接管。
+  mapMenuController?.setReady(true)
 
   // 绑定全局截图快捷键 (Alt+Shift+S)
   document.addEventListener('keydown', (e) => {

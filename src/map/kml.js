@@ -196,6 +196,8 @@ let kmlPointLabelSyncTimer = null
 let kmlPointLabelIdleTask = null
 let kmlPointLabelIdleTaskKind = ''
 let kmlPointLabelSyncRevision = 0
+let kmlFeatureFocusRequestId = 0
+let kmlFeatureFocusState = null
 const kmlViewportCache = new WeakMap()
 const leafletMediaIconCache = new Map()
 const leafletSimpleIconCache = new Map()
@@ -1279,8 +1281,11 @@ function getEnabledKmlFiles () {
 }
 
 function getFeatureById (kmlId, featureId) {
-  const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
-  const feature = kmlFile?.features?.find(f => f.id === featureId) || null
+  const normalizedKmlId = String(kmlId ?? '')
+  const normalizedFeatureId = String(featureId ?? '')
+  const kmlFile = kmlList.find(k => String(k?.id ?? '') === normalizedKmlId) ||
+    publicKmlList.find(k => String(k?.id ?? '') === normalizedKmlId)
+  const feature = kmlFile?.features?.find(f => String(f?.id ?? '') === normalizedFeatureId) || null
   return { kmlFile, feature }
 }
 
@@ -1288,12 +1293,97 @@ function getFeatureLayerKey (kmlId, featureId) {
   return JSON.stringify([String(kmlId || ''), String(featureId || '')])
 }
 
-function restoreKmlPopup (map, identity, delay = 0) {
-  if (!identity) return
-  const open = () => {
-    const layer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId))
-    if (!layer || (map.hasLayer && !map.hasLayer(layer))) return
+function normalizeKmlFeatureIdentity (kmlId, featureId) {
+  const identity = {
+    kmlId: String(kmlId ?? ''),
+    featureId: String(featureId ?? ''),
+  }
+  return identity.kmlId && identity.featureId ? identity : null
+}
+
+function sameKmlFeatureIdentity (left, right) {
+  return Boolean(left && right &&
+    String(left.kmlId || '') === String(right.kmlId || '') &&
+    String(left.featureId || '') === String(right.featureId || ''))
+}
+
+function getKmlPopupIdentity (popup) {
+  const source = popup?._source
+  return normalizeKmlFeatureIdentity(
+    source?._mapServiceKmlFileId,
+    source?._mapServiceKmlFeatureId,
+  )
+}
+
+function isCurrentKmlFeatureFocus (map, identity, requestId) {
+  return Boolean(
+    kmlFeatureFocusState &&
+    kmlFeatureFocusState.map === map &&
+    kmlFeatureFocusState.requestId === requestId &&
+    sameKmlFeatureIdentity(kmlFeatureFocusState.identity, identity),
+  )
+}
+
+function beginKmlFeatureFocus (map, kmlId, featureId) {
+  const requestId = ++kmlFeatureFocusRequestId
+  const identity = normalizeKmlFeatureIdentity(kmlId, featureId)
+
+  // A previous popup or viewport render may still have delayed work attached.
+  // Stop both before recording the new target so stale work cannot win later.
+  cancelKmlViewportRenderTasks()
+  map?.closePopup?.()
+  map?.stop?.()
+
+  kmlFeatureFocusState = {
+    map,
+    identity,
+    requestId,
+    pending: true,
+    deferViewportRerender: false,
+  }
+  return requestId
+}
+
+function cancelKmlFeatureFocus (map, requestId) {
+  if (!kmlFeatureFocusState || kmlFeatureFocusState.map !== map ||
+      (requestId != null && kmlFeatureFocusState.requestId !== requestId)) return
+  if (kmlFeatureFocusState.requestId === kmlFeatureFocusRequestId) kmlFeatureFocusRequestId += 1
+  kmlFeatureFocusState = null
+}
+
+function finishKmlFeatureFocus (map, identity, requestId) {
+  if (!isCurrentKmlFeatureFocus(map, identity, requestId)) return false
+  const shouldRerender = kmlFeatureFocusState.deferViewportRerender
+  kmlFeatureFocusState.pending = false
+  kmlFeatureFocusState.deferViewportRerender = false
+  if (shouldRerender) scheduleKmlViewportRerender(map)
+  return true
+}
+
+function openKmlFeaturePopup (layer) {
+  if (!layer?.openPopup) return false
+  const popup = layer.getPopup?.()
+  const previousAutoPan = popup?.options?.autoPan
+  if (popup?.options) popup.options.autoPan = false
+  try {
     layer.openPopup()
+    return true
+  } finally {
+    if (popup?.options) popup.options.autoPan = previousAutoPan
+  }
+}
+
+function restoreKmlPopup (map, identity, delay = 0) {
+  const normalizedIdentity = normalizeKmlFeatureIdentity(identity?.kmlId, identity?.featureId)
+  if (!normalizedIdentity) return
+  const expectedRequestId = kmlFeatureFocusRequestId
+  const open = () => {
+    if (expectedRequestId !== kmlFeatureFocusRequestId) return
+    const focusState = kmlFeatureFocusState
+    if (focusState?.map === map && !sameKmlFeatureIdentity(focusState.identity, normalizedIdentity)) return
+    const layer = featureLayers.get(getFeatureLayerKey(normalizedIdentity.kmlId, normalizedIdentity.featureId))
+    if (!layer || (map.hasLayer && !map.hasLayer(layer))) return
+    openKmlFeaturePopup(layer)
   }
   if (delay > 0) window.setTimeout(open, delay)
   else open()
@@ -1452,12 +1542,16 @@ function cancelKmlPointLabelSync () {
   kmlPointLabelIdleTaskKind = ''
 }
 
-function cancelKmlScheduledTasks () {
+function cancelKmlViewportRenderTasks () {
   if (kmlViewportRerenderTimer) window.clearTimeout(kmlViewportRerenderTimer)
   if (kmlViewportRenderTask) window.clearTimeout(kmlViewportRenderTask)
-  if (mediaFeatureActivationTimer) window.clearTimeout(mediaFeatureActivationTimer)
   kmlViewportRerenderTimer = null
   kmlViewportRenderTask = null
+}
+
+function cancelKmlScheduledTasks () {
+  cancelKmlViewportRenderTasks()
+  if (mediaFeatureActivationTimer) window.clearTimeout(mediaFeatureActivationTimer)
   mediaFeatureActivationTimer = null
   cancelKmlPointLabelSync()
 }
@@ -1621,6 +1715,7 @@ function renderFeature (map, kmlFile, feature) {
   if (layer) {
     layer._mapServiceKmlFeatureId = String(feature.id || '')
     layer._mapServiceKmlFileId = String(kmlId || '')
+    layer.on('preclick', () => cancelKmlFeatureFocus(map))
     layer.bindPopup(() => renderKmlFeaturePopupContent(kmlFile, feature, editable), {
       closeButton: false,
       className: 'kml-rich-popup',
@@ -2390,58 +2485,105 @@ function updateKmlPanelUI (map) {
   container.innerHTML = html
 }
 
-function focusFeature (map, kmlId, featureId) {
-  const kmlFile = kmlList.find(k => k.id === kmlId) || publicKmlList.find(k => k.id === kmlId)
-  if (!kmlFile) return
-  if (!isKmlEnabled(kmlFile)) {
-    showAlert('该 KML 文件已隐藏，请先启用后查看。')
-    return
+function focusFeature (map, kmlId, featureId, options = {}) {
+  const identity = normalizeKmlFeatureIdentity(kmlId, featureId)
+  if (!identity) {
+    if (Number.isSafeInteger(options.requestId)) cancelKmlFeatureFocus(map, options.requestId)
+    return false
   }
+  const requestId = Number.isSafeInteger(options.requestId)
+    ? options.requestId
+    : beginKmlFeatureFocus(map, kmlId, featureId)
+  if (!isCurrentKmlFeatureFocus(map, identity, requestId)) return false
 
-  const feature = kmlFile.features.find(f => f.id === featureId)
-  if (!feature) return
-  if (!isKmlFeatureVisibleForDisplay(kmlFile, feature)) {
-    showAlert('该点位或线段已隐藏，请先显示后查看。')
-    return
-  }
-  let layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
-  map.stop?.()
+  try {
+    const { kmlFile, feature } = getFeatureById(identity.kmlId, identity.featureId)
+    if (!kmlFile) return false
+    if (!isKmlEnabled(kmlFile)) {
+      showAlert('该 KML 文件已隐藏，请先启用后查看。')
+      return false
+    }
+    if (!feature) return false
+    if (!isKmlFeatureVisibleForDisplay(kmlFile, feature)) {
+      showAlert('该点位或线段已隐藏，请先显示后查看。')
+      return false
+    }
 
-  if (feature.type === 'Point') {
-    const point = getMapPoint(kmlFile, feature)
-    const targetInView = Boolean(map.getBounds?.().contains?.(point))
-    const plan = getKmlFeatureFocusPlan({
-      type: feature.type,
-      currentZoom: map.getZoom?.(),
-      targetInView,
-    })
-    if (plan.method === 'set-view') map.setView(point, plan.zoom, { animate: false })
-    else map.panInside?.(point, { padding: [40, 40], animate: false })
-  } else {
+    // The map may have moved while an unloaded file was being fetched.
+    map.stop?.()
+    let layer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId))
+
+    if (feature.type === 'Point') {
+      const point = getMapPoint(kmlFile, feature)
+      const targetInView = Boolean(map.getBounds?.().contains?.(point))
+      const plan = getKmlFeatureFocusPlan({
+        type: feature.type,
+        currentZoom: map.getZoom?.(),
+        targetInView,
+      })
+      if (plan.method === 'set-view') {
+        map.setView(point, plan.zoom, { animate: false })
+      } else if (plan.method === 'pan-inside') {
+        map.panInside?.(point, { padding: [40, 40], animate: false })
+      }
+    } else {
+      if (!layer) {
+        renderKmlLayers(map, kmlFile, {
+          incremental: true,
+          includeFeatureIds: [String(featureId)],
+        })
+        layer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId))
+      }
+      if (!layer) return false
+      const bounds = layer.getBounds()
+      const targetInView = Boolean(map.getBounds?.().contains?.(bounds))
+      const plan = getKmlFeatureFocusPlan({ type: feature.type, targetInView })
+      if (plan.method === 'fit-bounds') {
+        map.fitBounds(bounds, { maxZoom: plan.maxZoom, animate: false, padding: [36, 36] })
+      }
+    }
+
     if (!layer) {
       renderKmlLayers(map, kmlFile, {
         incremental: true,
         includeFeatureIds: [String(featureId)],
       })
-      layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
+      layer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId))
     }
-    if (!layer) return
-    const bounds = layer.getBounds()
-    const targetInView = Boolean(map.getBounds?.().contains?.(bounds))
-    const plan = getKmlFeatureFocusPlan({ type: feature.type, targetInView })
-    if (plan.method === 'fit-bounds') {
-      map.fitBounds(bounds, { maxZoom: plan.maxZoom, animate: false, padding: [36, 36] })
+    if (!layer || !isCurrentKmlFeatureFocus(map, identity, requestId)) return false
+    return openKmlFeaturePopup(layer)
+  } finally {
+    finishKmlFeatureFocus(map, identity, requestId)
+  }
+}
+
+async function focusKmlFeatureFromPanel (map, kmlFile, featureId, loadDetails) {
+  const kmlId = kmlFile?.id
+  const identity = normalizeKmlFeatureIdentity(kmlId, featureId)
+  const requestId = beginKmlFeatureFocus(map, kmlId, featureId)
+  if (!identity || !kmlFile) {
+    cancelKmlFeatureFocus(map, requestId)
+    return false
+  }
+
+  if (kmlFile.contentLoaded === false) {
+    let loaded = false
+    try {
+      loaded = await loadDetails()
+    } catch (error) {
+      if (!isCurrentKmlFeatureFocus(map, identity, requestId)) return false
+      kmlFile.loadError = error?.message || 'KML 文件详情加载失败'
+    }
+    if (!isCurrentKmlFeatureFocus(map, identity, requestId)) return false
+    if (!loaded) {
+      cancelKmlFeatureFocus(map, requestId)
+      await showAlert(kmlFile.loadError || 'KML 文件详情加载失败')
+      return false
     }
   }
-  if (!layer) {
-    renderKmlLayers(map, kmlFile, {
-      incremental: true,
-      includeFeatureIds: [String(featureId)],
-    })
-    layer = featureLayers.get(getFeatureLayerKey(kmlId, featureId))
-  }
-  if (!layer) return
-  layer.openPopup()
+
+  if (!isCurrentKmlFeatureFocus(map, identity, requestId)) return false
+  return focusFeature(map, identity.kmlId, identity.featureId, { requestId })
 }
 
 function activateFeatureForMedia (map, item, options = {}) {
@@ -3135,6 +3277,11 @@ function initLongPressPointCreation (map) {
  * 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先完成绘制再执行渲染。
  */
 function scheduleKmlViewportRerender (map) {
+  const focusState = kmlFeatureFocusState
+  if (focusState?.map === map && focusState.pending) {
+    focusState.deferViewportRerender = true
+    return
+  }
   if (kmlViewportRerenderTimer) clearTimeout(kmlViewportRerenderTimer)
   if (kmlViewportRenderTask) clearTimeout(kmlViewportRenderTask)
   kmlViewportRerenderTimer = setTimeout(() => {
@@ -3726,12 +3873,14 @@ async function initShareKmlSupport (map, options = {}) {
       }
       fitKmlFilesBounds(map, [kmlFile])
     } else if (action === 'focus-feature' && target.dataset.featureId) {
-      if (kmlFile.contentLoaded === false && !(await loadSharedKmlFileForUse(kmlFile))) {
-        await showAlert(kmlFile.loadError || '加载分享 KML 详情失败')
-        renderShareKmlPanel(map)
-        return
-      }
-      focusFeature(map, kmlFile.id, target.dataset.featureId)
+      event.preventDefault()
+      event.stopPropagation()
+      await focusKmlFeatureFromPanel(
+        map,
+        kmlFile,
+        target.dataset.featureId,
+        () => loadSharedKmlFileForUse(kmlFile),
+      )
     } else if (action === 'export' && kmlFile.allowDownload) {
       if (kmlFile.contentLoaded === false && !(await loadSharedKmlFileForUse(kmlFile))) {
         await showAlert(kmlFile.loadError || '获取分享 KML 数据失败')
@@ -4572,7 +4721,17 @@ export async function initKmlSupport (map, options = {}) {
     }
 
     if (action === 'focus-feature') {
-      focusFeature(map, kmlId, featureId)
+      event.preventDefault()
+      event.stopPropagation()
+      const kmlFile = kmlList.find(file => String(file?.id ?? '') === String(kmlId ?? '')) ||
+        publicKmlList.find(file => String(file?.id ?? '') === String(kmlId ?? ''))
+      if (!kmlFile) return
+      const loadDetails = kmlFile.isShare
+        ? () => loadSharedKmlFileForUse(kmlFile)
+        : kmlFile.isPublic
+          ? () => loadPublicKmlFileForUse(kmlFile)
+          : () => loadAccountKmlFileForUse(kmlFile)
+      await focusKmlFeatureFromPanel(map, kmlFile, featureId, loadDetails)
       return
     }
 
