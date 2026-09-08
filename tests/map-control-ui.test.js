@@ -36,7 +36,7 @@ test('map entry points initialize the search close action even without the map S
   const map3dSource = readSource('../src/3d.js')
 
   assert.match(mainSource, /initAmapSearch\(map, AMap, amapGeolocation\)/)
-  assert.match(mainSource, /if \(AMap && !restrictedShare\) \{[\s\S]*?amapGeolocation = initAmapGeolocation\(AMap\)[\s\S]*?\}\s*initAmapSearch\(map, AMap, amapGeolocation\)/)
+  assert.match(mainSource, /if \(AMap && !restrictedShare\) \{[\s\S]*?amapGeolocation = initAmapGeolocation\(AMap\)[\s\S]*?\}\s*prepareKmlSupport\(\)\s*initAmapSearch\(map, AMap, amapGeolocation\)/)
   assert.match(map3dSource, /if \(AMap\) \{[\s\S]*?amapGeolocation = initAmapGeolocation\(AMap\)[\s\S]*?\}\s*initAmapSearch3d\(viewer, AMap\)/)
 })
 

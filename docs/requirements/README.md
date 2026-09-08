@@ -41,6 +41,7 @@
 - [KML 性能优化与资源集合点位](./kml-performance-and-resource-collections.md)（v1.5.58 已完成 161 内测发布）
 - [KML 独立资源集合、引用绑定与按需加载需求](./kml-resource-collection-references.md)（v1.5.63 已实现并完成 161 内测部署）
 - [KML 线段绘制编辑器](./kml-line-drawing-editor.md)（v1.5.59 已完成 161 内测发布）
+- [路线规划保存、临时添加与起终点交换](./route-planning-kml-actions.md)（v1.5.72，计划先发布 161 内测）
 - [账号 KML 同步数据丢失防护](./kml-account-sync-data-loss-prevention.md)（1.5.47 已实现；覆盖误删、冲突、恢复草稿和保存失败）
 - [管理后台数值配置自由裁量与 KML 移动端布局修订](./admin-user-system-configurable-limits-and-kml-mobile-layout.md)（1.5.50 已实现）
 - [用户管理与个人空间 KML 工具栏界面优化需求](./admin-users-and-account-kml-toolbar-ui-polish.md)（v1.5.52 已发布）

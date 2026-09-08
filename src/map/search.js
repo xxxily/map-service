@@ -1,11 +1,22 @@
 import L from 'leaflet'
 import { getBestPosition, positionToGcj02 } from './geolocation.js'
-import { showAlert } from '../ui/dialog.js'
+import { showAlert, showConfirm } from '../ui/dialog.js'
 import {
   renderSearchHistoryDropdown,
   saveSearchHistory,
 } from './search-history.js'
 import { createAmapSearchBias } from './search-bias.js'
+import { saveRouteLineToKml } from './kml.js'
+import {
+  buildRouteDefaultName,
+  buildRouteDescription,
+  formatRouteDistance,
+  formatRouteDuration,
+  getBestRouteLocationName,
+  getRouteMetrics,
+  getRoutePath,
+  swapRouteEndpoints,
+} from './route-planner-utils.js'
 
 let currentSearchMarker = null
 
@@ -18,9 +29,228 @@ let startPoi = null
 let endPoi = null
 let startPickMarker = null
 let endPickMarker = null
+let temporaryRouteGroup = null
+let temporaryRoutes = []
+let routePlanningRequestId = 0
+let routeLifecycleBound = false
+let routePlanningBusy = false
+
+function escapeHtml (value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+function routePathForLeaflet (route) {
+  return getRoutePath(route).map(point => [point.lat, point.lng])
+}
+
+function selectedRoute () {
+  return routeData?.[activeRouteIndex] || null
+}
+
+function snapshotRoutePoi (poi) {
+  if (!poi?.location) return null
+  const lat = Number(poi.location.lat)
+  const lng = Number(poi.location.lng)
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+  return {
+    name: String(poi.name || '').trim(),
+    location: { lat, lng },
+  }
+}
+
+function updateRouteActionState () {
+  if (typeof document === 'undefined') return
+  const hasRoute = !routePlanningBusy && Boolean(selectedRoute() && routePathForLeaflet(selectedRoute()).length >= 2)
+  const swapButton = document.getElementById('route-swap-btn')
+  if (swapButton) swapButton.disabled = !(startPoi?.location && endPoi?.location)
+  ;['route-save-btn', 'route-add-btn', 'route-nav-btn'].forEach(id => {
+    const button = document.getElementById(id)
+    if (button) button.disabled = !hasRoute
+  })
+}
+
+function resolveBestPoiName (AMap, poi) {
+  if (!poi?.location) return Promise.resolve(String(poi?.name || ''))
+  const fallback = String(poi.name || `位置 (${Number(poi.location.lat).toFixed(4)}, ${Number(poi.location.lng).toFixed(4)})`)
+  if (!AMap?.plugin) return Promise.resolve(fallback)
+  return new Promise(resolve => {
+    let settled = false
+    let timeoutId = null
+    const finish = name => {
+      if (settled) return
+      settled = true
+      if (timeoutId !== null && typeof window !== 'undefined') window.clearTimeout(timeoutId)
+      resolve(String(name || fallback).trim() || fallback)
+    }
+    try {
+      AMap.plugin('AMap.Geocoder', () => {
+        try {
+          const geocoder = new AMap.Geocoder({ extensions: 'all', radius: 1000 })
+          geocoder.getAddress([poi.location.lng, poi.location.lat], (status, result) => {
+            finish(status === 'complete' ? getBestRouteLocationName(result, fallback) : fallback)
+          })
+        } catch {
+          finish(fallback)
+        }
+      })
+    } catch {
+      finish(fallback)
+    }
+    if (typeof window !== 'undefined') timeoutId = window.setTimeout(() => finish(fallback), 5000)
+  })
+}
+
+async function resolveRouteEndpointNames (AMap, endpoints = {}) {
+  const start = endpoints.start || startPoi
+  const end = endpoints.end || endPoi
+  const [startName, endName] = await Promise.all([
+    resolveBestPoiName(AMap, start),
+    resolveBestPoiName(AMap, end),
+  ])
+  if (start && start === startPoi) startPoi.name = startName
+  if (end && end === endPoi) endPoi.name = endName
+  const startInput = typeof document !== 'undefined' ? document.getElementById('route-start-input') : null
+  const endInput = typeof document !== 'undefined' ? document.getElementById('route-end-input') : null
+  if (startInput && start === startPoi && startName) startInput.value = startName
+  if (endInput && end === endPoi && endName) endInput.value = endName
+  return { startName, endName }
+}
+
+function removeTemporaryRoute (map, id) {
+  const index = temporaryRoutes.findIndex(item => item.id === String(id || ''))
+  if (index < 0) return false
+  const [item] = temporaryRoutes.splice(index, 1)
+  if (item.layer) {
+    item.layer.closePopup?.()
+    temporaryRouteGroup?.removeLayer(item.layer)
+    if (!temporaryRouteGroup && map.hasLayer?.(item.layer)) map.removeLayer(item.layer)
+  }
+  if (temporaryRouteGroup && temporaryRouteGroup.getLayers?.().length === 0) {
+    map.removeLayer(temporaryRouteGroup)
+    temporaryRouteGroup = null
+  }
+  return true
+}
+
+function clearTemporaryRoutes (map) {
+  temporaryRoutes.forEach(item => item.layer?.closePopup?.())
+  if (temporaryRouteGroup) map.removeLayer(temporaryRouteGroup)
+  temporaryRouteGroup = null
+  temporaryRoutes = []
+}
+
+function renderTemporaryRoutePopup (item) {
+  return `
+    <div class="route-temp-popup-content">
+      <div class="route-temp-popup-eyebrow">临时路线 · 方案 ${item.routeIndex + 1}</div>
+      <div class="route-temp-popup-title">${escapeHtml(item.name)}</div>
+      <div class="route-temp-popup-meta">${escapeHtml(formatRouteDistance(item.metrics.meters))} · ${escapeHtml(formatRouteDuration(item.metrics.seconds))}</div>
+      <div class="route-temp-popup-endpoints">${escapeHtml(item.startName)} → ${escapeHtml(item.endName)}</div>
+      <div class="route-temp-popup-actions">
+        <button type="button" class="route-temp-popup-btn primary" data-temp-route-save="${escapeHtml(item.id)}" title="保存路线">保存</button>
+        <button type="button" class="route-temp-popup-btn danger" data-temp-route-delete="${escapeHtml(item.id)}" title="删除临时路线">删除</button>
+      </div>
+    </div>
+  `
+}
+
+function bindTemporaryRoutePopup (map, AMap, item, popup) {
+  const container = popup?.getElement?.()
+  if (!container || container.dataset.routeTempBound === 'true') return
+  container.dataset.routeTempBound = 'true'
+  L.DomEvent.disableClickPropagation(container)
+  container.querySelector('[data-temp-route-save]')?.addEventListener('click', async event => {
+    event.preventDefault()
+    event.stopPropagation()
+    const saved = await saveRouteLineToKml(map, {
+      latlngs: item.path,
+      name: buildRouteDefaultName(item.startName, item.endName),
+      description: buildRouteDescription(item.route, item.startName, item.endName, item.routeIndex),
+    })
+    if (saved) {
+      item.layer?.closePopup?.()
+      await showAlert(`路线已保存到“${saved.kmlName || '目标 KML'}”。`, { title: '保存成功' })
+    }
+  })
+  container.querySelector('[data-temp-route-delete]')?.addEventListener('click', async event => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!(await showConfirm('确认删除这条临时路线吗？', { title: '删除临时路线', confirmText: '删除' }))) return
+    removeTemporaryRoute(map, item.id)
+  })
+}
+
+async function addTemporaryRoute (map, AMap, routeIndex = activeRouteIndex) {
+  const route = routeData?.[routeIndex]
+  const path = routePathForLeaflet(route)
+  if (!route || path.length < 2) return false
+  const endpoints = { start: snapshotRoutePoi(startPoi), end: snapshotRoutePoi(endPoi) }
+  const names = await resolveRouteEndpointNames(AMap, endpoints)
+  if (!temporaryRouteGroup) temporaryRouteGroup = L.featureGroup().addTo(map)
+  const item = {
+    id: `temporary-route-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    route,
+    routeIndex,
+    path,
+    startName: names.startName || endpoints.start?.name || '起点',
+    endName: names.endName || endpoints.end?.name || '终点',
+    name: buildRouteDefaultName(names.startName, names.endName),
+    metrics: getRouteMetrics(route),
+    layer: null,
+  }
+  item.layer = L.polyline(path, {
+    color: '#c2410c',
+    weight: 6,
+    opacity: 0.9,
+    dashArray: '10 7',
+    lineCap: 'round',
+    lineJoin: 'round',
+  }).addTo(temporaryRouteGroup)
+  item.layer.bindPopup(renderTemporaryRoutePopup(item), {
+    closeButton: false,
+    className: 'route-temp-popup',
+    maxWidth: 300,
+    minWidth: 230,
+  })
+  item.layer.on('click', event => {
+    L.DomEvent.stopPropagation(event)
+    item.layer.openPopup()
+  })
+  item.layer.on('popupopen', event => bindTemporaryRoutePopup(map, AMap, item, event.popup))
+  temporaryRoutes.push(item)
+  return true
+}
+
+async function saveSelectedRoute (map, AMap, routeIndex = activeRouteIndex) {
+  const route = routeData?.[routeIndex]
+  const path = routePathForLeaflet(route)
+  if (!route || path.length < 2) return false
+  const endpoints = { start: snapshotRoutePoi(startPoi), end: snapshotRoutePoi(endPoi) }
+  const names = await resolveRouteEndpointNames(AMap, endpoints)
+  if (routeData?.[routeIndex] !== route) return false
+  const saved = await saveRouteLineToKml(map, {
+    latlngs: path,
+    name: buildRouteDefaultName(names.startName, names.endName),
+    description: buildRouteDescription(route, names.startName, names.endName, routeIndex),
+  })
+  if (saved) {
+    await showAlert(`路线已保存到“${saved.kmlName || '目标 KML'}”。`, { title: '保存成功' })
+    return true
+  }
+  return false
+}
 
 // 清理路线相关的地图图层和状态
-function clearRouteLayers (map) {
+function clearRouteLayers (map, options = {}) {
+  if (options.invalidate !== false) {
+    routePlanningRequestId += 1
+    routePlanningBusy = false
+  }
   if (routeFeatureGroup) {
     map.removeLayer(routeFeatureGroup)
     routeFeatureGroup = null
@@ -36,6 +266,7 @@ function clearRouteLayers (map) {
     resultsList.style.display = 'none'
   }
   if (navigateBox) navigateBox.style.display = 'none'
+  updateRouteActionState()
 }
 
 // 清理所有地图上的选点大头针
@@ -53,11 +284,13 @@ function clearAllRoutePickers (map) {
 // 切换当前激活的折线和卡片
 function selectRoute (index) {
   if (!routePolylines || routePolylines.length === 0) return
-  activeRouteIndex = index
+  const requestedIndex = Number(index)
+  const normalizedIndex = Number.isInteger(requestedIndex) ? requestedIndex : 0
+  activeRouteIndex = Math.max(0, Math.min(normalizedIndex, routePolylines.length - 1))
 
   // 更新地图折线样式
   routePolylines.forEach((polyline, idx) => {
-    if (idx === index) {
+    if (idx === activeRouteIndex) {
       polyline.setStyle({
         color: '#0f766e',
         weight: 7,
@@ -76,13 +309,14 @@ function selectRoute (index) {
   // 更新面板卡片样式
   const cards = document.querySelectorAll('.route-card')
   cards.forEach((card, idx) => {
-    if (idx === index) {
+    if (idx === activeRouteIndex) {
       card.classList.add('active')
       card.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
     } else {
       card.classList.remove('active')
     }
   })
+  updateRouteActionState()
 }
 
 // 更新或绘制大头针标记
@@ -136,15 +370,19 @@ function bindMarkerDragEvents (map, marker, isStart) {
       location: { lng, lat },
     }
 
+    clearRouteLayers(map)
     if (isStart) {
       startPoi = poi
     } else {
       endPoi = poi
     }
+    updateRouteActionState()
+    const endpointRequestId = routePlanningRequestId
 
     AMap.plugin('AMap.Geocoder', () => {
       const geocoder = new AMap.Geocoder()
       geocoder.getAddress([lng, lat], (status, result) => {
+        if (endpointRequestId !== routePlanningRequestId) return
         if (status === 'complete' && result.regeocode) {
           const address = result.regeocode.formattedAddress || displayName
           poi.name = address
@@ -166,6 +404,13 @@ function bindMarkerDragEvents (map, marker, isStart) {
 // 提取路线计算逻辑为自适应重新规划纯函数
 function triggerRoutePlanning (map, AMap) {
   if (!startPoi || !endPoi) return
+  clearRouteLayers(map)
+  const planningStart = snapshotRoutePoi(startPoi)
+  const planningEnd = snapshotRoutePoi(endPoi)
+  if (!planningStart || !planningEnd) return
+  const requestId = ++routePlanningRequestId
+  routePlanningBusy = true
+  updateRouteActionState()
 
   AMap.plugin('AMap.Driving', () => {
     const driving = new AMap.Driving({
@@ -173,33 +418,36 @@ function triggerRoutePlanning (map, AMap) {
       extensions: 'all',
     })
 
-    const startLngLat = new AMap.LngLat(startPoi.location.lng, startPoi.location.lat)
-    const endLngLat = new AMap.LngLat(endPoi.location.lng, endPoi.location.lat)
+    const startLngLat = new AMap.LngLat(planningStart.location.lng, planningStart.location.lat)
+    const endLngLat = new AMap.LngLat(planningEnd.location.lng, planningEnd.location.lat)
 
     driving.search(startLngLat, endLngLat, async (status, result) => {
-      if (status !== 'complete' || !result.routes || result.routes.length === 0) {
+      if (requestId !== routePlanningRequestId) return
+      const routes = Array.isArray(result?.routes)
+        ? result.routes.filter(route => routePathForLeaflet(route).length >= 2)
+        : []
+      if (status !== 'complete' || routes.length === 0) {
+        routePlanningBusy = false
+        updateRouteActionState()
         await showAlert('路线规划失败: ' + (result?.info || '未知错误'))
         return
       }
 
-      saveSearchHistory('map_route_history', startPoi)
-      saveSearchHistory('map_route_history', endPoi)
+      saveSearchHistory('map_route_history', planningStart)
+      saveSearchHistory('map_route_history', planningEnd)
 
-      clearRouteLayers(map)
+      clearRouteLayers(map, { invalidate: false })
+      routePlanningBusy = true
       routeFeatureGroup = L.featureGroup().addTo(map)
-      routeData = result.routes
+      routeData = routes
 
       // 确保地图选点大头针被画出并且更新到最新位置
-      updatePickMarker(map, [startPoi.location.lat, startPoi.location.lng], true)
-      updatePickMarker(map, [endPoi.location.lat, endPoi.location.lng], false)
+      updatePickMarker(map, [planningStart.location.lat, planningStart.location.lng], true)
+      updatePickMarker(map, [planningEnd.location.lat, planningEnd.location.lng], false)
 
       routeData.forEach((route, idx) => {
-        const pathPoints = []
-        route.steps.forEach((step) => {
-          step.path.forEach((pt) => {
-            pathPoints.push([pt.lat, pt.lng])
-          })
-        })
+        const pathPoints = routePathForLeaflet(route)
+        if (pathPoints.length < 2) return
 
         const polyline = L.polyline(pathPoints, {
           color: '#94a3b8',
@@ -220,13 +468,22 @@ function triggerRoutePlanning (map, AMap) {
       if (resultsList) {
         resultsList.style.display = ''
         resultsList.innerHTML = routeData.map((route, idx) => {
-          const minutes = Math.round(route.time / 60)
-          const km = parseFloat((route.distance / 1000).toFixed(1))
+          const metrics = getRouteMetrics(route)
           const activeClass = idx === 0 ? 'active' : ''
           return `
             <div class="route-card ${activeClass}" data-route-idx="${idx}">
-              <div class="route-card-title">方案 ${idx + 1}</div>
-              <div class="route-card-meta">约 ${minutes} 分钟 | ${km} 公里</div>
+              <div class="route-card-main">
+                <div class="route-card-title">方案 ${idx + 1}</div>
+                <div class="route-card-meta">${escapeHtml(formatRouteDuration(metrics.seconds))} · ${escapeHtml(formatRouteDistance(metrics.meters))}</div>
+              </div>
+              <div class="route-card-actions" aria-label="方案 ${idx + 1} 操作">
+                <button type="button" class="route-card-icon-btn" data-route-action="save" data-route-idx="${idx}" title="保存路线" aria-label="保存方案 ${idx + 1}">
+                  <svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l2 2v16H5z"/><path d="M8 3v6h8V3M8 21v-6h8v6"/></svg>
+                </button>
+                <button type="button" class="route-card-icon-btn" data-route-action="add" data-route-idx="${idx}" title="添加到地图" aria-label="添加方案 ${idx + 1} 到地图">
+                  <svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+              </div>
             </div>
           `
         }).join('')
@@ -235,6 +492,16 @@ function triggerRoutePlanning (map, AMap) {
           card.addEventListener('click', () => {
             const idx = parseInt(card.getAttribute('data-route-idx'), 10)
             selectRoute(idx)
+          })
+        })
+        resultsList.querySelectorAll('[data-route-action]').forEach(button => {
+          button.addEventListener('click', async event => {
+            event.preventDefault()
+            event.stopPropagation()
+            const idx = Number(button.getAttribute('data-route-idx'))
+            selectRoute(idx)
+            if (button.getAttribute('data-route-action') === 'save') await saveSelectedRoute(map, AMap, idx)
+            else await addTemporaryRoute(map, AMap, idx)
           })
         })
       }
@@ -250,7 +517,7 @@ function triggerRoutePlanning (map, AMap) {
       const summaryText = document.getElementById('route-summary-text')
       const panelBody = document.getElementById('route-panel-body')
       if (summaryBar && summaryText && panelBody) {
-        summaryText.innerHTML = `${startPoi.name} ➔ ${endPoi.name}`
+        summaryText.textContent = `${planningStart.name || '起点'} ➔ ${planningEnd.name || '终点'}`
         summaryBar.style.display = 'flex'
 
         const fields = panelBody.querySelector('.route-fields')
@@ -265,6 +532,8 @@ function triggerRoutePlanning (map, AMap) {
       }
 
       selectRoute(0)
+      routePlanningBusy = false
+      updateRouteActionState()
     })
   })
 }
@@ -276,6 +545,19 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     closeSearchButton.dataset.searchCloseBound = 'true'
     closeSearchButton.addEventListener('click', () => {
       searchContainer.style.display = 'none'
+    })
+  }
+
+  if (map && !routeLifecycleBound) {
+    routeLifecycleBound = true
+    map.on('unload', () => {
+      clearTemporaryRoutes(map)
+      routeFeatureGroup = null
+      routePolylines = []
+      routeData = null
+      routePlanningRequestId += 1
+      routePlanningBusy = false
+      routeLifecycleBound = false
     })
   }
 
@@ -346,6 +628,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   // 绑定联想选中事件
   startAutoComplete.on('select', (event) => {
     if (event.poi?.location) {
+      clearRouteLayers(map)
       startPoi = {
         name: event.poi.name,
         location: {
@@ -353,6 +636,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           lat: event.poi.location.lat,
         },
       }
+      updateRouteActionState()
       saveSearchHistory('map_route_history', startPoi)
       updatePickMarker(map, [startPoi.location.lat, startPoi.location.lng], true)
       if (startPoi && endPoi) {
@@ -363,6 +647,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
 
   endAutoComplete.on('select', (event) => {
     if (event.poi?.location) {
+      clearRouteLayers(map)
       endPoi = {
         name: event.poi.name,
         location: {
@@ -370,6 +655,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           lat: event.poi.location.lat,
         },
       }
+      updateRouteActionState()
       saveSearchHistory('map_route_history', endPoi)
       updatePickMarker(map, [endPoi.location.lat, endPoi.location.lng], false)
       if (startPoi && endPoi) {
@@ -398,6 +684,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     startInput.addEventListener('input', () => {
       startPoi = null
       clearRouteLayers(map)
+      updateRouteActionState()
       if (!startInput.value.trim() && startPickMarker) {
         map.removeLayer(startPickMarker)
         startPickMarker = null
@@ -409,6 +696,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     endInput.addEventListener('input', () => {
       endPoi = null
       clearRouteLayers(map)
+      updateRouteActionState()
       if (!endInput.value.trim() && endPickMarker) {
         map.removeLayer(endPickMarker)
         endPickMarker = null
@@ -420,7 +708,9 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   if (startInput) {
     const container = startInput.closest('.route-input-container')
     renderSearchHistoryDropdown(container, startInput, 'map_route_history', (item) => {
+      clearRouteLayers(map)
       startPoi = item
+      updateRouteActionState()
       if (item.location) {
         updatePickMarker(map, [item.location.lat, item.location.lng], true)
         if (startPoi && endPoi) {
@@ -433,7 +723,9 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   if (endInput) {
     const container = endInput.closest('.route-input-container')
     renderSearchHistoryDropdown(container, endInput, 'map_route_history', (item) => {
+      clearRouteLayers(map)
       endPoi = item
+      updateRouteActionState()
       if (item.location) {
         updatePickMarker(map, [item.location.lat, item.location.lng], false)
         if (startPoi && endPoi) {
@@ -556,17 +848,21 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
           location: { lng, lat }
         }
 
+        clearRouteLayers(map)
         if (isStart) {
           startPoi = poi
         } else {
           endPoi = poi
         }
+        updateRouteActionState()
+        const endpointRequestId = routePlanningRequestId
 
         updatePickMarker(map, [lat, lng], isStart)
 
         AMap.plugin('AMap.Geocoder', () => {
           const geocoder = new AMap.Geocoder()
           geocoder.getAddress([lng, lat], (status, result) => {
+            if (endpointRequestId !== routePlanningRequestId) return
             if (status === 'complete' && result.regeocode) {
               const address = result.regeocode.formattedAddress || displayName
               poi.name = address
@@ -595,12 +891,16 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   const myLocationBtn = document.getElementById('route-my-location-btn')
   if (myLocationBtn && startInput) {
     myLocationBtn.addEventListener('click', async () => {
+      clearRouteLayers(map)
+      const locationRequestId = routePlanningRequestId
       startInput.value = '正在定位中...'
       startInput.disabled = true
       startPoi = null
+      updateRouteActionState()
 
       try {
         const position = await getBestPosition(amapGeolocation)
+        if (locationRequestId !== routePlanningRequestId) return
         const mapPosition = positionToGcj02(position)
         startPoi = {
           name: '我的位置',
@@ -609,6 +909,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
             lat: mapPosition.lat,
           },
         }
+        updateRouteActionState()
         startInput.value = '我的位置'
         saveSearchHistory('map_route_history', startPoi)
         updatePickMarker(map, [mapPosition.lat, mapPosition.lng], true)
@@ -625,7 +926,7 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     })
   }
 
-  // 5. “开始规划”按钮交互
+  // 5. 路线工具栏：规划、交换起终点、保存和临时添加
   const searchRouteBtn = document.getElementById('route-search-btn')
   if (searchRouteBtn) {
     searchRouteBtn.addEventListener('click', async () => {
@@ -651,6 +952,40 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       }
 
       triggerRoutePlanning(map, AMap)
+    })
+  }
+
+  const swapRouteBtn = document.getElementById('route-swap-btn')
+  if (swapRouteBtn) {
+    swapRouteBtn.addEventListener('click', async () => {
+      if (!startPoi || !endPoi) return
+      clearRouteLayers(map)
+      const swapped = swapRouteEndpoints(startPoi, endPoi)
+      startPoi = swapped.start
+      endPoi = swapped.end
+      updateRouteActionState()
+      if (startInput) startInput.value = startPoi?.name || ''
+      if (endInput) endInput.value = endPoi?.name || ''
+      clearAllRoutePickers(map)
+      if (startPoi?.location) updatePickMarker(map, [startPoi.location.lat, startPoi.location.lng], true)
+      if (endPoi?.location) updatePickMarker(map, [endPoi.location.lat, endPoi.location.lng], false)
+      saveSearchHistory('map_route_history', startPoi)
+      saveSearchHistory('map_route_history', endPoi)
+      triggerRoutePlanning(map, AMap)
+    })
+  }
+
+  const saveRouteBtn = document.getElementById('route-save-btn')
+  if (saveRouteBtn) {
+    saveRouteBtn.addEventListener('click', async () => {
+      await saveSelectedRoute(map, AMap)
+    })
+  }
+
+  const addRouteBtn = document.getElementById('route-add-btn')
+  if (addRouteBtn) {
+    addRouteBtn.addEventListener('click', async () => {
+      await addTemporaryRoute(map, AMap)
     })
   }
 

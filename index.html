@@ -75,7 +75,14 @@
             </div>
           </div>
           <div class="route-actions">
-            <button type="button" id="route-search-btn" class="route-primary-btn">开始规划</button>
+            <div class="route-action-toolbar" aria-label="路线规划操作">
+              <button type="button" id="route-search-btn" class="route-icon-btn route-icon-btn-primary" title="开始规划" aria-label="开始规划">
+                <svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19 9 5l5 14 2-6h4"/><circle cx="9" cy="5" r="1.5"/><circle cx="14" cy="19" r="1.5"/></svg>
+              </button>
+              <button type="button" id="route-swap-btn" class="route-icon-btn" title="交换起点和终点" aria-label="交换起点和终点" disabled>
+                <svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3M17 17H7l3 3M17 7l-3 3M7 17l3-3"/></svg>
+              </button>
+            </div>
           </div>
           <!-- 规划路线结果列表 -->
           <div id="route-results-list" class="route-results-list" style="display: none;">
@@ -83,7 +90,17 @@
           </div>
           <!-- 导航操作 -->
           <div id="route-navigate-box" class="route-navigate-box" style="display: none;">
-            <button type="button" id="route-nav-btn" class="route-nav-btn">开始导航</button>
+            <div class="route-action-toolbar route-result-toolbar" aria-label="路线结果操作">
+              <button type="button" id="route-save-btn" class="route-icon-btn" title="保存路线" aria-label="保存当前路线" disabled>
+                <svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l2 2v16H5z"/><path d="M8 3v6h8V3M8 21v-6h8v6"/></svg>
+              </button>
+              <button type="button" id="route-add-btn" class="route-icon-btn" title="添加到地图" aria-label="将当前路线临时添加到地图" disabled>
+                <svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <button type="button" id="route-nav-btn" class="route-icon-btn route-icon-btn-primary" title="开始导航" aria-label="开始导航" disabled>
+                <svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 4-8z"/><path d="M8 12h12"/></svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>

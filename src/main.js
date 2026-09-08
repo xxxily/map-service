@@ -29,7 +29,7 @@ import { isAdminLocation } from './admin/location.js'
 import { isAccountLocation } from './account/model.js'
 import { initIdentityEntry } from './auth/identity.js'
 import { registerServiceWorker } from './pwa.js'
-import { initKmlSupport } from './map/kml.js'
+import { initKmlSupport, prepareKmlSupport } from './map/kml.js'
 import { initGuidelines, toggleGuidelineMode } from './map/guidelines.js'
 import { initAfterAccessCheck } from './map/access-control.js'
 import { getActiveShare, getShareSpatialConfig, isShareLocation, prepareShareView } from './map/share-view.js'
@@ -254,6 +254,7 @@ async function initLeafletMap () {
   if (AMap && !restrictedShare) {
     amapGeolocation = initAmapGeolocation(AMap)
   }
+  prepareKmlSupport()
   initAmapSearch(map, AMap, amapGeolocation)
   if (!restrictedShare) {
     mapMenuController?.setAction('toggleSearchMode', () => toggleSearchMode())

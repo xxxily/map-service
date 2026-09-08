@@ -114,6 +114,7 @@ import {
   clusterKmlPoints,
   resolveGlobalKmlPointClusteringConfig,
 } from './kml-point-clustering.js'
+import { normalizeRoutePath } from './route-planner-utils.js'
 
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
@@ -188,6 +189,12 @@ const LONG_PRESS_MOVE_TOLERANCE = 10
 const KML_POPUP_FADE_FALLBACK_MS = 260
 let kmlList = []
 let kmlDirectories = []
+let resolveKmlSupportReady
+const kmlSupportReady = new Promise(resolve => {
+  resolveKmlSupportReady = resolve
+})
+let kmlSupportInitStarted = false
+let kmlSupportInitialized = false
 let accountSessionExpiryBound = false
 let kmlViewportRerenderTimer = null // KML 图层视口变化重渲染的 debounce timer
 let kmlViewportRenderTask = null
@@ -1263,6 +1270,122 @@ function getMapLatLngs (kmlFile, feature) {
 function mapLatLngToStoredCoordinate (kmlFile, latlng) {
   const coord = [latlng.lng, latlng.lat]
   return shouldCorrectCoords(kmlFile) ? gcj02ToWgs84(coord) : coord
+}
+
+/**
+ * Wait until the map KML store has loaded before presenting a route target
+ * selector. Search controls are initialized slightly earlier than KML, so a
+ * click during that short window must not create a second, incomplete store.
+ */
+export function waitForKmlSupportReady () {
+  return kmlSupportInitStarted && !kmlSupportInitialized
+    ? kmlSupportReady
+    : Promise.resolve(kmlSupportInitialized)
+}
+
+export function prepareKmlSupport () {
+  kmlSupportInitStarted = true
+}
+
+function nextRouteFeatureId () {
+  return `route-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+}
+
+/**
+ * Persist a Leaflet/AMap route as a LineString in one of the user's writable
+ * KML files. The coordinates received from AMap are GCJ-02 map coordinates;
+ * the selected KML's existing correction policy is applied before storage.
+ */
+export async function saveRouteLineToKml (map, options = {}) {
+  if (getActiveShare()) {
+    await showAlert('分享地图中的路线只能临时添加，不能保存到 KML。')
+    return null
+  }
+  await waitForKmlSupportReady()
+  if (!canWritePersonalKml()) {
+    await showAlert('当前账号只有 KML 查看权限，不能保存路线。')
+    return null
+  }
+
+  const routePoints = normalizeRoutePath(options.latlngs || options.points || [])
+  if (routePoints.length < 2) {
+    await showAlert('路线点位不足，无法保存。')
+    return null
+  }
+
+  ensureDefaultKmlFile()
+  const targetOptions = buildKmlTargetOptions()
+  if (!targetOptions.length) {
+    await showAlert('当前没有可写的 KML 文件。')
+    return null
+  }
+  const preferredId = String(options.targetKmlId || '')
+  const initialTarget = targetOptions.some(item => String(item.value) === preferredId)
+    ? preferredId
+    : (targetOptions.some(item => String(item.value) === resolveTargetKmlId())
+        ? resolveTargetKmlId()
+        : String(targetOptions[0].value))
+  const result = await showEditDialog({
+    title: '保存路线到 KML',
+    fields: [
+      {
+        name: 'kmlId',
+        label: '保存到 KML 文件',
+        type: 'select',
+        options: targetOptions,
+      },
+      {
+        name: 'name',
+        label: '路线名称',
+        required: false,
+        maxlength: 120,
+      },
+      {
+        name: 'description',
+        label: '描述',
+        type: 'textarea',
+        required: false,
+      },
+    ],
+    values: {
+      kmlId: initialTarget,
+      name: String(options.name || '').trim(),
+      description: String(options.description || '').trim(),
+    },
+    confirmText: '保存',
+  })
+  if (!result) return null
+
+  const targetId = String(result.kmlId || initialTarget)
+  const kmlFile = kmlList.find(file => String(file.id) === targetId)
+  if (!kmlFile || !isKmlEditable(kmlFile)) {
+    await showAlert('目标 KML 当前为只读，不能保存路线。')
+    return null
+  }
+  if (!isKmlEnabled(kmlFile)) {
+    await showAlert('目标 KML 文件已隐藏，请先启用后再保存路线。')
+    return null
+  }
+  if (!(await loadAccountKmlFileForUse(kmlFile))) {
+    await showAlert(kmlFile.loadError || 'KML 文件详情加载失败，未保存路线。')
+    return null
+  }
+
+  const feature = {
+    id: nextRouteFeatureId(),
+    type: 'LineString',
+    name: String(result.name || '').trim() || String(options.name || '').trim() || '新建路线',
+    description: String(result.description || '').trim(),
+    coordinates: routePoints.map(point => mapLatLngToStoredCoordinate(kmlFile, point)),
+  }
+  pushKmlHistory()
+  kmlFile.features.push(feature)
+  expandedKmlIds.add(kmlFile.id)
+  rememberTargetKmlId(kmlFile.id)
+  saveKmlChanges(kmlFile)
+  renderKmlLayers(map, kmlFile)
+  updateKmlPanelUI(map)
+  return { kmlId: kmlFile.id, kmlName: kmlFile.name, feature }
 }
 
 function getRememberedTargetKmlId () {
@@ -4403,12 +4526,15 @@ function bindKmlDirectoryOrganizationEvents (panel, map) {
 }
 
 export async function initKmlSupport (map, options = {}) {
+  kmlSupportInitStarted = true
   markKmlMapActive(map)
   bindKmlPopupActions(map)
   bindKmlMapInteractionState(map)
   bindKmlViewportRerender(map)
   if (getActiveShare()) {
     await initShareKmlSupport(map, options)
+    kmlSupportInitialized = true
+    resolveKmlSupportReady?.(true)
     return
   }
   window.getActiveKmlMarkers = getActiveKmlMarkers
@@ -5195,6 +5321,8 @@ export async function initKmlSupport (map, options = {}) {
       }
     }
   })
+  kmlSupportInitialized = true
+  resolveKmlSupportReady?.(true)
 }
 
 // 导出所有当前在地图上渲染的 KML 标记点图层，供碰撞检测与反点击穿透使用

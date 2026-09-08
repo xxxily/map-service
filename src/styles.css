@@ -917,22 +917,66 @@ body.admin-view #footer-bar {
   margin-bottom: 10px;
 }
 
-.route-primary-btn {
-  width: 100%;
-  height: 36px;
-  border: 1px solid #0f766e;
-  border-radius: 6px;
-  background-color: #0f766e;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.15s, border-color 0.15s;
+.route-action-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 34px;
 }
 
-.route-primary-btn:hover {
-  background-color: #0d9488;
+.route-icon-btn,
+.route-card-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 1px solid #d7e3e4;
+  border-radius: 6px;
+  background: #fff;
+  color: #416064;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.route-icon-btn {
+  width: 34px;
+  height: 34px;
+  padding: 7px;
+}
+
+.route-icon-btn:hover:not(:disabled),
+.route-card-icon-btn:hover:not(:disabled) {
+  border-color: #0f766e;
+  color: #0f766e;
+  background: #f0fdfa;
+  box-shadow: 0 2px 5px rgba(15, 118, 110, 0.12);
+}
+
+.route-icon-btn:focus-visible,
+.route-card-icon-btn:focus-visible,
+.route-edit-btn:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.42);
+  outline-offset: 2px;
+}
+
+.route-icon-btn:disabled,
+.route-card-icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  box-shadow: none;
+}
+
+.route-icon-btn-primary {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+
+.route-icon-btn-primary:hover:not(:disabled) {
   border-color: #0d9488;
+  background: #0d9488;
+  color: #fff;
 }
 
 /* 路线头部按钮组容器 */
@@ -1018,8 +1062,13 @@ body.admin-view #footer-bar {
 }
 
 .route-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
-  padding: 8px 10px;
+  min-height: 48px;
+  padding: 7px 8px 7px 10px;
   border: 1px solid transparent;
   border-radius: 6px;
   background-color: #fff;
@@ -1028,6 +1077,23 @@ body.admin-view #footer-bar {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   transition: all 0.15s ease;
   box-sizing: border-box;
+}
+
+.route-card-main {
+  min-width: 0;
+}
+
+.route-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+
+.route-card-icon-btn {
+  width: 27px;
+  height: 27px;
+  padding: 5px;
 }
 
 .route-card:hover {
@@ -1061,23 +1127,94 @@ body.admin-view #footer-bar {
   margin-top: 4px;
 }
 
-.route-nav-btn {
-  width: 100%;
-  height: 34px;
-  border: 1px solid #0f766e;
-  border-radius: 6px;
-  background-color: #0f766e;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  box-shadow: 0 3px 8px rgba(15, 118, 110, 0.15);
-  transition: all 0.15s ease;
+.route-result-toolbar {
+  justify-content: flex-end;
+  padding-top: 2px;
 }
 
-.route-nav-btn:hover {
-  background-color: #0d9488;
-  box-shadow: 0 3px 10px rgba(13, 148, 136, 0.25);
+.route-temp-popup .leaflet-popup-content {
+  margin: 0;
+  width: auto !important;
+}
+
+.route-temp-popup .leaflet-popup-content-wrapper {
+  border: 1px solid rgba(194, 65, 12, 0.22);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(61, 36, 20, 0.18);
+}
+
+.route-temp-popup-content {
+  min-width: 208px;
+  padding: 12px 13px 11px;
+  color: #253d40;
+}
+
+.route-temp-popup-eyebrow {
+  color: #c2410c;
+  font-size: 10px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.route-temp-popup-title {
+  overflow: hidden;
+  color: #18373a;
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-temp-popup-meta,
+.route-temp-popup-endpoints {
+  color: #5a7073;
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.route-temp-popup-endpoints {
+  overflow-wrap: anywhere;
+}
+
+.route-temp-popup-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.route-temp-popup-btn {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid #d7e3e4;
+  border-radius: 5px;
+  background: #fff;
+  color: #416064;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.route-temp-popup-btn:hover {
+  border-color: #0f766e;
+  color: #0f766e;
+}
+
+.route-temp-popup-btn.primary {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+
+.route-temp-popup-btn.primary:hover {
+  border-color: #0d9488;
+  background: #0d9488;
+  color: #fff;
+}
+
+.route-temp-popup-btn.danger:hover {
+  border-color: #dc2626;
+  color: #dc2626;
 }
 
 /* 移动端/小屏幕适配：强制方案卡片横向滚动显示 */
@@ -1109,7 +1246,7 @@ body.admin-view #footer-bar {
     flex: 1 0 110px !important;
     max-width: 130px !important;
     padding: 6px 8px !important;
-    text-align: center;
+    text-align: left;
   }
 
   .route-card-title {
@@ -1118,6 +1255,10 @@ body.admin-view #footer-bar {
 
   .route-card-meta {
     white-space: nowrap !important;
+  }
+
+  .route-card-actions {
+    gap: 2px;
   }
 }
 
