@@ -31,9 +31,50 @@ test('2D focus invalidates old popup restoration and does not pan an already vis
   const focus = source.match(/function focusFeature[\s\S]*?\n}\n\nasync function focusKmlFeatureFromPanel/)?.[0] || ''
 
   assert.match(restore, /const expectedRequestId = kmlFeatureFocusRequestId/)
-  assert.match(restore, /if \(expectedRequestId !== kmlFeatureFocusRequestId\) return/)
+  assert.match(restore, /expectedRequestId !== kmlFeatureFocusRequestId/)
   assert.match(restore, /!sameKmlFeatureIdentity\(focusState\.identity, normalizedIdentity\)/)
   assert.match(focus, /if \(plan\.method === 'set-view'\)/)
   assert.match(focus, /else if \(plan\.method === 'pan-inside'\)/)
-  assert.doesNotMatch(focus, /else map\.panInside/) 
+  assert.doesNotMatch(focus, /else map\.panInside/)
+})
+
+test('2D focus waits for Leaflet fade removal before opening the latest popup', () => {
+  const begin = source.match(/function beginKmlFeatureFocus[\s\S]*?\n}\n\nfunction cancelKmlFeatureFocus/)?.[0] || ''
+  const focus = source.match(/async function focusFeature[\s\S]*?\n}\n\nasync function focusKmlFeatureFromPanel/)?.[0] || ''
+
+  assert.match(source, /KML_POPUP_FADE_FALLBACK_MS/)
+  assert.match(begin, /queueKmlPopupTransition\(map\)/)
+  assert.ok(begin.indexOf('queueKmlPopupTransition(map)') < begin.indexOf('map\?\.closePopup\?\.\(\)'))
+  assert.match(focus, /await waitForKmlPopupTransition\(map\)/)
+  assert.match(focus, /if \(!isCurrentKmlFeatureFocus\(map, identity, requestId\)\) return false/)
+  assert.doesNotMatch(source, /forceCloseKmlPopups/)
+})
+
+test('2D viewport refresh stays behind a fading KML popup', () => {
+  const defer = source.match(/function shouldDeferKmlViewportRender[\s\S]*?\n}\n\nfunction flushDeferredKmlViewportRender/)?.[0] || ''
+  const flush = source.match(/function flushDeferredKmlViewportRender[\s\S]*?\n}\n\nfunction cancelKmlScheduledTasks/)?.[0] || ''
+
+  assert.match(defer, /getKmlPopupTransitionState\(map\)/)
+  assert.match(flush, /waitForKmlPopupTransition\(map\)/)
+})
+
+test('2D manual KML popup close invalidates pending popup restoration', () => {
+  const restore = source.match(/function restoreKmlPopup[\s\S]*?\n}\n\nfunction resolveTargetKmlId/)?.[0] || ''
+  const popupActions = source.match(/function bindKmlPopupActions[\s\S]*?\n}\n\nfunction renderShareKmlPanel/)?.[0] || ''
+
+  assert.match(restore, /const expectedPopupCloseGeneration = getKmlPopupCloseGeneration\(map\)/)
+  assert.match(restore, /expectedPopupCloseGeneration !== getKmlPopupCloseGeneration\(map\)/)
+  assert.match(popupActions, /if \(!isKmlPopupInstance\(event\?\.popup\)\) return/)
+  assert.match(popupActions, /noteKmlPopupClosed\(map\)/)
+})
+
+test('2D KML focus and popup restoration stop when the map unloads', () => {
+  const restore = source.match(/function restoreKmlPopup[\s\S]*?\n}\n\nfunction resolveTargetKmlId/)?.[0] || ''
+  const focus = source.match(/async function focusFeature[\s\S]*?\n}\n\nasync function focusKmlFeatureFromPanel/)?.[0] || ''
+  const binding = source.match(/function bindKmlViewportRerender[\s\S]*?\n}\n\nfunction scheduleKmlPointLabelSync/)?.[0] || ''
+
+  assert.match(restore, /isKmlMapUnloading\(map\)/)
+  assert.match(focus, /if \(isKmlMapUnloading\(map\)\) return false/)
+  assert.match(binding, /markKmlMapUnloading\(map\)/)
+  assert.match(binding, /cancelKmlFeatureFocus\(map\)/)
 })

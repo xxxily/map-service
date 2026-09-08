@@ -182,11 +182,16 @@ const DEFAULT_KML_ID = 'default-kml'
 const DEFAULT_KML_NAME = '默认标注'
 const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
+// Leaflet removes a faded DivOverlay after 200ms. Keep a small fallback for
+// browsers that do not deliver the removal mutation (or when the map is
+// detached during navigation).
+const KML_POPUP_FADE_FALLBACK_MS = 260
 let kmlList = []
 let kmlDirectories = []
 let accountSessionExpiryBound = false
 let kmlViewportRerenderTimer = null // KML 图层视口变化重渲染的 debounce timer
 let kmlViewportRenderTask = null
+let kmlViewportRenderDeferredMap = null
 let mediaFeatureActivationTimer = null
 let kmlViewportRerenderBinding = null
 let kmlFileViewportScheduler = null
@@ -198,6 +203,8 @@ let kmlPointLabelIdleTaskKind = ''
 let kmlPointLabelSyncRevision = 0
 let kmlFeatureFocusRequestId = 0
 let kmlFeatureFocusState = null
+const kmlPopupTransitionStates = new WeakMap()
+const kmlMapLifecycleStates = new WeakMap()
 const kmlViewportCache = new WeakMap()
 const leafletMediaIconCache = new Map()
 const leafletSimpleIconCache = new Map()
@@ -1307,16 +1314,56 @@ function sameKmlFeatureIdentity (left, right) {
     String(left.featureId || '') === String(right.featureId || ''))
 }
 
-function getKmlPopupIdentity (popup) {
-  const source = popup?._source
-  return normalizeKmlFeatureIdentity(
-    source?._mapServiceKmlFileId,
-    source?._mapServiceKmlFeatureId,
-  )
+function getKmlMapLifecycleState (map) {
+  if (!map || (typeof map !== 'object' && typeof map !== 'function')) return null
+  let state = kmlMapLifecycleStates.get(map)
+  if (!state) {
+    state = {
+      unloading: false,
+      popupCloseGeneration: 0,
+    }
+    kmlMapLifecycleStates.set(map, state)
+  }
+  return state
+}
+
+function isKmlMapUnloading (map) {
+  return getKmlMapLifecycleState(map)?.unloading === true
+}
+
+function markKmlMapActive (map) {
+  const state = getKmlMapLifecycleState(map)
+  if (!state) return
+  state.unloading = false
+  state.popupCloseGeneration += 1
+}
+
+function markKmlMapUnloading (map) {
+  const state = getKmlMapLifecycleState(map)
+  if (!state) return
+  state.unloading = true
+  state.popupCloseGeneration += 1
+}
+
+function noteKmlPopupClosed (map) {
+  const state = getKmlMapLifecycleState(map)
+  if (state) state.popupCloseGeneration += 1
+}
+
+function getKmlPopupCloseGeneration (map) {
+  return getKmlMapLifecycleState(map)?.popupCloseGeneration ?? 0
+}
+
+function isKmlPopupInstance (popup) {
+  if (!popup) return false
+  const className = String(popup.options?.className || '')
+  return className.split(/\s+/).includes('kml-rich-popup') ||
+    Boolean(popup._source?._mapServiceKmlFileId && popup._source?._mapServiceKmlFeatureId)
 }
 
 function isCurrentKmlFeatureFocus (map, identity, requestId) {
   return Boolean(
+    !isKmlMapUnloading(map) &&
     kmlFeatureFocusState &&
     kmlFeatureFocusState.map === map &&
     kmlFeatureFocusState.requestId === requestId &&
@@ -1324,16 +1371,97 @@ function isCurrentKmlFeatureFocus (map, identity, requestId) {
   )
 }
 
+function cancelKmlMediaFeatureActivation () {
+  if (mediaFeatureActivationTimer) window.clearTimeout(mediaFeatureActivationTimer)
+  mediaFeatureActivationTimer = null
+}
+
+function getKmlPopupElements (map) {
+  const pane = map?.getPane?.('popupPane')
+  const root = pane || (typeof document !== 'undefined' ? document : null)
+  if (!root?.querySelectorAll) return []
+  return [...root.querySelectorAll('.leaflet-popup.kml-rich-popup')]
+    .filter(element => element?.isConnected !== false)
+}
+
+function getKmlPopupTransitionState (map) {
+  return map ? kmlPopupTransitionStates.get(map) || null : null
+}
+
+/**
+ * Register KML popup DOM that is already fading out. Leaflet owns the actual
+ * removal; this state only gives focus/render tasks a completion signal.
+ */
+function queueKmlPopupTransition (map) {
+  if (!map || isKmlMapUnloading(map)) return null
+  const elements = getKmlPopupElements(map)
+  let state = getKmlPopupTransitionState(map)
+  if (!state && !elements.length) return null
+
+  if (!state) {
+    state = {
+      elements: new Set(),
+      observer: null,
+      timer: null,
+      finish: null,
+      promise: null,
+      settled: false,
+    }
+    kmlPopupTransitionStates.set(map, state)
+  }
+  elements.forEach(element => state.elements.add(element))
+  if (state.promise) return state
+
+  state.promise = new Promise(resolve => {
+    const cleanup = () => {
+      state.observer?.disconnect?.()
+      state.observer = null
+      if (state.timer !== null) window.clearTimeout(state.timer)
+      state.timer = null
+    }
+    const finish = () => {
+      if (state.settled) return
+      state.settled = true
+      cleanup()
+      if (kmlPopupTransitionStates.get(map) === state) kmlPopupTransitionStates.delete(map)
+      resolve(true)
+    }
+    state.finish = finish
+    const check = () => {
+      state.elements.forEach(element => {
+        if (element?.isConnected === false) state.elements.delete(element)
+      })
+      if (!state.elements.size) finish()
+    }
+
+    if (typeof MutationObserver === 'function') {
+      const root = map.getPane?.('popupPane') || (typeof document !== 'undefined' ? document.body : null)
+      if (root) {
+        state.observer = new MutationObserver(check)
+        state.observer.observe(root, { childList: true, subtree: true })
+      }
+    }
+    state.timer = window.setTimeout(finish, KML_POPUP_FADE_FALLBACK_MS)
+    check()
+  })
+  return state
+}
+
+function waitForKmlPopupTransition (map) {
+  return getKmlPopupTransitionState(map)?.promise || Promise.resolve(true)
+}
+
+function cancelKmlPopupTransition (map) {
+  getKmlPopupTransitionState(map)?.finish?.()
+}
+
 function beginKmlFeatureFocus (map, kmlId, featureId) {
   const requestId = ++kmlFeatureFocusRequestId
   const identity = normalizeKmlFeatureIdentity(kmlId, featureId)
 
-  // A previous popup or viewport render may still have delayed work attached.
-  // Stop both before recording the new target so stale work cannot win later.
-  cancelKmlViewportRenderTasks()
-  map?.closePopup?.()
-  map?.stop?.()
-
+  // Register the latest request before any map call. Leaflet's stop() can
+  // synchronously emit moveend/zoomend, and those events must be attributed
+  // to this focus instead of scheduling a stale viewport rebuild.
   kmlFeatureFocusState = {
     map,
     identity,
@@ -1341,6 +1469,18 @@ function beginKmlFeatureFocus (map, kmlId, featureId) {
     pending: true,
     deferViewportRerender: false,
   }
+
+  // A previous popup or viewport render may still have delayed work attached.
+  // Clear both after recording the new target so synchronous map events cannot
+  // schedule work outside this focus request.
+  cancelKmlViewportRenderTasks()
+  cancelKmlMediaFeatureActivation()
+  queueKmlPopupTransition(map)
+  map?.closePopup?.()
+  // A close handler may synchronously replace the popup, so include any DOM
+  // created by that handler in the same transition barrier.
+  queueKmlPopupTransition(map)
+  map?.stop?.()
   return requestId
 }
 
@@ -1353,10 +1493,18 @@ function cancelKmlFeatureFocus (map, requestId) {
 
 function finishKmlFeatureFocus (map, identity, requestId) {
   if (!isCurrentKmlFeatureFocus(map, identity, requestId)) return false
-  const shouldRerender = kmlFeatureFocusState.deferViewportRerender
-  kmlFeatureFocusState.pending = false
-  kmlFeatureFocusState.deferViewportRerender = false
-  if (shouldRerender) scheduleKmlViewportRerender(map)
+  const focusState = kmlFeatureFocusState
+  const hadDeferredViewportRerender = focusState.deferViewportRerender
+  focusState.pending = false
+  focusState.deferViewportRerender = false
+  if (hadDeferredViewportRerender) {
+    cancelKmlViewportRenderTasks()
+    if (!getOpenKmlPopupIdentity(map)) flushDeferredKmlViewportRender(map)
+  }
+  // A move triggered by focus is deliberately not rerendered here. Rebuilding
+  // KML groups immediately after opening the popup closes the freshly opened
+  // overlay and starts another fade cycle. The next real map interaction will
+  // run the normal viewport refresh once the user has finished reading it.
   return true
 }
 
@@ -1375,18 +1523,27 @@ function openKmlFeaturePopup (layer) {
 
 function restoreKmlPopup (map, identity, delay = 0) {
   const normalizedIdentity = normalizeKmlFeatureIdentity(identity?.kmlId, identity?.featureId)
-  if (!normalizedIdentity) return
+  if (!normalizedIdentity || isKmlMapUnloading(map)) return
   const expectedRequestId = kmlFeatureFocusRequestId
-  const open = () => {
-    if (expectedRequestId !== kmlFeatureFocusRequestId) return
+  const expectedPopupCloseGeneration = getKmlPopupCloseGeneration(map)
+  const open = async () => {
+    if (isKmlMapUnloading(map) ||
+        expectedRequestId !== kmlFeatureFocusRequestId ||
+        expectedPopupCloseGeneration !== getKmlPopupCloseGeneration(map)) return
     const focusState = kmlFeatureFocusState
     if (focusState?.map === map && !sameKmlFeatureIdentity(focusState.identity, normalizedIdentity)) return
+    await waitForKmlPopupTransition(map)
+    if (isKmlMapUnloading(map) ||
+        expectedRequestId !== kmlFeatureFocusRequestId ||
+        expectedPopupCloseGeneration !== getKmlPopupCloseGeneration(map)) return
+    const latestFocusState = kmlFeatureFocusState
+    if (latestFocusState?.map === map && !sameKmlFeatureIdentity(latestFocusState.identity, normalizedIdentity)) return
     const layer = featureLayers.get(getFeatureLayerKey(normalizedIdentity.kmlId, normalizedIdentity.featureId))
     if (!layer || (map.hasLayer && !map.hasLayer(layer))) return
     openKmlFeaturePopup(layer)
   }
-  if (delay > 0) window.setTimeout(open, delay)
-  else open()
+  if (delay > 0) window.setTimeout(() => { void open() }, delay)
+  else void open()
 }
 
 function resolveTargetKmlId (preferredKmlId = '') {
@@ -1549,10 +1706,47 @@ function cancelKmlViewportRenderTasks () {
   kmlViewportRenderTask = null
 }
 
+function deferKmlViewportRender (map) {
+  if (map && !isKmlMapUnloading(map)) kmlViewportRenderDeferredMap = map
+}
+
+function shouldDeferKmlViewportRender (map) {
+  if (!map || isKmlMapUnloading(map)) return true
+  const focusState = kmlFeatureFocusState
+  if (focusState?.map === map && focusState.pending) {
+    focusState.deferViewportRerender = true
+    deferKmlViewportRender(map)
+    return true
+  }
+  if (getKmlPopupTransitionState(map)) {
+    // Do not rebuild feature groups while Leaflet is still removing the old
+    // faded popup. The rebuild would create another popup layer in parallel.
+    deferKmlViewportRender(map)
+    return true
+  }
+  if (getOpenKmlPopupIdentity(map)) {
+    // Rebuilding every KML group while a popup is open closes that popup and
+    // starts Leaflet's fade cycle again. Keep the live layers stable until the
+    // user closes the popup or performs another explicit refresh.
+    deferKmlViewportRender(map)
+    return true
+  }
+  return false
+}
+
+function flushDeferredKmlViewportRender (map) {
+  if (!map || isKmlMapUnloading(map) || kmlViewportRenderDeferredMap !== map) return
+  if (getKmlPopupTransitionState(map)) {
+    void waitForKmlPopupTransition(map).then(() => flushDeferredKmlViewportRender(map))
+    return
+  }
+  kmlViewportRenderDeferredMap = null
+  scheduleKmlViewportRender(map)
+}
+
 function cancelKmlScheduledTasks () {
   cancelKmlViewportRenderTasks()
-  if (mediaFeatureActivationTimer) window.clearTimeout(mediaFeatureActivationTimer)
-  mediaFeatureActivationTimer = null
+  cancelKmlMediaFeatureActivation()
   cancelKmlPointLabelSync()
 }
 
@@ -2130,10 +2324,12 @@ function allKmlFilesForViewport () {
 }
 
 function scheduleKmlViewportRender (map) {
-  if (!map) return
+  if (!map || isKmlMapUnloading(map)) return
+  if (shouldDeferKmlViewportRender(map)) return
   if (kmlViewportRenderTask) clearTimeout(kmlViewportRenderTask)
   kmlViewportRenderTask = setTimeout(() => {
     kmlViewportRenderTask = null
+    if (shouldDeferKmlViewportRender(map)) return
     renderAllKmls(map)
     updateKmlPanelUI(map)
     if (getActiveShare()) renderShareKmlPanel(map)
@@ -2485,7 +2681,8 @@ function updateKmlPanelUI (map) {
   container.innerHTML = html
 }
 
-function focusFeature (map, kmlId, featureId, options = {}) {
+async function focusFeature (map, kmlId, featureId, options = {}) {
+  if (isKmlMapUnloading(map)) return false
   const identity = normalizeKmlFeatureIdentity(kmlId, featureId)
   if (!identity) {
     if (Number.isSafeInteger(options.requestId)) cancelKmlFeatureFocus(map, options.requestId)
@@ -2551,13 +2748,22 @@ function focusFeature (map, kmlId, featureId, options = {}) {
       layer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId))
     }
     if (!layer || !isCurrentKmlFeatureFocus(map, identity, requestId)) return false
-    return openKmlFeaturePopup(layer)
+
+    // A previous KML popup may still be present at opacity 0 while Leaflet's
+    // fade animation finishes. Wait for Leaflet's own removal before opening
+    // the latest target, otherwise two popup DOM nodes coexist on mobile.
+    await waitForKmlPopupTransition(map)
+    if (!isCurrentKmlFeatureFocus(map, identity, requestId)) return false
+    const currentLayer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId)) || layer
+    if (map.hasLayer && !map.hasLayer(currentLayer)) return false
+    return openKmlFeaturePopup(currentLayer)
   } finally {
     finishKmlFeatureFocus(map, identity, requestId)
   }
 }
 
 async function focusKmlFeatureFromPanel (map, kmlFile, featureId, loadDetails) {
+  if (isKmlMapUnloading(map)) return false
   const kmlId = kmlFile?.id
   const identity = normalizeKmlFeatureIdentity(kmlId, featureId)
   const requestId = beginKmlFeatureFocus(map, kmlId, featureId)
@@ -3277,20 +3483,18 @@ function initLongPressPointCreation (map) {
  * 使用 setTimeout(0) 替代 requestAnimationFrame，让浏览器先完成绘制再执行渲染。
  */
 function scheduleKmlViewportRerender (map) {
-  const focusState = kmlFeatureFocusState
-  if (focusState?.map === map && focusState.pending) {
-    focusState.deferViewportRerender = true
-    return
-  }
+  if (shouldDeferKmlViewportRender(map)) return
   if (kmlViewportRerenderTimer) clearTimeout(kmlViewportRerenderTimer)
   if (kmlViewportRenderTask) clearTimeout(kmlViewportRenderTask)
   kmlViewportRerenderTimer = setTimeout(() => {
     kmlViewportRerenderTimer = null
+    if (shouldDeferKmlViewportRender(map)) return
     const viewportOptions = getViewportOptions2d(map)
     refreshKmlFileViewportLoading(map)
     scheduleKmlPointLabelSync(map)
     kmlViewportRenderTask = setTimeout(() => {
       kmlViewportRenderTask = null
+      if (shouldDeferKmlViewportRender(map)) return
       const managedKmlFiles = [...kmlList, ...publicKmlList].filter(kmlFile =>
         kmlFile.enabled && kmlFile.contentLoaded !== false &&
         (kmlFile.isLiveTrack || shouldVirtualizeKmlPoints(kmlFile.features?.length)))
@@ -3327,10 +3531,14 @@ function bindKmlViewportRerender (map) {
   kmlViewportRerenderBinding?.unbind?.()
   const rerender = () => scheduleKmlViewportRerender(map)
   const unbind = () => {
+    markKmlMapUnloading(map)
+    cancelKmlFeatureFocus(map)
     map.off('moveend zoomend', rerender)
     map.off('rotate resize', rerender)
     map.off('unload', unbind)
     cancelKmlScheduledTasks()
+    cancelKmlPopupTransition(map)
+    if (kmlViewportRenderDeferredMap === map) kmlViewportRenderDeferredMap = null
     if (kmlFileViewportSchedulerMap === map) {
       kmlFileViewportScheduler?.dispose?.()
       kmlFileViewportScheduler = null
@@ -3348,6 +3556,7 @@ function scheduleKmlPointLabelSync (map) {
   cancelKmlPointLabelSync()
   kmlPointLabelSyncTimer = window.setTimeout(() => {
     kmlPointLabelSyncTimer = null
+    if (isKmlMapUnloading(map)) return
     syncKmlPointLabels(map)
   }, KML_POINT_LABEL_DELAY_MS)
 }
@@ -3597,6 +3806,14 @@ async function handleTwoBuluBatchImport (map, button, correctionInput) {
 }
 
 function bindKmlPopupActions (map) {
+  map.on('popupclose', event => {
+    if (!isKmlPopupInstance(event?.popup)) return
+    noteKmlPopupClosed(map)
+    // Leaflet fires popupclose before the faded DOM node is removed. Keep
+    // viewport work behind the same barrier used by feature focus.
+    queueKmlPopupTransition(map)
+    void waitForKmlPopupTransition(map).then(() => flushDeferredKmlViewportRender(map))
+  })
   map.on('popupopen', (event) => {
     const popup = event.popup
     const container = popup.getElement()
@@ -4186,6 +4403,7 @@ function bindKmlDirectoryOrganizationEvents (panel, map) {
 }
 
 export async function initKmlSupport (map, options = {}) {
+  markKmlMapActive(map)
   bindKmlPopupActions(map)
   bindKmlMapInteractionState(map)
   bindKmlViewportRerender(map)
