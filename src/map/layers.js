@@ -1,6 +1,5 @@
 import L from 'leaflet'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import '@maplibre/maplibre-gl-leaflet'
 import { writeMapViewToUrl } from './url-state.js'
 import { triggerMapScreenshot } from './screenshot.js'
 import {
@@ -15,6 +14,18 @@ const DEFAULT_LAYER_NAME = '高德/卫星'
 const VECTOR_STYLE_KIND = 'vector-style'
 const VECTOR_RESOURCE_KINDS = new Set(['mvt', 'vector-tilejson', 'vector-style', 'pmtiles-vector'])
 const PMTILES_RESOURCE_KINDS = new Set(['pmtiles-vector', 'pmtiles-raster'])
+let mapLibrePluginPromise = null
+
+async function loadMapLibrePlugin () {
+  if (L.maplibreGL instanceof Function) return
+  if (!mapLibrePluginPromise) {
+    mapLibrePluginPromise = import('@maplibre/maplibre-gl-leaflet').catch((error) => {
+      mapLibrePluginPromise = null
+      throw error
+    })
+  }
+  await mapLibrePluginPromise
+}
 const FALLBACK_CATALOG = {
   sources: [
     {
@@ -315,6 +326,12 @@ export async function initLayerControl (map, initialLayerName = '', options = {}
     
     // 过滤出启用且支持 2D 的图层
     catalogLayers = layers.filter(l => l.enabled !== false && (l.clients || []).includes('2d'))
+
+    const needsMapLibre = catalogLayers.some(layer => (layer.items || []).some(item => {
+      const source = sourceById.get(item.sourceId)
+      return source?.kind === VECTOR_STYLE_KIND && Boolean(source.styleUrl)
+    }))
+    if (needsMapLibre) await loadMapLibrePlugin()
 
     const usedNames = new Set()
     catalogLayers.forEach(layer => {

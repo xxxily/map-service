@@ -1,5 +1,3 @@
-import html2canvas from 'html2canvas'
-
 const HIDDEN_ELEMENT_SELECTORS = [
   '.leaflet-control-container',
   '#map-menu',
@@ -16,6 +14,14 @@ const OVERLAY_SELECTORS = [
 ]
 
 const screenshotTasks = new WeakMap()
+let html2canvasLoader = null
+
+function loadHtml2Canvas () {
+  if (!html2canvasLoader) {
+    html2canvasLoader = import('html2canvas').then(module => module.default)
+  }
+  return html2canvasLoader
+}
 
 function showScreenshotToast (text, backgroundColor = '') {
   const toast = document.createElement('div')
@@ -313,7 +319,7 @@ async function copyCanvasToClipboard (canvas) {
 
 export async function captureMapCanvas (map, options = {}) {
   const mapContainer = map.getContainer()
-  const renderer = options.renderer || html2canvas
+  const renderer = options.renderer || await loadHtml2Canvas()
   const { layerCanvases, overlayClone } = await buildScreenshotLayers(mapContainer)
   await nextFrame()
   return renderer(mapContainer, createCaptureOptions(layerCanvases, overlayClone))

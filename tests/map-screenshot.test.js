@@ -5,8 +5,10 @@ import { getElementVisualMatrix } from '../src/map/screenshot.js'
 
 const source = readFileSync(new URL('../src/map/screenshot.js', import.meta.url), 'utf8')
 
-test('地图截图依赖由构建系统本地打包，不再运行时加载第三方脚本', () => {
-  assert.match(source, /import html2canvas from 'html2canvas'/)
+test('地图截图依赖由构建系统本地打包，并在截图时按需加载', () => {
+  assert.match(source, /import\('html2canvas'\)/)
+  assert.doesNotMatch(source, /import html2canvas from ['"]html2canvas['"]/
+  )
   assert.doesNotMatch(source, /unpkg\.com|createElement\(['"]script['"]\)/)
 })
 

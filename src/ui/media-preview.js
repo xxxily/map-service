@@ -308,7 +308,7 @@ function renderImage (item, generation) {
 
 async function attachHlsVideo (video, sourceUrl, generation) {
   try {
-    const { default: Hls } = await import('hls.js')
+    const { default: Hls } = await import('hls.js/light')
     if (generation !== renderGeneration || !video.isConnected) return
     if (!Hls.isSupported()) {
       video.src = sourceUrl

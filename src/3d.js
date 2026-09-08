@@ -13,17 +13,16 @@ import {
   Terrain,
   ShadowMode,
   Math as CesiumMath,
+  Matrix4,
   sampleTerrain,
 } from 'cesium'
-import * as Cesium from 'cesium'
 import AMapLoader from '@amap/amap-jsapi-loader'
 
 import 'cesium/Source/Widgets/widgets.css'
 import './styles.css'
 import './map3d-styles.css'
 
-import { initAdminApp } from './admin/dashboard.js'
-import { isAdminLocation } from './admin/routes.js'
+import { isAdminLocation } from './admin/location.js'
 import { initIdentityEntry } from './auth/identity.js'
 import { amapConfig, map3dCameraInteractionConfig, terrainConfig } from './config.js'
 import { initAfterAccessCheck } from './map/access-control.js'
@@ -88,6 +87,13 @@ import {
 window.CESIUM_BASE_URL = '/cesium/'
 
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
+const cameraInteractionCesium = Object.freeze({
+  Cartesian2,
+  Cartesian3,
+  Cartographic,
+  HeadingPitchRange,
+  Matrix4,
+})
 
 function renderAppVersion () {
   const versionNode = document.getElementById('app-version')
@@ -869,7 +875,7 @@ async function init3dEarth () {
   controller.enableInputs = false
   cameraInteraction = installMap3dCameraInteraction({
     viewer,
-    cesium: Cesium,
+    cesium: cameraInteractionCesium,
     canvas,
     getNavigationMode: () => interactionMode,
     isToolInteractionActive: isMapToolInteractionActive,
@@ -1690,7 +1696,7 @@ if (isShareLocation(window.location)) {
   renderAppVersion()
   prepareShareView(init3dEarth)
 } else if (isAdminLocation(window.location)) {
-  initAdminApp({ amapLoader: AMapLoader })
+  import('./admin/dashboard.js').then(({ initAdminApp }) => initAdminApp({ amapLoader: AMapLoader }))
 } else {
   renderAppVersion()
   initAfterAccessCheck({

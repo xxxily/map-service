@@ -138,7 +138,7 @@ test('KML media thumbnails open the in-app preview instead of a blank browser pa
   assert.match(previewSource, /data-media-preview-window-resize="se"/)
   assert.match(previewSource, /readMediaPreviewLayout/)
   assert.match(previewSource, /writeMediaPreviewWindow/)
-  assert.match(previewSource, /import\('hls\.js'\)/)
+  assert.match(previewSource, /import\('hls\.js(?:\/light)?'\)/)
   assert.match(previewSource, /video\.autoplay = true/)
   assert.match(previewSource, /video\.muted = true/)
   assert.match(previewSource, /onActiveItemChange/)

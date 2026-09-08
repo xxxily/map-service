@@ -59,6 +59,7 @@ import {
   filterAdminPages,
   hasAdminPermission,
 } from './access.js'
+export { isAdminLocation } from './location.js'
 
 
 export const ADMIN_PAGES = [
@@ -194,12 +195,6 @@ export function getAuthorizedAdminPage (tabId, session) {
 
 export function isAdminTab (tabId) {
   return ADMIN_PAGES.some(page => page.id === tabId)
-}
-
-export function isAdminLocation (location) {
-  return location.pathname === '/admin' ||
-    location.pathname.startsWith('/admin/') ||
-    new URLSearchParams(location.search).get('view') === 'admin'
 }
 
 export function getAdminTabFromLocation (location) {

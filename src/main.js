@@ -25,9 +25,8 @@ import {
 import { showChoiceDialog, showEditDialog, showAlert } from './ui/dialog.js'
 import { initAmapSearch, toggleSearchMode } from './map/search.js'
 import { isMapViewInsideBounds, parseDefaultView, parseMapUrlState, writeMapViewToUrl } from './map/url-state.js'
-import { initAdminApp } from './admin/dashboard.js'
-import { isAdminLocation } from './admin/routes.js'
-import { initAccountApp, isAccountLocation } from './account/app.js'
+import { isAdminLocation } from './admin/location.js'
+import { isAccountLocation } from './account/model.js'
 import { initIdentityEntry } from './auth/identity.js'
 import { registerServiceWorker } from './pwa.js'
 import { initKmlSupport } from './map/kml.js'
@@ -576,9 +575,9 @@ if (isShareLocation(window.location)) {
   renderAppVersion()
   prepareShareView(initLeafletMap)
 } else if (isAccountLocation(window.location)) {
-  initAccountApp()
+  import('./account/app.js').then(({ initAccountApp }) => initAccountApp())
 } else if (isAdminLocation(window.location)) {
-  initAdminApp({ amapLoader: AMapLoader })
+  import('./admin/dashboard.js').then(({ initAdminApp }) => initAdminApp({ amapLoader: AMapLoader }))
 } else {
   renderAppVersion()
   initAfterAccessCheck({
