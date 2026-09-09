@@ -2817,6 +2817,7 @@ body.admin-view #footer-bar {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   padding: 16px;
   display: flex;
@@ -3533,6 +3534,7 @@ body.admin-view #footer-bar {
   flex-direction: column;
   max-height: 200px;
   overflow-y: auto;
+  overflow-anchor: none;
 }
 
 .kml-feature-item {

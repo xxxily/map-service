@@ -101,6 +101,7 @@ import {
   computeKmlBounds,
   normalizeKmlBounds,
 } from '../../shared/kml-spatial.js'
+import { replaceKmlPanelContent } from '../map/kml-panel-scroll.js'
 
 const KML_STORAGE_KEY = 'map_kml_list'
 const KML_DIRECTORIES_STORAGE_KEY = 'map_kml_directories'
@@ -2653,11 +2654,11 @@ function renderKmlCard (kmlFile) {
             ${editable ? `<button type="button" class="kml-file-btn" data-kml-action="add-point" data-kml-id="${safeKmlId}" title="在此文件下新增标注点" aria-label="新增标注点"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg></button>` : ''}
           </div>
         </div>
-        <div class="kml-features-list" ${featureOrderingAvailable ? `data-kml-drop-target="list" data-kml-id="${safeKmlId}"` : ''}>
-          ${displayFeatures.length < (kmlFile.features || []).length ? `<div class="kml-feature-limit-note">已按当前视口和缩放级别过滤显示，共 ${(kmlFile.features || []).length} 个记录点中展示 ${displayFeatures.length} 个；导出仍包含全部记录。</div>` : ''}
-          ${displayFeatures.map(feature => renderFeatureItem(kmlFile, feature, editable)).join('')}
-        </div>
         ` : ''}
+        <div class="kml-features-list" data-kml-scroll-key="${safeKmlId}" ${expanded && featureOrderingAvailable ? `data-kml-drop-target="list" data-kml-id="${safeKmlId}"` : ''}>
+          ${expanded && displayFeatures.length < (kmlFile.features || []).length ? `<div class="kml-feature-limit-note">已按当前视口和缩放级别过滤显示，共 ${(kmlFile.features || []).length} 个记录点中展示 ${displayFeatures.length} 个；导出仍包含全部记录。</div>` : ''}
+          ${expanded ? displayFeatures.map(feature => renderFeatureItem(kmlFile, feature, editable)).join('') : ''}
+        </div>
       </div>
     </div>
   `
@@ -2671,14 +2672,14 @@ function updateKmlPanelUI () {
   if (share) {
     if (kmlBatchSelection.isActive()) exitKmlBatchMode()
     if (kmlDirectoryBatchSelection.isActive()) exitKmlDirectoryBatchMode()
-    container.innerHTML = `
+    replaceKmlPanelContent(container, `
       <section class="kml-share-summary">
         <strong>${escapeHtml(share.manifest.title || 'KML 分享')}</strong>
         ${share.manifest.description ? `<p>${escapeHtml(share.manifest.description)}</p>` : ''}
         <span>${publicKmlList.length} 个只读 KML</span>
       </section>
       <div class="kml-section-list">${renderKmlDirectoryGroups(publicKmlList, true)}</div>
-    `
+    `)
     return
   }
 
@@ -2704,7 +2705,7 @@ function updateKmlPanelUI () {
     ? '<div class="kml-empty kml-embedded-auth-required">请先登录，再编辑账号 KML</div>'
     : ''
 
-  container.innerHTML = `
+  replaceKmlPanelContent(container, `
     ${authRequiredNotice}
     <div class="kml-section-header kml-personal-section-header" data-kml-action="toggle-section" data-section-id="personal-section">
       <span class="kml-section-label">个人图层 (${kmlList.length})</span>
@@ -2732,7 +2733,7 @@ function updateKmlPanelUI () {
             : '<div class="kml-empty">无已发布公共图层</div>')
         : ''}
     </div>
-  `
+  `)
 }
 
 function renderKmlDirectoryGroups (files, isShare = false) {

@@ -115,10 +115,7 @@ import {
   resolveGlobalKmlPointClusteringConfig,
 } from './kml-point-clustering.js'
 import { normalizeRoutePath } from './route-planner-utils.js'
-import {
-  captureKmlPanelScrollState,
-  restoreKmlPanelScrollState,
-} from './kml-panel-scroll.js'
+import { replaceKmlPanelContent } from './kml-panel-scroll.js'
 
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
@@ -2522,7 +2519,6 @@ function updateKmlPanelUI (map) {
   }
   const container = document.getElementById('kml-files-list')
   if (!container) return
-  const panelScrollState = captureKmlPanelScrollState(container)
 
   let html = ''
 
@@ -2657,7 +2653,7 @@ function updateKmlPanelUI (map) {
                   ${writable ? `<button type="button" class="kml-file-btn" data-kml-action="add-line" data-kml-id="${safeKmlId}" title="在此文件下绘制线段" aria-label="新增线段"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><circle cx="3" cy="17" r="1.5"/><circle cx="9" cy="11" r="1.5"/><circle cx="13" cy="15" r="1.5"/><circle cx="21" cy="7" r="1.5"/></svg></button>` : ''}
                 </div>
               </div>
-              <div class="kml-features-list" ${featureOrderingAvailable ? `data-kml-drop-target="list" data-kml-id="${safeKmlId}"` : ''}>
+              <div class="kml-features-list" data-kml-scroll-key="${safeKmlId}" ${featureOrderingAvailable ? `data-kml-drop-target="list" data-kml-id="${safeKmlId}"` : ''}>
                 ${displayFeatures.length < kmlFile.features.length ? `<div class="kml-feature-limit-note">已按当前视口和缩放级别过滤显示，共 ${kmlFile.features.length} 个记录点中展示 ${displayFeatures.length} 个；导出仍包含全部记录。</div>` : ''}
                 ${displayFeatures.map(feat => {
                   const safeFeatureId = escapeHtml(feat.id)
@@ -2775,7 +2771,7 @@ function updateKmlPanelUI (map) {
                   ${isEditingThis ? `<button type="button" class="kml-file-btn" data-kml-action="add-line" data-kml-id="${safeKmlId}" title="绘制线段" aria-label="新增线段"><svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><circle cx="3" cy="17" r="1.5"/><circle cx="9" cy="11" r="1.5"/><circle cx="13" cy="15" r="1.5"/><circle cx="21" cy="7" r="1.5"/></svg></button>` : ''}
                 </div>
               </div>
-              <div class="kml-features-list">
+              <div class="kml-features-list" data-kml-scroll-key="${safeKmlId}">
                 ${expanded ? (kmlFile.features || []).map(feat => {
                   const safeFeatureId = escapeHtml(feat.id)
                   let iconSvg = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
@@ -2806,8 +2802,7 @@ function updateKmlPanelUI (map) {
         : ''}
     </div>
   `
-  container.innerHTML = html
-  restoreKmlPanelScrollState(panelScrollState)
+  replaceKmlPanelContent(container, html)
 }
 
 async function focusFeature (map, kmlId, featureId, options = {}) {
@@ -4058,7 +4053,7 @@ function renderShareKmlPanel (map) {
         <div class="kml-file-detail${expanded ? ' is-expanded' : ''}" id="features-${safeKmlId}" ${expanded ? '' : 'hidden'}>
           ${expanded && kmlFile.contentLoaded !== false ? renderKmlFileOverview(kmlFile) : ''}
           ${kmlFile.loadError ? `<p class="kml-share-item-error">${escapeHtml(kmlFile.loadError)}</p>` : ''}
-          <div class="kml-features-list">
+          <div class="kml-features-list" data-kml-scroll-key="${safeKmlId}">
             ${expanded && kmlFile.contentLoaded !== false ? features.map(feature => {
               const safeFeatureId = escapeHtml(feature.id)
               const { displayName, accessibleName } = getKmlFeatureNamePresentation(feature)
@@ -4078,7 +4073,7 @@ function renderShareKmlPanel (map) {
       </article>
     `
   }
-  container.innerHTML = `
+  replaceKmlPanelContent(container, `
     <section class="kml-share-summary">
       <strong>${escapeHtml(share.manifest.title || 'KML 分享')}</strong>
       ${share.manifest.description ? `<p>${escapeHtml(share.manifest.description)}</p>` : ''}
@@ -4097,7 +4092,7 @@ function renderShareKmlPanel (map) {
         <div class="kml-directory-files">${group.files.map(renderFile).join('')}</div>
       </section>`
     }).join('')}
-  `
+  `)
 }
 
 async function initShareKmlSupport (map, options = {}) {
