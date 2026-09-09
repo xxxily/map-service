@@ -1,4 +1,13 @@
 const latestCaptureTokenByContainer = new WeakMap()
+const featureListScrollMemoryByContainer = new WeakMap()
+const featureListInvalidationVersionByContainer = new WeakMap()
+const pendingFeatureListInvalidationByContainer = new WeakMap()
+const latestFeatureListInvalidationKeysByContainer = new WeakMap()
+const MAX_FEATURE_LIST_SCROLL_MEMORY = 512
+// Invalidation versions for active/pending KML keys stay addressable so an
+// older deferred restore cannot resurrect a removed list. Only historical
+// tombstones are subject to this bound.
+const MAX_FEATURE_LIST_INVALIDATION_TOMBSTONES = 512
 let nextCaptureToken = 0
 
 function readElementAttribute (element, name) {
@@ -24,6 +33,124 @@ function collectElements (root, selector) {
     elements.push(...Array.from(root.querySelectorAll(selector)))
   }
   return elements
+}
+
+function hasElementAttribute (element, name) {
+  if (!element) return false
+  try {
+    if (element.hasAttribute?.(name)) return true
+    return element.getAttribute?.(name) != null
+  } catch {
+    return false
+  }
+}
+
+function isHiddenElement (element) {
+  if (!element) return true
+  if (element.hidden === true || element.closest?.('[hidden]')) return true
+  try {
+    const computedStyle = typeof window !== 'undefined' && window.getComputedStyle?.(element)
+    if (computedStyle && (
+      computedStyle.display === 'none' ||
+      computedStyle.visibility === 'hidden' ||
+      computedStyle.contentVisibility === 'hidden'
+    )) return true
+  } catch {
+    // Detached nodes and lightweight test doubles may not expose styles.
+  }
+  const visited = new Set()
+  let current = element.parentElement || element.parentNode
+  while (current && !visited.has(current)) {
+    visited.add(current)
+    if (current.hidden === true || hasElementAttribute(current, 'hidden')) return true
+    current = current.parentElement || current.parentNode
+  }
+  return false
+}
+
+function hasUnavailableLayout (element) {
+  // A zero-height list with content is commonly observed while a collapsed
+  // card or content-visibility subtree is settling. Do not replace a valid
+  // remembered position with the transient zero value.
+  if (!element || !('clientHeight' in element) || !('offsetHeight' in element) || !('scrollHeight' in element)) return false
+  return Number(element.clientHeight) === 0 &&
+    Number(element.offsetHeight) === 0 &&
+    Number(element.scrollHeight) > 0
+}
+
+function canRememberFeatureListPosition (element) {
+  return Boolean(element) && !isHiddenElement(element) && !hasUnavailableLayout(element)
+}
+
+function getFeatureListScrollMemory (container, create = false) {
+  if (!container) return null
+  let memory = featureListScrollMemoryByContainer.get(container)
+  if (!memory && create) {
+    memory = new Map()
+    featureListScrollMemoryByContainer.set(container, memory)
+  }
+  return memory || null
+}
+
+function getFeatureListInvalidationVersions (container, create = false) {
+  if (!container) return null
+  let versions = featureListInvalidationVersionByContainer.get(container)
+  if (!versions && create) {
+    versions = new Map()
+    featureListInvalidationVersionByContainer.set(container, versions)
+  }
+  return versions || null
+}
+
+function getPendingFeatureListInvalidations (container, create = false) {
+  if (!container) return null
+  let pending = pendingFeatureListInvalidationByContainer.get(container)
+  if (!pending && create) {
+    pending = new Set()
+    pendingFeatureListInvalidationByContainer.set(container, pending)
+  }
+  return pending || null
+}
+
+function trimFeatureListInvalidationVersions (container) {
+  const versions = getFeatureListInvalidationVersions(container)
+  if (!versions || versions.size <= MAX_FEATURE_LIST_INVALIDATION_TOMBSTONES) return
+  const protectedKeys = new Set([
+    ...(getPendingFeatureListInvalidations(container) || []),
+    ...(latestFeatureListInvalidationKeysByContainer.get(container) || []),
+  ])
+  while (versions.size > MAX_FEATURE_LIST_INVALIDATION_TOMBSTONES) {
+    const oldestKey = [...versions.keys()].find(key => !protectedKeys.has(key))
+    if (oldestKey === undefined) break
+    versions.delete(oldestKey)
+  }
+}
+
+function getFeatureListStateKey (state) {
+  return JSON.stringify([
+    state?.stableKey ? 'stable' : 'unkeyed',
+    String(state?.key || ''),
+    Number(state?.occurrence) || 0,
+  ])
+}
+
+function getFeatureListInvalidationKey (state) {
+  return JSON.stringify([
+    state?.stableKey ? 'stable' : 'unkeyed',
+    String(state?.key || ''),
+  ])
+}
+
+function getFeatureListInvalidationVersion (container, state) {
+  return getFeatureListInvalidationVersions(container)?.get(getFeatureListInvalidationKey(state)) || 0
+}
+
+function isFeatureListStateCurrent (captureState, featureListState) {
+  if (!captureState?.container || !featureListState) return true
+  const capturedVersion = captureState.featureListInvalidationVersions?.get(
+    getFeatureListInvalidationKey(featureListState),
+  ) || 0
+  return getFeatureListInvalidationVersion(captureState.container, featureListState) === capturedVersion
 }
 
 function findPanelScrollContainer (container) {
@@ -65,9 +192,48 @@ function getFeatureListStates (container) {
       key: identity.key,
       stableKey: identity.stable,
       occurrence,
+      rememberable: canRememberFeatureListPosition(element),
       ...readScrollPosition(element),
     }
   })
+}
+
+function rememberFeatureListState (container, state) {
+  if (!container || !state || state.rememberable === false || !canRememberFeatureListPosition(state.element)) return
+  const memory = getFeatureListScrollMemory(container, true)
+  const cacheKey = getFeatureListStateKey(state)
+  memory.delete(cacheKey)
+  memory.set(cacheKey, {
+    key: state.key,
+    stableKey: state.stableKey,
+    occurrence: state.occurrence,
+    scrollTop: state.scrollTop,
+    scrollLeft: state.scrollLeft,
+  })
+  while (memory.size > MAX_FEATURE_LIST_SCROLL_MEMORY) {
+    const oldestKey = memory.keys().next().value
+    if (oldestKey === undefined) break
+    memory.delete(oldestKey)
+  }
+}
+
+function rememberFeatureListStates (container, states, captureState = null) {
+  states?.forEach(state => {
+    if (!captureState || isFeatureListStateCurrent(captureState, state)) {
+      rememberFeatureListState(container, state)
+    }
+  })
+}
+
+function getRememberedFeatureListPosition (container, state) {
+  const remembered = getFeatureListScrollMemory(container)?.get(getFeatureListStateKey(state))
+  return remembered || null
+}
+
+function getRestorableFeatureListPosition (container, state) {
+  if (!state) return null
+  return getRememberedFeatureListPosition(container, state) ||
+    (state.rememberable === false ? null : state)
 }
 
 function syncElementAttributes (target, source) {
@@ -110,7 +276,7 @@ function preserveExistingFeatureLists (container, state) {
         previous.innerHTML = replacement.innerHTML
       }
       replacement.replaceWith(previous)
-      writeScrollPosition(previous, savedList)
+      writeScrollPosition(previous, getRestorableFeatureListPosition(container, savedList))
     } catch (error) {
       if (typeof console !== 'undefined' && typeof console.warn === 'function') {
         console.warn('[kml-panel-scroll] 无法复用内部滚动容器，将继续执行滚动位置恢复', error)
@@ -119,7 +285,7 @@ function preserveExistingFeatureLists (container, state) {
   })
 }
 
-function scheduleDeferredRestore (callback) {
+function scheduleDeferredRestore (callback, onSettled) {
   const requestFrame = typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function'
     ? window.requestAnimationFrame.bind(window)
     : typeof globalThis.requestAnimationFrame === 'function'
@@ -130,7 +296,10 @@ function scheduleDeferredRestore (callback) {
     callback()
     // A second pass covers layout/content-visibility settling after a large
     // KML feature list is recreated.
-    requestFrame(callback)
+    requestFrame(() => {
+      callback()
+      onSettled?.()
+    })
   })
 }
 
@@ -142,8 +311,17 @@ function isCurrentCapture (state) {
 export function captureKmlPanelScrollState (container) {
   if (!container || (typeof container !== 'object' && typeof container !== 'function')) return null
   const scrollContainer = findPanelScrollContainer(container)
-  const featureLists = getFeatureListStates(container)
+  const pendingInvalidations = getPendingFeatureListInvalidations(container)
+  const featureLists = getFeatureListStates(container).filter(featureList => {
+    return !pendingInvalidations?.has(getFeatureListInvalidationKey(featureList))
+  })
+  pendingInvalidations?.clear()
+  latestFeatureListInvalidationKeysByContainer.set(container, new Set(
+    featureLists.map(getFeatureListInvalidationKey),
+  ))
+  trimFeatureListInvalidationVersions(container)
   if (!scrollContainer && !featureLists.length) return null
+  rememberFeatureListStates(container, featureLists)
   const token = ++nextCaptureToken
   latestCaptureTokenByContainer.set(container, token)
   return {
@@ -152,6 +330,10 @@ export function captureKmlPanelScrollState (container) {
     scrollContainer,
     ...(scrollContainer ? readScrollPosition(scrollContainer) : {}),
     featureLists,
+    featureListInvalidationVersions: new Map(featureLists.map(featureList => [
+      getFeatureListInvalidationKey(featureList),
+      getFeatureListInvalidationVersion(container, featureList),
+    ])),
   }
 }
 
@@ -160,32 +342,57 @@ export function restoreKmlPanelScrollState (state) {
   const apply = () => {
     if (!isCurrentCapture(state)) return
     writeScrollPosition(state.scrollContainer, state)
-    if (!state.container || !state.featureLists?.length) return
-    const candidates = collectElements(state.container, '.kml-features-list')
-    const candidatesByKey = new Map()
-    candidates.forEach((candidate, index) => {
-      const key = getFeatureListIdentity(candidate, index).key
-      const matches = candidatesByKey.get(key) || []
-      matches.push(candidate)
-      candidatesByKey.set(key, matches)
-    })
-    const used = new Set()
-    state.featureLists.forEach((savedList, index) => {
-      const matching = candidatesByKey.get(savedList.key) || []
-      const replacement = matching[savedList.occurrence] ||
-        (!savedList.stableKey &&
-         candidates[index] &&
-         !getFeatureListIdentity(candidates[index], index).stable
-          ? candidates[index]
-          : null)
-      if (used.has(replacement)) return
-      if (!replacement) return
-      used.add(replacement)
-      writeScrollPosition(replacement, savedList)
+    if (!state.container) return
+    const candidates = getFeatureListStates(state.container)
+    if (!candidates.length) return
+    const savedByKey = new Map((state.featureLists || []).map(savedList => [
+      getFeatureListStateKey(savedList),
+      savedList,
+    ]))
+    candidates.forEach(candidate => {
+      const savedList = savedByKey.get(getFeatureListStateKey(candidate))
+      if (!isFeatureListStateCurrent(state, candidate)) return
+      const position = getRestorableFeatureListPosition(state.container, savedList || candidate)
+      if (!position) return
+      writeScrollPosition(candidate.element, position)
     })
   }
   apply()
-  scheduleDeferredRestore(apply)
+  scheduleDeferredRestore(apply, () => {
+    if (!isCurrentCapture(state) || !state.container) return
+    rememberFeatureListStates(state.container, getFeatureListStates(state.container), state)
+  })
+}
+
+export function clearKmlPanelScrollState (container, keys = null) {
+  if (!container) return
+  const memory = getFeatureListScrollMemory(container)
+  if (keys == null) {
+    memory?.clear()
+    getFeatureListInvalidationVersions(container)?.clear()
+    getPendingFeatureListInvalidations(container)?.clear()
+    latestFeatureListInvalidationKeysByContainer.delete(container)
+  } else {
+    const normalizedKeys = new Set((Array.isArray(keys) ? keys : [keys]).map(key => String(key || '')))
+    const versions = getFeatureListInvalidationVersions(container, true)
+    normalizedKeys.forEach(key => {
+      const invalidationKey = getFeatureListInvalidationKey({ key, stableKey: true })
+      versions.set(invalidationKey, (versions.get(invalidationKey) || 0) + 1)
+      getPendingFeatureListInvalidations(container, true).add(invalidationKey)
+    })
+    trimFeatureListInvalidationVersions(container)
+    if (memory) {
+      for (const [cacheKey, entry] of memory) {
+        if (entry.stableKey && normalizedKeys.has(String(entry.key))) memory.delete(cacheKey)
+      }
+    }
+    // A key-scoped invalidation deliberately leaves other files' pending
+    // restores alive; only the removed file must lose its old position.
+    return
+  }
+  // A full reset (for example, switching the panel to another data scope)
+  // invalidates every pending restore because no prior node can be trusted.
+  latestCaptureTokenByContainer.set(container, ++nextCaptureToken)
 }
 
 export function replaceKmlPanelContent (container, html) {

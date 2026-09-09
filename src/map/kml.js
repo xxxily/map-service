@@ -115,7 +115,10 @@ import {
   resolveGlobalKmlPointClusteringConfig,
 } from './kml-point-clustering.js'
 import { normalizeRoutePath } from './route-planner-utils.js'
-import { replaceKmlPanelContent } from './kml-panel-scroll.js'
+import {
+  clearKmlPanelScrollState,
+  replaceKmlPanelContent,
+} from './kml-panel-scroll.js'
 
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
@@ -413,6 +416,12 @@ async function loadPublicKmls (map) {
     const list = await window.fetch('/api/v1/kml/shared').then(res => res.json()).then(payload => payload.result || [])
     
     const oldPublicKmls = new Map(publicKmlList.map(k => [k.id, k]))
+    const nextPublicKmlIds = new Set(list.map(kml => String(kml?.id || '')).filter(Boolean))
+    for (const id of oldPublicKmls.keys()) {
+      if (!nextPublicKmlIds.has(String(id))) {
+        clearKmlPanelScrollState(document.getElementById('kml-files-list'), id)
+      }
+    }
     
     publicKmlList = list.map(kml => {
       const oldKml = oldPublicKmls.get(kml.id)
@@ -703,6 +712,8 @@ async function deleteDirectoryBatchFiles (map) {
   if (deletedIdSet.has(getRememberedTargetKmlId())) rememberTargetKmlId(DEFAULT_KML_ID)
   saveToStorage({ deletedIds, deletionIntent: 'user-confirmed-batch' })
   exitKmlDirectoryBatchMode()
+  const panelContainer = document.getElementById('kml-files-list')
+  deletedIds.forEach(id => clearKmlPanelScrollState(panelContainer, id))
   updateKmlPanelUI(map)
 }
 
@@ -1109,6 +1120,7 @@ function getRemovedKmlFileIds (previousFiles, nextFiles) {
 
 function saveKmlHistoryState (previousFiles) {
   const deletedIds = getRemovedKmlFileIds(previousFiles, kmlList)
+  deletedIds.forEach(id => clearKmlPanelScrollState(document.getElementById('kml-files-list'), id))
   saveToStorage(deletedIds.length > 0
     ? { deletedIds, deletionIntent: 'user-confirmed' }
     : {})
@@ -2397,6 +2409,7 @@ function bindAccountSessionExpiry (map) {
     exitKmlBatchMode()
     exitKmlDirectoryBatchMode()
     suspendKmlAccountSync({ preserveDraft: true, reason: 'session-expired' })
+    clearKmlPanelScrollState(document.getElementById('kml-files-list'))
     if (!isEmbeddedKmlAuthRequired()) loadFromStorage()
     else kmlList = []
     ensureKmlFileViewportScheduler(map)
@@ -4529,6 +4542,9 @@ function bindKmlDirectoryOrganizationEvents (panel, map) {
 export async function initKmlSupport (map, options = {}) {
   kmlSupportInitStarted = true
   markKmlMapActive(map)
+  // Reinitialization can switch between account, local, and share scopes.
+  // Scroll state is UI-local and must not cross those data domains.
+  clearKmlPanelScrollState(document.getElementById('kml-files-list'))
   bindKmlPopupActions(map)
   bindKmlMapInteractionState(map)
   bindKmlViewportRerender(map)
@@ -4542,7 +4558,11 @@ export async function initKmlSupport (map, options = {}) {
   window.activateKmlFeatureForMedia = (item, options) => activateFeatureForMedia(map, item, options)
   bindKmlAccountSyncStatus()
   bindKmlAccountConflictRecovery((files) => {
-    kmlList = files.map(normalizeKmlFile)
+    const nextFiles = files.map(normalizeKmlFile)
+    getRemovedKmlFileIds(kmlList, nextFiles).forEach(id => {
+      clearKmlPanelScrollState(document.getElementById('kml-files-list'), id)
+    })
+    kmlList = nextFiles
     renderAllKmls(map)
     updateKmlPanelUI(map)
     return kmlList
@@ -5130,6 +5150,7 @@ export async function initKmlSupport (map, options = {}) {
           kmlLayerGroups.delete(kmlId)
         }
         
+        clearKmlPanelScrollState(document.getElementById('kml-files-list'), kmlId)
         updateKmlPanelUI(map)
       }
       return
