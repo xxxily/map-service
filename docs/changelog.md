@@ -14,6 +14,14 @@
 - 更新《KML 数据管理面板渲染与状态保持优化》：记录 v1.5.74 残留问题、v1.5.75 补正方案、keyed 增量渲染路线，以及 Vue 3 + Pinia 试点门槛。
 - 当前不引入大型 MVVM/MVC 运行时；先按 view model、renderer、controller、scheduler 分层推进，达到量化门槛后再进行独立页面试点。
 
+### 161 内测发布与验收
+
+- 已部署 `map-service:1.5.75` 到 `map-service-161`，Image ID 为 `sha256:675c4984cfbb7fcca7da9fbca662a60e589cb5ba664df9e525bdc0133969c030`；发布前备份保存在 `/opt/1panel/backup/map-service/2026/09/09/20260909-132351-pre-v1.5.75`。
+- 远端容器版本为 `1.5.75`，`/health` 与 `/api/v1/health` 均通过；桌面 2D/3D、2D 分享和 390×844 移动端分享的显隐、编辑、拖动及折叠场景均保持内部列表滚动位置。
+- 3D 分享入口按空间受限分享策略回退到 2D 分享页；该行为由 `spatialAccess.mode=kml_bounds` 触发，属于预期安全边界，不是渲染回顶部问题。
+- 浏览器验收未发现业务错误；唯一 warning 为分享模式下未使用的高德搜索插件加载失败，已记录为独立后续事项。
+- 构建审计发现 6 个生产依赖漏洞（2 moderate、2 high、2 critical），本版本未执行自动升级，后续单独评估。
+
 ## 1.5.74 - 2026-09-09
 
 ### KML 数据管理面板内部滚动状态修复
