@@ -115,6 +115,10 @@ import {
   resolveGlobalKmlPointClusteringConfig,
 } from './kml-point-clustering.js'
 import { normalizeRoutePath } from './route-planner-utils.js'
+import {
+  captureKmlPanelScrollState,
+  restoreKmlPanelScrollState,
+} from './kml-panel-scroll.js'
 
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
@@ -2518,6 +2522,7 @@ function updateKmlPanelUI (map) {
   }
   const container = document.getElementById('kml-files-list')
   if (!container) return
+  const panelScrollState = captureKmlPanelScrollState(container)
 
   let html = ''
 
@@ -2802,6 +2807,7 @@ function updateKmlPanelUI (map) {
     </div>
   `
   container.innerHTML = html
+  restoreKmlPanelScrollState(panelScrollState)
 }
 
 async function focusFeature (map, kmlId, featureId, options = {}) {
