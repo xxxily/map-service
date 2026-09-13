@@ -1,5 +1,13 @@
 # 变更日志
 
+## 1.5.76 - 2026-09-13
+
+### KML 要素聚焦交互延迟消除与视口虚拟化防御
+
+- 消除 2D KML 要素切换聚焦时的弹窗延迟：重构 `beginKmlFeatureFocus`，在聚焦新要素时主动清理旧弹窗 DOM 并终止过渡锁，移除原先 `await waitForKmlPopupTransition(map)` 对 Leaflet 200ms 淡出动画的异步阻塞，使新弹窗即时弹出响应交互；同一要素重复聚焦时直接保持当前弹窗，用户手动关闭时仍保留平滑淡出动画。
+- 加固视口虚拟化渲染防御：抽取 `ensureKmlFeatureLayer` 与 `isKmlFeatureLayerMounted`，当要素在视口快速平移、缩放或二次重绘期间被虚拟化卸载或替换实例时，自动按要素 ID 增量重新物化（rematerialize）挂载到地图，防止点击要素时静默丢失。
+- 自动化测试与断言同步：更新 `tests/kml-focus-race.test.js` 验证要素聚焦不阻塞淡出与旧 DOM 主动清理，新增视口重绘替换实例后自动重试图层的回归测试；适配 `tests/share-kml-experience.test.js` 断言。
+
 ## 1.5.75 - 2026-09-09
 
 ### KML 数据管理面板滚动状态二次修复
