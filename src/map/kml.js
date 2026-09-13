@@ -1591,9 +1591,16 @@ function cancelKmlPopupTransition (map) {
   getKmlPopupTransitionState(map)?.finish?.()
 }
 
+function settleKmlPopupTransitionForFocus (map) {
+  getKmlPopupElements(map).forEach(element => element.remove?.())
+  cancelKmlPopupTransition(map)
+}
+
 function beginKmlFeatureFocus (map, kmlId, featureId) {
   const requestId = ++kmlFeatureFocusRequestId
   const identity = normalizeKmlFeatureIdentity(kmlId, featureId)
+  const currentPopupIdentity = getOpenKmlPopupIdentity(map)
+  const keepsCurrentPopup = sameKmlFeatureIdentity(currentPopupIdentity, identity)
 
   // Register the latest request before any map call. Leaflet's stop() can
   // synchronously emit moveend/zoomend, and those events must be attributed
@@ -1611,11 +1618,19 @@ function beginKmlFeatureFocus (map, kmlId, featureId) {
   // schedule work outside this focus request.
   cancelKmlViewportRenderTasks()
   cancelKmlMediaFeatureActivation()
-  queueKmlPopupTransition(map)
-  map?.closePopup?.()
-  // A close handler may synchronously replace the popup, so include any DOM
-  // created by that handler in the same transition barrier.
-  queueKmlPopupTransition(map)
+  if (!keepsCurrentPopup) {
+    // Track the old DOM for viewport-render coordination, but do not make a
+    // user-initiated feature switch wait for Leaflet's 200ms fade timer.
+    queueKmlPopupTransition(map)
+    map?.closePopup?.()
+    // A close handler may synchronously replace the popup, so include any DOM
+    // created by that handler in the same transition barrier.
+    queueKmlPopupTransition(map)
+    // The popup is already detached from Leaflet at this point. Remove only
+    // its closing DOM so the next popup can be interactive immediately; normal
+    // user closes still keep Leaflet's native fade.
+    settleKmlPopupTransitionForFocus(map)
+  }
   map?.stop?.()
   return requestId
 }
@@ -1644,8 +1659,9 @@ function finishKmlFeatureFocus (map, identity, requestId) {
   return true
 }
 
-function openKmlFeaturePopup (layer) {
-  if (!layer?.openPopup) return false
+function openKmlFeaturePopup (map, layer) {
+  const layerIsMounted = typeof map?.hasLayer !== 'function' || map.hasLayer(layer)
+  if (!layer?.openPopup || !layerIsMounted) return false
   const popup = layer.getPopup?.()
   const previousAutoPan = popup?.options?.autoPan
   if (popup?.options) popup.options.autoPan = false
@@ -1655,6 +1671,26 @@ function openKmlFeaturePopup (layer) {
   } finally {
     if (popup?.options) popup.options.autoPan = previousAutoPan
   }
+}
+
+function isKmlFeatureLayerMounted (map, layer) {
+  return Boolean(layer) && (typeof map?.hasLayer !== 'function' || map.hasLayer(layer))
+}
+
+function ensureKmlFeatureLayer (map, kmlFile, feature, layer = null) {
+  const key = getFeatureLayerKey(kmlFile?.id, feature?.id)
+  let currentLayer = layer || featureLayers.get(key)
+  if (isKmlFeatureLayerMounted(map, currentLayer)) return currentLayer
+
+  // Viewport virtualization can remove a layer between the first lookup and
+  // the popup step. Materialize the requested feature again instead of
+  // silently dropping the click.
+  renderKmlLayers(map, kmlFile, {
+    incremental: true,
+    includeFeatureIds: [String(feature?.id || '')],
+  })
+  currentLayer = featureLayers.get(key)
+  return isKmlFeatureLayerMounted(map, currentLayer) ? currentLayer : null
 }
 
 function restoreKmlPopup (map, identity, delay = 0) {
@@ -1676,7 +1712,7 @@ function restoreKmlPopup (map, identity, delay = 0) {
     if (latestFocusState?.map === map && !sameKmlFeatureIdentity(latestFocusState.identity, normalizedIdentity)) return
     const layer = featureLayers.get(getFeatureLayerKey(normalizedIdentity.kmlId, normalizedIdentity.featureId))
     if (!layer || (map.hasLayer && !map.hasLayer(layer))) return
-    openKmlFeaturePopup(layer)
+    openKmlFeaturePopup(map, layer)
   }
   if (delay > 0) window.setTimeout(() => { void open() }, delay)
   else void open()
@@ -2861,13 +2897,7 @@ async function focusFeature (map, kmlId, featureId, options = {}) {
         map.panInside?.(point, { padding: [40, 40], animate: false })
       }
     } else {
-      if (!layer) {
-        renderKmlLayers(map, kmlFile, {
-          incremental: true,
-          includeFeatureIds: [String(featureId)],
-        })
-        layer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId))
-      }
+      layer = ensureKmlFeatureLayer(map, kmlFile, feature, layer)
       if (!layer) return false
       const bounds = layer.getBounds()
       const targetInView = Boolean(map.getBounds?.().contains?.(bounds))
@@ -2877,23 +2907,13 @@ async function focusFeature (map, kmlId, featureId, options = {}) {
       }
     }
 
-    if (!layer) {
-      renderKmlLayers(map, kmlFile, {
-        incremental: true,
-        includeFeatureIds: [String(featureId)],
-      })
-      layer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId))
-    }
-    if (!layer || !isCurrentKmlFeatureFocus(map, identity, requestId)) return false
+    const currentLayer = ensureKmlFeatureLayer(map, kmlFile, feature, layer)
+    if (!currentLayer || !isCurrentKmlFeatureFocus(map, identity, requestId)) return false
 
-    // A previous KML popup may still be present at opacity 0 while Leaflet's
-    // fade animation finishes. Wait for Leaflet's own removal before opening
-    // the latest target, otherwise two popup DOM nodes coexist on mobile.
-    await waitForKmlPopupTransition(map)
-    if (!isCurrentKmlFeatureFocus(map, identity, requestId)) return false
-    const currentLayer = featureLayers.get(getFeatureLayerKey(identity.kmlId, identity.featureId)) || layer
-    if (map.hasLayer && !map.hasLayer(currentLayer)) return false
-    return openKmlFeaturePopup(currentLayer)
+    // Leaflet removes the previous popup DOM on its own fade timer. That
+    // cleanup is independent from the active popup, so the latest target can
+    // open immediately instead of leaving the panel looking unresponsive.
+    return openKmlFeaturePopup(map, currentLayer)
   } finally {
     finishKmlFeatureFocus(map, identity, requestId)
   }

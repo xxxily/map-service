@@ -27,7 +27,7 @@ test('2D share view keeps the full read-only KML browsing lifecycle', () => {
   assert.match(source, /if \(options\.fitShareView !== false\)/)
   assert.match(source, /getFeatureLayerKey\(kmlId, featureId\)/)
   assert.match(source, /const features = getTrackDisplayFeatures\(kmlFile, viewportOptions\)/)
-  assert.match(source, /includeFeatureIds: \[String\(featureId\)\]/)
+  assert.match(source, /function ensureKmlFeatureLayer[\s\S]*includeFeatureIds: \[String\(feature\?\.id \|\| ''\)\]/)
   assert.doesNotMatch(source, /showShareBanner/)
   assert.doesNotMatch(styles, /kml-share-banner/)
 })

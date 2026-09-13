@@ -38,16 +38,28 @@ test('2D focus invalidates old popup restoration and does not pan an already vis
   assert.doesNotMatch(focus, /else map\.panInside/)
 })
 
-test('2D focus waits for Leaflet fade removal before opening the latest popup', () => {
+test('2D focus switches popups without blocking on the old fade transition', () => {
   const begin = source.match(/function beginKmlFeatureFocus[\s\S]*?\n}\n\nfunction cancelKmlFeatureFocus/)?.[0] || ''
   const focus = source.match(/async function focusFeature[\s\S]*?\n}\n\nasync function focusKmlFeatureFromPanel/)?.[0] || ''
 
   assert.match(source, /KML_POPUP_FADE_FALLBACK_MS/)
   assert.match(begin, /queueKmlPopupTransition\(map\)/)
-  assert.ok(begin.indexOf('queueKmlPopupTransition(map)') < begin.indexOf('map\?\.closePopup\?\.\(\)'))
-  assert.match(focus, /await waitForKmlPopupTransition\(map\)/)
+  assert.match(begin, /getOpenKmlPopupIdentity\(map\)/)
+  assert.match(begin, /sameKmlFeatureIdentity\(/)
+  assert.match(begin, /settleKmlPopupTransitionForFocus\(map\)/)
+  assert.match(source, /function settleKmlPopupTransitionForFocus[\s\S]*?element\.remove\?\.\(\)[\s\S]*?cancelKmlPopupTransition\(map\)/)
+  assert.doesNotMatch(focus, /await waitForKmlPopupTransition\(map\)/)
   assert.match(focus, /if \(!isCurrentKmlFeatureFocus\(map, identity, requestId\)\) return false/)
   assert.doesNotMatch(source, /forceCloseKmlPopups/)
+})
+
+test('2D focus retries a target layer after a viewport render replaces its instance', () => {
+  const focus = source.match(/async function focusFeature[\s\S]*?\n}\n\nasync function focusKmlFeatureFromPanel/)?.[0] || ''
+
+  assert.match(source, /function ensureKmlFeatureLayer[\s\S]*?renderKmlLayers\(map, kmlFile, \{[\s\S]*includeFeatureIds/)
+  assert.match(source, /function isKmlFeatureLayerMounted[\s\S]*?map\.hasLayer\(layer\)/)
+  assert.match(focus, /ensureKmlFeatureLayer\(map, kmlFile, feature, layer\)/)
+  assert.match(focus, /return openKmlFeaturePopup\(map, currentLayer\)/)
 })
 
 test('2D viewport refresh stays behind a fading KML popup', () => {
