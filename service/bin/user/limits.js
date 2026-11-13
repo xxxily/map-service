@@ -94,7 +94,18 @@ export function handleJsonPayloadTooLarge (err, req, res, next) {
     return
   }
   const requestPath = String(req?.path || req?.originalUrl || '').split('?')[0]
-  const isKmlJsonRequest = requestPath.startsWith('/api/v1/kml/')
+  if (requestPath === '/api/v1/kml/import/2bulu/browser-helper') {
+    res.status(413).jsonErr({
+      code: 'FILE_TOO_LARGE',
+      message: 'KML 文件超过 10 MiB 浏览器助手导入限制',
+    })
+    return
+  }
+  const isKmlJsonRequest = [
+    '/api/v1/kml/files',
+    '/api/v1/kml/sync',
+    '/api/v1/kml/migrations/local',
+  ].some(prefix => requestPath === prefix || requestPath.startsWith(`${prefix}/`))
   res.status(413).jsonErr({
     code: isKmlJsonRequest ? 'KML_JSON_TRANSPORT_LIMIT_EXCEEDED' : 'REQUEST_BODY_TOO_LARGE',
     message: isKmlJsonRequest

@@ -156,6 +156,24 @@ test('JSON transport overflow mapping does not rewrite business quota 413 errors
   )
   assert.equal(responses[1].status, 413)
   assert.equal(responses[1].payload.code, 'REQUEST_BODY_TOO_LARGE')
+
+  handleJsonPayloadTooLarge(
+    { type: 'entity.too.large', status: 413 },
+    { path: '/api/v1/kml/import/2bulu/browser-helper' },
+    response,
+    () => assert.fail('两步路浏览器助手 JSON 超限不应继续传递'),
+  )
+  assert.equal(responses[2].status, 413)
+  assert.equal(responses[2].payload.code, 'FILE_TOO_LARGE')
+
+  handleJsonPayloadTooLarge(
+    { type: 'entity.too.large', status: 413 },
+    { path: '/api/v1/kml/shares' },
+    response,
+    () => assert.fail('分享普通 JSON 请求超限应使用通用请求体超限错误'),
+  )
+  assert.equal(responses[3].status, 413)
+  assert.equal(responses[3].payload.code, 'REQUEST_BODY_TOO_LARGE')
 })
 
 test('user login uses HttpOnly session cookie and readable CSRF cookie without returning tokens', async () => {

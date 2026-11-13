@@ -1,4 +1,5 @@
 import {
+  AttemptLimiter,
   createHttpError,
   hashPassword,
   hashPasswordSync,
@@ -385,62 +386,6 @@ function createTemporaryPassword (providedPassword, username) {
     }
   }
   throw createHttpError('无法生成临时密码，请稍后重试', 500, 'INTERNAL_ERROR')
-}
-
-class AttemptLimiter {
-  constructor (options, clock) {
-    this.options = options
-    this.clock = clock
-    this.entries = new Map()
-  }
-
-  getState (key) {
-    const now = this.clock()
-    const current = this.entries.get(key)
-    if (!current || (current.blockedUntil <= now && now - current.firstFailedAt > this.options.windowMs)) {
-      return {
-        count: 0,
-        firstFailedAt: now,
-        blockedUntil: 0,
-      }
-    }
-    return current
-  }
-
-  assertAllowed (key) {
-    const state = this.getState(key)
-    if (state.blockedUntil > this.clock()) {
-      throw createHttpError('尝试次数过多，请稍后再试', 429, 'RATE_LIMITED')
-    }
-  }
-
-  recordFailure (key) {
-    const state = this.getState(key)
-    state.count += 1
-    if (state.count >= this.options.maxAttempts) {
-      state.blockedUntil = this.clock() + this.options.blockMs
-    }
-    this.entries.set(key, state)
-    return state
-  }
-
-  recordMany (keys) {
-    return keys.map(key => this.recordFailure(key)).reduce((latest, state) => (
-      state.blockedUntil > latest.blockedUntil ? state : latest
-    ), { count: 0, firstFailedAt: this.clock(), blockedUntil: 0 })
-  }
-
-  assertAllowedMany (keys) {
-    keys.forEach(key => this.assertAllowed(key))
-  }
-
-  clear (key) {
-    this.entries.delete(key)
-  }
-
-  clearMany (keys) {
-    keys.forEach(key => this.clear(key))
-  }
 }
 
 export class UserSystemService {
@@ -956,15 +901,45 @@ export class UserSystemService {
     `).all(roleId).map(row => row.code)
   }
 
+  rolesAndPermissionsForUsers (userIds = []) {
+    const uniqueIds = [...new Set((Array.isArray(userIds) ? userIds : []).map(id => String(id || '')).filter(Boolean))]
+    if (!uniqueIds.length) return new Map()
+    const grouped = new Map(uniqueIds.map(id => [id, { roles: new Set(), permissions: new Set() }]))
+    const placeholders = uniqueIds.map(() => '?').join(', ')
+    const rows = this.database.prepare(`
+      SELECT ur.user_id, r.code AS role_code, rp.permission_code
+      FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+      LEFT JOIN role_permissions rp ON rp.role_id = r.id
+      WHERE ur.user_id IN (${placeholders})
+      ORDER BY r.code, rp.permission_code
+    `).all(...uniqueIds)
+    rows.forEach(entry => {
+      const target = grouped.get(entry.user_id)
+      if (!target) return
+      if (entry.role_code) target.roles.add(entry.role_code)
+      if (entry.permission_code) target.permissions.add(entry.permission_code)
+    })
+    return new Map(
+      [...grouped.entries()].map(([id, target]) => [
+        id,
+        {
+          roles: [...target.roles].sort(),
+          permissions: [...target.permissions].sort(),
+        },
+      ])
+    )
+  }
+
   userViewFromRow (row, options = {}) {
     if (!row) return null
-    const roles = this.roleCodesForUser(row.id)
-    const permissions = this.permissionsForUser(row.id)
+    const roles = Array.isArray(options.roles) ? options.roles : this.roleCodesForUser(row.id)
+    const permissions = Array.isArray(options.permissions) ? options.permissions : this.permissionsForUser(row.id)
     const result = {
       id: row.id,
       username: row.username_display,
       displayName: row.display_name,
-      avatarPresent: Boolean(row.avatar),
+      avatarPresent: row.avatar_present !== undefined ? Boolean(row.avatar_present) : Boolean(row.avatar),
       gender: row.gender || '',
       status: row.status,
       mustChangePassword: Boolean(row.must_change_password),
@@ -1104,7 +1079,19 @@ export class UserSystemService {
         s.device_label,
         s.ip_summary,
         s.user_agent,
-        u.*
+        u.id,
+        u.username_display,
+        u.display_name,
+        u.avatar,
+        u.gender,
+        u.email,
+        u.status,
+        u.must_change_password,
+        u.permissions_version,
+        u.quota_json,
+        u.created_at,
+        u.updated_at,
+        u.last_login_at
       FROM sessions s
       JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ?
@@ -1119,6 +1106,7 @@ export class UserSystemService {
         .run(this.nowIso(), row.session_id)
     }
 
+    const access = this.rolesAndPermissionsForUsers([row.user_id]).get(row.user_id) || { roles: [], permissions: [] }
     return {
       id: row.session_id,
       userId: row.user_id,
@@ -1130,7 +1118,11 @@ export class UserSystemService {
       deviceLabel: row.device_label,
       ipSummary: row.ip_summary,
       userAgent: row.user_agent,
-      user: this.userViewFromRow(row, { includePrivate: true }),
+      user: this.userViewFromRow(row, {
+        includePrivate: true,
+        roles: access.roles,
+        permissions: access.permissions,
+      }),
     }
   }
 
@@ -1477,7 +1469,19 @@ export class UserSystemService {
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
     const total = Number(this.database.prepare(`SELECT COUNT(*) AS count FROM users u ${clause}`).get(...params)?.count || 0)
     const rows = this.database.prepare(`
-      SELECT u.*,
+      SELECT
+        u.id,
+        u.username_display,
+        u.display_name,
+        (u.avatar != '') AS avatar_present,
+        u.gender,
+        u.status,
+        u.must_change_password,
+        u.quota_json,
+        u.created_at,
+        u.updated_at,
+        u.last_login_at,
+        u.email,
         (SELECT COUNT(*) FROM kml_documents k WHERE k.owner_id = u.id AND k.status = 'active') AS kml_count,
         (SELECT COUNT(*) FROM favorite_places f WHERE f.owner_id = u.id) AS favorite_count,
         (SELECT COUNT(*) FROM kml_shares s WHERE s.owner_id = u.id AND s.status = 'active') AS share_count
@@ -1487,15 +1491,24 @@ export class UserSystemService {
       LIMIT ? OFFSET ?
     `).all(...params, limit, (page - 1) * limit)
     const quotaSettings = this.getSettings().quota
+    const accessByUserId = this.rolesAndPermissionsForUsers(rows.map(row => row.id))
     return {
-      items: rows.map(row => ({
-        ...this.userViewFromRow(row, { includePrivate: false, quotaSettings }),
-        usage: {
-          kmlCount: Number(row.kml_count || 0),
-          favoriteCount: Number(row.favorite_count || 0),
-          activeShareCount: Number(row.share_count || 0),
-        },
-      })),
+      items: rows.map(row => {
+        const access = accessByUserId.get(row.id) || { roles: [], permissions: [] }
+        return {
+          ...this.userViewFromRow(row, {
+            includePrivate: false,
+            quotaSettings,
+            roles: access.roles,
+            permissions: access.permissions,
+          }),
+          usage: {
+            kmlCount: Number(row.kml_count || 0),
+            favoriteCount: Number(row.favorite_count || 0),
+            activeShareCount: Number(row.share_count || 0),
+          },
+        }
+      }),
       page,
       limit,
       total,
@@ -1524,6 +1537,7 @@ export class UserSystemService {
     const targetHasAdministrativeAuthority = targetPermissions.some(code => (
       code.startsWith('admin.') ||
       code.startsWith('kml.any.') ||
+      code.startsWith('resource_collection.any.') ||
       code === 'system.super_admin'
     ))
     if (targetHasAdministrativeAuthority && !this.isSuperAdmin(actor)) {
@@ -1641,6 +1655,7 @@ export class UserSystemService {
     const hasAdministrativeRole = roles.some(role => this.permissionsForRole(role.id).some(code => (
       code.startsWith('admin.') ||
       code.startsWith('kml.any.') ||
+      code.startsWith('resource_collection.any.') ||
       code === 'system.super_admin'
     )))
     if (hasAdministrativeRole) {
@@ -1712,7 +1727,14 @@ export class UserSystemService {
     }
     const name = validateDisplayName(input.name ?? current.name)
     const description = String(input.description ?? current.description ?? '').trim().slice(0, 200)
-    const permissions = [...new Set(input.permissions ?? current.permissions ?? [])].map(String)
+    if (input.permissions !== undefined && !Array.isArray(input.permissions)) {
+      throw createHttpError('角色权限列表格式不正确', 400, 'VALIDATION_FAILED')
+    }
+    const rawPermissions = input.permissions ?? current.permissions ?? []
+    if (rawPermissions.some(permission => typeof permission !== 'string')) {
+      throw createHttpError('角色权限列表格式不正确', 400, 'VALIDATION_FAILED')
+    }
+    const permissions = [...new Set(rawPermissions)]
     if (permissions.some(code => !isKnownPermission(code))) {
       throw createHttpError('角色包含未知权限码', 400, 'VALIDATION_FAILED')
     }

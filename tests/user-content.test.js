@@ -96,6 +96,7 @@ function createHarness (options = {}) {
     clock: () => now,
     settingsProvider: () => settings,
     isSiteAccessEnabled: () => Boolean(options.siteAccessEnabled),
+    sharePasswordLimit: options.sharePasswordLimit,
     shareTileRateLimit: options.shareTileRateLimit,
     shareManifestRateLimit: options.shareManifestRateLimit,
   })
@@ -3197,6 +3198,134 @@ test('public share tile and manifest rate limits isolate shares and IPs and rese
     } finally {
       capacityHarness.close()
     }
+  } finally {
+    harness.close()
+  }
+})
+
+test('share password limiter keeps active lock when blockMs exceeds windowMs and caps entries', async () => {
+  const harness = createHarness({
+    sharePasswordLimit: { maxAttempts: 2, windowMs: 1000, blockMs: 10000, maxEntries: 3 },
+  })
+  try {
+    const document = harness.service.createKml(harness.one, { name: '锁定路线', features: [point('lock')] })
+    const share = harness.service.createShare(harness.one, {
+      title: '锁定分享',
+      items: [{ kmlId: document.id }],
+      password: 'correct-password',
+    })
+    for (let i = 0; i < 2; i += 1) {
+      await assert.rejects(
+        harness.service.authorizePublicShare(share.publicId, { password: 'wrong' }, { ip: '203.0.113.1' }),
+        error => error.code === 'SHARE_PASSWORD_INVALID'
+      )
+    }
+    harness.advance(2000)
+    await assert.rejects(
+      harness.service.authorizePublicShare(share.publicId, { password: 'correct-password' }, { ip: '203.0.113.1' }),
+      error => error.statusCode === 429 && error.code === 'RATE_LIMITED'
+    )
+    harness.advance(9000)
+    const allowed = await harness.service.authorizePublicShare(share.publicId, { password: 'correct-password' }, { ip: '203.0.113.1' })
+    assert.equal(Boolean(allowed.accessToken), true)
+
+    for (let index = 0; index < 5; index += 1) {
+      await assert.rejects(
+        harness.service.authorizePublicShare(share.publicId, { password: 'wrong' }, { ip: `203.0.113.${10 + index}` }),
+        error => error.code === 'SHARE_PASSWORD_INVALID'
+      )
+    }
+    assert.equal(harness.service.sharePasswordLimiter.entries.size, 3)
+  } finally {
+    harness.close()
+  }
+})
+
+test('shareSpatialView fails closed when spatial scope is stale or missing cameraBounds', () => {
+  const harness = createHarness()
+  try {
+    const document = harness.service.createKml(harness.one, { name: '空间范围路线', features: [point('spatial')] })
+    const share = harness.service.createShare(harness.one, {
+      title: '空间范围',
+      items: [{ kmlId: document.id }],
+      spatialAccess: { mode: 'kml_bounds' },
+    })
+    harness.database.prepare('UPDATE kml_shares SET spatial_scope_json = ?, spatial_scope_revision = 1 WHERE id = ?')
+      .run(JSON.stringify({ version: 1, bbox: [113, 23, 114, 24] }), share.id)
+    const row = harness.database.prepare('SELECT * FROM kml_shares WHERE id = ?').get(share.id)
+    const view = harness.service.shareSpatialView(row)
+    assert.equal(view.status, 'error')
+    assert.equal(view.reasonCode, 'SHARE_SPATIAL_SCOPE_STALE')
+    assert.equal(view.cameraBounds, undefined)
+  } finally {
+    harness.close()
+  }
+})
+
+test('syncShareContent preserves trashed items spatial scope and collection bindings while keeping counts accurate', () => {
+  const harness = createHarness()
+  try {
+    const dir = harness.service.createKmlDirectory(harness.one, { name: '测试目录' })
+    const collection = harness.service.createResourceCollection(harness.one, { name: '攻略合集' })
+    const activeDoc = harness.service.createKml(harness.one, {
+      name: '主路线',
+      directoryId: dir.id,
+      features: [point('active-pt', 113.2, 23.1)],
+    })
+    const trashedDoc = harness.service.createKml(harness.one, {
+      name: '快照路线',
+      features: [{
+        ...point('trashed-pt', 113.6, 23.4),
+        resourceCollectionRef: { version: 1, sourceType: 'personal', collectionId: collection.id },
+      }],
+    })
+    const share = harness.service.createShare(harness.one, {
+      title: '混合分享',
+      items: [{ kmlId: activeDoc.id }, { kmlId: trashedDoc.id }],
+      spatialAccess: { mode: 'kml_bounds' },
+    })
+    const updatedActive = harness.service.updateKml(harness.one, activeDoc.id, {
+      revision: activeDoc.revision,
+      name: '主路线-更新',
+      features: [point('active-pt', 113.25, 23.15)],
+    })
+    harness.service.trashKml(harness.one, trashedDoc.id)
+
+    const beforeSyncShare = harness.service.getShare(harness.one, share.id)
+    assert.equal(beforeSyncShare.pendingSyncItemCount, 1)
+    assert.equal(beforeSyncShare.syncStatus, 'pending')
+    assert.equal(harness.service.getKml(harness.one, trashedDoc.id).outdatedShareReferenceCount, 0)
+
+    harness.advance(1000)
+    const synced = harness.service.syncShareContent(harness.one, share.id, { revision: beforeSyncShare.revision })
+    assert.equal(synced.pendingSyncItemCount, 0)
+    assert.equal(synced.syncStatus, 'synced')
+    assert.equal(synced.spatialAccess.status, 'ready')
+    assert.equal(synced.spatialAccess.cameraBounds[2] >= 113.59, true)
+    assert.equal(synced.spatialAccess.cameraBounds[3] >= 23.39, true)
+    assert.equal(updatedActive.id, activeDoc.id)
+    const listed = harness.service.listKml(harness.one, { status: 'all' }).items
+    const listedActive = listed.find(item => item.id === activeDoc.id)
+    assert.equal(listedActive.directoryName, '测试目录')
+    assert.equal(listedActive.shareReferenceCount, 1)
+    assert.equal(listedActive.outdatedShareReferenceCount, 0)
+    assert.equal('features' in listedActive, false)
+
+    const trashedItemId = synced.items.find(item => item.kmlId === trashedDoc.id).id
+    const binding = harness.database.prepare(`
+      SELECT status FROM resource_collection_bindings
+      WHERE collection_id = ? AND source_scope = 'published_share' AND feature_id = ?
+    `).get(collection.id, `${trashedItemId}::trashed-pt`)
+    assert.equal(binding?.status, 'active')
+
+    // Verify '_' wildcard in share item IDs never cross-matches peer bindings or references
+    const decoyItemId = `${trashedItemId.slice(0, 3)}X${trashedItemId.slice(4)}`
+    harness.database.prepare(`
+      INSERT INTO resource_collection_bindings(id, collection_id, kml_id, feature_id, source_scope, status, created_at, updated_at)
+      VALUES ('rcb_decoy', ?, ?, ?, 'published_share', 'active', '2026-08-05T00:00:00.000Z', '2026-08-05T00:00:00.000Z')
+    `).run(collection.id, trashedDoc.id, `${decoyItemId}::decoy`)
+    harness.service.markPublishedResourceCollectionBindingsStale(share.id)
+    assert.equal(harness.database.prepare("SELECT status FROM resource_collection_bindings WHERE id = 'rcb_decoy'").get().status, 'active')
   } finally {
     harness.close()
   }

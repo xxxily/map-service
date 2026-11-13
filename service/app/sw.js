@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'map-service-v1.2.4'
+const CACHE_VERSION = 'map-service-v1.5.76'
 const APP_SHELL = [
   '/',
   '/offline.html',
@@ -34,6 +34,17 @@ function shouldBypassCache (requestUrl) {
     requestUrl.pathname.startsWith('/.cache/')
 }
 
+function navigateShellKey (requestUrl) {
+  if (requestUrl.search) return ''
+  if (requestUrl.pathname === '/' || requestUrl.pathname === '/index.html') return '/'
+  if (requestUrl.pathname === '/3d' || requestUrl.pathname === '/3d.html') return '/3d'
+  return ''
+}
+
+function isCacheableResponse (response) {
+  return Boolean(response && response.status === 200 && response.type === 'basic')
+}
+
 self.addEventListener('fetch', (event) => {
   const request = event.request
   if (request.method !== 'GET') return
@@ -44,24 +55,34 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (request.mode === 'navigate') {
+    const shellKey = navigateShellKey(requestUrl)
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone()
-          caches.open(CACHE_VERSION).then(cache => cache.put('/', copy))
+          if (shellKey && isCacheableResponse(response)) {
+            const copy = response.clone()
+            caches.open(CACHE_VERSION).then(cache => cache.put(shellKey, copy)).catch(() => {})
+          }
           return response
         })
-        .catch(() => caches.match('/').then(response => response || caches.match('/offline.html')))
+        .catch(() => {
+          if (shellKey) {
+            return caches.match(shellKey).then(response => response || caches.match('/offline.html'))
+          }
+          return caches.match('/offline.html')
+        })
     )
     return
   }
 
+  if (request.headers.has('range')) return
+
   event.respondWith(
     fetch(request)
       .then((response) => {
-        if (response.ok) {
+        if (isCacheableResponse(response)) {
           const copy = response.clone()
-          caches.open(CACHE_VERSION).then(cache => cache.put(request, copy))
+          caches.open(CACHE_VERSION).then(cache => cache.put(request, copy)).catch(() => {})
         }
         return response
       })

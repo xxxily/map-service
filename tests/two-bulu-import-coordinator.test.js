@@ -391,3 +391,38 @@ test('浏览器助手导入拒绝不兼容协议、超大正文和 XXE，且不�
     assert.equal(state.audits[0].result, 'failure')
   }
 })
+
+test('服务端直连导入统一限制 10 MiB、前置校验 directoryId 并映射 kmlText Persistence 校验错误', async () => {
+  const oversized = createHarness({
+    resolved: {
+      sourceUrl: SHARE_URL,
+      kmlText: VALID_KML,
+      sourceByteSize: 10 * 1024 * 1024 + 1,
+      completeness: 'full',
+      warnings: [],
+    },
+  })
+  await assert.rejects(
+    oversized.coordinator.import(ACTOR, { url: SHARE_URL }),
+    error => error.statusCode === 413 && error.code === 'FILE_TOO_LARGE'
+  )
+
+  const dirHarness = createHarness()
+  const imported = await dirHarness.coordinator.import(ACTOR, {
+    url: SHARE_URL,
+    directoryId: 'kmd_dir_direct',
+  })
+  assert.equal(imported.id, 'kml_import_1')
+  assert.equal(dirHarness.state.createCalls[0].input.directoryId, 'kmd_dir_direct')
+
+  const invalidKmlPersist = createHarness()
+  invalidKmlPersist.coordinator.userContent.createKml = () => {
+    const err = new Error('validation failed')
+    err.code = 'VALIDATION_FAILED'
+    throw err
+  }
+  await assert.rejects(
+    invalidKmlPersist.coordinator.import(ACTOR, { url: SHARE_URL }),
+    error => error.statusCode === 502 && error.code === 'TWO_BULU_UPSTREAM_INVALID'
+  )
+})

@@ -414,4 +414,10 @@ test('外部请求限制跨域重定向、超限响应和用户级频率', async
   limited.assertRateLimit('usr_rate')
   now += 2000
   assert.throws(() => limited.assertRateLimit('usr_rate'), error => error.code === 'TWO_BULU_RATE_LIMITED')
+
+  const decoded = convertTwoBuluPublicData(
+    { trackPositions: [[113.1, 23.1], [113.2, 23.2]] },
+    { title: '路线&#65;&#9999999999;标题' }
+  )
+  assert.equal(decoded.name, '路线A标题')
 })

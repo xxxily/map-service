@@ -1,4 +1,5 @@
 import {
+  AttemptLimiter,
   createHttpError,
   decryptSecret,
   encryptSecret,
@@ -1152,40 +1153,6 @@ function spatialError (reasonCode) {
   return createHttpError(messages[reasonCode] || '分享空间范围暂不可用', statusCode, reasonCode || 'SHARE_SPATIAL_BOUNDS_EMPTY')
 }
 
-class AttemptLimiter {
-  constructor (options, clock) {
-    this.options = options
-    this.clock = clock
-    this.entries = new Map()
-  }
-
-  state (key) {
-    const now = this.clock()
-    const current = this.entries.get(key)
-    if (!current || now - current.firstFailedAt > this.options.windowMs) {
-      return { count: 0, firstFailedAt: now, blockedUntil: 0 }
-    }
-    return current
-  }
-
-  assertAllowed (key) {
-    if (this.state(key).blockedUntil > this.clock()) {
-      throw createHttpError('分享密码尝试次数过多，请稍后再试', 429, 'RATE_LIMITED')
-    }
-  }
-
-  recordFailure (key) {
-    const state = this.state(key)
-    state.count += 1
-    if (state.count >= this.options.maxAttempts) state.blockedUntil = this.clock() + this.options.blockMs
-    this.entries.set(key, state)
-  }
-
-  clear (key) {
-    this.entries.delete(key)
-  }
-}
-
 class FixedWindowLimiter {
   constructor (options, clock) {
     this.options = {
@@ -1243,7 +1210,10 @@ export class UserContentService {
     this.settingsProvider = options.settingsProvider || (() => this.userSystem?.getSettings?.() || DEFAULT_SETTINGS)
     this.clock = options.clock || (() => Date.now())
     this.isSiteAccessEnabled = options.isSiteAccessEnabled || (() => false)
-    this.sharePasswordLimiter = new AttemptLimiter(options.sharePasswordLimit || SHARE_PASSWORD_LIMIT, this.clock)
+    this.sharePasswordLimiter = new AttemptLimiter({
+      ...(options.sharePasswordLimit || SHARE_PASSWORD_LIMIT),
+      errorMessage: '分享密码尝试次数过多，请稍后再试',
+    }, this.clock)
     this.shareTileLimiter = new FixedWindowLimiter(options.shareTileRateLimit || SHARE_TILE_RATE_LIMIT, this.clock)
     this.shareManifestLimiter = new FixedWindowLimiter(options.shareManifestRateLimit || SHARE_MANIFEST_RATE_LIMIT, this.clock)
     this.publicCollectionReadLimiter = new FixedWindowLimiter({
@@ -1622,10 +1592,16 @@ export class UserContentService {
       revision: Number(row.spatial_scope_revision || 0),
     }
     if (mode === 'kml_bounds' && scope && status === 'ready') {
-      Object.assign(result, publicSpatialScope(scope, Number(row.spatial_scope_revision || 0)))
-      const eligibility = spatialPolicyEligibility(scope, this.spatialSettings())
-      result.unlimitedAccessEligible = eligibility.unlimitedAccessEligible
-      result.reasonCode = row.spatial_error_code || eligibility.reasonCode || null
+      const publicScope = publicSpatialScope(scope, Number(row.spatial_scope_revision || 0))
+      if (!publicScope) {
+        result.status = 'error'
+        result.reasonCode = row.spatial_error_code || 'SHARE_SPATIAL_SCOPE_STALE'
+      } else {
+        Object.assign(result, publicScope)
+        const eligibility = spatialPolicyEligibility(scope, this.spatialSettings())
+        result.unlimitedAccessEligible = eligibility.unlimitedAccessEligible
+        result.reasonCode = row.spatial_error_code || eligibility.reasonCode || null
+      }
     } else if (mode === 'kml_bounds') {
       result.reasonCode = row.spatial_error_code || null
     }
@@ -2014,8 +1990,34 @@ export class UserContentService {
       SELECT COUNT(*) AS count
       FROM kml_share_items i
       JOIN kml_documents k ON k.id = i.kml_id
-      WHERE i.kml_id = ? AND i.published_revision != k.revision
+      WHERE i.kml_id = ? AND k.status = 'active' AND i.published_revision != k.revision
     `).get(kmlId)?.count || 0)
+  }
+
+  shareCountsForKmlIds (kmlIds = []) {
+    const uniqueIds = [...new Set((Array.isArray(kmlIds) ? kmlIds : []).map(id => String(id || '')).filter(Boolean))]
+    const shareCountsByKmlId = new Map()
+    const outdatedShareCountsByKmlId = new Map()
+    if (!uniqueIds.length) return { shareCountsByKmlId, outdatedShareCountsByKmlId }
+    const placeholders = uniqueIds.map(() => '?').join(', ')
+    this.database.prepare(`
+      SELECT kml_id, COUNT(*) AS count
+      FROM kml_share_items
+      WHERE kml_id IN (${placeholders})
+      GROUP BY kml_id
+    `).all(...uniqueIds).forEach(row => {
+      shareCountsByKmlId.set(row.kml_id, Number(row.count || 0))
+    })
+    this.database.prepare(`
+      SELECT i.kml_id, COUNT(*) AS count
+      FROM kml_share_items i
+      JOIN kml_documents k ON k.id = i.kml_id
+      WHERE i.kml_id IN (${placeholders}) AND k.status = 'active' AND i.published_revision != k.revision
+      GROUP BY i.kml_id
+    `).all(...uniqueIds).forEach(row => {
+      outdatedShareCountsByKmlId.set(row.kml_id, Number(row.count || 0))
+    })
+    return { shareCountsByKmlId, outdatedShareCountsByKmlId }
   }
 
   requireOwnedKmlDirectory (actor, directoryId) {
@@ -2478,14 +2480,22 @@ export class UserContentService {
       byteSize: Number(row.byte_size),
       revision: Number(row.revision),
       sourceType: row.source_type,
-      shareReferenceCount: this.shareReferenceCount(row.id),
-      outdatedShareReferenceCount: this.outdatedShareReferenceCount(row.id),
+      shareReferenceCount: options.shareCountsByKmlId instanceof Map
+        ? (options.shareCountsByKmlId.get(row.id) ?? 0)
+        : this.shareReferenceCount(row.id),
+      outdatedShareReferenceCount: options.outdatedShareCountsByKmlId instanceof Map
+        ? (options.outdatedShareCountsByKmlId.get(row.id) ?? 0)
+        : this.outdatedShareReferenceCount(row.id),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       deletedAt: row.deleted_at || null,
       directoryId: row.directory_id || null,
       directoryName: row.directory_id
-        ? String(this.database.prepare('SELECT name FROM kml_directories WHERE id = ?').get(row.directory_id)?.name || '')
+        ? (
+            row.directory_name !== undefined
+              ? String(row.directory_name || '')
+              : String(this.database.prepare('SELECT name FROM kml_directories WHERE id = ?').get(row.directory_id)?.name || '')
+          )
         : '',
       position: Number(row.position || 0),
     }
@@ -2696,42 +2706,55 @@ export class UserContentService {
     }
     const sort = sortMap[input.sort] || sortMap.updatedAt
     const order = normalizeOrder(input.order).toUpperCase()
-    const where = ['owner_id = ?']
+    const where = ['k.owner_id = ?']
     const params = [ownerId]
     if (status !== 'all') {
-      where.push('status = ?')
+      where.push('k.status = ?')
       params.push(status)
     }
     if (input.search) {
-      where.push("(name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')")
-      const search = `%${String(input.search).slice(0, 200)}%`
+      where.push("(k.name LIKE ? ESCAPE '\\' OR k.description LIKE ? ESCAPE '\\')")
+      const escapedSearch = String(input.search).slice(0, 200).replace(/[\\%_]/g, '\\$&')
+      const search = `%${escapedSearch}%`
       params.push(search, search)
     }
     if (input.directoryId !== undefined) {
       const directoryId = normalizeKmlDirectoryId(input.directoryId)
       if (directoryId) this.requireOwnedKmlDirectory(actor, directoryId)
-      where.push('directory_id IS ?')
+      where.push('k.directory_id IS ?')
       params.push(directoryId)
     }
     if (input.updatedAfter) {
       const parsed = normalizeExpiresAt(input.updatedAfter)
-      where.push('updated_at >= ?')
+      where.push('k.updated_at >= ?')
       params.push(parsed)
     }
     if (input.updatedBefore) {
       const parsed = normalizeExpiresAt(input.updatedBefore)
-      where.push('updated_at <= ?')
+      where.push('k.updated_at <= ?')
       params.push(parsed)
     }
     const clause = where.join(' AND ')
-    const total = Number(this.database.prepare(`SELECT COUNT(*) AS count FROM kml_documents WHERE ${clause}`).get(...params)?.count || 0)
+    const total = Number(this.database.prepare(`SELECT COUNT(*) AS count FROM kml_documents k WHERE ${clause}`).get(...params)?.count || 0)
     const rows = this.database.prepare(`
-      SELECT * FROM kml_documents WHERE ${clause}
-      ORDER BY is_default DESC, ${sort} ${order}, id ASC
+      SELECT
+        k.id, k.owner_id, k.name, k.description, k.is_default, k.status,
+        k.coord_correction, k.theme, k.color, k.lock_drag, k.enabled, k.is_live_track,
+        k.feature_count, k.bounds_json, k.byte_size, k.revision, k.source_type,
+        k.created_at, k.updated_at, k.deleted_at, k.directory_id, k.position,
+        k.sync_client_id, d.name AS directory_name
+      FROM kml_documents k
+      LEFT JOIN kml_directories d ON d.id = k.directory_id AND d.owner_id = k.owner_id
+      WHERE ${clause}
+      ORDER BY k.is_default DESC, k.${sort} ${order}, k.id ASC
       LIMIT ? OFFSET ?
     `).all(...params, limit, (page - 1) * limit)
+    const { shareCountsByKmlId, outdatedShareCountsByKmlId } = this.shareCountsForKmlIds(rows.map(row => row.id))
     return {
-      items: rows.map(row => this.kmlViewFromRow(row)),
+      items: rows.map(row => this.kmlViewFromRow(row, {
+        shareCountsByKmlId,
+        outdatedShareCountsByKmlId,
+      })),
       page,
       limit,
       total,
@@ -2834,8 +2857,9 @@ export class UserContentService {
     const itemIds = this.database.prepare('SELECT id FROM kml_share_items WHERE share_id=?').all(shareId).map(row => String(row.id))
     if (!itemIds.length) return
     const now = this.nowIso()
-    const update = this.database.prepare("UPDATE resource_collection_bindings SET status='stale',updated_at=? WHERE source_scope='published_share' AND status='active' AND feature_id LIKE ?")
-    itemIds.forEach(itemId => update.run(now, `${itemId}::%`))
+    const escapeLike = value => String(value || '').replace(/[\\%_]/g, '\\$&')
+    const update = this.database.prepare("UPDATE resource_collection_bindings SET status='stale',updated_at=? WHERE source_scope='published_share' AND status='active' AND feature_id LIKE ? ESCAPE '\\'")
+    itemIds.forEach(itemId => update.run(now, `${escapeLike(itemId)}::%`))
   }
 
   syncPublishedResourceCollectionBindings (shareId, items) {
@@ -3602,7 +3626,7 @@ export class UserContentService {
              b.status, b.updated_at AS updatedAt, s.public_id AS publicId, s.status AS shareStatus,
              s.owner_id AS shareOwnerId
       FROM resource_collection_bindings b
-      JOIN kml_share_items si ON si.kml_id=b.kml_id AND b.feature_id LIKE si.id || '::%'
+      JOIN kml_share_items si ON si.kml_id=b.kml_id AND substr(b.feature_id, 1, length(si.id) + 2) = si.id || '::'
       JOIN kml_shares s ON s.id=si.share_id
       WHERE b.collection_id=? AND b.status='active' AND b.source_scope='published_share' AND s.owner_id=?
       ORDER BY b.updated_at DESC, b.id DESC
@@ -3611,7 +3635,7 @@ export class UserContentService {
       SELECT COUNT(*) AS count
       FROM resource_collection_bindings b
       LEFT JOIN kml_documents k ON k.id=b.kml_id AND b.source_scope='owner_kml'
-      LEFT JOIN kml_share_items si ON b.source_scope='published_share' AND b.feature_id LIKE si.id || '::%'
+      LEFT JOIN kml_share_items si ON b.source_scope='published_share' AND substr(b.feature_id, 1, length(si.id) + 2) = si.id || '::'
       LEFT JOIN kml_shares s ON s.id=si.share_id
       WHERE b.collection_id=? AND b.status='active' AND ((b.source_scope='owner_kml' AND (k.owner_id IS NULL OR k.owner_id<>?)) OR (b.source_scope='published_share' AND (s.owner_id IS NULL OR s.owner_id<>?)))
     `).get(collection.id, collection.owner_id, collection.owner_id)?.count || 0)
@@ -3672,7 +3696,7 @@ export class UserContentService {
       LEFT JOIN kml_documents k
         ON b.source_scope = 'owner_kml' AND k.id = b.kml_id
       LEFT JOIN kml_share_items si
-        ON b.source_scope = 'published_share' AND b.feature_id LIKE si.id || '::%'
+        ON b.source_scope = 'published_share' AND substr(b.feature_id, 1, length(si.id) + 2) = si.id || '::'
       LEFT JOIN kml_shares s ON s.id = si.share_id
       WHERE ${clause}
       ORDER BY b.updated_at DESC, b.id DESC
@@ -4762,7 +4786,7 @@ export class UserContentService {
         sourceRevision,
         publishedRevision,
         publishedAt: row.published_at || null,
-        syncStatus: publishedRevision === sourceRevision ? 'synced' : 'pending',
+        syncStatus: row.kml_status === 'active' && publishedRevision !== sourceRevision ? 'pending' : 'synced',
       }
     })
   }
@@ -4804,7 +4828,7 @@ export class UserContentService {
           SELECT COUNT(*) AS count
           FROM kml_share_items i
           JOIN kml_documents k ON k.id = i.kml_id
-          WHERE i.share_id = ? AND i.published_revision != k.revision
+          WHERE i.share_id = ? AND k.status = 'active' AND i.published_revision != k.revision
         `).get(row.id)?.count || 0)
     result.syncStatus = result.pendingSyncItemCount > 0 ? 'pending' : 'synced'
     return result
@@ -5308,7 +5332,9 @@ export class UserContentService {
 
     const sourceItems = this.database.prepare(`
       SELECT i.id, i.kml_id, i.position, i.visible_by_default, i.display_name,
+             i.published_revision, i.published_snapshot_json,
              i.directory_id, i.source_directory_id, i.directory_name, i.source_position,
+             k.status AS kml_status,
              k.name, k.description, k.coord_correction, k.theme, k.color,
              k.lock_drag, k.enabled, k.is_live_track, k.features_json,
              k.feature_count, k.bounds_json, k.byte_size, k.revision, k.updated_at,
@@ -5316,14 +5342,17 @@ export class UserContentService {
              k.position AS current_position,
              d.name AS current_directory_name
       FROM kml_share_items i
-      JOIN kml_documents k ON k.id = i.kml_id
+      LEFT JOIN kml_documents k ON k.id = i.kml_id
       LEFT JOIN kml_directories d ON d.id = k.directory_id AND d.owner_id = k.owner_id
-      WHERE i.share_id = ? AND k.status = 'active'
+      WHERE i.share_id = ?
       ORDER BY i.position, i.id
     `).all(row.id)
-    if (sourceItems.length === 0) throw createHttpError('分享包没有可用 KML', 409, 'SHARE_EMPTY')
+    if (!sourceItems.some(item => item.kml_status === 'active')) {
+      throw createHttpError('分享包没有可用 KML', 409, 'SHARE_EMPTY')
+    }
 
     const publicDirectoryIds = new Map(sourceItems.flatMap(item => (
+      item.kml_status === 'active' &&
       item.current_directory_id &&
       item.current_directory_id === item.source_directory_id &&
       item.directory_id
@@ -5331,6 +5360,24 @@ export class UserContentService {
         : []
     )))
     const items = sourceItems.map(item => {
+      if (item.kml_status !== 'active') {
+        const preservedSnapshot = parseJson(item.published_snapshot_json, {})
+        return {
+          syncFromSource: false,
+          id: item.id,
+          kmlId: item.kml_id,
+          revision: Number(item.published_revision || 0),
+          features: Array.isArray(preservedSnapshot.features) ? preservedSnapshot.features : [],
+          position: Number(item.position),
+          visibleByDefault: Boolean(item.visible_by_default),
+          displayName: item.display_name || '',
+          directoryId: item.directory_id || null,
+          sourceDirectoryId: item.source_directory_id || null,
+          directoryName: item.directory_name || '',
+          sourcePosition: Number(item.source_position || 0),
+          publishedSnapshot: preservedSnapshot,
+        }
+      }
       const sourceDirectoryId = item.current_directory_id || null
       const publicDirectoryId = sourceDirectoryId
         ? (publicDirectoryIds.get(sourceDirectoryId) || (() => {
@@ -5340,20 +5387,22 @@ export class UserContentService {
           })())
         : null
       return {
-      id: item.id,
-      kmlId: item.kml_id,
-      revision: Number(item.revision),
-      features: parseJson(item.features_json, []),
-      position: Number(item.position),
-      visibleByDefault: Boolean(item.visible_by_default),
-      displayName: item.display_name || '',
-      directoryId: publicDirectoryId,
-      sourceDirectoryId,
-      directoryName: item.current_directory_name || '',
-      sourcePosition: Number(item.current_position || 0),
-      publishedSnapshot: this.publishedSnapshotFromDocument(item),
+        syncFromSource: true,
+        id: item.id,
+        kmlId: item.kml_id,
+        revision: Number(item.revision),
+        features: parseJson(item.features_json, []),
+        position: Number(item.position),
+        visibleByDefault: Boolean(item.visible_by_default),
+        displayName: item.display_name || '',
+        directoryId: publicDirectoryId,
+        sourceDirectoryId,
+        directoryName: item.current_directory_name || '',
+        sourcePosition: Number(item.current_position || 0),
+        publishedSnapshot: this.publishedSnapshotFromDocument(item),
       }
     })
+    const activeItems = items.filter(item => item.syncFromSource)
     const settings = this.getSettings()
     const spatialMode = row.spatial_access_mode || 'unrestricted'
     const previousScope = parseJson(row.spatial_scope_json, null)
@@ -5384,7 +5433,7 @@ export class UserContentService {
         WHERE i.share_id = ? AND k.status = 'active'
         ORDER BY i.position, i.id
       `).all(row.id).map(item => ({ id: item.kml_id, revision: Number(item.revision) }))
-      const sourceRevisions = items.map(item => ({ id: item.kmlId, revision: item.revision }))
+      const sourceRevisions = activeItems.map(item => ({ id: item.kmlId, revision: item.revision }))
       if (!this.spatialSnapshotEqual(currentRevisions, sourceRevisions)) {
         throw createHttpError('KML 内容已发生变化，请重新加载后同步', 409, 'KML_REVISION_CONFLICT')
       }
@@ -5395,7 +5444,7 @@ export class UserContentService {
         WHERE id = ? AND share_id = ?
       `)
       this.markPublishedResourceCollectionBindingsStale(row.id)
-      items.forEach(item => {
+      activeItems.forEach(item => {
         updateSnapshot.run(
           item.revision,
           JSON.stringify(item.publishedSnapshot),

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import vm from 'node:vm'
 import test from 'node:test'
 import express from 'express'
 import serviceConfig from '../service/config.js'
@@ -214,4 +217,104 @@ test('legacy helper stringifyParams and object mergeObj block invalid types and 
   assert.equal(cloned.safe, 42)
   assert.equal(({}).polluted, undefined)
   assert.equal(objectUtils.clone(null), null)
+})
+
+test('service worker isolates shell cache keys and skips error, 206, and dynamic share navigation responses', async () => {
+  const swSource = fs.readFileSync(path.resolve('public/sw.js'), 'utf8')
+  const listeners = {}
+  const stored = new Map()
+  const fetchQueue = []
+
+  const cacheObj = {
+    async addAll () {},
+    async put (key, res) {
+      const k = typeof key === 'string' ? key : key.url
+      stored.set(k, res)
+    },
+  }
+  const sandbox = {
+    URL,
+    caches: {
+      async open () { return cacheObj },
+      async keys () { return [] },
+      async delete () {},
+      async match (key) {
+        const k = typeof key === 'string' ? key : key.url
+        return stored.get(k) || null
+      },
+    },
+    fetch: async () => {
+      const next = fetchQueue.shift()
+      if (next instanceof Error) throw next
+      return next
+    },
+    self: {
+      location: { origin: 'https://example.com' },
+      addEventListener (type, fn) { listeners[type] = fn },
+      async skipWaiting () {},
+      clients: { async claim () {} },
+    },
+  }
+  vm.runInNewContext(swSource, sandbox)
+
+  const runFetch = (url, { mode = 'cors', method = 'GET', headers = new Map() } = {}) => new Promise((resolve) => {
+    let responsePromise = null
+    listeners.fetch({
+      request: { url, mode, method, headers },
+      respondWith (p) { responsePromise = p },
+    })
+    if (!responsePromise) return resolve(null)
+    Promise.resolve(responsePromise).then(resolve)
+  })
+  const makeResponse = (body, { status = 200, type = 'basic' } = {}) => ({
+    status,
+    ok: status >= 200 && status < 300,
+    type,
+    body,
+    clone () { return makeResponse(body, { status, type }) },
+  })
+
+  await stored.set('/offline.html', makeResponse('offline'))
+  fetchQueue.push(makeResponse('home-ok'))
+  await runFetch('https://example.com/', { mode: 'navigate' })
+  assert.equal(stored.get('/')?.body, 'home-ok')
+
+  fetchQueue.push(makeResponse('3d-ok'))
+  await runFetch('https://example.com/3d', { mode: 'navigate' })
+  assert.equal(stored.get('/')?.body, 'home-ok')
+  assert.equal(stored.get('/3d')?.body, '3d-ok')
+
+  fetchQueue.push(makeResponse('home-500', { status: 500 }))
+  await runFetch('https://example.com/', { mode: 'navigate' })
+  assert.equal(stored.get('/')?.body, 'home-ok')
+
+  fetchQueue.push(makeResponse('share-3d', { status: 200 }))
+  await runFetch('https://example.com/3d?share=pub_1', { mode: 'navigate' })
+  assert.equal(stored.get('/3d')?.body, '3d-ok')
+
+  fetchQueue.push(new Error('offline'))
+  const offlineShare = await runFetch('https://example.com/share/pub_1', { mode: 'navigate' })
+  assert.equal(offlineShare?.body, 'offline')
+
+  fetchQueue.push(makeResponse('partial', { status: 206 }))
+  await runFetch('https://example.com/location-keepalive.mp4', { mode: 'no-cors' })
+  assert.equal(stored.has('https://example.com/location-keepalive.mp4'), false)
+
+  fetchQueue.push(makeResponse('ranged', { status: 200 }))
+  const rangeRes = await runFetch('https://example.com/location-keepalive.mp4', {
+    mode: 'no-cors',
+    headers: new Map([['range', 'bytes=0-10']]),
+  })
+  assert.equal(rangeRes, null)
+})
+
+test('service/index.js registers /3d before static middleware, disables HTML immutable caching, and bounds 2bulu helper JSON', () => {
+  const indexSource = fs.readFileSync(path.resolve('service/index.js'), 'utf8')
+  const staticIndex = indexSource.indexOf("app.use('/', express.static(serviceConfig.appDir, appOptions))")
+  const threeDIndex = indexSource.indexOf("app.get('/3d'")
+  assert.ok(threeDIndex > 0 && threeDIndex < staticIndex)
+  assert.match(indexSource, /extname\(filePath\)\.toLowerCase\(\) === '\.html'/)
+  assert.match(indexSource, /app\.use\('\/api\/v1\/kml\/import\/2bulu\/browser-helper',\s*express\.json\(\{\s*limit:\s*'16mb'\s*\}\)\)/)
+  const kmlTransportBlock = indexSource.slice(indexSource.indexOf("'/api/v1/kml/files'"), indexSource.indexOf('express.json({ limit: kmlJsonTransportMaxBytes() })'))
+  assert.equal(kmlTransportBlock.includes('2bulu/browser-helper'), false)
 })

@@ -112,8 +112,10 @@ const index = {
       '/api/v1/kml/files',
       '/api/v1/kml/sync',
       '/api/v1/kml/migrations/local',
-      '/api/v1/kml/import/2bulu/browser-helper',
     ], express.json({ limit: kmlJsonTransportMaxBytes() }))
+
+    /* 两步路浏览器助手单文件限制为 10 MiB，预留 JSON 转义及元信息封装空间 */
+    app.use('/api/v1/kml/import/2bulu/browser-helper', express.json({ limit: '16mb' }))
 
     /* parse ordinary application/json */
     app.use(express.json({ limit: '12mb' }))
@@ -157,7 +159,7 @@ const index = {
         res.set('Access-Control-Allow-Origin', '*')
         res.set('x-timestamp', Date.now())
 
-        if (['index.html', 'sw.js', 'manifest.webmanifest'].includes(path.basename(filePath))) {
+        if (path.extname(filePath).toLowerCase() === '.html' || ['sw.js', 'manifest.webmanifest'].includes(path.basename(filePath))) {
           res.set('Cache-Control', 'no-cache')
         } else {
           res.set('Cache-Control', 'public, max-age=31536000, immutable')
@@ -182,11 +184,11 @@ const index = {
         res.set('Referrer-Policy', 'no-referrer')
         return sendSharePage(req, res, { fileName: '3d.html', publicId })
       })
-      app.use('/', express.static(serviceConfig.appDir, appOptions))
       app.get('/3d', (req, res) => {
         res.set('Cache-Control', 'no-cache')
         res.sendFile(path.join(serviceConfig.appDir, '3d.html'))
       })
+      app.use('/', express.static(serviceConfig.appDir, appOptions))
       app.get(['/admin', '/admin/:tab'], (req, res) => {
         res.set('Cache-Control', 'no-cache')
         res.sendFile(path.join(serviceConfig.appDir, 'index.html'))

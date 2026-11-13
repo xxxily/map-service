@@ -1175,3 +1175,60 @@ test('audit metadata and IP addresses are sanitized before persistence', async t
   assert.match(row.ip_summary, /^ip_[A-Za-z0-9_-]{16}$/)
   assert.notEqual(row.ip_summary, '198.51.100.77')
 })
+
+test('validateRoleInput rejects non-array permissions and resource_collection.any grants administrative authority', async t => {
+  const { service } = createHarness(t)
+  const { session: rootSession } = await login(service)
+
+  assert.throws(
+    () => service.createRole(rootSession, {
+      code: 'bad_perm_type',
+      name: '非法权限列表',
+      permissions: 'admin.user.read',
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+
+  const collectionManagerRole = service.createRole(rootSession, {
+    code: 'collection_admin',
+    name: '资源集合管理员',
+    permissions: ['resource_collection.any.manage'],
+  })
+
+  assert.throws(
+    () => service.updateSettings(rootSession, {
+      registration: { defaultRoleCodes: ['user', collectionManagerRole.code] },
+    }),
+    matchesError('VALIDATION_FAILED', 400)
+  )
+
+  const operator = service.createUser(rootSession, {
+    username: 'user.operator',
+    displayName: '普通运营',
+    password: 'operator password phrase 2026',
+    roles: ['user'],
+  })
+  const userEditorRole = service.createRole(rootSession, {
+    code: 'user_editor',
+    name: '用户管理员',
+    permissions: ['admin.user.read', 'admin.user.manage'],
+  })
+  service.setUserRoles(rootSession, operator.user.id, ['user', userEditorRole.code])
+  const opLogin = await login(service, 'user.operator', 'operator password phrase 2026')
+  await service.changePassword(opLogin.session, {
+    currentPassword: 'operator password phrase 2026',
+    newPassword: 'operator permanent phrase 2026',
+  })
+  const opSession = service.verifySession(opLogin.result.sessionToken)
+
+  const colMgrUser = service.createUser(rootSession, {
+    username: 'col.manager',
+    displayName: '集合管理员账号',
+    password: 'collection mgr phrase 2026',
+    roles: [collectionManagerRole.code],
+  })
+  assert.throws(
+    () => service.updateUser(opSession, colMgrUser.user.id, { displayName: '越权修改' }),
+    matchesError('PERMISSION_DENIED', 403)
+  )
+})

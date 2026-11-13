@@ -231,3 +231,92 @@ export async function verifyPassword (value, encodedHash) {
 export function nowIso (clock = Date) {
   return new clock().toISOString()
 }
+
+/**
+ * Bounded in-memory attempt limiter preserving active blocks across window boundaries.
+ */
+export class AttemptLimiter {
+  constructor (options = {}, clock = () => Date.now()) {
+    this.options = {
+      maxAttempts: Math.max(1, Number(options?.maxAttempts) || 5),
+      windowMs: Math.max(1000, Number(options?.windowMs) || 60000),
+      blockMs: Math.max(1000, Number(options?.blockMs) || 60000),
+      maxEntries: Math.max(1, Number(options?.maxEntries) || 10000),
+      errorMessage: options?.errorMessage || '尝试次数过多，请稍后再试',
+      errorCode: options?.errorCode || 'RATE_LIMITED',
+    }
+    this.clock = clock
+    this.entries = new Map()
+  }
+
+  getState (key) {
+    const now = this.clock()
+    const current = this.entries.get(key)
+    if (!current || (current.blockedUntil <= now && now - current.firstFailedAt > this.options.windowMs)) {
+      return {
+        count: 0,
+        firstFailedAt: now,
+        blockedUntil: 0,
+      }
+    }
+    return current
+  }
+
+  prune (now) {
+    for (const [key, entry] of this.entries) {
+      if (entry.blockedUntil <= now && now - entry.firstFailedAt > this.options.windowMs) {
+        this.entries.delete(key)
+      }
+    }
+    while (this.entries.size >= this.options.maxEntries) {
+      let evictKey = null
+      for (const [key, entry] of this.entries) {
+        if (entry.blockedUntil <= now) {
+          evictKey = key
+          break
+        }
+      }
+      if (!evictKey) evictKey = this.entries.keys().next().value
+      if (!evictKey) break
+      this.entries.delete(evictKey)
+    }
+  }
+
+  assertAllowed (key) {
+    const state = this.getState(key)
+    if (state.blockedUntil > this.clock()) {
+      throw createHttpError(this.options.errorMessage, 429, this.options.errorCode)
+    }
+  }
+
+  recordFailure (key) {
+    const now = this.clock()
+    const normalizedKey = String(key || '').slice(0, 320)
+    const state = this.getState(normalizedKey)
+    if (!this.entries.has(normalizedKey)) this.prune(now)
+    state.count += 1
+    if (state.count >= this.options.maxAttempts) {
+      state.blockedUntil = now + this.options.blockMs
+    }
+    this.entries.set(normalizedKey, state)
+    return state
+  }
+
+  recordMany (keys) {
+    return keys.map(key => this.recordFailure(key)).reduce((latest, state) => (
+      state.blockedUntil > latest.blockedUntil ? state : latest
+    ), { count: 0, firstFailedAt: this.clock(), blockedUntil: 0 })
+  }
+
+  assertAllowedMany (keys) {
+    keys.forEach(key => this.assertAllowed(key))
+  }
+
+  clear (key) {
+    this.entries.delete(key)
+  }
+
+  clearMany (keys) {
+    keys.forEach(key => this.clear(key))
+  }
+}

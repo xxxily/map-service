@@ -135,23 +135,43 @@ export class TwoBuluImportCoordinator {
   }
 
   createDocument (actor, input, resolved, syncClientId, canonicalUrl) {
+    const kmlText = resolved.kmlText !== undefined && resolved.kmlText !== null
+      ? String(resolved.kmlText)
+      : null
+    const kmlByteSize = kmlText !== null ? Buffer.byteLength(kmlText, 'utf8') : 0
+    const sourceByteSize = Number.isFinite(Number(resolved.sourceByteSize))
+      ? Number(resolved.sourceByteSize)
+      : kmlByteSize
+    if (kmlByteSize > MAX_BROWSER_HELPER_KML_BYTES || sourceByteSize > MAX_BROWSER_HELPER_KML_BYTES) {
+      throw createHttpError('KML 文件超过 10 MiB 两步路导入限制', 413, 'FILE_TOO_LARGE')
+    }
+
+    const directoryId = input.directoryId !== undefined
+      ? this.userContent.assertOwnedDirectoryId(actor, input.directoryId)
+      : undefined
     const createOptions = {
       sourceType: 'imported',
-      sourceByteSize: resolved.sourceByteSize,
+      sourceByteSize,
       ...(syncClientId ? { syncClientId } : {}),
     }
 
-    if (resolved.kmlText !== undefined && resolved.kmlText !== null) {
-      const parsed = parseProviderKml(resolved.kmlText)
+    if (kmlText !== null) {
+      const parsed = parseProviderKml(kmlText)
       if (!parsed.features.length) throw trackEmptyError()
-      return this.userContent.createKml(actor, {
-        name: resolved.name || parsed.name || '两步路公开轨迹',
-        description: mergeDocumentDescription(parsed.description, canonicalUrl),
-        features: parsed.features,
-        sourceType: 'imported',
-        coordCorrection: input.coordCorrection,
-        theme: 'simple',
-      }, createOptions)
+      try {
+        return this.userContent.createKml(actor, {
+          name: resolved.name || parsed.name || '两步路公开轨迹',
+          description: mergeDocumentDescription(parsed.description, canonicalUrl),
+          features: parsed.features,
+          sourceType: 'imported',
+          coordCorrection: input.coordCorrection,
+          theme: 'simple',
+          ...(directoryId !== undefined ? { directoryId } : {}),
+        }, createOptions)
+      } catch (error) {
+        if (PROVIDER_VALIDATION_ERROR_CODES.has(error?.code)) throw upstreamInvalidError()
+        throw error
+      }
     }
 
     if (!resolved.document || typeof resolved.document !== 'object' || !Array.isArray(resolved.document.features)) {
@@ -166,6 +186,7 @@ export class TwoBuluImportCoordinator {
         sourceType: 'imported',
         coordCorrection: input.coordCorrection,
         theme: 'simple',
+        ...(directoryId !== undefined ? { directoryId } : {}),
       }, createOptions)
     } catch (error) {
       if (PROVIDER_VALIDATION_ERROR_CODES.has(error?.code)) throw upstreamInvalidError()
@@ -186,6 +207,9 @@ export class TwoBuluImportCoordinator {
       const partialPolicy = normalizeTwoBuluPartialPolicy(input.partialPolicy)
       const requestId = normalizeTwoBuluRequestId(input.requestId)
       const coordCorrection = normalizeKmlCoordCorrection(input.coordCorrection)
+      const directoryId = input.directoryId === undefined
+        ? undefined
+        : this.userContent.assertOwnedDirectoryId(actor, input.directoryId)
       const syncClientId = requestId
         ? `2bulu:${requestId}:${hashToken(normalizedSource.trackId).slice(0, 16)}`
         : ''
@@ -227,7 +251,11 @@ export class TwoBuluImportCoordinator {
       }, { userId: actorUserId })
       const document = this.createDocument(
         actor,
-        { ...input, coordCorrection },
+        {
+          ...input,
+          coordCorrection,
+          ...(directoryId !== undefined ? { directoryId } : {}),
+        },
         resolved || {},
         syncClientId,
         normalizedSource.canonicalUrl
