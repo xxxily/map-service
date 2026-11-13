@@ -94,7 +94,7 @@ function clonePolicy (value) {
 }
 
 /**
- * `createDefaultInteractionPolicy()` returns the frozen shared reference, so a
+ * `DEFAULT_INTERACTION_POLICY` is a frozen shared reference, so a
  * mutable per-site base has to be cloned before overrides can be applied.
  */
 export function createMutableInteractionPolicy (overrides = {}) {

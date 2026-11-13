@@ -4,7 +4,7 @@ import InteractionDatabase from '../service/bin/interaction/database.js'
 import CommentService from '../service/bin/interaction/commentService.js'
 import ModerationService from '../service/bin/interaction/moderationService.js'
 import { InteractionPolicyStore } from '../service/bin/interaction/commentPolicy.js'
-import { ArtalkMirror, ArtalkNotFoundError } from '../service/bin/interaction/artalkMirror.js'
+import { ArtalkMirror, ArtalkNotFoundError, buildCommentThreadKey } from '../service/bin/interaction/artalkMirror.js'
 
 const TEST_NOW = '2026-08-25T00:00:00.000Z'
 const TEST_SECRET = 'artalk-mirror-test-secret'
@@ -473,4 +473,29 @@ test('reconcileOnce avoids repeating failed items ahead of pending ones and avoi
     const freshProjection = harness.database.prepare('SELECT provider_comment_id, projection_status FROM artalk_comment_projections WHERE comment_id = ?').get(fresh.id)
     assert.equal(freshProjection.projection_status, 'visible')
   } finally { harness.close() }
+})
+
+test('buildCommentThreadKey binds thread key to canonicalShareId and rejects non-feature scope', () => {
+  const ref = {
+    sharePublicId: 'public_alias_1234567890',
+    shareItemId: 'shi_item_123',
+    featureId: 'point-one',
+    scope: 'feature',
+  }
+  const first = buildCommentThreadKey(ref, { canonicalShareId: 'shr_internal_1' })
+  const rotated = buildCommentThreadKey({ ...ref, sharePublicId: 'rotated_alias_123456' }, {
+    canonicalShareId: 'shr_internal_1',
+  })
+  const otherShare = buildCommentThreadKey(ref, { canonicalShareId: 'shr_internal_2' })
+
+  assert.equal(first, rotated)
+  assert.notEqual(first, otherShare)
+  assert.match(first, /^msp_comment_v1_[a-f0-9]{32}$/)
+  assert.equal(first.includes('shr_internal_1'), false)
+  assert.equal(first.includes(ref.featureId), false)
+
+  assert.throws(
+    () => buildCommentThreadKey({ ...ref, scope: 'media', mediaId: 'media_123' }, { canonicalShareId: 'shr_internal_1' }),
+    error => error.code === 'COMMENT_SCOPE_UNSUPPORTED',
+  )
 })

@@ -1,5 +1,8 @@
 # 第三方评论系统 POC 评审（2026-08）
 
+> [!NOTE] 状态更新（2026-11-13）
+> 原 `poc/comment-provider-adapters.js` 及配套 POC 测试已于仓库清理阶段下线删除；生产依赖的内部线程键函数 `buildCommentThreadKey` 已迁入 `service/bin/interaction/artalkMirror.js`，对应单测合并至 `tests/interaction-artalk-mirror.test.js`。下文保留 2026-08 评审历史背景。
+
 > 评审日期：2026-08-22；161 实测更新：2026-08-25（Asia/Shanghai）
 >
 > 范围：Remark42、Artalk、Isso、Cusdis。只采用项目官方仓库、官方文档和 GitHub 官方 API 作为证据。这里的“匿名”指不要求第三方社交登录即可提交评论；是否要求昵称、邮箱或验证码另行说明。
@@ -78,11 +81,9 @@ Artalk 在当前四个候选中同时满足：MIT 许可证、活跃版本发布
 2. **保留 Remark42 备选**：当需求更看重 OAuth provider 丰富度、成熟备份/恢复、Disqus/WordPress 迁移时再做 provider 实测；部署前必须完成可信代理与安全公告核对。
 3. **不投入 Cusdis POC**；Isso 仅在需要极简匿名评论、可接受自行验证导出和 SQLite 运维时考虑。
 
-## 本仓库 POC 适配器
+## 历史 POC 适配器记录
 
-POC 代码位于 [`poc/comment-provider-adapters.js`](../../poc/comment-provider-adapters.js)，测试位于
-[`tests/comment-provider-adapters-poc.test.js`](../../tests/comment-provider-adapters-poc.test.js)。它只生成
-provider locator，不启动第三方服务，也不新增生产运行时依赖。
+原评审期 POC 代码曾位于 `poc/comment-provider-adapters.js`（及测试 `tests/comment-provider-adapters-poc.test.js`），现已下线清理；其中仍在使用的 `buildCommentThreadKey` 已正式迁入 [`service/bin/interaction/artalkMirror.js`](../../service/bin/interaction/artalkMirror.js)，测试位于 [`tests/interaction-artalk-mirror.test.js`](../../tests/interaction-artalk-mirror.test.js)。其设计原则（只生成 locator、不启动第三方服务、不新增生产运行时依赖）仍保持一致：
 
 - 留言只接受 `scope=feature`；举报和未来媒体级能力不复用该 page key。
 - 适配器先用现有分享授权把外部 `sharePublicId` 解析为服务端内部 `canonicalShareId`，再生成

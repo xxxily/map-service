@@ -4,7 +4,44 @@
  */
 
 import crypto from 'node:crypto'
-import { buildCommentThreadKey } from '../../../poc/comment-provider-adapters.js'
+import {
+  normalizeResourceRef,
+  stableInteractionDigest,
+} from '../../../shared/interaction-resource-ref.js'
+
+function threadKeyError (message, code = 'COMMENT_THREAD_KEY_INVALID') {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+function requiredThreadKeyText (value, field) {
+  const normalized = String(value ?? '').normalize('NFKC').trim()
+  if (!normalized) throw threadKeyError(`${field} 不能为空`, 'COMMENT_THREAD_KEY_CONFIG_INVALID')
+  return normalized
+}
+
+/**
+ * 为外置评论镜像构建稳定的内部线程键。
+ * 绑定服务端内部 canonicalShareId，避免公开分享别名轮换导致评论线程分裂。
+ */
+export function buildCommentThreadKey (resourceRef, options = {}) {
+  const normalized = normalizeResourceRef(resourceRef)
+  if (!normalized.valid) {
+    throw threadKeyError(normalized.issues[0]?.message || '资源引用不合法', 'COMMENT_RESOURCE_REF_INVALID')
+  }
+  if (normalized.resourceRef.scope !== 'feature') {
+    throw threadKeyError('评论线程仅支持 feature 范围', 'COMMENT_SCOPE_UNSUPPORTED')
+  }
+  const canonicalShareId = requiredThreadKeyText(options.canonicalShareId, 'canonicalShareId')
+  const identity = JSON.stringify([
+    normalized.resourceRef.siteId,
+    canonicalShareId,
+    normalized.resourceRef.shareItemId,
+    normalized.resourceRef.featureId,
+  ])
+  return `msp_comment_v1_${stableInteractionDigest(identity)}`
+}
 
 function bool (value) {
   return value === true || String(value || '').toLowerCase() === 'true'

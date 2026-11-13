@@ -1,5 +1,33 @@
 # 变更日志
 
+## 2026-11-13 仓库全面体检与分阶段加固
+
+### Stage 1-3：安全边界、交互服务与后台接口加固
+
+- 加固 SSRF、CORS 白名单（移除已下线域名 `'qiweioa.cn'`）及路由发现端点鉴权（`GET /api/v1/routes`、`GET /api/v1/openapi.json` 收敛至管理总览权限）；修复对象深拷贝/工具函数边界与管理接口异常分支。
+- 修复 Interaction AI 提供方执行边界、审核与举报状态机流转、数据保留定时任务及 Artalk 单向镜像协调状态问题。
+- 优化 `fetchRelay` 与访问日志写入合并，加固预缓存任务、图层发布 `sprite@2x` 路由（含 `:ref` 派生路径与文档同步）及后台访问统计查询。
+
+### Stage 4-5：用户体系、两步路 10 MiB 统一上限、SW 路由与浏览器扩展加固
+
+- 统一两步路导入正文上限为 `10 MiB`（通用 KML 导入维持 `50 MiB`），加固密码校验与限流、空间访问范围控制、`userContent` 数据库查询边界，以及 `public/sw.js` 对 `/3d` 页面与静态资源的路由缓存策略。
+- 修复 `two-bulu-helper` 扩展桥接鉴权竞态、标签页刷新等待、Vite `5173` 本机来源匹配、`protocol.js` 正则字面量转义，并补全扩展、RBAC 与 KML 回归测试。
+
+### Stage 6：前端环境变量配置、管理端防御与 2D/3D 地图交互稳定性
+
+- `src/config.js` 支持通过 `import.meta.env.VITE_AMAP_KEY` 与 `VITE_AMAP_SECURITY_JS_CODE` 覆盖高德配置并保留受控默认值（同时兼容 Node ESM 单测导入；结合 161 实况暂保留默认回退，66 生产 `MAP_SERVICE_SHARE_SECRET_KEY` Fail-Fast 亦按部署前提暂缓启用）。
+- 补全 `src/main.js` / `src/3d.js` 懒加载入口 `.catch`、`cache` / `precache` 未认证轮询短路与拖拽取消清理、`interaction` 筛选异常处理、`userSystemSettings` 的 `spatialPaddingMeters >= 0` 校验、`proxy` / `tileSources` 查找空保护及 Safe Form Elements 查询。
+- 修复 `src/map/` 与 `src/map3d/` 多项缺陷：2D 截图按钮重复监听、`html2canvasLoader` 失败锁定与搜索/历史浮层隐藏；辅助线快捷键忽略可编辑输入框并做 `requestAnimationFrame` 节流与 `unload` 卸载清理；2D/3D 定位扩散波纹泄漏与幽灵静态标点、帧率无关 `CallbackProperty` 呼吸动画；路线选点挂起取消句柄与地理编码/路径规划超时兜底；2D/3D KML 50 MiB 客户端导入前校验与 3D 公共 KML 撤销/重做对齐。
+
+### Stage 7：死代码清理与文档同步
+
+- 将 `buildCommentThreadKey` 从 `poc/comment-provider-adapters.js` 正式迁入 `service/bin/interaction/artalkMirror.js` 并将单测并入 `tests/interaction-artalk-mirror.test.js`；删除已退役 `poc/`、`service/bin/interaction/{commentModeration,commentVisibility}.js`、`service/bin/common.js`、`service/bin/utils/cpu.js`、配套废弃测试及已确认无生产调用的死函数/别名导出（`redactModerationComment*`、`buildPublishedResourceCatalog`、`checkPublishedResourceReferences`、`createDefaultInteractionPolicy`、`isKmlResourceCollectionRef`、`isKmlResourceCollection`、`cleanupExpiredKmlTrash`、`scriptDescriptorToHtml`），同步更新 `package.json` 检查清单。
+- 补全 `docs/api.md` 中遗漏的 7 个服务端路由说明，并同步更新 `docs/architecture.md`、`docs/development.md` 与 `docs/research/comment-provider-poc-2026-08.md`。
+
+### 运维待办提醒（未改强阻断默认值）
+
+- 部署环境核查结果：66 生产 PM2 缺少 `MAP_SERVICE_SHARE_SECRET_KEY`，161 环境缺少 `VITE_AMAP_KEY`。为避免服务无法启动，本轮未对这两个变量启用生产 Fail-Fast；补齐服务器环境变量后可再评估收紧。
+
 ## 1.5.76 - 2026-09-13
 
 ### KML 要素聚焦交互延迟消除与视口虚拟化防御

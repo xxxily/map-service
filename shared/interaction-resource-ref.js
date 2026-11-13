@@ -142,15 +142,6 @@ export function decoratePublishedSnapshot (snapshot, options = {}) {
   }
 }
 
-export function buildPublishedResourceCatalog (snapshot, options = {}) {
-  return {
-    version: INTERACTION_RESOURCE_REF_VERSION,
-    features: (Array.isArray(snapshot?.features) ? snapshot.features : []).map(feature =>
-      buildPublishedFeatureResourceRefs(feature, options)
-    ),
-  }
-}
-
 function checkId (field, value, issues) {
   if (!value) {
     issues.push(issue('REQUIRED', field, `${field} 为必填项`))
@@ -345,8 +336,6 @@ export function inspectPublishedResourceReferences (snapshot, options = {}) {
   }
   return issues
 }
-
-export const checkPublishedResourceReferences = inspectPublishedResourceReferences
 
 export const RESOURCE_REF_ID_PATTERNS = ID_PATTERNS
 export {

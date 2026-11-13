@@ -214,10 +214,6 @@ export function sanitizeKmlResourceCollectionRef (value, options = {}) {
   return normalized
 }
 
-export function isKmlResourceCollectionRef (value) {
-  return Boolean(tryNormalizeKmlResourceCollectionRef(value).value)
-}
-
 export function getKmlResourceCollectionPage (items, requestedPage, pageSize = KML_RESOURCE_COLLECTION_PAGE_SIZE) {
   const source = Array.isArray(items) ? items : []
   const size = Math.max(1, Number.parseInt(pageSize, 10) || KML_RESOURCE_COLLECTION_PAGE_SIZE)
@@ -430,8 +426,4 @@ export function tryNormalizeKmlResourceCollection (value, options = {}) {
 
 export function serializeKmlResourceCollection (value, options = {}) {
   return JSON.stringify(normalizeKmlResourceCollection(value, options))
-}
-
-export function isKmlResourceCollection (value) {
-  return Boolean(tryNormalizeKmlResourceCollection(value).value)
 }

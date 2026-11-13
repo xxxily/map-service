@@ -133,20 +133,6 @@ export function normalizeScriptDescriptor (value, options = {}) {
   return result
 }
 
-export function scriptDescriptorToHtml (descriptor) {
-  const normalized = normalizeScriptDescriptor(descriptor)
-  if (!normalized) return ''
-  const attributes = [
-    normalized.defer ? 'defer' : '',
-    normalized.async ? 'async' : '',
-    `src="${normalized.src.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"`,
-    ...Object.entries(normalized.attributes).map(([name, value]) => (
-      `${name}="${String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"`
-    )),
-  ].filter(Boolean)
-  return `<script ${attributes.join(' ')}></script>`
-}
-
 export function mergeAnalyticsSettings (saved = {}) {
   return {
     global: {

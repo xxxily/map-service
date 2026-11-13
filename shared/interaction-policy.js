@@ -167,10 +167,6 @@ export const DEFAULT_INTERACTION_POLICY = deepFreeze({
   },
 })
 
-export function createDefaultInteractionPolicy () {
-  return DEFAULT_INTERACTION_POLICY
-}
-
 export function isModerationActionAllowed (level, action) {
   return MODERATION_LEVELS.includes(level) && MODERATION_ACTIONS.includes(action)
 }

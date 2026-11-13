@@ -434,6 +434,10 @@ If-Range: <etag-or-date>
 - `userSystem.counts`：用户、活跃会话、KML、收藏、分享和有效分享数量。
 - `userSystem.storage.kmlBytes`：KML 内容逻辑用量。
 
+### `GET /api/v1/admin/visits`
+
+获取访问统计摘要（总访问数、独立访客及统计明细），需具备后台管理会话。
+
 ### `GET /api/v1/admin/settings`
 
 返回脱敏后的运行时设置。目前只保留前台访问控制配置；代理统一在代理出口、代理池和图源策略中管理。
@@ -915,6 +919,10 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 
 删除图源。若图源仍被图层或发布项引用，返回错误并阻止删除。
 
+### `POST /api/v1/admin/tile-sources/:id/test`
+
+测试指定图源的上游连通性与样例响应，经过服务端代理与 SSRF 校验边界执行并返回脱敏诊断结果。
+
 ## 图层管理
 
 图层是一个或多个图源的展示组合。
@@ -1015,6 +1023,10 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 
 删除代理出口。若仍被代理池或图源引用，返回错误并阻止删除。
 
+### `POST /api/v1/admin/proxy-outbounds/:id/test`
+
+测试指定代理出口的可用性与脱敏状态结果。
+
 ### `GET /api/v1/admin/proxy-pools`
 
 获取代理池列表。
@@ -1050,6 +1062,10 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 ### `DELETE /api/v1/admin/proxy-pools/:id`
 
 删除代理池。若仍被图源引用，返回错误并阻止删除。
+
+### `POST /api/v1/admin/proxy-pools/:id/test`
+
+按代理池策略测试可用出口并返回脱敏诊断摘要。
 
 ## 对外发布 API
 
@@ -1132,6 +1148,10 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 ### `POST /api/v1/admin/external-publishes/:id/token`
 
 重置发布项 Token。只在本次响应返回明文 Token。
+
+### `POST /api/v1/admin/external-publishes/:id/test`
+
+按对外发布项的当前配置（含 `overrides`、代理策略、样式重写或瓦片模板）执行受控瓦片连通性测试并返回脱敏状态结果。
 
 ### `GET /api/v1/admin/external-publishes/:id/logs`
 
@@ -1333,6 +1353,10 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 ### `GET /api/v1/admin/precache/providers`
 
 返回可预缓存 provider 目录。
+
+### `GET /api/v1/admin/precache/catalog`
+
+返回可用于预缓存的图源与图层目录（与 `GET /api/v1/admin/precache/providers` 返回同一受控目录快照）。
 
 ### `GET /api/v1/admin/precache/tasks`
 
@@ -1708,6 +1732,7 @@ Point 还可以携带 `resourceCollection` 资源集合扩展，用于在一个�
 公开读取不需要登录，但集合必须为 `active + public`；未知、私有或回收集合统一返回 `404 RESOURCE_NOT_FOUND`，不提供搜索或枚举。接口为：
 
 - `GET /api/v1/public/resource-collections/:id`：只返回公开元数据；可选 `include=firstPage` 返回首项页。
+- `GET /api/v1/resource-collections/public/:id`：上述接口的兼容别名，行为与校验边界一致。
 - `GET /api/v1/public/resource-collections/:id/items?page=1&limit=40`：返回项页及 `pagination { page, limit, total, pageCount, hasNext }`。
 
 公开响应不含所有者、引用列表、审计和管理字段，并始终返回 `collectionRevision`、`itemsRevision`、`updatedAt`。公开和分享解析受配置限流，超限返回 `429 RESOURCE_COLLECTION_RATE_LIMITED`。

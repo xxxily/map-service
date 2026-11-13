@@ -90,6 +90,7 @@ KML 点位详情由 `src/map/kml-content-panel.js` 统一渲染，图片、视�
 - `service/bin/middleware/fetchRelay/index.js` 负责瓦片代理缓存。
 - `service/bin/whitelist.js` 限制可代理的瓦片上游 host 和 path。
 - `service/bin/cronJob/` 包含定时任务。
+- `service/bin/interaction/artalkMirror.js` 负责可选 Artalk 单向投影与内部稳定评论线程键（`buildCommentThreadKey`）计算；原 `poc/` 目录已下线清理。
 
 ## 缓存设计
 
@@ -195,7 +196,7 @@ API 应保持版本化和显式注册。新增接口需要：
 - 明确 HTTP method。
 - 做输入校验。
 - 使用统一 JSON 响应。
-- 为 `/api/v1/routes` 和 `/api/v1/openapi.json` 提供路由元数据。
+- 为 `/api/v1/routes` 和 `/api/v1/openapi.json` 提供路由元数据（这两个发现端点需管理总览权限鉴权）。
 - 对缓存、校验、权限边界相关逻辑补测试。
 - 更新 `docs/api.md`。
 

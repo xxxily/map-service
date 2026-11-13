@@ -17,7 +17,6 @@ import {
   canTransitionCommentContent,
   canTransitionCommentModeration,
   canTransitionReportStatus,
-  createDefaultInteractionPolicy,
   isPublicComment,
   isValidReportTargetScope,
   isValidReportType,
@@ -30,7 +29,6 @@ test('default interaction policy is frozen and disables anonymous comments', () 
   assert.equal(DEFAULT_INTERACTION_POLICY.comments.anonymous.enabled, false)
   assert.equal(DEFAULT_INTERACTION_POLICY.comments.anonymous.contactRequirement, 'email_or_phone')
   assert.match(DEFAULT_INTERACTION_POLICY.mediaDetails.generalDescription, /举报投诉渠道/)
-  assert.strictEqual(createDefaultInteractionPolicy(), DEFAULT_INTERACTION_POLICY)
 })
 
 test('comment status contract only exposes approved active comments', () => {

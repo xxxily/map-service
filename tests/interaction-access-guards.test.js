@@ -8,8 +8,6 @@ import {
   assertInteractionAdminAccess,
   assertPublicCommentWrite,
   findForbiddenResponseFields,
-  redactModerationComment,
-  redactModerationComments,
 } from '../service/bin/interaction/accessGuards.js'
 import { createMutableInteractionPolicy } from '../service/bin/interaction/commentPolicy.js'
 import {
@@ -74,43 +72,6 @@ function sameOriginAsserter (allowed = true) {
     if (!allowed) throw createHttpError('请求来源校验失败', 403, 'CSRF_INVALID')
   }
   return { assertSameOrigin, calls }
-}
-
-function moderationRow (overrides = {}) {
-  return {
-    id: 'cmt_one',
-    canonical_share_id: 'share_one',
-    share_public_id_snapshot: 'shr_public_demo',
-    share_item_id: 'shi_demo',
-    feature_id: 'feature_demo',
-    scope: 'feature',
-    content_revision: 1,
-    parent_id: null,
-    thread_depth: 0,
-    author_type: 'anonymous',
-    author_user_id: '',
-    author_key: 'anon_secret_key',
-    display_name_snapshot: '访客',
-    body_raw_encrypted: 'aes-256-gcm$1$iv$tag$payload',
-    body_normalized: '待审内容',
-    body_rendered: '待审内容',
-    consent_policy_version: 1,
-    contact_ciphertext: 'aes-256-gcm$1$iv$tag$contact',
-    contact_hash: 'hash_of_contact',
-    contact_type: 'email',
-    content_status: 'active',
-    moderation_status: 'pending',
-    moderation_level: 'risk',
-    visible_at: null,
-    created_at: TEST_NOW,
-    updated_at: TEST_NOW,
-    approved_at: null,
-    deleted_at: null,
-    orphaned_at: null,
-    legal_hold: 0,
-    resource_snapshot_json: '{"secret":"snapshot"}',
-    ...overrides,
-  }
 }
 
 test('logged-in comment writes require a valid CSRF token', () => {
@@ -365,35 +326,8 @@ test('admin write actions require both RBAC and CSRF', () => {
   assert.equal(csrf.calls.length, 2)
 })
 
-test('the admin comment projection redacts every sensitive field', () => {
-  const view = redactModerationComment(moderationRow())
-
-  assert.deepEqual(findForbiddenResponseFields(view), [])
-  const serialized = JSON.stringify(view)
-  assert.equal(serialized.includes('aes-256-gcm'), false)
-  assert.equal(serialized.includes('hash_of_contact'), false)
-  assert.equal(serialized.includes('anon_secret_key'), false)
-  assert.equal(serialized.includes('snapshot'), false)
-
-  // Moderators still get what they need to decide.
-  assert.equal(view.body, '待审内容')
-  assert.equal(view.moderationStatus, 'pending')
-  assert.equal(view.moderationLevel, 'risk')
-  assert.equal(view.contactType, 'email')
-  assert.equal(view.contactProvided, true)
-  assert.equal(view.authorRegistered, false)
-  assert.equal(view.legalHold, false)
-
-  const registered = redactModerationComment(moderationRow({
-    author_type: 'user', author_user_id: 'usr_42', contact_type: '', contact_ciphertext: '', contact_hash: '',
-  }))
-  assert.equal(registered.authorRegistered, true)
-  assert.equal(registered.contactProvided, false)
-  assert.equal(JSON.stringify(registered).includes('usr_42'), false)
-
-  assert.equal(redactModerationComment(null), null)
-  assert.equal(redactModerationComments([moderationRow(), null]).length, 1)
-  assert.equal(redactModerationComments().length, 0)
+test('FORBIDDEN_RESPONSE_FIELDS detects secret fields across nested interaction payloads', () => {
   assert.equal(FORBIDDEN_RESPONSE_FIELDS.includes('contactCiphertext'), true)
   assert.equal(Object.isFrozen(FORBIDDEN_RESPONSE_FIELDS), true)
+  assert.deepEqual(findForbiddenResponseFields({ id: 'cmt_one', nested: [{ email: 'a@example.com' }] }), ['$.nested[0].email'])
 })

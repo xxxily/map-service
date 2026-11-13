@@ -128,52 +128,6 @@ function readCsrfToken (req) {
   return headers['x-csrf-token'] || ''
 }
 
-/**
- * Admin projection of a comment row.
- *
- * Redacted unconditionally: `body_raw_encrypted`, `contact_ciphertext`,
- * `contact_hash`, `author_key`, `resource_snapshot_json` and any raw IP or user
- * agent. Contact presence is reported as a type only, so a moderator can see
- * that a reporter left an email without the value being readable. Nothing here
- * ever returns plaintext contact details, keys or tokens.
- */
-export function redactModerationComment (row) {
-  if (!row) return null
-  return {
-    id: row.id,
-    canonicalShareId: row.canonical_share_id,
-    sharePublicIdSnapshot: row.share_public_id_snapshot,
-    shareItemId: row.share_item_id,
-    featureId: row.feature_id,
-    scope: row.scope,
-    contentRevision: row.content_revision,
-    parentId: row.parent_id || '',
-    threadDepth: row.thread_depth,
-    authorType: row.author_type,
-    // Present as a boolean: moderators need "is this a registered author",
-    // not the account identifier.
-    authorRegistered: Boolean(row.author_user_id),
-    displayName: row.display_name_snapshot || '',
-    body: row.body_normalized || '',
-    contactType: row.contact_type || '',
-    contactProvided: Boolean(row.contact_type),
-    contentStatus: row.content_status,
-    moderationStatus: row.moderation_status,
-    moderationLevel: row.moderation_level,
-    consentPolicyVersion: row.consent_policy_version,
-    legalHold: row.legal_hold === 1,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    approvedAt: row.approved_at || '',
-    visibleAt: row.visible_at || '',
-    deletedAt: row.deleted_at || '',
-  }
-}
-
-export function redactModerationComments (rows = []) {
-  return rows.map(redactModerationComment).filter(Boolean)
-}
-
 /** Field names that must never appear in any interaction API response. */
 export const FORBIDDEN_RESPONSE_FIELDS = Object.freeze([
   'body_raw_encrypted', 'bodyRawEncrypted',
@@ -217,6 +171,4 @@ export default {
   assertInteractionAdminAccess,
   assertPublicCommentWrite,
   findForbiddenResponseFields,
-  redactModerationComment,
-  redactModerationComments,
 }

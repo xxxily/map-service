@@ -4342,10 +4342,6 @@ export class UserContentService {
     return summary
   }
 
-  cleanupExpiredKmlTrash (options = {}) {
-    return this.purgeExpiredKmlTrash(options)
-  }
-
   deleteKmlPermanently (actor, kmlId) {
     return this.permanentDeleteKml(actor, kmlId)
   }

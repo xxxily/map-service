@@ -163,6 +163,17 @@ popup 媒体入口使用容器级事件委托，不在单个媒体按钮上保�
 
 不要重新启用 Cesium 默认相机控制器来“补救”单一手势，它会与适配器抢占同一个输入事件。KML、辅助线和其他地图工具处于活动状态时，优先让工具接收指针事件。相机、URL 同步、KML 和辅助线取点必须优先使用深度命中，再退化到地形射线和椭球体，不能默认 `pickEllipsoid`。无地表命中的平移必须按相机高度、FOV 和 canvas 的 CSS 宽高换算，且同时保留 CSS 位移与世界坐标位移的单帧限幅；不能用高 DPR drawing buffer 的宽高替代 CSS 尺寸。
 
+### 前端与高德构建环境变量
+
+`src/config.js` 中的高德 JSAPI 配置优先读取构建期变量，并保留本地受控默认值：
+
+```bash
+VITE_AMAP_KEY=<高德_Web_JSAPI_Key>
+VITE_AMAP_SECURITY_JS_CODE=<高德_Web_JSAPI_安全密钥>
+```
+
+在切换或清理前端默认值、或为 `service/config.js` 开启生产环境变量 Fail-Fast 前，必须先核实部署机器（如 66 PM2 的 `MAP_SERVICE_SHARE_SECRET_KEY` 与 161 `.env` 的 `VITE_AMAP_KEY`）均已配置到位。
+
 ### 地形部署配置
 
 `src/config.js` 从以下构建期变量读取地形配置：

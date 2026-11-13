@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  checkPublishedResourceReferences,
   inspectPublishedResourceReferences,
   isValidResourceRef,
   normalizeResourceRef,
@@ -51,7 +50,6 @@ test('published snapshot inspection reports missing, duplicate and invalid featu
     'MEDIA_ID_DUPLICATE', 'MEDIA_ID_MISSING', 'FEATURE_ID_DUPLICATE',
     'MEDIA_ID_INVALID', 'FEATURE_ID_MISSING',
   ])
-  assert.deepEqual(checkPublishedResourceReferences({ features: [{ id: 'feature_a', media: [{ id: 'media_a' }] }] }), [])
 })
 
 test('snapshot inspection can require valid share identifiers', () => {
