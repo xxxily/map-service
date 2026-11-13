@@ -4,15 +4,42 @@ import { interactionHttpError, isUniqueConstraintError } from './commentPolicy.j
 import { encryptInteractionSecret, hashInteractionContacts, hashInteractionValue, decryptInteractionSecret } from './security.js'
 import { randomUUID } from 'node:crypto'
 
-const REPORT_ACTIONS = new Set(['no_action', 'mark_duplicate', 'hide_comment', 'hide_media', 'block_share', 'pause_share', 'request_more_info', 'escalate_legal'])
+const REPORT_ACTIONS = new Set([
+  'triage',
+  'no_action',
+  'mark_duplicate',
+  'hide_comment',
+  'hide_media',
+  'block_share',
+  'pause_share',
+  'request_more_info',
+  'escalate_legal',
+  'close',
+])
 
 function actorId (actor) { return actor?.user?.id || actor?.id || '' }
 function id () { return `rpt_${randomUUID().replaceAll('-', '')}` }
 function eventId () { return `rpe_${randomUUID().replaceAll('-', '')}` }
+function maskSingleContact (value) {
+  const trimmed = String(value || '').trim()
+  if (!trimmed) return ''
+  if (trimmed.includes('@')) {
+    const [name, domain] = trimmed.split('@')
+    return `${name.slice(0, 1)}***@${domain || ''}`
+  }
+  const compact = trimmed.replace(/\s+/gu, '')
+  if (/^\+?\d{6,}$/u.test(compact)) {
+    return compact.length >= 10
+      ? `${compact.slice(0, 3)}****${compact.slice(-4)}`
+      : `${compact.slice(0, 3)}****${compact.slice(-2)}`
+  }
+  return `${trimmed.slice(0, 3)}***${trimmed.slice(-2)}`
+}
+
 function contactMask (value) {
-  if (!value) return ''
-  if (value.includes('@')) { const [name, domain] = value.split('@'); return `${name.slice(0, 1)}***@${domain}` }
-  return `${value.slice(0, 3)}***${value.slice(-2)}`
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  return raw.split('|').map(part => maskSingleContact(part)).filter(Boolean).join(' | ')
 }
 function parseJson (value, fallback = {}) { try { return JSON.parse(value || '') } catch { return fallback } }
 
@@ -98,7 +125,7 @@ export class ReportService {
     const limit = Math.min(100, Math.max(1, Number(options.limit) || 20)); const page = Math.max(1, Number(options.page) || 1); const where = ['1=1']; const params = []
     for (const key of ['status', 'priority', 'canonicalShareId', 'scope', 'reportType']) { if (filters[key]) { where.push(`${key === 'reportType' ? 'report_type' : key === 'canonicalShareId' ? 'canonical_share_id' : key} = ?`); params.push(filters[key]) } }
     const clause = where.join(' AND '); const total = Number(this.database.prepare(`SELECT COUNT(*) count FROM reports WHERE ${clause}`).get(...params)?.count || 0)
-    const rows = this.database.prepare(`SELECT * FROM reports WHERE ${clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).all(...params, limit, (page - 1) * limit)
+    const rows = this.database.prepare(`SELECT id, report_type, canonical_share_id, share_public_id_snapshot, share_item_id, feature_id, media_id, scope, reporter_type, display_name_snapshot, rights_attestation, status, priority, assigned_to, duplicate_of, created_at, updated_at, closed_at, action_summary_json FROM reports WHERE ${clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).all(...params, limit, (page - 1) * limit)
     return { total, page, limit, items: rows.map(row => this.project(row)) }
   }
 
@@ -113,14 +140,24 @@ export class ReportService {
     if (['hide_media', 'hide_comment'].includes(action)) throw interactionHttpError('目标动作尚未接入受控治理能力', 'VALIDATION_FAILED')
     const reason = String(input.reason || '').trim(); if (!reason) throw interactionHttpError('处理原因不能为空', 'VALIDATION_FAILED')
     let next = row.status
-    if (action === 'mark_duplicate') { next = 'duplicate'; if (!input.duplicateOf) throw interactionHttpError('标记重复必须提供关联工单', 'VALIDATION_FAILED') }
+    let duplicateOf = null
+    if (action === 'triage') next = 'triaged'
+    else if (action === 'mark_duplicate') {
+      next = 'duplicate'
+      duplicateOf = String(input.duplicateOf || '').trim()
+      if (!duplicateOf) throw interactionHttpError('标记重复必须提供关联工单', 'VALIDATION_FAILED')
+      if (duplicateOf === row.id) throw interactionHttpError('不能将工单标记为自身的重复项', 'VALIDATION_FAILED')
+      const targetReport = this.database.prepare('SELECT id FROM reports WHERE id = ?').get(duplicateOf)
+      if (!targetReport) throw interactionHttpError('关联重复工单不存在', 'RESOURCE_NOT_FOUND')
+    }
     else if (action === 'no_action') next = 'dismissed'
     else if (action === 'escalate_legal' || action === 'request_more_info') next = 'investigating'
     else if (['block_share', 'pause_share'].includes(action)) next = 'actioned'
+    else if (action === 'close') next = 'closed'
     if (!canTransitionReportStatus(row.status, next)) throw interactionHttpError('举报状态流转不合法', 'MODERATION_TRANSITION_INVALID')
     const now = this.now(); const summary = { action, reason, actorUserId: actorId(actor), affectedPublicContent: ['block_share', 'pause_share'].includes(action) }
     if (typeof input.beforeApply === 'function') input.beforeApply({ report: row, action, reason })
-    this.database.transaction(() => { this.database.prepare('UPDATE reports SET status = ?, duplicate_of = COALESCE(?, duplicate_of), action_summary_json = ?, updated_at = ?, closed_at = ? WHERE id = ?').run(next, input.duplicateOf || null, JSON.stringify(summary), now, ['dismissed', 'duplicate', 'closed'].includes(next) ? now : null, row.id); this.addEvent(row.id, { eventType: 'action', fromStatus: row.status, toStatus: next, action, actorUserId: actorId(actor), reason, metadata: summary, createdAt: now }) })
+    this.database.transaction(() => { this.database.prepare('UPDATE reports SET status = ?, duplicate_of = COALESCE(?, duplicate_of), action_summary_json = ?, updated_at = ?, closed_at = ? WHERE id = ?').run(next, duplicateOf, JSON.stringify(summary), now, ['actioned', 'dismissed', 'duplicate', 'closed'].includes(next) ? now : null, row.id); this.addEvent(row.id, { eventType: 'action', fromStatus: row.status, toStatus: next, action, actorUserId: actorId(actor), reason, metadata: summary, createdAt: now }) })
     return { applied: true, status: next, action, reportId: row.id }
   }
 }

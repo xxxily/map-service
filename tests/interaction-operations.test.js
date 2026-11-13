@@ -108,3 +108,59 @@ test('backup manifest hash gates restore', async () => {
   assert.equal(await fs.readFile(target, 'utf8'), 'sqlite-test')
   await fs.rm(tempDir, { recursive: true, force: true })
 })
+
+test('retention removes expired thread children before parents and preserves parents of held replies', () => {
+  const database = new InteractionDatabase({ filePath: ':memory:' })
+  const secret = 'interaction-retention-thread-secret'
+  try {
+    const now = '2026-08-24T00:00:00.000Z'
+    const expired = '2026-08-23T00:00:00.000Z'
+    const future = '2026-09-24T00:00:00.000Z'
+    database.prepare("INSERT INTO interaction_policy_versions(version, policy_json, active, created_at) VALUES (1, '{}', 1, ?)").run(now)
+    const insert = database.prepare(`
+      INSERT INTO comments(
+        id, site_id, canonical_share_id, share_public_id_snapshot, share_item_id, feature_id,
+        scope, content_revision, resource_snapshot_json, parent_id, thread_depth, author_type, author_key,
+        body_raw_encrypted, body_normalized, consent_policy_version, content_status, moderation_status,
+        moderation_level, approved_at, visible_at, retention_expires_at, created_at, updated_at
+      ) VALUES (?, 'map-service', 'share-1', 'public-1', 'item-1', 'feature-1', 'feature', 1, '{}', ?, ?,
+        'anonymous', ?, ?, 'body', 1, 'active', 'approved', 'normal', ?, ?, ?, ?, ?)
+    `)
+    const bodyCipher = encryptInteractionSecret('body', secret, 'comment-body')
+    insert.run('cmt_root_del', null, 0, 'a1', bodyCipher, expired, expired, expired, expired, expired)
+    insert.run('cmt_child_del', 'cmt_root_del', 1, 'a2', bodyCipher, expired, expired, future, expired, expired)
+    insert.run('cmt_root_keep', null, 0, 'a3', bodyCipher, expired, expired, expired, expired, expired)
+    insert.run('cmt_child_hold', 'cmt_root_keep', 1, 'a4', bodyCipher, expired, expired, expired, expired, expired)
+    database.prepare("UPDATE comments SET legal_hold = 1, legal_hold_reason = 'hold', legal_hold_at = ? WHERE id = 'cmt_child_hold'").run(now)
+
+    const preview = previewRetention(database, { now })
+    assert.equal(preview.comments, 2)
+    const applied = applyRetention(database, { now, dryRun: false })
+    assert.equal(applied.comments, 2)
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM comments WHERE id IN ('cmt_root_del', 'cmt_child_del')").get().count, 0)
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM comments WHERE id IN ('cmt_root_keep', 'cmt_child_hold')").get().count, 2)
+  } finally { database.close() }
+})
+
+test('createInteractionBackup snapshots WAL transactions consistently', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'interaction-wal-backup-'))
+  const sourcePath = path.join(tempDir, 'live.sqlite')
+  const database = new InteractionDatabase({ filePath: sourcePath })
+  try {
+    const now = '2026-08-24T00:00:00.000Z'
+    database.prepare("INSERT INTO interaction_policy_versions(version, policy_json, active, created_at) VALUES (1, '{\"from\":\"wal\"}', 1, ?)").run(now)
+    const manifest = await createInteractionBackup({ database, sourcePath, destinationDir: tempDir, now })
+    const backupPath = path.join(tempDir, manifest.file)
+    database.prepare("INSERT INTO interaction_policy_versions(version, policy_json, active, created_at) VALUES (2, '{\"from\":\"after\"}', 0, ?)").run(now)
+    database.close()
+    await restoreInteractionBackup({ backupPath, targetPath: sourcePath })
+    const reopened = new InteractionDatabase({ filePath: sourcePath })
+    try {
+      const rows = reopened.prepare('SELECT version, policy_json FROM interaction_policy_versions ORDER BY version').all()
+      assert.equal(rows.length, 1)
+      assert.equal(rows[0].policy_json, '{"from":"wal"}')
+    } finally { reopened.close() }
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true })
+  }
+})

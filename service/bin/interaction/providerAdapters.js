@@ -1,5 +1,6 @@
 import http from 'node:http'
 import https from 'node:https'
+import { isIP } from 'node:net'
 import { resolvePublicHttpTarget, createPinnedHttpAgents } from '../security/networkTarget.js'
 
 const MAX_RESPONSE_BYTES = 64 * 1024
@@ -16,8 +17,43 @@ function defaultSecretResolver (secretRef) {
   return match ? String(process.env[match[1]] || '') : ''
 }
 
+function abortPromise (signal, error) {
+  return new Promise((_, reject) => {
+    if (!signal) return
+    if (signal.aborted) {
+      reject(error)
+      return
+    }
+    signal.addEventListener('abort', () => reject(error), { once: true })
+  })
+}
+
+async function resolveWithTimeout (endpoint, options, timeoutMs) {
+  if (options.signal?.aborted) {
+    throw adapterError('AI provider 请求已取消', 'AI_PROVIDER_ABORTED')
+  }
+  let timer
+  const controller = new AbortController()
+  const onParentAbort = () => controller.abort()
+  if (options.signal) options.signal.addEventListener('abort', onParentAbort, { once: true })
+  try {
+    return await Promise.race([
+      resolvePublicHttpTarget(endpoint, { lookup: options.lookup }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(adapterError('AI provider 请求超时', 'AI_PROVIDER_TIMEOUT')), timeoutMs)
+      }),
+      abortPromise(controller.signal, adapterError('AI provider 请求已取消', 'AI_PROVIDER_ABORTED')),
+    ])
+  } finally {
+    clearTimeout(timer)
+    if (options.signal) options.signal.removeEventListener('abort', onParentAbort)
+  }
+}
+
 async function requestJson (endpoint, options = {}) {
-  const target = await resolvePublicHttpTarget(endpoint, { lookup: options.lookup })
+  const totalTimeoutMs = Math.max(100, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS)
+  const deadline = Date.now() + totalTimeoutMs
+  const target = await resolveWithTimeout(endpoint, options, totalTimeoutMs)
   const parsed = new URL(target.url)
   const transport = parsed.protocol === 'https:' ? https : http
   const agents = createPinnedHttpAgents(target.addresses)
@@ -34,10 +70,12 @@ async function requestJson (endpoint, options = {}) {
   return new Promise((resolve, reject) => {
     let settled = false
     let timer
+    let onAbort = null
     const finish = (error, value) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (onAbort && options.signal) options.signal.removeEventListener('abort', onAbort)
       if (error) reject(error)
       else resolve(value)
     }
@@ -48,7 +86,9 @@ async function requestJson (endpoint, options = {}) {
       path: `${parsed.pathname}${parsed.search}`,
       method: String(options.method || 'GET').toUpperCase(),
       headers,
-      ...(parsed.protocol === 'https:' ? { agent: agents.httpsAgent, servername: target.hostname } : { agent: agents.httpAgent }),
+      ...(parsed.protocol === 'https:'
+        ? { agent: agents.httpsAgent, ...(isIP(target.hostname) ? {} : { servername: target.hostname }) }
+        : { agent: agents.httpAgent }),
     }, response => {
       if (response.statusCode >= 300 && response.statusCode < 400) {
         response.resume()
@@ -80,13 +120,32 @@ async function requestJson (endpoint, options = {}) {
       })
     })
     request.on('error', error => finish(error))
-    timer = setTimeout(() => {
-      request.destroy(adapterError('AI provider 请求超时', 'AI_PROVIDER_TIMEOUT'))
-    }, Math.max(100, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS))
     if (options.signal) {
-      if (options.signal.aborted) request.destroy(adapterError('AI provider 请求已取消', 'AI_PROVIDER_ABORTED'))
-      else options.signal.addEventListener('abort', () => request.destroy(adapterError('AI provider 请求已取消', 'AI_PROVIDER_ABORTED')), { once: true })
+      if (options.signal.aborted) {
+        const abortError = adapterError('AI provider 请求已取消', 'AI_PROVIDER_ABORTED')
+        request.destroy(abortError)
+        finish(abortError)
+        return
+      }
+      onAbort = () => {
+        const abortError = adapterError('AI provider 请求已取消', 'AI_PROVIDER_ABORTED')
+        request.destroy(abortError)
+        finish(abortError)
+      }
+      options.signal.addEventListener('abort', onAbort, { once: true })
     }
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) {
+      const timeoutError = adapterError('AI provider 请求超时', 'AI_PROVIDER_TIMEOUT')
+      request.destroy(timeoutError)
+      finish(timeoutError)
+      return
+    }
+    timer = setTimeout(() => {
+      const timeoutError = adapterError('AI provider 请求超时', 'AI_PROVIDER_TIMEOUT')
+      request.destroy(timeoutError)
+      finish(timeoutError)
+    }, remainingMs)
     if (body) request.write(body)
     request.end()
   })

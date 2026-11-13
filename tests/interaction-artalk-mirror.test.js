@@ -417,3 +417,60 @@ test('reply projection uses the parent provider id and hiding the parent removes
     assert.deepEqual(new Set(removed), new Set(created.map(item => item.id)))
   } finally { harness.close() }
 })
+
+test('reconcileOnce avoids repeating failed items ahead of pending ones and avoids duplicate findExisting', async () => {
+  const harness = projectionHarness()
+  let findExistingCalls = 0
+  let nextId = 500
+  const mirror = new ArtalkMirror({
+    enabled: true,
+    endpoint: 'http://artalk.test/api/v2',
+    token: 'server-token',
+    secret: TEST_SECRET,
+    adapter: {
+      health: async () => {},
+      findExisting: async () => { findExistingCalls += 1; return null },
+      create: async payload => {
+        if (payload.content.includes('fail-first')) throw new Error('temporary artalk failure')
+        return nextId++
+      },
+      update: async () => {},
+      remove: async () => {},
+    },
+  })
+  try {
+    const failing = submit(harness.comments, 'fail-first')
+    harness.moderation.applyHumanDecision({
+      commentId: failing.id,
+      moderationStatus: 'approved',
+      contentStatus: 'active',
+      level: 'normal',
+      suggestedAction: 'approve',
+      actorUserId: 'usr_artalk_admin',
+      idempotencyKey: 'approve-fail-first',
+      now: '2026-08-24T00:00:01.000Z',
+    })
+
+    const firstPass = await mirror.reconcileOnce(harness.interaction, { force: true, reconcileLimit: 1 })
+    assert.equal(firstPass.reconcileFailed, 1)
+    assert.equal(findExistingCalls, 1)
+
+    const fresh = submit(harness.comments, 'fresh-second')
+    harness.moderation.applyHumanDecision({
+      commentId: fresh.id,
+      moderationStatus: 'approved',
+      contentStatus: 'active',
+      level: 'normal',
+      suggestedAction: 'approve',
+      actorUserId: 'usr_artalk_admin',
+      idempotencyKey: 'approve-fresh-second',
+      now: '2026-08-24T00:00:02.000Z',
+    })
+
+    const secondPass = await mirror.reconcileOnce(harness.interaction, { force: true, reconcileLimit: 1 })
+    assert.equal(secondPass.reconciled, 1)
+    assert.equal(findExistingCalls, 2)
+    const freshProjection = harness.database.prepare('SELECT provider_comment_id, projection_status FROM artalk_comment_projections WHERE comment_id = ?').get(fresh.id)
+    assert.equal(freshProjection.projection_status, 'visible')
+  } finally { harness.close() }
+})

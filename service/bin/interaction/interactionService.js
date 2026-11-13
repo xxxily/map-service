@@ -137,6 +137,7 @@ export class InteractionService {
     this.secretResolver = options.secretResolver
     this.aiEngine = options.aiEngine || null
     this.aiEngineInjected = Boolean(options.aiEngine)
+    this.aiPolicySynced = false
     this.aiRuntimeConfig = null
     this.aiTasks = new Set()
     this.aiReviewTasks = new Map()
@@ -158,7 +159,7 @@ export class InteractionService {
   /** Open the interaction database and build the services on first use. */
   ensureReady () {
     if (this.comments && this.reports) {
-      this.syncAiRuntimePolicy()
+      if (!this.aiPolicySynced) this.syncAiRuntimePolicy()
       return this
     }
     if (!this.secret) {
@@ -256,6 +257,7 @@ export class InteractionService {
   }
 
   syncAiRuntimePolicy () {
+    this.aiPolicySynced = true
     if (!this.aiRegistry || !this.policyStore || this.aiEngineInjected) return
     const ai = this.getEffectiveAiConfig()
     this.aiRuntimeConfig = ai
@@ -297,7 +299,7 @@ export class InteractionService {
     const contactDays = this.retention.anonymousContactDays
     this.database.prepare(`
       UPDATE comments
-      SET retention_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '+' || CASE WHEN moderation_status = 'approved' THEN ? ELSE ? END || ' days')
+      SET retention_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '+' || CASE WHEN moderation_status = 'approved' AND content_status = 'active' THEN ? ELSE ? END || ' days')
       WHERE retention_expires_at IS NULL
     `).run(approvedDays, privateDays)
     this.database.prepare(`
@@ -320,6 +322,7 @@ export class InteractionService {
     this.aiReviewTasks.clear()
     this.aiRegistry = null
     this.aiEngine = null
+    this.aiPolicySynced = false
     this.aiClosing = false
   }
 

@@ -142,6 +142,10 @@ CREATE INDEX IF NOT EXISTS idx_comments_public_order
   WHERE content_status = 'active' AND moderation_status = 'approved';
 CREATE INDEX IF NOT EXISTS idx_comments_retention
   ON comments(retention_expires_at, legal_hold, content_status, moderation_status);
+CREATE INDEX IF NOT EXISTS idx_comments_parent_id
+  ON comments(parent_id, approved_at, id);
+CREATE INDEX IF NOT EXISTS idx_comments_created_id
+  ON comments(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_comments_contact
   ON comments(contact_hash, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_comments_idempotency
@@ -385,6 +389,7 @@ CREATE TABLE IF NOT EXISTS reports (
   CHECK (${ciphertextSqlCheck('contact_ciphertext', { allowEmpty: true })})
 );
 CREATE INDEX IF NOT EXISTS idx_reports_queue ON reports(status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_reports_created_id ON reports(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_resource ON reports(canonical_share_id, scope, share_item_id, feature_id, media_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_retention ON reports(retention_expires_at, legal_hold, status);
 CREATE INDEX IF NOT EXISTS idx_reports_contact ON reports(contact_hash, created_at);
@@ -616,7 +621,7 @@ export function ensureAiSchema (database) {
       database.prepare(`
         UPDATE comment_moderation_decisions
         SET raw_result_ciphertext = raw_result_encrypted,
-            raw_result_expires_at = COALESCE(raw_result_expires_at, datetime('now', '+30 days'))
+            raw_result_expires_at = COALESCE(raw_result_expires_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+30 days'))
         WHERE raw_result_ciphertext = ''
           AND typeof(raw_result_encrypted) = 'text'
           AND raw_result_encrypted LIKE 'aes-256-gcm$1$%'
@@ -691,6 +696,14 @@ export class InteractionDatabase {
         this.database.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)')
           .run(2, new Date().toISOString())
       }
+      this.database.exec(`
+        CREATE INDEX IF NOT EXISTS idx_comments_parent_id
+          ON comments(parent_id, approved_at, id);
+        CREATE INDEX IF NOT EXISTS idx_comments_created_id
+          ON comments(created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_reports_created_id
+          ON reports(created_at DESC, id DESC);
+      `)
     })
     const finalVersion = Number(this.database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get()?.version || 0)
     if (finalVersion !== INTERACTION_DATABASE_VERSION) {

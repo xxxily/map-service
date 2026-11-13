@@ -50,10 +50,56 @@ function counts (database, sql, params = []) {
   return Number(database.prepare(sql).get(...params)?.count || 0)
 }
 
+function escapeSqlLiteral (value) {
+  return String(value).replaceAll("'", "''")
+}
+
+async function isSqliteFile (filePath) {
+  let handle
+  try {
+    handle = await fsp.open(filePath, 'r')
+    const buffer = Buffer.alloc(16)
+    const { bytesRead } = await handle.read(buffer, 0, 16, 0)
+    return bytesRead === 16 && buffer.toString('utf8') === 'SQLite format 3\0'
+  } catch {
+    return false
+  } finally {
+    await handle?.close()
+  }
+}
+
 export function previewRetention (database, options = {}) {
   const now = options.now || new Date().toISOString()
   const windows = retentionWindows(options)
-  const comments = counts(database, 'SELECT COUNT(*) count FROM comments WHERE retention_expires_at IS NOT NULL AND retention_expires_at <= ? AND legal_hold = 0', [now])
+  const expiredReplies = counts(database, `
+    SELECT COUNT(*) count FROM comments
+    WHERE thread_depth = 1 AND legal_hold = 0 AND (
+      (retention_expires_at IS NOT NULL AND retention_expires_at <= ?)
+      OR parent_id IN (
+        SELECT parent.id FROM comments parent
+        WHERE parent.thread_depth = 0
+          AND parent.retention_expires_at IS NOT NULL
+          AND parent.retention_expires_at <= ?
+          AND parent.legal_hold = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM comments held_child
+            WHERE held_child.parent_id = parent.id AND held_child.legal_hold = 1
+          )
+      )
+    )
+  `, [now, now])
+  const expiredRoots = counts(database, `
+    SELECT COUNT(*) count FROM comments parent
+    WHERE parent.thread_depth = 0
+      AND parent.retention_expires_at IS NOT NULL
+      AND parent.retention_expires_at <= ?
+      AND parent.legal_hold = 0
+      AND NOT EXISTS (
+        SELECT 1 FROM comments held_child
+        WHERE held_child.parent_id = parent.id AND held_child.legal_hold = 1
+      )
+  `, [now])
+  const comments = expiredReplies + expiredRoots
   const reports = counts(database, 'SELECT COUNT(*) count FROM reports WHERE retention_expires_at IS NOT NULL AND retention_expires_at <= ? AND legal_hold = 0', [now])
   const decisions = counts(database, 'SELECT COUNT(*) count FROM comment_moderation_decisions WHERE raw_result_expires_at IS NOT NULL AND raw_result_expires_at <= ?', [now])
   const events = counts(database, 'SELECT COUNT(*) count FROM report_events WHERE created_at <= ?', [isoDaysAgo(now, windows.reportEvents)])
@@ -76,9 +122,32 @@ export function applyRetention (database, options = {}) {
     database.prepare('DELETE FROM report_events WHERE created_at <= ?').run(isoDaysAgo(now, windows.reportEvents))
     database.prepare("DELETE FROM comment_outbox WHERE status IN ('sent','failed') AND created_at <= ?").run(isoDaysAgo(now, windows.outbox))
     database.prepare('DELETE FROM reports WHERE retention_expires_at IS NOT NULL AND retention_expires_at <= ? AND legal_hold = 0').run(now)
-    // Replies reference parents with ON DELETE RESTRICT; remove expired rows deepest-first.
-    database.prepare('DELETE FROM comments WHERE retention_expires_at IS NOT NULL AND retention_expires_at <= ? AND legal_hold = 0 AND thread_depth = 1').run(now)
-    database.prepare('DELETE FROM comments WHERE retention_expires_at IS NOT NULL AND retention_expires_at <= ? AND legal_hold = 0 AND thread_depth = 0').run(now)
+    // Replies reference parents with ON DELETE RESTRICT; remove non-held replies before deletable parents.
+    database.prepare(`
+      DELETE FROM comments
+      WHERE thread_depth = 1 AND legal_hold = 0 AND (
+        (retention_expires_at IS NOT NULL AND retention_expires_at <= ?)
+        OR parent_id IN (
+          SELECT parent.id FROM comments parent
+          WHERE parent.thread_depth = 0
+            AND parent.retention_expires_at IS NOT NULL
+            AND parent.retention_expires_at <= ?
+            AND parent.legal_hold = 0
+            AND NOT EXISTS (
+              SELECT 1 FROM comments held_child
+              WHERE held_child.parent_id = parent.id AND held_child.legal_hold = 1
+            )
+        )
+      )
+    `).run(now, now)
+    database.prepare(`
+      DELETE FROM comments
+      WHERE thread_depth = 0
+        AND retention_expires_at IS NOT NULL
+        AND retention_expires_at <= ?
+        AND legal_hold = 0
+        AND NOT EXISTS (SELECT 1 FROM comments child WHERE child.parent_id = comments.id)
+    `).run(now)
     return { dryRun: false, ...preview }
   })
 }
@@ -103,14 +172,29 @@ async function sha256 (filePath) {
   return hash.digest('hex')
 }
 
-export async function createInteractionBackup ({ sourcePath, destinationDir, now = new Date().toISOString() }) {
+export async function createInteractionBackup ({ database = null, sourcePath, destinationDir, now = new Date().toISOString() }) {
   await fsp.mkdir(destinationDir, { recursive: true })
   const stamp = now.replace(/[:.]/g, '-')
   const target = path.join(destinationDir, `interaction-${stamp}.sqlite`)
   const temp = `${target}.tmp`
-  await fsp.copyFile(sourcePath, temp)
+  await fsp.rm(temp, { force: true })
+  const rawDb = database?.database || database
+  if (rawDb && typeof rawDb.exec === 'function') {
+    rawDb.exec(`VACUUM INTO '${escapeSqlLiteral(temp)}'`)
+  } else if (sourcePath && await isSqliteFile(sourcePath)) {
+    const { DatabaseSync } = await import('node:sqlite')
+    const snapshotDb = new DatabaseSync(sourcePath)
+    try {
+      snapshotDb.exec('PRAGMA busy_timeout = 5000')
+      snapshotDb.exec(`VACUUM INTO '${escapeSqlLiteral(temp)}'`)
+    } finally {
+      snapshotDb.close()
+    }
+  } else {
+    await fsp.copyFile(sourcePath, temp)
+  }
   await fsp.rename(temp, target)
-  const manifest = { version: 1, source: path.basename(sourcePath), file: path.basename(target), size: (await fsp.stat(target)).size, sha256: await sha256(target), createdAt: now }
+  const manifest = { version: 1, source: path.basename(sourcePath || target), file: path.basename(target), size: (await fsp.stat(target)).size, sha256: await sha256(target), createdAt: now }
   await fsp.writeFile(`${target}.manifest.json`, JSON.stringify(manifest, null, 2), 'utf8')
   return manifest
 }
@@ -121,6 +205,10 @@ export async function restoreInteractionBackup ({ backupPath, manifestPath = `${
   if (actual !== manifest.sha256) throw new Error('备份校验失败')
   const temp = `${targetPath}.restore-${process.pid}`
   await fsp.copyFile(backupPath, temp)
+  await Promise.all([
+    fsp.rm(`${targetPath}-wal`, { force: true }),
+    fsp.rm(`${targetPath}-shm`, { force: true }),
+  ])
   await fsp.rename(temp, targetPath)
   return { restored: true, sha256: actual, size: manifest.size }
 }

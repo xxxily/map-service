@@ -1332,6 +1332,63 @@ test('soft delete keeps the row, hides it publicly and refuses legal holds', () 
   }
 })
 
+test('human moderation clears visible_at on hide/reject, stamps orphaned_at, and softDelete narrows retention', () => {
+  const harness = createHarness()
+  try {
+    publishPolicy(harness, { comments: { moderationRequired: false, publicReplyEnabled: true } })
+    harness.moderation.publishKeywordRules([], { sourcePolicyVersion: 1, now: TEST_NOW })
+    const parent = harness.comments.submitComment({
+      resource: RESOURCE,
+      body: submission({ clientRequestId: 'req_parent_vis' }),
+      clientKey: 'visitor-vis-1',
+    }).comment
+    const reply = harness.comments.submitComment({
+      resource: RESOURCE,
+      body: submission({ parentId: parent.id, clientRequestId: 'req_reply_vis' }),
+      clientKey: 'visitor-vis-2',
+    }).comment
+    const listed = harness.comments.listPublicComments(RESOURCE)
+    assert.equal(listed.items.length, 1)
+    assert.equal(listed.items[0].replies.length, 1)
+
+    const initialRetention = Date.parse(harness.comments.findById(parent.id).retention_expires_at)
+    harness.moderation.applyHumanDecision({
+      commentId: parent.id,
+      moderationStatus: 'approved',
+      contentStatus: 'hidden',
+      level: 'normal',
+      actorUserId: 'usr_moderator',
+      idempotencyKey: 'hide-vis',
+    })
+    assert.equal(harness.comments.findById(parent.id).visible_at, null)
+
+    harness.moderation.applyHumanDecision({
+      commentId: reply.id,
+      moderationStatus: 'orphaned',
+      level: 'unknown',
+      actorUserId: 'usr_moderator',
+      idempotencyKey: 'orphan-vis',
+    })
+    assert.ok(harness.comments.findById(reply.id).orphaned_at)
+    assert.equal(harness.comments.findById(reply.id).visible_at, null)
+
+    harness.comments.softDeleteComment(parent.id, { actorUserId: 'usr_moderator' })
+    const deletedParent = harness.comments.findById(parent.id)
+    assert.equal(deletedParent.visible_at, null)
+    assert.ok(Date.parse(deletedParent.retention_expires_at) < initialRetention)
+
+    harness.database.prepare("UPDATE comments SET legal_hold = 1, legal_hold_reason = 'hold', legal_hold_at = ? WHERE id = ?").run(TEST_NOW, reply.id)
+    assert.throws(() => harness.moderation.applyHumanDecision({
+      commentId: reply.id,
+      contentStatus: 'deleted',
+      actorUserId: 'usr_moderator',
+      idempotencyKey: 'delete-held-human',
+    }), error => error.code === 'COMMENT_POLICY_BLOCKED')
+  } finally {
+    harness.close()
+  }
+})
+
 test('admin projections never expose ciphertext or contact values', () => {
   const harness = createHarness()
   try {

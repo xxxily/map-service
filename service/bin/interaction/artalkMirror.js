@@ -121,7 +121,7 @@ export class ArtalkMirror {
       FROM comments AS comment
       LEFT JOIN artalk_comment_projections AS projection ON projection.comment_id = comment.id
       ${where}
-      ORDER BY comment.updated_at, comment.id
+      ORDER BY CASE WHEN projection.projection_status = 'failed' THEN 1 ELSE 0 END, COALESCE(projection.updated_at, comment.updated_at), comment.id
       LIMIT ?
     `).all(limit)
     let reconciled = 0
@@ -262,7 +262,11 @@ export class ArtalkMirror {
       const stateHash = hashProjection(payload)
       if (!options.force && projection?.projection_status === 'visible' && projection.state_hash === stateHash && projection.provider_comment_id) return
       let providerCommentId = safeInteger(projection?.provider_comment_id)
-      if (!providerCommentId) providerCommentId = await this.adapter.findExisting(payload)
+      let lookedUpExisting = false
+      if (!providerCommentId) {
+        providerCommentId = await this.adapter.findExisting(payload)
+        lookedUpExisting = true
+      }
       if (providerCommentId) {
         try {
           await this.adapter.update({ ...payload, providerCommentId })
@@ -272,7 +276,7 @@ export class ArtalkMirror {
         }
       }
       if (!providerCommentId) {
-        providerCommentId = await this.adapter.findExisting(payload)
+        if (!lookedUpExisting) providerCommentId = await this.adapter.findExisting(payload)
         if (providerCommentId) {
           try {
             await this.adapter.update({ ...payload, providerCommentId })

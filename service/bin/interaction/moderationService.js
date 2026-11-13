@@ -602,13 +602,16 @@ export class ModerationService {
 
     return this.database.transaction(() => {
       const comment = this.database.prepare(`
-        SELECT id, content_revision, content_status, moderation_status, approved_at, deleted_at
+        SELECT id, content_revision, content_status, moderation_status, approved_at, deleted_at, orphaned_at, legal_hold
         FROM comments WHERE id = ?
       `).get(commentId)
       if (!comment) throw interactionHttpError('留言不存在', 'RESOURCE_NOT_FOUND')
 
       const nextModeration = targetModeration || comment.moderation_status
       const nextContent = targetContent || comment.content_status
+      if (nextContent === 'deleted' && comment.legal_hold === 1) {
+        throw interactionHttpError('该留言处于法律保留状态，不能删除', 'COMMENT_POLICY_BLOCKED')
+      }
       if (!canTransitionCommentModeration(comment.moderation_status, nextModeration)) {
         throw interactionHttpError(
           `审核状态不能从 ${comment.moderation_status} 变更为 ${nextModeration}`,
@@ -640,14 +643,17 @@ export class ModerationService {
       }
 
       try {
+        const approvedExpiry = new Date(Date.parse(now) + this.retention.approvedCommentDays * 86_400_000).toISOString()
+        const nonPublicExpiry = new Date(Date.parse(now) + this.retention.nonPublicCommentDays * 86_400_000).toISOString()
         this.database.prepare(`
           UPDATE comments
           SET moderation_status = ?,
               content_status = ?,
               moderation_level = ?,
               approved_at = CASE WHEN ? = 'approved' THEN COALESCE(approved_at, ?) ELSE approved_at END,
-              visible_at = CASE WHEN ? = 'approved' THEN COALESCE(visible_at, ?) ELSE visible_at END,
-              retention_expires_at = CASE WHEN ? = 'approved' THEN ? ELSE ? END,
+              visible_at = CASE WHEN ? = 'approved' AND ? = 'active' THEN COALESCE(visible_at, ?) ELSE NULL END,
+              orphaned_at = CASE WHEN ? = 'orphaned' THEN COALESCE(orphaned_at, ?) ELSE orphaned_at END,
+              retention_expires_at = CASE WHEN ? = 'approved' AND ? = 'active' THEN ? ELSE ? END,
               deleted_at = CASE WHEN ? = 'deleted' THEN COALESCE(deleted_at, ?) ELSE deleted_at END,
               updated_at = ?
           WHERE id = ?
@@ -655,9 +661,9 @@ export class ModerationService {
           nextModeration, nextContent,
           MODERATION_LEVELS.includes(input.level) ? input.level : 'unknown',
           nextModeration, now,
+          nextModeration, nextContent, now,
           nextModeration, now,
-          nextModeration, new Date(Date.parse(now) + this.retention.approvedCommentDays * 86_400_000).toISOString(),
-          new Date(Date.parse(now) + this.retention.nonPublicCommentDays * 86_400_000).toISOString(),
+          nextModeration, nextContent, approvedExpiry, nonPublicExpiry,
           nextContent, now,
           now, commentId
         )

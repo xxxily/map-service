@@ -204,3 +204,49 @@ test('provider endpoint rejects credentials and private or mapped private addres
     assert.throws(() => registry.register({ id: endpoint, endpoint, secretRef: 'ENV:X', request: async () => ({}) }))
   }
 })
+
+test('provider registry bounds wait queue and rechecks budget after acquiring slot', async () => {
+  const registry = new AiProviderRegistry({
+    allowHosts: ['example.test'],
+    maxConcurrency: 1,
+    maxQueue: 1,
+    budget: 1,
+  })
+  let releaseFirst
+  let calls = 0
+  registry.register({
+    id: 'p',
+    endpoint: 'https://example.test',
+    secretRef: 'ENV:X',
+    request: () => {
+      calls += 1
+      if (calls === 1) return new Promise(resolve => { releaseFirst = () => resolve(validDecision({ level: 'normal', suggestedAction: 'approve' })) })
+      return Promise.resolve(validDecision({ level: 'normal', suggestedAction: 'approve' }))
+    },
+  })
+
+  const first = registry.run('p', p => p.request())
+  const second = registry.run('p', p => p.request())
+  await assert.rejects(() => registry.run('p', p => p.request()), /并发队列已满/)
+  releaseFirst()
+  await first
+  await assert.rejects(() => second, /budget exhausted/)
+  assert.equal(calls, 1)
+  assert.equal(registry.used, 1)
+})
+
+test('AI moderation maps AI_PROVIDER_TIMEOUT error code to AI_TIMEOUT fallback', async () => {
+  const registry = new AiProviderRegistry({ allowHosts: ['example.test'], failureThreshold: 5 })
+  registry.register({
+    id: 'p',
+    endpoint: 'https://example.test',
+    secretRef: 'ENV:X',
+    request: async () => {
+      const error = new Error('AI provider 请求超时')
+      error.code = 'AI_PROVIDER_TIMEOUT'
+      throw error
+    },
+  })
+  const result = await new AiModerationEngine({ registry, providerId: 'p', retries: 0 }).decide({ body: 'hello' })
+  assert.equal(result.reasonCodes[0], 'AI_TIMEOUT')
+})

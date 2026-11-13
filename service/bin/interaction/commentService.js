@@ -346,8 +346,9 @@ export class CommentService {
 
     const hasMore = rows.length > limit
     const page = hasMore ? rows.slice(0, limit) : rows
+    const repliesByParent = this.publicRepliesByParents(page.map(row => row.id))
     const items = page.map(row => serializePublicComment(row, {
-      replies: this.publicReplies(row.id),
+      replies: repliesByParent.get(row.id) || [],
     })).filter(Boolean)
 
     return {
@@ -355,6 +356,27 @@ export class CommentService {
       items,
       nextCursor: hasMore ? encodeCommentCursor(page[page.length - 1]) : '',
     }
+  }
+
+  publicRepliesByParents (parentIds = []) {
+    const ids = [...new Set((parentIds || []).map(id => String(id || '')).filter(Boolean))]
+    const grouped = new Map()
+    if (!ids.length) return grouped
+    const placeholders = ids.map(() => '?').join(', ')
+    const rows = this.database.prepare(`
+      SELECT * FROM comments
+      WHERE parent_id IN (${placeholders}) AND ${PUBLIC_PREDICATE}
+      ORDER BY parent_id, approved_at, id
+    `).all(...ids)
+    for (const row of rows) {
+      let bucket = grouped.get(row.parent_id)
+      if (!bucket) {
+        bucket = []
+        grouped.set(row.parent_id, bucket)
+      }
+      bucket.push(row)
+    }
+    return grouped
   }
 
   publicReplies (parentId) {
@@ -511,11 +533,16 @@ export class CommentService {
         throw interactionHttpError('该留言处于法律保留状态，不能删除', 'COMMENT_POLICY_BLOCKED')
       }
       try {
+        const deletedRetentionExpiry = new Date(Date.parse(now) + this.retention.nonPublicCommentDays * 86_400_000).toISOString()
         this.database.prepare(`
           UPDATE comments
-          SET content_status = 'deleted', deleted_at = ?, updated_at = ?
+          SET content_status = 'deleted',
+              deleted_at = ?,
+              visible_at = NULL,
+              retention_expires_at = CASE WHEN retention_expires_at IS NULL OR retention_expires_at > ? THEN ? ELSE retention_expires_at END,
+              updated_at = ?
           WHERE id = ?
-        `).run(now, now, commentId)
+        `).run(now, deletedRetentionExpiry, deletedRetentionExpiry, now, commentId)
       } catch (error) {
         throw mapInteractionDatabaseError(error)
       }

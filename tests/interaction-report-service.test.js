@@ -100,3 +100,55 @@ test('report actions enforce transitions, duplicate linkage and audit events', (
     assert.equal(investigating.status, 'investigating')
   } finally { database.close() }
 })
+
+test('report actions support triage/close, validate duplicate targets, and mask composite contacts', () => {
+  const { database, service } = harness()
+  try {
+    const actor = { user: { id: 'usr_moderator' } }
+    const created = service.submitReport({
+      resource: RESOURCE,
+      clientKey: 'visitor-report-composite',
+      body: {
+        resourceRef: RESOURCE.resourceRef,
+        type: 'copyright_takedown',
+        description: '版权举报详情',
+        displayName: '权利人',
+        email: 'owner@example.com',
+        phone: '13800138000',
+        rightsAttestation: true,
+        consent: true,
+        clientRequestId: 'req-composite-1',
+      },
+      now: NOW,
+    }).report
+
+    const listing = service.listForAdmin()
+    assert.equal(listing.total, 1)
+    assert.equal(listing.items[0].description, undefined)
+
+    const detail = service.getForAdmin(created.id)
+    assert.equal(detail.contact, 'o***@example.com | 138****8000')
+
+    assert.throws(() => service.action(actor, created.id, {
+      action: 'mark_duplicate',
+      duplicateOf: created.id,
+      reason: '自指测试',
+    }), error => error.code === 'VALIDATION_FAILED')
+
+    assert.throws(() => service.action(actor, created.id, {
+      action: 'mark_duplicate',
+      duplicateOf: 'rpt_nonexistent',
+      reason: '不存在工单测试',
+    }), error => error.code === 'RESOURCE_NOT_FOUND')
+
+    const triaged = service.action(actor, created.id, { action: 'triage', reason: '完成初筛' })
+    assert.equal(triaged.status, 'triaged')
+
+    const actioned = service.action(actor, created.id, { action: 'pause_share', reason: '暂停公开访问' })
+    assert.equal(actioned.status, 'actioned')
+    assert.ok(service.getForAdmin(created.id).closedAt)
+
+    const closed = service.action(actor, created.id, { action: 'close', reason: '工单归档关闭' })
+    assert.equal(closed.status, 'closed')
+  } finally { database.close() }
+})

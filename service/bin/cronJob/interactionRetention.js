@@ -7,11 +7,17 @@ let running = false
 
 export function getInteractionRetentionConfig (runtimeConfig = config) {
   const interactionConfig = runtimeConfig?.staticService?.interaction || {}
+  const retention = interactionConfig.retention || {}
   return {
     databasePath: interactionConfig.databasePath,
     retention: {
-      reportEvents: interactionConfig.retention?.reportEventsDays,
-      outbox: interactionConfig.retention?.outboxDays,
+      publicComments: retention.publicCommentsDays,
+      privateComments: retention.privateCommentsDays,
+      anonymousContact: retention.anonymousContactDays,
+      aiRawResults: retention.aiRawResultsDays,
+      reports: retention.reportsDays,
+      reportEvents: retention.reportEventsDays,
+      outbox: retention.outboxDays,
     },
   }
 }

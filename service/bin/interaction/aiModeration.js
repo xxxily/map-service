@@ -85,12 +85,13 @@ export class AiModerationEngine {
         }
       } catch (error) {
         lastError = error
-        if (error?.name === 'AbortError') return fallback('AI_TIMEOUT')
+        if (error?.name === 'AbortError' || error?.code === 'AI_PROVIDER_TIMEOUT') return fallback('AI_TIMEOUT')
         if (error?.code === 'AI_SCHEMA_INVALID' || /AI 响应|JSON/u.test(String(error?.message || ''))) return fallback('AI_SCHEMA_INVALID')
         if (/budget exhausted|circuit open|not configured|不存在/u.test(String(error?.message || ''))) break
       }
     }
-    return fallback(lastError?.name === 'AbortError' ? 'AI_TIMEOUT' : 'AI_UNAVAILABLE')
+    const lastIsTimeout = lastError?.name === 'AbortError' || lastError?.code === 'AI_PROVIDER_TIMEOUT'
+    return fallback(lastIsTimeout ? 'AI_TIMEOUT' : 'AI_UNAVAILABLE')
   }
 }
 

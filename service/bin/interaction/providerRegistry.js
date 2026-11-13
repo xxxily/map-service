@@ -96,6 +96,8 @@ export class AiProviderRegistry {
     this.budgetStore = typeof options.budgetStore === 'function' ? options.budgetStore : null
     this.onVerificationExpired = typeof options.onVerificationExpired === 'function' ? options.onVerificationExpired : null
     this.verificationTtlMs = positiveInteger(options.verificationTtlMs, DEFAULT_VERIFICATION_TTL_MS, 30 * 24 * 60 * 60 * 1_000)
+    this.maxQueue = positiveInteger(options.maxQueue, 100, 10_000)
+    this.queueTimeoutMs = positiveInteger(options.queueTimeoutMs, 30_000, 300_000)
   }
 
   _resolveAdapter (provider) {
@@ -247,7 +249,7 @@ export class AiProviderRegistry {
       enabled: provider.enabled,
       requestedEnabled: provider.requestedEnabled,
       isDefault: provider.id === this.defaultProviderId,
-      health: provider.state.failures.openUntil > Date.now() ? 'circuit_open' : provider.healthStatus,
+      health: provider.state.failures.openUntil > this.now() ? 'circuit_open' : provider.healthStatus,
       lastVerifiedAt: provider.lastVerifiedAt || null,
       timeoutMs: provider.timeoutMs,
       maxAttempts: provider.maxAttempts || 2,
@@ -271,19 +273,7 @@ export class AiProviderRegistry {
     }
   }
 
-  async _acquireSlot (provider) {
-    if (provider.state.active < provider.state.maxConcurrency) { provider.state.active += 1; return }
-    await new Promise(resolve => provider.state.queue.push(resolve))
-    provider.state.active += 1
-  }
-
-  _releaseSlot (provider) {
-    provider.state.active = Math.max(0, provider.state.active - 1)
-    provider.state.queue.shift()?.()
-  }
-
-  async run (id, task) {
-    const provider = this.get(id)
+  _validateProviderRunnable (provider, { consumeBudget = false } = {}) {
     if (!provider || provider.enabled === false) throw new Error('AI provider 不存在或已停用')
     this._expireVerification(provider)
     if (provider.enabled === false) throw new Error('AI provider 尚未通过最近健康验证')
@@ -292,24 +282,79 @@ export class AiProviderRegistry {
     if (provider.state.failures.openUntil > now) throw new Error('AI provider circuit open')
     this._resetBudgetIfNeeded(provider)
     if (provider.state.used >= provider.state.budget) throw new Error('AI budget exhausted')
-    const day = new Date(this.now()).toISOString().slice(0, 10)
+    const day = new Date(now).toISOString().slice(0, 10)
     if (Number.isFinite(this.budget)) {
-      const allowed = this.budgetStore
-        ? this.budgetStore(day, this.budget)
-        : this.budgetUsed < this.budget
-      if (allowed === false) throw new Error('AI budget exhausted')
-      this.budgetUsed += 1
+      if (consumeBudget) {
+        const allowed = this.budgetStore
+          ? this.budgetStore(day, this.budget)
+          : this.budgetUsed < this.budget
+        if (allowed === false) throw new Error('AI budget exhausted')
+        this.budgetUsed += 1
+      } else if (!this.budgetStore && this.budgetUsed >= this.budget) {
+        throw new Error('AI budget exhausted')
+      }
     }
-    provider.state.used += 1
-    this.usageStore?.(provider, provider.state)
+    if (consumeBudget) {
+      provider.state.used += 1
+      this.usageStore?.(provider, provider.state)
+    }
+  }
+
+  async _acquireSlot (provider) {
+    if (provider.state.active < provider.state.maxConcurrency) {
+      provider.state.active += 1
+      return
+    }
+    if (provider.state.queue.length >= this.maxQueue) {
+      throw providerValidationError('AI provider 并发队列已满', 'AI_PROVIDER_BUSY')
+    }
+    await new Promise((resolve, reject) => {
+      let settled = false
+      const waiter = {
+        grant: () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve()
+        },
+      }
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        const idx = provider.state.queue.indexOf(waiter)
+        if (idx >= 0) provider.state.queue.splice(idx, 1)
+        reject(providerValidationError('AI provider 等待并发槽位超时', 'AI_PROVIDER_TIMEOUT'))
+      }, this.queueTimeoutMs)
+      timer.unref?.()
+      provider.state.queue.push(waiter)
+    })
+  }
+
+  _releaseSlot (provider) {
+    const nextWaiter = provider.state.queue.shift()
+    if (nextWaiter) {
+      nextWaiter.grant()
+      return
+    }
+    provider.state.active = Math.max(0, provider.state.active - 1)
+  }
+
+  async run (id, task) {
+    const provider = this.get(id)
+    this._validateProviderRunnable(provider, { consumeBudget: false })
     await this._acquireSlot(provider)
+    let executing = false
     try {
+      this._validateProviderRunnable(provider, { consumeBudget: true })
+      executing = true
       const result = await task(provider)
       provider.state.failures = { count: 0, openUntil: 0 }
       return result
     } catch (error) {
-      const next = provider.state.failures.count + 1
-      provider.state.failures = { count: next, openUntil: next >= provider.state.failureThreshold ? this.now() + provider.state.cooldownMs : 0 }
+      if (executing) {
+        const next = provider.state.failures.count + 1
+        provider.state.failures = { count: next, openUntil: next >= provider.state.failureThreshold ? this.now() + provider.state.cooldownMs : 0 }
+      }
       throw error
     } finally { this._releaseSlot(provider) }
   }
