@@ -3,6 +3,8 @@ export const HELPER_CAPABILITY = '2bulu-kml-import'
 export const DEFAULT_ALLOWED_ORIGINS = Object.freeze([
   'http://127.0.0.1:3088',
   'http://localhost:3088',
+  'http://127.0.0.1:5173',
+  'http://localhost:5173',
   'http://127.0.0.1:5174',
   'http://localhost:5174',
 ])

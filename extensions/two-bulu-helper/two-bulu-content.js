@@ -61,7 +61,10 @@
   function pageName () {
     const title = document.querySelector('meta[property="og:title"]')?.content || document.title || ''
     return String(title)
-      .replace(/\s*[-_|].*(?:轨迹|两步路).*$/i, '')
+      .replace(/\s*-\s*GPS导航[\s\S]*$/i, '')
+      .replace(/\s*\|\s*行程线路图[\s\S]*$/i, '')
+      .replace(/\s*-\s*(?:步行|骑行|自驾)?轨迹(?:下载)?\s*-\s*两步路[\s\S]*$/i, '')
+      .replace(/\s*-\s*两步路[\s\S]*$/i, '')
       .replace(/\.(?:kml|kmz|gpx)$/i, '')
       .trim()
       .slice(0, 200)

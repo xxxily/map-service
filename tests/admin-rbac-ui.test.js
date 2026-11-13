@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 import {
   canAccessAdminPage,
   filterAdminPages,
@@ -187,7 +190,7 @@ test('用户管理与添加用户使用页首 Tab 分区且只读权限不显示
 })
 
 test('管理后台个人空间入口使用与其他操作一致的图标按钮', async () => {
-  const source = await fs.readFile(path.resolve('src/admin/layout.js'), 'utf8')
+  const source = await fs.readFile(path.join(projectRoot, 'src/admin/layout.js'), 'utf8')
   assert.match(source, /class="admin-icon-link" href="\/account#kml" aria-label="个人空间" title="个人空间">⌂<\/a>/)
   assert.doesNotMatch(source, /aria-label="个人空间">个人空间<\/a>/)
 })
@@ -390,7 +393,7 @@ test('用户管理页面转义账号数据并按权限隐藏管理操作', () =>
 })
 
 test('后台源码不再保存旧管理 Token，也不使用原生阻塞弹窗', async () => {
-  const adminDir = path.resolve('src/admin')
+  const adminDir = path.join(projectRoot, 'src/admin')
   const files = []
   async function collect (dir) {
     for (const entry of await fs.readdir(dir, { withFileTypes: true })) {

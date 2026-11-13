@@ -9,7 +9,7 @@
 3. 点击“加载已解压的扩展程序”。
 4. 选择本目录 `extensions/two-bulu-helper/`。
 5. 打开扩展详情页，进入“扩展程序选项”。
-6. 本地 `http://127.0.0.1:3088`、`http://localhost:3088`、`http://127.0.0.1:5174` 和 `http://localhost:5174` 已默认允许；其他开发端口或生产域名需在选项页填写完整 origin 并由 Chrome 授权。
+6. 本地 `http://127.0.0.1:3088`、`http://localhost:3088`、`http://127.0.0.1:5173`、`http://localhost:5173`、`http://127.0.0.1:5174` 和 `http://localhost:5174` 已默认允许；其他开发端口或生产域名需在选项页填写完整 origin 并由 Chrome 授权。
 7. 刷新 map-service 页面。只有已登录、具备 `kml.own.write` 且扩展在当前 origin 响应时，账号中心和 2D 地图才显示“两步路导入”。
 
 扩展加载后，两步路页面主世界会提供 `MapServiceTwoBuluPageExport`。需要先单独验证页面提取时，可在该页面执行 `await MapServiceTwoBuluPageExport.download({ partialPolicy: 'allow-track-only' })`；它会直接下载当前页面整理出的 KML，不经过 map-service。

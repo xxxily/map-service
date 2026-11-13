@@ -3,11 +3,11 @@ const CAPABILITY = '2bulu-kml-import'
 const TAB_LIFECYCLE_CAPABILITY = '2bulu-import-tab-lifecycle'
 const REQUEST_EVENT = 'map-service:two-bulu-helper:request'
 const RESPONSE_EVENT = 'map-service:two-bulu-helper:response'
-const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/
 const MAX_KML_BYTES = 10 * 1024 * 1024
 const DEFAULT_PROBE_TIMEOUT_MS = 1200
 const DEFAULT_IMPORT_TIMEOUT_MS = 120000
-const DEFAULT_BATCH_PREVIEW_TIMEOUT_MS = 30000
+const DEFAULT_BATCH_PREVIEW_TIMEOUT_MS = 45000
 const DEFAULT_COMPLETION_TIMEOUT_MS = 5000
 
 let state = {

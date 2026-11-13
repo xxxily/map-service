@@ -369,7 +369,7 @@
       const pattern = new RegExp(`(?:var|let|const|window\\.)?\\s*${name}\\s*(?:=|:)\\s*`, 'g')
       let match
       while ((match = pattern.exec(scripts)) !== null && values.length < 40) {
-        const start = scripts.slice(match.index + match[0].length).search(/[\\[{]/)
+        const start = scripts.slice(match.index + match[0].length).search(/[\[{]/)
         if (start < 0) continue
         const absoluteStart = match.index + match[0].length + start
         const literal = readBalancedLiteral(scripts, absoluteStart)
@@ -399,7 +399,6 @@
     const html = typeof rawContent === 'string'
       ? rawContent
       : safeRead(() => rawContent?.outerHTML || rawContent?.textContent, '')
-    const options = layer?.options || {}
     const params = markerData?.params && typeof markerData.params === 'object' ? markerData.params : {}
     const merged = { ...markerData, ...params }
     const readAttribute = (attributes, name) => new RegExp(`(?:^|\\s)${name}\\s*=\\s*(["'])(.*?)\\1`, 'i').exec(String(attributes || ''))?.[2] || ''

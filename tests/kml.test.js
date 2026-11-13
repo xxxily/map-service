@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import { gcj02ToWgs84, normalizeLongitude, wgs84ToGcj02 } from '../src/map/coord-transform.js'
 import { generateKmlText, parseKML, parseKmlDocument } from '../src/map/kml-format.js'
 
@@ -92,6 +92,10 @@ class MockDOMParser {
   }
 }
 
+const originalDomParser = globalThis.DOMParser
+const originalNode = globalThis.Node
+const originalXmlSerializer = globalThis.XMLSerializer
+
 globalThis.DOMParser = MockDOMParser
 globalThis.Node = { TEXT_NODE: 3, CDATA_SECTION_NODE: 4 }
 globalThis.XMLSerializer = class MockXMLSerializer {
@@ -100,6 +104,15 @@ globalThis.XMLSerializer = class MockXMLSerializer {
     return `<${node.tagName}>${node.childNodes.map(child => this.serializeToString(child)).join('')}</${node.tagName}>`
   }
 }
+
+after(() => {
+  if (originalDomParser === undefined) delete globalThis.DOMParser
+  else globalThis.DOMParser = originalDomParser
+  if (originalNode === undefined) delete globalThis.Node
+  else globalThis.Node = originalNode
+  if (originalXmlSerializer === undefined) delete globalThis.XMLSerializer
+  else globalThis.XMLSerializer = originalXmlSerializer
+})
 
 test('WGS84 coordinates convert to GCJ-02 for AMap display and restore accurately', () => {
   const source = [111.3950162020138, 22.3796367459376]

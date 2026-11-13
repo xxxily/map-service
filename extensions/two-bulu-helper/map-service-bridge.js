@@ -12,11 +12,14 @@
   const DEFAULT_ALLOWED_ORIGINS = [
     'http://127.0.0.1:3088',
     'http://localhost:3088',
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
     'http://127.0.0.1:5174',
     'http://localhost:5174',
   ]
   const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/
   let allowed = false
+  let authPromise = null
 
   function respond (payload) {
     document.dispatchEvent(new CustomEvent(RESPONSE_EVENT, {
@@ -40,7 +43,14 @@
     }
   }
 
+  async function ensureAuthorized () {
+    if (!authPromise) authPromise = refreshAuthorization()
+    await authPromise
+    return allowed
+  }
+
   async function onRequest (event) {
+    if (!await ensureAuthorized()) return
     const request = parseRequest(event)
     if (!request) return
 
@@ -131,7 +141,7 @@
 
   document.addEventListener(REQUEST_EVENT, onRequest)
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && changes.allowedOrigins) refreshAuthorization()
+    if (areaName === 'local' && changes.allowedOrigins) authPromise = refreshAuthorization()
   })
-  refreshAuthorization()
+  authPromise = refreshAuthorization()
 })()

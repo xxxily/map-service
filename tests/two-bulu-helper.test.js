@@ -82,6 +82,8 @@ test('浏览器助手协议规范化精确站点 origin、两步路分享 URL �
   assert.deepEqual(DEFAULT_ALLOWED_ORIGINS, [
     'http://127.0.0.1:3088',
     'http://localhost:3088',
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
     'http://127.0.0.1:5174',
     'http://localhost:5174',
   ])
@@ -1077,4 +1079,276 @@ test('页面导出脚本未识别运行态数据时返回明确错误而非要�
   assert.equal(result.code, 'TWO_BULU_PAGE_DATA_NOT_RECOGNIZED')
   assert.match(result.message, /轨迹运行数据|轨迹和点位/)
   assert.doesNotMatch(result.message, /官方导出|标准 KML/)
+})
+
+test('map-service-bridge 等待初始授权并支持 5173 默认开发端口与 160 位请求 ID', async () => {
+  const bridgeSource = fs.readFileSync(path.join(projectRoot, 'extensions/two-bulu-helper/map-service-bridge.js'), 'utf8')
+  const documentTarget = new EventTarget()
+  const responses = []
+  documentTarget.addEventListener('map-service:two-bulu-helper:response', (event) => {
+    responses.push(JSON.parse(event.detail))
+  })
+  let releaseStorage
+  const storageGate = new Promise(resolve => { releaseStorage = resolve })
+  const context = vm.createContext({
+    document: documentTarget,
+    CustomEvent: TestCustomEvent,
+    Event,
+    URL,
+    Date,
+    setTimeout,
+    clearTimeout,
+    location: { origin: 'http://127.0.0.1:5173' },
+    window: null,
+    chrome: {
+      storage: {
+        local: {
+          get: async () => {
+            await storageGate
+            return {}
+          },
+        },
+        onChanged: { addListener: () => {} },
+      },
+      runtime: {
+        getManifest: () => ({ version: '0.4.0' }),
+        sendMessage: async () => ({ ok: true }),
+      },
+    },
+  })
+  context.window = context
+  context.top = context
+  vm.runInContext(bridgeSource, context)
+
+  const longId = 'r'.repeat(160)
+  documentTarget.dispatchEvent(new TestCustomEvent('map-service:two-bulu-helper:request', {
+    detail: JSON.stringify({
+      protocolVersion: 1,
+      type: 'PING',
+      requestId: longId,
+      timestamp: Date.now(),
+    }),
+  }))
+  assert.equal(responses.length, 0)
+  releaseStorage()
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(responses.length, 1)
+  assert.equal(responses[0].type, 'PONG')
+  assert.equal(responses[0].requestId, longId)
+
+  const pingCheck = parseTwoBuluHelperResponse({
+    protocolVersion: 1,
+    type: 'PONG',
+    requestId: longId,
+  }, longId)
+  assert.equal(pingCheck.type, 'PONG')
+})
+
+test('service-worker 串行化动态脚本注册、等待复用标签页新加载并在批量预览后返回原页面', async () => {
+  const originalChrome = globalThis.chrome
+  const localStore = {
+    allowedOrigins: ['http://127.0.0.1:3088', 'https://map.example.com'],
+    defaultOriginsVersion: 2,
+  }
+  const sessionStore = { twoBuluHelperTabId: 22 }
+  const tabs = new Map([
+    [11, { id: 11, windowId: 2, url: 'http://127.0.0.1:5173/map', status: 'complete', active: true }],
+    [22, { id: 22, windowId: 2, url: 'https://www.2bulu.com/track/track_detail.htm?trackId=old', status: 'complete', pinned: false, active: false }],
+  ])
+  const updatedListeners = new Set()
+  const removedListeners = new Set()
+  const activeRegistrations = new Set()
+  let executeCount = 0
+  let reusedTabReadyAfterUpdate = false
+
+  const fakeChrome = {
+    storage: {
+      local: {
+        get: async key => Array.isArray(key)
+          ? Object.fromEntries(key.map(k => [k, localStore[k]]))
+          : typeof key === 'string' ? { [key]: localStore[key] } : { ...localStore },
+        set: async value => Object.assign(localStore, value),
+      },
+      session: {
+        get: async key => typeof key === 'string' ? { [key]: sessionStore[key] } : { ...sessionStore },
+        set: async value => Object.assign(sessionStore, value),
+        remove: async key => { delete sessionStore[key] },
+      },
+      onChanged: { addListener: () => {} },
+    },
+    scripting: {
+      getRegisteredContentScripts: async () => [...activeRegistrations].map(id => ({ id })),
+      unregisterContentScripts: async ({ ids = [] }) => {
+        await new Promise(resolve => setTimeout(resolve, 10))
+        ids.forEach(id => activeRegistrations.delete(id))
+      },
+      registerContentScripts: async scripts => {
+        for (const item of scripts) {
+          if (activeRegistrations.has(item.id)) throw new Error(`Duplicate script ID '${item.id}'`)
+          activeRegistrations.add(item.id)
+        }
+      },
+      executeScript: async ({ func, files }) => {
+        if (files) return []
+        executeCount += 1
+        if (String(func).includes('MapServiceTwoBuluPageExport')) {
+          return [{
+            result: {
+              status: 'needs-user-action',
+              code: 'TWO_BULU_LOGIN_REQUIRED',
+              message: '请先登录',
+            },
+          }]
+        }
+        return [{
+          result: {
+            status: 'success',
+            sourceUrl: 'https://www.2bulu.com/spaceindex/my_track.htm?userId=u1',
+            userName: '测试山友',
+            items: [{ url: 'https://www.2bulu.com/track/track_detail.htm?trackId=abc', name: '路线 A' }],
+            detectedCount: 1,
+            warnings: [],
+          },
+        }]
+      },
+    },
+    permissions: { contains: async () => true },
+    runtime: {
+      getManifest: () => ({ version: '0.4.0' }),
+      onMessage: { addListener: () => {} },
+      onInstalled: { addListener: () => {} },
+      onStartup: { addListener: () => {} },
+      openOptionsPage: async () => {},
+      sendMessage: async () => {
+        throw new Error('should not fall back to content script')
+      },
+    },
+    tabs: {
+      get: async id => ({ ...tabs.get(Number(id)) }),
+      update: async (id, changes) => {
+        const tab = tabs.get(Number(id))
+        Object.assign(tab, changes)
+        if (id === 22 && changes.url) {
+          // 模拟 tabs.update 返回瞬间仍为旧 complete，之后再经历 loading -> complete
+          setTimeout(() => {
+            reusedTabReadyAfterUpdate = true
+            tab.status = 'complete'
+            updatedListeners.forEach(listener => listener(22, { status: 'complete' }))
+          }, 25)
+        }
+        return { ...tab }
+      },
+      remove: async id => { tabs.delete(Number(id)) },
+      sendMessage: async () => ({ ok: true }),
+      create: async options => {
+        const tab = { id: 30, windowId: options.windowId || 2, url: options.url, status: 'complete' }
+        tabs.set(tab.id, tab)
+        return { ...tab }
+      },
+      onUpdated: {
+        addListener: listener => updatedListeners.add(listener),
+        removeListener: listener => updatedListeners.delete(listener),
+      },
+      onRemoved: {
+        addListener: listener => removedListeners.add(listener),
+        removeListener: listener => removedListeners.delete(listener),
+      },
+    },
+    windows: { update: async () => {} },
+    action: { onClicked: { addListener: () => {} } },
+  }
+
+  globalThis.chrome = fakeChrome
+  try {
+    const sw = await import(`../extensions/two-bulu-helper/service-worker.js?stage5=${Date.now()}`)
+    await Promise.all([sw.initializeStorage(), sw.initializeStorage(), sw.initializeStorage()])
+    assert.ok(localStore.allowedOrigins.includes('http://127.0.0.1:5173'))
+    assert.ok(localStore.allowedOrigins.includes('http://localhost:5173'))
+    assert.equal(localStore.defaultOriginsVersion, 3)
+
+    const opened = await sw.openHelperTab('https://www.2bulu.com/track/track_detail.htm?trackId=new', tabs.get(11))
+    assert.equal(opened.created, false)
+    assert.equal(reusedTabReadyAfterUpdate, true)
+
+    executeCount = 0
+    const collectResult = await sw.collectFromTab(22, { partialPolicy: 'reject', trackId: 'new' })
+    assert.equal(collectResult.status, 'needs-user-action')
+    assert.equal(executeCount, 1)
+
+    const batchResult = await sw.importTwoBuluBatchPreview(
+      { url: 'https://www.2bulu.com/spaceindex/my_track.htm?userId=u1' },
+      { tab: tabs.get(11) },
+    )
+    assert.equal(batchResult.status, 'success')
+    assert.equal(tabs.get(11).active, true)
+  } finally {
+    if (originalChrome === undefined) delete globalThis.chrome
+    else globalThis.chrome = originalChrome
+  }
+})
+
+test('页面导出脚本正确解析含反斜杠注释旁的内联数组且内容脚本保留含日期的轨迹名', async () => {
+  const api = loadTwoBuluPageExportApi({
+    document: {
+      title: '2026-05-01 香山环线 - 轨迹 - 两步路',
+      querySelector: () => null,
+      documentElement: { localName: 'html' },
+      scripts: [{ textContent: 'var hint = "\\\\"; var trackLngs = [113.1, 113.2]; var trackLats = [23.1, 23.2];' }],
+    },
+  })
+  const result = await api.collect({ partialPolicy: 'allow-track-only' })
+  assert.equal(result.status, 'success')
+  assert.equal(result.name, '2026-05-01 香山环线')
+
+  const dataSource = fs.readFileSync(path.join(projectRoot, 'extensions/two-bulu-helper/two-bulu-data.js'), 'utf8')
+  const contentSource = fs.readFileSync(path.join(projectRoot, 'extensions/two-bulu-helper/two-bulu-content.js'), 'utf8')
+  let captured = null
+  const contentContext = vm.createContext({
+    URL,
+    TextEncoder,
+    AbortController,
+    XMLSerializer: class { serializeToString () { return '' } },
+    setTimeout,
+    clearTimeout,
+    window: null,
+    location: new URL('https://www.2bulu.com/track/track_detail.htm?trackId=abc'),
+    fetch: async url => ({
+      ok: true,
+      status: 200,
+      url,
+      headers: { get: () => null },
+      text: async () => url.includes('positions')
+        ? JSON.stringify({ trackPositions: [[{ lng: 113.1, lat: 23.1 }, { lng: 113.2, lat: 23.2 }]] })
+        : JSON.stringify({ markers: [{ longitude: 113.15, latitude: 23.15, text: '休息点' }] }),
+    }),
+    document: {
+      title: '2026-05-01 香山环线 - 步行轨迹下载 - 两步路',
+      scripts: [],
+      documentElement: { localName: 'html', outerHTML: '<html></html>' },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    },
+    chrome: {
+      runtime: {
+        onMessage: {
+          addListener: fn => { captured = fn },
+        },
+      },
+    },
+  })
+  contentContext.window = contentContext
+  contentContext.top = contentContext
+  vm.runInContext(dataSource, contentContext)
+  vm.runInContext(contentSource, contentContext)
+  assert.equal(typeof captured, 'function')
+  const collected = await new Promise(resolve => {
+    captured({
+      channel: 'map-service-two-bulu-helper',
+      action: 'COLLECT_TWO_BULU_KML',
+      sourceUrl: 'https://www.2bulu.com/track/track_detail.htm?trackId=abc',
+      trackId: 'abc',
+    }, {}, resolve)
+  })
+  assert.equal(collected.status, 'success')
+  assert.equal(collected.name, '2026-05-01 香山环线')
 })

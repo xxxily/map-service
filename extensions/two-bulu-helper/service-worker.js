@@ -25,10 +25,12 @@ import {
 
 const BRIDGE_REGISTRATION_PREFIX = 'map-service-origin-'
 const HELPER_TAB_KEY = 'twoBuluHelperTabId'
-const DEFAULT_ORIGINS_VERSION = 2
+const DEFAULT_ORIGINS_VERSION = 3
 const MAX_KML_BYTES = 10 * 1024 * 1024
 const PAGE_HOSTS = new Set(TWO_BULU_PAGE_HOSTS)
 const TAB_LIFECYCLE_CAPABILITY = '2bulu-import-tab-lifecycle'
+let bridgeSyncQueue = Promise.resolve()
+let storageInitQueue = Promise.resolve()
 
 function uniqueStrings (values) {
   return [...new Set((Array.isArray(values) ? values : []).map(value => String(value || '').trim()).filter(Boolean))]
@@ -101,7 +103,7 @@ function isStaticLocalOrigin (origin) {
   }
 }
 
-async function syncBridgeRegistrations () {
+async function runSyncBridgeRegistrations () {
   const registrations = await chrome.scripting.getRegisteredContentScripts()
   const dynamicIds = registrations
     .map(item => item.id)
@@ -127,7 +129,13 @@ async function syncBridgeRegistrations () {
   }
 }
 
-async function initializeStorage () {
+function syncBridgeRegistrations () {
+  const run = bridgeSyncQueue.then(runSyncBridgeRegistrations, runSyncBridgeRegistrations)
+  bridgeSyncQueue = run.catch(() => {})
+  return run
+}
+
+async function runInitializeStorage () {
   const stored = await chrome.storage.local.get(['allowedOrigins', 'defaultOriginsVersion'])
   if (!Array.isArray(stored.allowedOrigins)) {
     await chrome.storage.local.set({
@@ -142,6 +150,12 @@ async function initializeStorage () {
     })
   }
   await syncBridgeRegistrations()
+}
+
+function initializeStorage () {
+  const run = storageInitQueue.then(runInitializeStorage, runInitializeStorage)
+  storageInitQueue = run.catch(() => {})
+  return run
 }
 
 function senderOrigin (sender) {
@@ -174,40 +188,66 @@ function assertTwoBuluSender (sender) {
   }
 }
 
-function waitForTabReady (tabId, timeoutMs = 30000) {
+function waitForTabReady (tabId, options = {}) {
+  const normalized = typeof options === 'number' ? { timeoutMs: options } : options
+  const timeoutMs = Number.isFinite(Number(normalized.timeoutMs)) ? Number(normalized.timeoutMs) : 30000
+  const expectReload = normalized.expectReload === true
+  const signal = normalized.signal || null
   return new Promise((resolve, reject) => {
     let timer
+    let settled = false
     const cleanup = () => {
       clearTimeout(timer)
       chrome.tabs.onUpdated.removeListener(onUpdated)
       chrome.tabs.onRemoved.removeListener(onRemoved)
+      signal?.removeEventListener('abort', onAbort)
     }
-    const onUpdated = (updatedTabId, changeInfo) => {
-      if (updatedTabId !== tabId || changeInfo.status !== 'complete') return
+    const finishResolve = () => {
+      if (settled) return
+      settled = true
       cleanup()
       resolve()
     }
+    const finishReject = (error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const onUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId !== tabId || changeInfo.status !== 'complete') return
+      finishResolve()
+    }
     const onRemoved = removedTabId => {
       if (removedTabId !== tabId) return
-      cleanup()
       const error = new Error('用户关闭了两步路页面')
       error.code = 'USER_CANCELLED'
-      reject(error)
+      finishReject(error)
+    }
+    const onAbort = () => {
+      const error = new Error('等待两步路页面加载已取消')
+      error.code = 'TWO_BULU_ABORTED'
+      finishReject(error)
     }
     chrome.tabs.onUpdated.addListener(onUpdated)
     chrome.tabs.onRemoved.addListener(onRemoved)
+    if (signal) {
+      if (signal.aborted) {
+        onAbort()
+        return
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
     timer = setTimeout(() => {
-      cleanup()
       const error = new Error('等待两步路页面加载超时')
       error.code = 'TWO_BULU_TIMEOUT'
-      reject(error)
+      finishReject(error)
     }, timeoutMs)
-    chrome.tabs.get(tabId).then(tab => {
-      if (tab?.status === 'complete') {
-        cleanup()
-        resolve()
-      }
-    }).catch(() => {})
+    if (!expectReload) {
+      chrome.tabs.get(tabId).then(tab => {
+        if (tab?.status === 'complete') finishResolve()
+      }).catch(() => {})
+    }
   })
 }
 
@@ -242,12 +282,25 @@ async function openHelperTab (url, sourceTab) {
   if (Number.isSafeInteger(sourceTab?.windowId)) createOptions.windowId = sourceTab.windowId
   if (Number.isSafeInteger(sourceTab?.id)) createOptions.openerTabId = sourceTab.id
   const created = !existing
-  const tab = existing
-    ? await chrome.tabs.update(existing.id, { url, active: true })
-    : await chrome.tabs.create(createOptions)
-  await chrome.storage.session.set({ [HELPER_TAB_KEY]: tab.id })
-  if (existing) await focusTab(tab.id)
-  await waitForTabReady(tab.id)
+  let tab
+  if (existing) {
+    const controller = new AbortController()
+    const readyPromise = waitForTabReady(existing.id, { expectReload: true, signal: controller.signal })
+    readyPromise.catch(() => {})
+    try {
+      tab = await chrome.tabs.update(existing.id, { url, active: true })
+      await chrome.storage.session.set({ [HELPER_TAB_KEY]: tab.id })
+      await focusTab(tab.id)
+      await readyPromise
+    } catch (error) {
+      controller.abort()
+      throw error
+    }
+  } else {
+    tab = await chrome.tabs.create(createOptions)
+    await chrome.storage.session.set({ [HELPER_TAB_KEY]: tab.id })
+    await waitForTabReady(tab.id)
+  }
   return { tab: await chrome.tabs.get(tab.id), created, managed: true }
 }
 
@@ -291,6 +344,20 @@ async function clearManagedHelperTabKey (tabId) {
   }
 }
 
+const TERMINAL_COLLECT_CODES = new Set([
+  'FILE_TOO_LARGE',
+  'TWO_BULU_PARTIAL_REJECTED',
+  'TWO_BULU_URL_INVALID',
+])
+
+function isTerminalCollectResult (result) {
+  return Boolean(
+    result?.status === 'success' ||
+    result?.status === 'needs-user-action' ||
+    TERMINAL_COLLECT_CODES.has(result?.code)
+  )
+}
+
 async function collectFromTab (tabId, payload) {
   let runtimeResult
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -314,7 +381,7 @@ async function collectFromTab (tabId, payload) {
         }],
       })
       runtimeResult = executed?.[0]?.result
-      if (runtimeResult?.status === 'success') return runtimeResult
+      if (isTerminalCollectResult(runtimeResult)) return runtimeResult
     } catch {}
     if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)))
   }
@@ -468,11 +535,17 @@ async function importTwoBuluBatchPreview (message, sender) {
   let result = null
   for (let attempt = 0; attempt < 3; attempt += 1) {
     result = await collectBatchPreviewFromTab(helper.tab.id)
-    if (result?.status === 'success' || result?.code === 'TWO_BULU_BATCH_TOO_LARGE') break
+    if (
+      result?.status === 'success' ||
+      ['TWO_BULU_BATCH_TOO_LARGE', 'TWO_BULU_LIST_URL_INVALID'].includes(result?.code)
+    ) break
     if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)))
   }
   if (!result || typeof result !== 'object') {
     return { status: 'unsupported', code: 'TWO_BULU_LIST_DATA_NOT_RECOGNIZED', message: '未读取到两步路用户轨迹列表。' }
+  }
+  if (result.status === 'success' && Number.isSafeInteger(Number(sender?.tab?.id))) {
+    await activateSourceTab({ sourceTabId: Number(sender.tab.id) }).catch(() => {})
   }
   return {
     ...result,
@@ -660,6 +733,11 @@ export {
   HELPER_CAPABILITY,
   PROTOCOL_VERSION,
   TAB_LIFECYCLE_CAPABILITY,
+  collectFromTab,
   finalizeTwoBuluImport,
   handleImportTabAction,
+  importTwoBuluBatchPreview,
+  initializeStorage,
+  openHelperTab,
+  waitForTabReady,
 }
