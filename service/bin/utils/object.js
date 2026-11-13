@@ -11,19 +11,22 @@
  * 对一个对象进行深度拷贝
  * @source -必选（Object|Array）需拷贝的对象或数组
  */
+const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+function isSafeObjectKey (key) {
+  return !UNSAFE_OBJECT_KEYS.has(key)
+}
+
 function clone (source) {
   let result = {}
 
-  if (typeof source !== 'object') {
+  if (source === null || typeof source !== 'object') {
     return source
   }
   if (Object.prototype.toString.call(source) === '[object Array]') {
     result = []
   }
-  if (Object.prototype.toString.call(source) === '[object Null]') {
-    result = null
-  }
   for (const key in source) {
+    if (!Object.hasOwnProperty.call(source, key) || !isSafeObjectKey(key)) continue
     result[key] = (typeof source[key] === 'object') ? clone(source[key]) : source[key]
   }
   return result
@@ -65,7 +68,8 @@ function mergeObj (objA, objB, concatArr) {
   if (!isObj(objA) || !isObj(objB)) return objA
   function deepMerge (objA, objB) {
     forIn(objB, function (key) {
-      const subItemA = objA[key]
+      if (!isSafeObjectKey(key)) return
+      const subItemA = Object.hasOwnProperty.call(objA, key) ? objA[key] : undefined
       const subItemB = objB[key]
       if (typeof subItemA === 'undefined') {
         objA[key] = subItemB

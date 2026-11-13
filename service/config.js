@@ -92,7 +92,9 @@ const config = {
         pollIntervalMs: Number(process.env.MAP_SERVICE_ARTALK_MIRROR_POLL_INTERVAL_MS || 5000),
         timeoutMs: Number(process.env.MAP_SERVICE_ARTALK_MIRROR_TIMEOUT_MS || 3000),
         secret: process.env.MAP_SERVICE_ARTALK_MIRROR_SECRET ||
-          process.env.MAP_SERVICE_INTERACTION_SECRET_KEY || '',
+          process.env.MAP_SERVICE_INTERACTION_SECRET_KEY ||
+          process.env.MAP_SERVICE_SHARE_SECRET_KEY ||
+          process.env.MAP_SERVICE_ADMIN_TOKEN_SECRET || '',
       },
       commentRateLimit: {
         maxRequests: Number(process.env.MAP_SERVICE_COMMENT_RATE_MAX || 10),
@@ -135,7 +137,6 @@ const config = {
       // 'google.com',
       // 'autonavi.com',
       'do1.com.cn',
-      'qiweioa..cn',
     ],
   },
 }

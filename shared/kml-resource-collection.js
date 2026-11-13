@@ -65,32 +65,97 @@ const SENSITIVE_URL_QUERY_KEYS = new Set([
 const VIEW_MODES = new Set(KML_RESOURCE_COLLECTION_VIEW_MODES)
 const ITEM_TYPES = new Set(KML_RESOURCE_COLLECTION_ITEM_TYPES)
 
+function parseIpv4Octets (address) {
+  const match = String(address || '').match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)
+  if (!match) return null
+  const octets = match.slice(1).map(Number)
+  return octets.every(value => Number.isInteger(value) && value >= 0 && value <= 255) ? octets : null
+}
+
+function isPrivateIpv4Octets (octets) {
+  if (!octets) return true
+  const [a, b, c] = octets
+  return (
+    a === 0 ||
+    a === 10 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+    (a === 192 && b === 88 && c === 99) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+    (a === 203 && b === 0 && c === 113) ||
+    a >= 224
+  )
+}
+
+function parseIpv6Groups (address) {
+  const withoutZone = String(address || '').split('%')[0].trim().toLowerCase()
+  if (!withoutZone || !withoutZone.includes(':')) return null
+  const doubleColonParts = withoutZone.split('::')
+  if (doubleColonParts.length > 2) return null
+
+  const parseSegment = (segment, allowTrailingIpv4) => {
+    if (!segment) return []
+    const tokens = segment.split(':')
+    const words = []
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i]
+      if (allowTrailingIpv4 && i === tokens.length - 1 && token.includes('.')) {
+        const octets = parseIpv4Octets(token)
+        if (!octets) return null
+        words.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3])
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(token)) return null
+        words.push(Number.parseInt(token, 16))
+      }
+    }
+    return words
+  }
+
+  if (doubleColonParts.length === 1) {
+    const groups = parseSegment(doubleColonParts[0], true)
+    return groups && groups.length === 8 ? groups : null
+  }
+
+  const head = parseSegment(doubleColonParts[0], false)
+  const tail = parseSegment(doubleColonParts[1], true)
+  if (!head || !tail) return null
+  const missing = 8 - (head.length + tail.length)
+  if (missing < 1) return null
+  return [...head, ...Array(missing).fill(0), ...tail]
+}
+
 function isPrivateHost (hostname) {
-  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '').split('%')[0]
   if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') ||
+      host.endsWith('.internal') || host === 'metadata' ||
       host === 'metadata.google.internal' || host.endsWith('.metadata.google.internal') ||
       host === 'instance-data' || host.endsWith('.instance-data')) return true
-  const ipv4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)
-  if (ipv4) {
-    const octets = ipv4.slice(1).map(Number)
-    if (octets.some(value => value > 255)) return true
-    const [a, b] = octets
-    return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 ||
-      a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31
-  }
+  const ipv4Octets = parseIpv4Octets(host)
+  if (ipv4Octets) return isPrivateIpv4Octets(ipv4Octets)
   if (host.includes(':')) {
-    // Literal IPv6 private, loopback, link-local and IPv4-mapped addresses.
-    if (host === '::' || host === '::1' || host.startsWith('::ffff:')) {
-      if (host.startsWith('::ffff:')) return isPrivateHost(host.slice(7))
-      return true
+    const groups = parseIpv6Groups(host)
+    if (!groups) return true
+    const [g0, g1, g2, g3, g4, g5, g6, g7] = groups
+    // ::/96 (covers ::, ::1, IPv4-compatible ::7f00:1 / ::127.0.0.1)
+    if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) return true
+    // IPv4-mapped ::ffff:0:0/96 or SIIT ::ffff:0:0:0/96
+    if ((g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0xffff) ||
+        (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0xffff && g5 === 0)) {
+      return isPrivateIpv4Octets([g6 >> 8, g6 & 255, g7 >> 8, g7 & 255])
     }
-    const first = host.split(':').find(Boolean) || ''
-    const prefix = Number.parseInt(first.slice(0, 4), 16)
-    if (Number.isFinite(prefix)) {
-      if ((prefix & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
-      if ((prefix & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
-      if (prefix === 0) return true
-    }
+    // NAT64 64:ff9b::/96 & 64:ff9b:1::/48
+    if (g0 === 0x0064 && g1 === 0xff9b && ((g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) || g2 === 1)) return true
+    if (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 0) return true // 100::/64 discard
+    if (g0 === 0x2001 && (g1 === 0 || g1 === 0x0002 || g1 === 0x0db8 || (g1 & 0xfff0) === 0x0010 || (g1 & 0xfff0) === 0x0020)) return true
+    if (g0 === 0x2002) return true // 2002::/16 6to4
+    if ((g0 & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
+    if ((g0 & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
+    if ((g0 & 0xffc0) === 0xfec0) return true // fec0::/10 deprecated site-local
+    if ((g0 & 0xff00) === 0xff00) return true // ff00::/8 multicast
   }
   return false
 }

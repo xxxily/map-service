@@ -866,8 +866,9 @@ export class InteractionService {
       throw interactionHttpError('AI provider 未绑定服务端 adapter', 'AI_PROVIDER_ADAPTER_REQUIRED')
     }
     const provider = this.aiRegistry.register({
-      ...input,
       id,
+      name: String(input.name ?? existing?.name ?? id),
+      endpoint: String(input.endpoint || existing?.endpoint || ''),
       secretRef,
       apiKey,
       adapterId,

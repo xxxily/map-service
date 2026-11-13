@@ -1,7 +1,6 @@
-import net from 'node:net'
 import { URL } from 'node:url'
+import { isBlockedNetworkHostname } from '../security/networkTarget.js'
 
-const PRIVATE_HOSTNAMES = new Set(['localhost', 'metadata.google.internal', 'metadata'])
 const DEFAULT_TIMEOUT_MS = 3_000
 const DEFAULT_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1_000
 
@@ -10,30 +9,6 @@ function providerValidationError (message, code = 'VALIDATION_FAILED') {
   error.statusCode = 400
   error.code = code
   return error
-}
-
-function ipv4Number (address) {
-  return address.split('.').reduce((value, octet) => ((value << 8) | Number(octet)) >>> 0, 0)
-}
-
-function isForbiddenIpv4 (address) {
-  if (net.isIP(address) !== 4) return false
-  const value = ipv4Number(address)
-  return [
-    [0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8],
-    [0xa9fe0000, 16], [0xac100000, 12], [0xc0000000, 24], [0xc0000200, 24],
-    [0xc0a80000, 16], [0xc6120000, 15], [0xc6336400, 24], [0xcb007100, 24],
-    [0xe0000000, 4], [0xf0000000, 4],
-  ].some(([network, prefix]) => (value >>> (32 - prefix)) === (network >>> (32 - prefix)))
-}
-
-function mappedIpv4 (hostname) {
-  const match = /^::ffff:(?:([0-9a-f]{1,4}):([0-9a-f]{1,4})|(\d+\.\d+\.\d+\.\d+))$/iu.exec(hostname)
-  if (!match) return ''
-  if (match[3]) return match[3]
-  const high = Number.parseInt(match[1], 16)
-  const low = Number.parseInt(match[2], 16)
-  return `${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`
 }
 
 function normalizeHosts (value) {
@@ -47,12 +22,7 @@ function endpointInfo (endpoint, allowHosts = []) {
   try { parsed = new URL(endpoint) } catch { throw providerValidationError('AI provider endpoint 不合法') }
   const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, '').replace(/\.$/gu, '')
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw providerValidationError('AI provider 只允许不带凭据的 HTTPS endpoint')
-  const ipType = net.isIP(hostname)
-  const privateIp = ipType === 4 && isForbiddenIpv4(hostname)
-  const mappedV4 = ipType === 6 ? mappedIpv4(hostname) : ''
-  const privateMappedV4 = mappedV4 && isForbiddenIpv4(mappedV4)
-  const privateV6 = ipType === 6 && (hostname === '::1' || hostname === '::' || hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe8') || hostname.startsWith('fe9') || hostname.startsWith('fea') || hostname.startsWith('feb') || hostname.startsWith('ff') || hostname.startsWith('2001:db8:'))
-  if (PRIVATE_HOSTNAMES.has(hostname) || hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal') || privateIp || privateV6 || privateMappedV4) throw providerValidationError('AI provider endpoint 命中禁止的本地或内网地址')
+  if (isBlockedNetworkHostname(hostname)) throw providerValidationError('AI provider endpoint 命中禁止的本地或内网地址')
   const approved = normalizeHosts(allowHosts)
   if (!approved.length) throw providerValidationError('AI provider 未配置受控 allowlist', 'AI_PROVIDER_ALLOWLIST_REQUIRED')
   if (!approved.includes(hostname)) throw providerValidationError('AI provider endpoint 不在受控 allowlist')

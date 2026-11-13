@@ -173,7 +173,7 @@ function strToBoolean (str) {
 function stringifyParams (params) {
   const strArr = []
 
-  if (!Object.prototype.toString.call(params) === '[object Object]') {
+  if (Object.prototype.toString.call(params) !== '[object Object]') {
     return ''
   }
 

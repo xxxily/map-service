@@ -2484,6 +2484,7 @@ const simpleApi = {
       describe: '获取当前 API 路由目录',
       tags: ['system'],
       handler: async (req, res) => {
+        requireAdmin(req, 'admin.overview.read')
         res.jsonSuc(Object.values(routeSet).map((conf) => ({
           method: conf.method.toUpperCase(),
           path: conf.urlPath,
@@ -2497,7 +2498,10 @@ const simpleApi = {
       method: 'get',
       describe: '获取 OpenAPI 说明',
       tags: ['system'],
-      handler: async (req, res) => res.jsonSuc(buildOpenApiSpec()),
+      handler: async (req, res) => {
+        requireAdmin(req, 'admin.overview.read')
+        res.jsonSuc(buildOpenApiSpec())
+      },
     },
     {
       path: '/tiles/relay',

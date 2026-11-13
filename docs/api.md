@@ -156,11 +156,11 @@ AI 响应必须严格匹配 `shared/interaction-ai.js` 的 schema：受控 `leve
 
 ### `GET /api/v1/routes`
 
-返回当前注册的 API 路由目录。
+返回当前注册的 API 路由目录。需已登录且具备后台总览权限（`admin.overview.read` 或超级管理员）。
 
 ### `GET /api/v1/openapi.json`
 
-返回根据路由元数据生成的轻量 OpenAPI 3.1 文档。
+返回根据路由元数据生成的轻量 OpenAPI 3.1 文档。需已登录且具备后台总览权限（`admin.overview.read` 或超级管理员）。
 
 ## 访问控制
 
