@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import createAdminAuth from '../service/bin/admin/auth.js'
 import AdminStore from '../service/bin/admin/store.js'
 import AdminSettings from '../service/bin/admin/settings.js'
+import TileCatalogManager from '../service/bin/admin/tileCatalog.js'
 import { createTilePlan, estimateTilePlan, generateTiles, PrecacheManager } from '../service/bin/admin/precache.js'
 import { buildTileUrl, getTileProvider, getTileProviderByUrl, listTileProviders } from '../service/bin/admin/tileProviders.js'
 import { getVisitStats } from '../service/bin/admin/visitStats.js'
@@ -830,6 +831,94 @@ test('admin settings support access control settings and verification', async ()
     })
     assert.equal(cleared.access.hasPassword, false)
     assert.equal(await settings.isAccessEnabled(), false)
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('visit stats matches rotated access logs only and ignores backup/temp files', async () => {
+  const logDir = tempDir('visit-stats-rotated')
+  await fs.ensureDir(logDir)
+  const validLine = '127.0.0.1 - - [2026/6/17 12:00:00] "GET /api/v1/health HTTP/1.1" 200 42 "-" "node"'
+  await fs.writeFile(path.join(logDir, 'access.log'), `${validLine}\n`)
+  await fs.writeFile(path.join(logDir, '20261112-0000-01-access.log'), `${validLine}\n`)
+  await fs.writeFile(path.join(logDir, 'access.log.1'), `${validLine}\n`)
+  await fs.writeFile(path.join(logDir, 'access.log.bak'), `${validLine}\n`)
+  await fs.writeFile(path.join(logDir, 'access.log.tmp'), `${validLine}\n`)
+  await fs.writeFile(path.join(logDir, 'evil-access.log.gz'), `${validLine}\n`)
+
+  try {
+    const stats = await getVisitStats({ logDir })
+    assert.equal(stats.scannedLines, 3)
+    assert.equal(stats.total, 3)
+  } finally {
+    await fs.remove(logDir)
+  }
+})
+
+test('precache manager supports custom tile catalog sources and rejects disabled layers or sources', async () => {
+  const dataDir = tempDir('precache-custom-catalog')
+  const store = new AdminStore({ dataDir })
+  const catalog = new TileCatalogManager({ store })
+  await catalog.createTileSource({
+    id: 'custom-xyz',
+    name: 'Custom XYZ',
+    enabled: true,
+    kind: 'xyz-raster',
+    entry: { template: 'https://tiles.example.com/{z}/{x}/{y}.png' },
+    permissions: { precacheAllowed: true },
+  })
+  await catalog.createTileSource({
+    id: 'custom-disabled',
+    name: 'Custom Disabled',
+    enabled: false,
+    kind: 'xyz-raster',
+    entry: { template: 'https://tiles.example.com/disabled/{z}/{x}/{y}.png' },
+    permissions: { precacheAllowed: true },
+  })
+  await catalog.createMapLayer({
+    id: 'disabled-layer',
+    name: 'Disabled Layer',
+    enabled: false,
+    default: false,
+    items: [{ sourceId: 'custom-xyz', opacity: 1, zIndex: 1 }],
+  })
+
+  const fetched = []
+  const cleared = []
+  const manager = new PrecacheManager({
+    store,
+    tileCatalogManager: catalog,
+    maxTiles: 20,
+    defaultConcurrency: 1,
+    maxConcurrency: 2,
+    fetchTile: async (url) => {
+      fetched.push(url)
+      return { stream: Readable.from([Buffer.from('tile')]) }
+    },
+    clearTileCache: async (urls) => {
+      cleared.push(...urls)
+      return { removed: urls.length }
+    },
+  })
+
+  try {
+    const bounds = { west: 113.24, south: 23.11, east: 113.29, north: 23.15 }
+    await assert.rejects(() => manager.estimateTask({ targetType: 'layer', targetId: 'disabled-layer', bounds, minZoom: 3, maxZoom: 3 }), /图层不存在或已禁用/)
+    await assert.rejects(() => manager.createTask({ targetType: 'layer', targetId: 'disabled-layer', bounds, minZoom: 3, maxZoom: 3 }), /图层不存在或已禁用/)
+    await assert.rejects(() => manager.createTask({ providerId: 'custom-disabled', bounds, minZoom: 3, maxZoom: 3 }), /图源已禁用/)
+
+    const task = await manager.createTask({ providerId: 'custom-xyz', bounds, minZoom: 3, maxZoom: 3 })
+    await manager.queue
+
+    const listed = await manager.listTasks()
+    assert.equal(listed[0].status, 'completed')
+    assert.ok(fetched.length > 0)
+    assert.ok(fetched.every(url => url.startsWith('https://tiles.example.com/3/')))
+
+    const deleted = await manager.deleteTask(task.id, { deleteCache: true })
+    assert.equal(deleted.cache.removed, fetched.length)
+    assert.deepEqual(new Set(cleared), new Set(fetched))
   } finally {
     await fs.remove(dataDir)
   }

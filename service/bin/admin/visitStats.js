@@ -3,9 +3,38 @@ import path from 'path'
 import rootPath from '../rootPath.js'
 
 const ACCESS_LOG_PATTERN = /^(\S+) - (\S+) \[(.+?)] "(\S+) ([^"]*) HTTP\/([^"]*)" (\d{3}) (\S+) "([^"]*)" "([^"]*)"$/
+const ACCESS_LOG_FILENAME_PATTERN = /^(?:\d{8}-\d{4}-\d{2}-)?access\.log(?:\.\d+)?$/u
 const DEFAULT_STATS_TTL = 30 * 1000
+const MAX_STATS_CACHE_ENTRIES = 64
 
 const statsCache = new Map()
+
+function getCachedStats (cacheKey, ttl) {
+  const cached = statsCache.get(cacheKey)
+  if (!cached) return null
+  if (Date.now() - cached.generatedAt >= ttl) {
+    statsCache.delete(cacheKey)
+    return null
+  }
+  statsCache.delete(cacheKey)
+  statsCache.set(cacheKey, cached)
+  return cached.result
+}
+
+function setCachedStats (cacheKey, result) {
+  if (statsCache.has(cacheKey)) {
+    statsCache.delete(cacheKey)
+  }
+  while (statsCache.size >= MAX_STATS_CACHE_ENTRIES) {
+    const oldestKey = statsCache.keys().next().value
+    if (oldestKey === undefined) break
+    statsCache.delete(oldestKey)
+  }
+  statsCache.set(cacheKey, {
+    generatedAt: result.generatedAt,
+    result,
+  })
+}
 
 function statusGroup (status) {
   const family = Math.floor(Number(status) / 100)
@@ -50,7 +79,7 @@ async function getAccessLogFiles (logDir) {
   const items = await fs.readdir(logDir)
   const files = []
   for (const item of items) {
-    if (!item.includes('access.log')) {
+    if (!ACCESS_LOG_FILENAME_PATTERN.test(item)) {
       continue
     }
 
@@ -72,9 +101,9 @@ export async function getVisitStats (options = {}) {
   const maxLines = Number(options.maxLines || 2000)
   const ttl = Number(options.ttl || DEFAULT_STATS_TTL)
   const cacheKey = `${logDir}:${maxLines}`
-  const cached = statsCache.get(cacheKey)
-  if (cached && Date.now() - cached.generatedAt < ttl) {
-    return cached.result
+  const cachedResult = getCachedStats(cacheKey, ttl)
+  if (cachedResult) {
+    return cachedResult
   }
 
   const files = await getAccessLogFiles(logDir)
@@ -121,10 +150,7 @@ export async function getVisitStats (options = {}) {
     recentRequests: records.slice(-50).reverse(),
     generatedAt: Date.now(),
   }
-  statsCache.set(cacheKey, {
-    generatedAt: result.generatedAt,
-    result,
-  })
+  setCachedStats(cacheKey, result)
   return result
 }
 

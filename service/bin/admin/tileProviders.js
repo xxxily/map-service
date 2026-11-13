@@ -114,7 +114,9 @@ export function getTileProviderByUrl (url) {
 }
 
 export function buildTileUrl (provider, tile) {
-  const subdomains = provider.subdomains || ['']
+  const subdomains = Array.isArray(provider.subdomains) && provider.subdomains.length
+    ? provider.subdomains
+    : ['']
   const subdomain = subdomains[(tile.x + tile.y + tile.z) % subdomains.length]
   return provider.template
     .replaceAll('{s}', subdomain)

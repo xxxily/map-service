@@ -533,3 +533,116 @@ test('GET /api/v1/external/:publishId/:z/:x/:y relays published source and logs 
     restore()
   }
 })
+
+test('tile catalog enforces enabled default layer invariants', async () => {
+  const dataDir = tempDir('tile-catalog-default-layer')
+  const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })
+
+  try {
+    await assert.rejects(() => manager.createMapLayer({
+      id: 'disabled-default-layer',
+      name: 'Disabled Default',
+      enabled: false,
+      default: true,
+      items: [{ sourceId: 'amap-road', opacity: 1, zIndex: 1 }],
+    }), /不能将已禁用图层设为默认/)
+
+    await assert.rejects(() => manager.updateMapLayer('amap-hybrid', {
+      enabled: false,
+      default: true,
+    }), /不能将已禁用图层设为默认/)
+
+    await manager.createMapLayer({
+      id: 'backup-road',
+      name: 'Backup Road',
+      enabled: true,
+      default: false,
+      items: [{ sourceId: 'amap-road', opacity: 1, zIndex: 1 }],
+    })
+
+    const disabledDefault = await manager.updateMapLayer('amap-hybrid', { enabled: false })
+    assert.equal(disabledDefault.enabled, false)
+    assert.equal(disabledDefault.default, false)
+
+    const catalog = await manager.getPublicCatalog()
+    assert.notEqual(catalog.defaultLayerId, 'amap-hybrid')
+    assert.ok(catalog.layers.some(layer => layer.id === catalog.defaultLayerId && layer.default === true && layer.enabled === true))
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('tile catalog caps external logs per publishId and flushes deferred log writes', async () => {
+  const dataDir = tempDir('tile-catalog-log-flush')
+  const manager = new TileCatalogManager({ store: new AdminStore({ dataDir }) })
+
+  try {
+    await manager.addExternalLog({ publishId: 'pub-a', marker: 'a1' }, 1)
+    await manager.addExternalLog({ publishId: 'pub-b', marker: 'b1' }, 2)
+    await manager.addExternalLog({ publishId: 'pub-a', marker: 'a2' }, 1)
+    await manager.addSourceAccessLog({ sourceId: 'amap-road', marker: 's1' }, 2)
+
+    assert.deepEqual((await manager.listExternalLogs('pub-a')).map(item => item.marker), ['a2'])
+    assert.deepEqual((await manager.listExternalLogs('pub-b')).map(item => item.marker), ['b1'])
+
+    await manager.flushLogs()
+
+    const reloaded = new TileCatalogManager({ store: new AdminStore({ dataDir }) })
+    assert.deepEqual((await reloaded.listExternalLogs('pub-a')).map(item => item.marker), ['a2'])
+    assert.deepEqual((await reloaded.listExternalLogs('pub-b')).map(item => item.marker), ['b1'])
+    assert.deepEqual((await reloaded.listSourceAccessLogs('amap-road')).map(item => item.marker), ['s1'])
+  } finally {
+    await fs.remove(dataDir)
+  }
+})
+
+test('testTileSource forwards key headers and supports vector-style sources', async () => {
+  const dataDir = tempDir('tile-catalog-test-source')
+  const calls = []
+  const manager = new TileCatalogManager({
+    store: new AdminStore({ dataDir }),
+    targetResolver: async (url) => ({
+      url,
+      hostname: new URL(url).hostname,
+      addresses: [{ address: '203.12.34.56', family: 4 }],
+    }),
+    httpClient: async (config) => {
+      calls.push(config)
+      return { status: 200, data: Buffer.from('{}') }
+    },
+  })
+
+  try {
+    await manager.createKeyPool({
+      id: 'header-pool',
+      name: 'Header Pool',
+      vendor: 'custom',
+      keys: [{ id: 'key-header-1', alias: 'K1', secret: 'top-secret-header', placement: 'header', paramName: 'X-Tile-Key' }],
+    })
+    await manager.createTileSource({
+      id: 'header-xyz',
+      name: 'Header XYZ',
+      enabled: true,
+      kind: 'xyz-raster',
+      entry: { template: 'https://tiles.example.com/{z}/{x}/{y}.png' },
+      secrets: { required: true, keyPoolId: 'header-pool', placement: 'header', paramName: 'X-Tile-Key' },
+    })
+    await manager.createTileSource({
+      id: 'style-vector',
+      name: 'Style Vector',
+      enabled: true,
+      kind: 'vector-style',
+      adapter: 'maplibre-style',
+      entry: { styleJsonUrl: 'https://styles.example.com/basic/style.json' },
+    })
+
+    const headerRes = await manager.testTileSource('header-xyz')
+    const vectorRes = await manager.testTileSource('style-vector')
+    assert.equal(headerRes.success, true)
+    assert.equal(vectorRes.success, true)
+    assert.equal(calls[0].headers['X-Tile-Key'], 'top-secret-header')
+    assert.equal(calls[1].url, 'https://styles.example.com/basic/style.json')
+  } finally {
+    await fs.remove(dataDir)
+  }
+})

@@ -21,6 +21,7 @@ const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/
 const DEFAULT_TOKEN_BYTES = 24
 const DEFAULT_EXTERNAL_LOG_LIMIT = 500
 const DEFAULT_SOURCE_ACCESS_LOG_LIMIT = 500
+const DEFAULT_LOG_FLUSH_DELAY_MS = 1000
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60 * 1000
 const VECTOR_RESOURCE_REF_TTL_MS = 1000 * 60 * 60
 const VECTOR_RESOURCE_REF_MAX_COUNT = 5000
@@ -1274,6 +1275,10 @@ export class TileCatalogManager {
     this.keyRoundRobinState = new Map()
     this.proxyCooldowns = new Map()
     this.rateLimits = new Map()
+    this.externalLogsDirty = false
+    this.sourceAccessLogsDirty = false
+    this.logFlushTimer = null
+    this.logFlushPromise = null
   }
 
   async requestHttp (config) {
@@ -1809,6 +1814,7 @@ export class TileCatalogManager {
     const layer = normalizeLayer(input)
     if (this.findLayer(layer.id)) throw createHttpError('图层 ID 已存在')
     this.validateLayerRefs(layer)
+    if (layer.default && !layer.enabled) throw createHttpError('不能将已禁用图层设为默认')
     if (layer.default) this.layers.forEach(item => { item.default = false })
     this.layers.push(layer)
     await this.writeStore(STORE_LAYERS, this.layers)
@@ -1821,8 +1827,18 @@ export class TileCatalogManager {
     if (index < 0) throw createHttpError('图层不存在', 404)
     const layer = normalizeLayer({ ...input, id }, this.layers[index])
     this.validateLayerRefs(layer)
+    if (!layer.enabled && input.default === true) {
+      throw createHttpError('不能将已禁用图层设为默认')
+    }
+    if (!layer.enabled) {
+      layer.default = false
+    }
     if (layer.default) this.layers.forEach(item => { item.default = false })
     this.layers[index] = layer
+    if (!this.layers.some(item => item.default)) {
+      const firstEnabled = this.layers.find(item => item.enabled)
+      if (firstEnabled) firstEnabled.default = true
+    }
     await this.writeStore(STORE_LAYERS, this.layers)
     return clone(layer)
   }
@@ -2572,14 +2588,76 @@ export class TileCatalogManager {
     }
   }
 
+  scheduleLogFlush () {
+    if (this.logFlushTimer) return
+    this.logFlushTimer = setTimeout(() => {
+      this.logFlushTimer = null
+      this.flushLogs().catch((err) => {
+        console.error('[tileCatalog] flushLogs failed:', err)
+      })
+    }, DEFAULT_LOG_FLUSH_DELAY_MS)
+    this.logFlushTimer.unref?.()
+  }
+
+  async flushLogs () {
+    if (this.logFlushTimer) {
+      clearTimeout(this.logFlushTimer)
+      this.logFlushTimer = null
+    }
+    if (this.logFlushPromise) {
+      return this.logFlushPromise
+    }
+
+    this.logFlushPromise = (async () => {
+      while (this.externalLogsDirty || this.sourceAccessLogsDirty) {
+        if (this.externalLogsDirty) {
+          this.externalLogsDirty = false
+          try {
+            await this.writeStore(STORE_EXTERNAL_LOGS, this.externalLogs)
+          } catch (err) {
+            this.externalLogsDirty = true
+            throw err
+          }
+        }
+        if (this.sourceAccessLogsDirty) {
+          this.sourceAccessLogsDirty = false
+          try {
+            await this.writeStore(STORE_SOURCE_ACCESS_LOGS, this.sourceAccessLogs)
+          } catch (err) {
+            this.sourceAccessLogsDirty = true
+            throw err
+          }
+        }
+      }
+    })()
+
+    try {
+      return await this.logFlushPromise
+    } finally {
+      this.logFlushPromise = null
+      if ((this.externalLogsDirty || this.sourceAccessLogsDirty) && !this.logFlushTimer) {
+        this.scheduleLogFlush()
+      }
+    }
+  }
+
   async addExternalLog (entry, maxLogCount = DEFAULT_EXTERNAL_LOG_LIMIT) {
     await this.ensureLoaded()
     if (maxLogCount <= 0) return
-    this.externalLogs.unshift(entry)
-    if (this.externalLogs.length > maxLogCount) {
+    const publishId = normalizeString(entry?.publishId)
+    this.externalLogs.unshift(publishId ? { ...entry, publishId } : entry)
+    if (publishId) {
+      let countForPublish = 0
+      this.externalLogs = this.externalLogs.filter((log) => {
+        if (log.publishId !== publishId) return true
+        countForPublish += 1
+        return countForPublish <= maxLogCount
+      })
+    } else if (this.externalLogs.length > maxLogCount) {
       this.externalLogs.length = maxLogCount
     }
-    await this.writeStore(STORE_EXTERNAL_LOGS, this.externalLogs)
+    this.externalLogsDirty = true
+    this.scheduleLogFlush()
   }
 
   async listExternalLogs (publishId = '') {
@@ -2606,7 +2684,8 @@ export class TileCatalogManager {
       return countForSource <= maxLogCount
     })
 
-    await this.writeStore(STORE_SOURCE_ACCESS_LOGS, this.sourceAccessLogs)
+    this.sourceAccessLogsDirty = true
+    this.scheduleLogFlush()
   }
 
   async listSourceAccessLogs (sourceId = '') {
@@ -2711,7 +2790,18 @@ export class TileCatalogManager {
 
     const startTime = Date.now()
     try {
-      const request = await this.createSourceTileRequest(source.id, { z: zoom, x, y })
+      let request
+      const extraHeaders = {}
+      if (source.kind === 'vector-style') {
+        request = await this.createVectorResourceRequest(source.id, 'style', {})
+      } else if (source.kind === 'vector-tilejson') {
+        request = await this.createVectorResourceRequest(source.id, 'tilejson', {})
+      } else if (source.kind === 'pmtiles-vector' || source.kind === 'pmtiles-raster') {
+        request = await this.createVectorResourceRequest(source.id, 'pmtiles-range', { range: '0-63' })
+        extraHeaders.Range = 'bytes=0-63'
+      } else {
+        request = await this.createSourceTileRequest(source.id, { z: zoom, x, y })
+      }
       const proxyConfig = request.proxy && request.proxy.enabled
         ? {
             protocol: request.proxy.protocol || 'http',
@@ -2729,6 +2819,10 @@ export class TileCatalogManager {
         label: '图源 URL',
         delegateDnsToProxy: isLocalProxyEndpoint(proxyConfig),
       })
+      const baseHeaders = {
+        ...extraHeaders,
+        ...(request.headers || {}),
+      }
       const axiosConfig = {
         url: request.url,
         method: 'GET',
@@ -2738,8 +2832,20 @@ export class TileCatalogManager {
         validateStatus: () => true,
       }
       if (proxyConfig) {
-        Object.assign(axiosConfig, createPinnedProxyRequestConfig(targetResolution, proxyConfig))
+        const pinnedConfig = createPinnedProxyRequestConfig(targetResolution, proxyConfig)
+        const mergedHeaders = {
+          ...baseHeaders,
+          ...(pinnedConfig.headers || {}),
+        }
+        delete mergedHeaders.host
+        Object.assign(axiosConfig, {
+          ...pinnedConfig,
+          headers: mergedHeaders,
+        })
       } else {
+        if (Object.keys(baseHeaders).length > 0) {
+          axiosConfig.headers = baseHeaders
+        }
         Object.assign(axiosConfig, createPinnedHttpAgents(targetResolution.addresses))
       }
       const response = await this.requestHttp(axiosConfig)

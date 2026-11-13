@@ -227,3 +227,77 @@ test('external publish tile route respects disabled publish logging', async () =
     restore()
   }
 })
+
+test('sprite@2x routes work without ref for both vector and external publish endpoints', async () => {
+  const calls = []
+  const restore = withMockedService({
+    isAccessEnabled: async () => false,
+    fetchVectorResource: async (sourceId, resourceType, params) => {
+      calls.push({ kind: 'vector', sourceId, resourceType, params })
+      return {
+        statusCode: 200,
+        headers: { 'content-type': resourceType.includes('json') ? 'application/json' : 'image/png' },
+        stream: Readable.from([Buffer.from(resourceType)]),
+      }
+    },
+    fetchExternalVectorResource: async (publishId, resourceType, params) => {
+      calls.push({ kind: 'external', publishId, resourceType, params })
+      return {
+        statusCode: 200,
+        headers: { 'content-type': resourceType.includes('json') ? 'application/json' : 'image/png' },
+        stream: Readable.from([Buffer.from(resourceType)]),
+      }
+    },
+  })
+
+  const app = createTestApp()
+  const { server, baseUrl } = await listen(app)
+
+  try {
+    for (const [urlPath, expected] of [
+      ['/api/v1/vector/sprites/src-a/sprite@2x.json', { kind: 'vector', sourceId: 'src-a', resourceType: 'sprite-json-2x', params: {} }],
+      ['/api/v1/vector/sprites/src-a/sprite@2x.png', { kind: 'vector', sourceId: 'src-a', resourceType: 'sprite-png-2x', params: {} }],
+      ['/api/v1/external/pub-a/sprites/sprite@2x.json', { kind: 'external', publishId: 'pub-a', resourceType: 'sprite-json-2x', params: {} }],
+      ['/api/v1/external/pub-a/sprites/sprite@2x.png', { kind: 'external', publishId: 'pub-a', resourceType: 'sprite-png-2x', params: {} }],
+    ]) {
+      const response = await fetch(`${baseUrl}${urlPath}`)
+      assert.equal(response.status, 200)
+      assert.equal(await response.text(), expected.resourceType)
+    }
+
+    assert.equal(calls.length, 4)
+  } finally {
+    server.close()
+    restore()
+  }
+})
+
+test('external publish tile error path respects disabled publish logging', async () => {
+  let logged = false
+  const restore = withMockedService({
+    findExternalPublish: (id) => ({
+      id,
+      log: { enabled: false, maxLogCount: 500 },
+    }),
+    fetchExternalPublishTile: async () => {
+      const err = new Error('图源已禁用')
+      err.statusCode = 403
+      throw err
+    },
+    logExternalPublishRequest: async () => {
+      logged = true
+    },
+  })
+
+  const app = createTestApp()
+  const { server, baseUrl } = await listen(app)
+
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/external/disabled-log-pub/3/1/2`)
+    assert.equal(response.status, 403)
+    assert.equal(logged, false)
+  } finally {
+    server.close()
+    restore()
+  }
+})

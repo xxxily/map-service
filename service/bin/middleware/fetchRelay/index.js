@@ -1,5 +1,6 @@
 import fs from 'fs-extra'
 import path from 'path'
+import crypto from 'node:crypto'
 import { open as openFile } from 'node:fs/promises'
 import { pipeline } from 'stream/promises'
 import rootPath from '../../rootPath.js'
@@ -164,6 +165,7 @@ class FetchRelay {
     this.cachePathLocks = new Map()
     this.activeCacheWrites = new Set()
     this.cacheClearGate = null
+    this.inFlightFetches = new Map()
   }
 
   setCacheObserver (observer) {
@@ -489,7 +491,7 @@ class FetchRelay {
 
     await fs.ensureDir(path.dirname(paths.cachePath))
 
-    const tempPath = `${paths.cachePath}.tmp-${process.pid}-${Date.now()}`
+    const tempPath = `${paths.cachePath}.tmp-${process.pid}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
     try {
       await pipeline(response.data, fs.createWriteStream(tempPath))
     } catch (err) {
@@ -666,6 +668,21 @@ class FetchRelay {
     }
   }
 
+  async openCoalescedResponse (flightPromise, url, options) {
+    const flight = await flightPromise
+    if (flight?.cachePath && flight?.meta) {
+      try {
+        return await this.createCachedResponse({
+          cachePath: flight.cachePath,
+          meta: flight.meta,
+        }, flight.cacheStatus || 'HIT')
+      } catch (err) {
+        if (err?.code !== 'ENOENT') throw err
+      }
+    }
+    return this.fetchUpstream(url, options, null)
+  }
+
   async fetch (url, options = {}) {
     if (!url) {
       throw new Error('url is required')
@@ -705,6 +722,13 @@ class FetchRelay {
       }
     }
 
+    const flightKey = !normalizedOptions.refresh
+      ? this.getCachePaths(url, normalizedOptions).cachePath
+      : null
+    if (flightKey && this.inFlightFetches.has(flightKey)) {
+      return this.openCoalescedResponse(this.inFlightFetches.get(flightKey), url, normalizedOptions)
+    }
+
     const cached = await this.withCacheWrite(async () => {
       const entry = await this.getCachedEntry(url, normalizedOptions)
       if (entry.exists && entry.fresh && !normalizedOptions.refresh) {
@@ -718,8 +742,32 @@ class FetchRelay {
     if (cached.response) return cached.response
     const entry = cached.entry
 
+    if (flightKey && this.inFlightFetches.has(flightKey)) {
+      return this.openCoalescedResponse(this.inFlightFetches.get(flightKey), url, normalizedOptions)
+    }
+
+    let resolveFlight = null
+    let rejectFlight = null
+    let flightPromise = null
+    if (flightKey) {
+      flightPromise = new Promise((resolve, reject) => {
+        resolveFlight = resolve
+        rejectFlight = reject
+      })
+      flightPromise.catch(() => {})
+      this.inFlightFetches.set(flightKey, flightPromise)
+    }
+
     try {
-      return await this.fetchUpstream(url, normalizedOptions, entry.exists ? entry : null)
+      const response = await this.fetchUpstream(url, normalizedOptions, entry.exists ? entry : null)
+      if (resolveFlight) {
+        resolveFlight({
+          cachePath: response.cachePath || null,
+          meta: response.meta || null,
+          cacheStatus: response.cacheStatus === 'STALE' ? 'STALE' : 'HIT',
+        })
+      }
+      return response
     } catch (err) {
       if (entry.exists && entry.staleUsable && !normalizedOptions.refresh) {
         const staleResponse = await this.withCacheWrite(async () => {
@@ -732,11 +780,23 @@ class FetchRelay {
             `[fetchRelay] upstream refresh failed, serving stale cache: ${maskSensitiveUrl(url, normalizedOptions.sensitiveQueryParams)}`,
             err.message
           )
+          if (resolveFlight) {
+            resolveFlight({
+              cachePath: staleResponse.cachePath || null,
+              meta: staleResponse.meta || null,
+              cacheStatus: 'STALE',
+            })
+          }
           return staleResponse
         }
       }
 
+      if (rejectFlight) rejectFlight(err)
       throw err
+    } finally {
+      if (flightKey && this.inFlightFetches.get(flightKey) === flightPromise) {
+        this.inFlightFetches.delete(flightKey)
+      }
     }
   }
 

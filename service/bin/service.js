@@ -1466,6 +1466,14 @@ const service = {
     return tileCatalogManager.listExternalPublishes()
   },
 
+  findExternalPublish (id) {
+    return tileCatalogManager.findExternalPublish(id)
+  },
+
+  flushCatalogLogs () {
+    return tileCatalogManager.flushLogs()
+  },
+
   createExternalPublish (input) {
     return tileCatalogManager.createExternalPublish(input)
   },

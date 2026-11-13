@@ -635,3 +635,76 @@ test('fetch relay clears cache entries by sourceId', async () => {
     await cleanup()
   }
 })
+
+test('fetch relay coalesces concurrent cacheable misses into a single upstream request', async () => {
+  const targetUrl = 'https://www.google.com/maps/vt?lyrs=s&x=81&y=82&z=12'
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-coalesce-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  let upstreamCount = 0
+  let releaseUpstream = null
+  const upstreamStarted = new Promise((resolve) => {
+    releaseUpstream = resolve
+  })
+
+  const relay = new FetchRelay({
+    cacheDir,
+    minCacheBytes: 1,
+    targetResolver: resolveTestTarget,
+    httpClient: async () => {
+      upstreamCount += 1
+      await upstreamStarted
+      return {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+        data: streamFrom('coalesced-tile'),
+      }
+    },
+  })
+
+  try {
+    const pending = Array.from({ length: 5 }, () => relay.fetch(targetUrl))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(upstreamCount, 1)
+    releaseUpstream()
+
+    const responses = await Promise.all(pending)
+    const payloads = await Promise.all(responses.map(res => readStream(res.stream)))
+    assert.equal(upstreamCount, 1)
+    assert.equal(responses[0].cacheStatus, 'MISS')
+    assert.ok(responses.slice(1).every(res => res.cacheStatus === 'HIT'))
+    assert.deepEqual(payloads, Array(5).fill('coalesced-tile'))
+  } finally {
+    await removeDir(cacheDir)
+  }
+})
+
+test('fetch relay propagates upstream errors across coalesced callers cleanly', async () => {
+  const targetUrl = 'https://www.google.com/maps/vt?lyrs=s&x=83&y=84&z=12'
+  const cacheDir = path.join(tmpdir(), `map-service-fetch-relay-coalesce-err-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  let upstreamCount = 0
+  let rejectUpstream = null
+  const upstreamGate = new Promise((_, reject) => {
+    rejectUpstream = reject
+  })
+
+  const relay = new FetchRelay({
+    cacheDir,
+    minCacheBytes: 1,
+    targetResolver: resolveTestTarget,
+    httpClient: async () => {
+      upstreamCount += 1
+      await upstreamGate
+    },
+  })
+
+  try {
+    const pending = Array.from({ length: 3 }, () => relay.fetch(targetUrl))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(upstreamCount, 1)
+    rejectUpstream(new Error('upstream down'))
+
+    const settled = await Promise.allSettled(pending)
+    assert.equal(settled.every(item => item.status === 'rejected' && item.reason.message === 'upstream down'), true)
+  } finally {
+    await removeDir(cacheDir)
+  }
+})

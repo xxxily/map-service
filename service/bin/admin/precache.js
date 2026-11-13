@@ -281,6 +281,8 @@ export class PrecacheManager {
     this.nextRequestAt = 0
     this.tasks = []
     this.queue = Promise.resolve()
+    this.persistDirty = false
+    this.persistPromise = null
     this.ready = this.load()
   }
 
@@ -322,12 +324,36 @@ export class PrecacheManager {
   }
 
   async persist () {
-    this.tasks = this.tasks
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, 50)
-    await this.store.write('precache-tasks', this.tasks
-      .filter(task => !task.deleteRequested)
-      .map(withoutRuntimeFlags))
+    this.persistDirty = true
+    if (this.persistPromise) {
+      return this.persistPromise
+    }
+
+    this.persistPromise = (async () => {
+      while (this.persistDirty) {
+        this.persistDirty = false
+        const sorted = [...this.tasks].sort((a, b) => b.createdAt - a.createdAt)
+        const active = []
+        const inactive = []
+        for (const task of sorted) {
+          if (task.status === 'running' || task.status === 'queued' || task.status === 'pausing') {
+            active.push(task)
+          } else {
+            inactive.push(task)
+          }
+        }
+        this.tasks = [...active, ...inactive.slice(0, Math.max(0, 50 - active.length))]
+        await this.store.write('precache-tasks', this.tasks
+          .filter(task => !task.deleteRequested)
+          .map(withoutRuntimeFlags))
+      }
+    })()
+
+    try {
+      return await this.persistPromise
+    } finally {
+      this.persistPromise = null
+    }
   }
 
   async listTasks () {
@@ -387,11 +413,12 @@ export class PrecacheManager {
 
   async estimateTask (input = {}) {
     await this.ready
+    await this.tileCatalogManager?.ensureLoaded?.()
     const getSourceOrProvider = (id) => this.getSourceOrProvider(id)
 
     if (input.targetType === 'layer') {
       const layer = this.tileCatalogManager?.findLayer(input.targetId)
-      if (!layer) throw createHttpError('图层不存在或已禁用')
+      if (!layer || !layer.enabled) throw createHttpError('图层不存在或已禁用')
 
       const results = []
       let total = 0
@@ -441,6 +468,9 @@ export class PrecacheManager {
 
     const sourceId = input.targetId || input.providerId || input.provider
     const source = this.tileCatalogManager?.findSource(sourceId)
+    if (source && !source.enabled) {
+      throw createHttpError('图源已禁用')
+    }
     if (source && !source.permissions.precacheAllowed) {
       throw createHttpError('图源未允许预缓存')
     }
@@ -461,11 +491,12 @@ export class PrecacheManager {
 
   async createTask (input = {}) {
     await this.ready
+    await this.tileCatalogManager?.ensureLoaded?.()
     const getSourceOrProvider = (id) => this.getSourceOrProvider(id)
 
     if (input.targetType === 'layer') {
       const layer = this.tileCatalogManager?.findLayer(input.targetId)
-      if (!layer) throw createHttpError('图层不存在或已禁用')
+      if (!layer || !layer.enabled) throw createHttpError('图层不存在或已禁用')
 
       const tasksCreated = []
       for (const item of layer.items) {
@@ -486,6 +517,9 @@ export class PrecacheManager {
 
     const sourceId = input.targetId || input.providerId || input.provider
     const source = this.tileCatalogManager?.findSource(sourceId)
+    if (source && !source.enabled) {
+      throw createHttpError('图源已禁用')
+    }
     if (source && !source.permissions.precacheAllowed) {
       throw createHttpError('图源未允许预缓存')
     }
@@ -630,7 +664,9 @@ export class PrecacheManager {
       }
     }
 
-    const provider = getTileProvider(task.providerId)
+    await this.tileCatalogManager?.ensureLoaded?.()
+    const source = this.tileCatalogManager?.findSource?.(task.providerId) || null
+    const provider = this.getSourceOrProvider(task.providerId)
     if (!provider) {
       throw createHttpError('瓦片提供方不存在，无法删除关联缓存')
     }
@@ -638,7 +674,7 @@ export class PrecacheManager {
     let removed = 0
     let batch = []
     for (const tile of iterateTiles(task)) {
-      batch.push(buildTileUrl(provider, tile))
+      batch.push(source ? this.tileCatalogManager.buildTileUrl(source, tile) : buildTileUrl(provider, tile))
       if (batch.length >= CACHE_DELETE_BATCH_SIZE) {
         const result = await this.clearTileCache(batch)
         removed += Number(result?.removed || batch.length)
@@ -827,12 +863,13 @@ export class PrecacheManager {
   }
 
   async runTask (taskId) {
+    await this.tileCatalogManager?.ensureLoaded?.()
     const task = this.tasks.find(item => item.id === taskId)
     if (!task || task.status !== 'queued') {
       return
     }
 
-    const provider = getTileProvider(task.providerId)
+    const provider = this.getSourceOrProvider(task.providerId)
     if (!provider) {
       task.status = 'failed'
       task.errors.push({ message: '瓦片提供方不存在', timestamp: Date.now() })
@@ -860,7 +897,10 @@ export class PrecacheManager {
           return
         }
         const tile = pendingTile.tile
-        const url = buildTileUrl(provider, tile)
+        const catalogSource = this.tileCatalogManager?.findSource?.(task.providerId) || null
+        const url = catalogSource
+          ? this.tileCatalogManager.buildTileUrl(catalogSource, tile)
+          : buildTileUrl(provider, tile)
 
         let completedAttempt = false
         let retryCurrentTile = false

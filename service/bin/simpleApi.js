@@ -3280,6 +3280,36 @@ const simpleApi = {
       },
     },
     {
+      path: '/vector/sprites/:sourceId/sprite@2x.json',
+      method: 'get',
+      describe: '获取矢量高清 sprite JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'sprite-json-2x', {}, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/vector/sprites/:sourceId/sprite@2x.png',
+      method: 'get',
+      describe: '获取矢量高清 sprite 图片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        await requireAccess(req)
+        const result = await service.fetchVectorResource(req.params.sourceId, 'sprite-png-2x', {}, {
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
       path: '/vector/sprites/:sourceId/sprite.json',
       method: 'get',
       describe: '获取矢量 sprite JSON',
@@ -3968,6 +3998,36 @@ const simpleApi = {
       },
     },
     {
+      path: '/external/:publishId/sprites/sprite@2x.json',
+      method: 'get',
+      describe: '获取对外发布高清 sprite JSON',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'sprite-json-2x', {}, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
+      path: '/external/:publishId/sprites/sprite@2x.png',
+      method: 'get',
+      describe: '获取对外发布高清 sprite 图片',
+      tags: ['tiles'],
+      handler: async (req, res) => {
+        const result = await service.fetchExternalVectorResource(req.params.publishId, 'sprite-png-2x', {}, {
+          token: req.query.token,
+          clientIp: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '',
+          userAgent: req.headers['user-agent'] || '',
+          reqUrl: maskSensitiveQueryParams(req.originalUrl || req.url || ''),
+        })
+        await sendRelayResponse(res, result)
+      },
+    },
+    {
       path: '/external/:publishId/sprites/sprite.json',
       method: 'get',
       describe: '获取对外发布 sprite JSON',
@@ -4074,7 +4134,7 @@ const simpleApi = {
           logEntry.statusCode = status
           logEntry.duration = Date.now() - startTime
           logEntry.errorMessage = err.message
-          service.logExternalPublishRequest(logEntry, 500).catch(e => console.error('[external publish log error]', e))
+          writeExternalPublishLog(logEntry, service.findExternalPublish?.(req.params.publishId) || null)
           jsonError(res, err.message || '对外发布图源瓦片请求失败', status)
         }
       },
@@ -4135,7 +4195,7 @@ const simpleApi = {
           logEntry.statusCode = status
           logEntry.duration = Date.now() - startTime
           logEntry.errorMessage = err.message
-          service.logExternalPublishRequest(logEntry, 500).catch(e => console.error('[external publish log error]', e))
+          writeExternalPublishLog(logEntry, service.findExternalPublish?.(req.params.publishId) || null)
           jsonError(res, err.message || '对外发布瓦片请求失败', status)
         }
       },

@@ -357,6 +357,14 @@ AI 响应必须严格匹配 `shared/interaction-ai.js` 的 schema：受控 `leve
 
 获取图源直接配置的 sprite 图片。
 
+### `GET /api/v1/vector/sprites/:sourceId/sprite@2x.json`
+
+获取图源直接配置的高清 sprite JSON。
+
+### `GET /api/v1/vector/sprites/:sourceId/sprite@2x.png`
+
+获取图源直接配置的高清 sprite 图片。
+
 ### `GET /api/v1/vector/sprites/:sourceId/:ref/sprite.json`
 
 获取 Style JSON 派生出来的 sprite JSON。
@@ -1289,6 +1297,14 @@ URL 模板只允许不含账号密码的 `http/https`，且不允许指向 local
 ### `GET /api/v1/external/:publishId/sprites/sprite.png`
 
 获取对外发布项直接配置的 sprite 图片。
+
+### `GET /api/v1/external/:publishId/sprites/sprite@2x.json`
+
+获取对外发布项直接配置的高清 sprite JSON。
+
+### `GET /api/v1/external/:publishId/sprites/sprite@2x.png`
+
+获取对外发布项直接配置的高清 sprite 图片。
 
 ### `GET /api/v1/external/:publishId/sprites/:ref/sprite.json`
 
