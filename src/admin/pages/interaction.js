@@ -386,9 +386,14 @@ function queryFor (state, kind, page = 1) { return { ...(kind === 'reports' ? st
 export async function handleInteractionSubmit ({ api, event, renderDashboard, setNotice, state }) {
   const form = event.target.closest('[data-interaction-filter]'); if (!form) return false
   event.preventDefault(); const kind = form.dataset.interactionFilter; const values = Object.fromEntries(new FormData(form).entries())
-  if (kind === 'reports') { state.interactionReportFilters = values; state.interactionReports = await api.listInteractionReports(queryFor(state, kind)) }
-  else { state.interactionCommentFilters = values; state.interactionComments = await api.listInteractionComments(queryFor(state, kind)) }
-  setNotice('筛选已更新'); renderDashboard(); return true
+  try {
+    if (kind === 'reports') { state.interactionReportFilters = values; state.interactionReports = await api.listInteractionReports(queryFor(state, kind)) }
+    else { state.interactionCommentFilters = values; state.interactionComments = await api.listInteractionComments(queryFor(state, kind)) }
+    setNotice('筛选已更新')
+  } catch (err) {
+    setNotice('', err.message || '筛选加载失败')
+  }
+  renderDashboard(); return true
 }
 
 export async function handleInteractionClick ({ api, event, renderDashboard, setNotice, showConfirm: confirmAction, state }) {

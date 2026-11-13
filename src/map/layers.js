@@ -501,7 +501,6 @@ function initScreenshotControl (map) {
         triggerMapScreenshot(map)
       }
 
-      container.addEventListener('click', handleScreenshotClick, true)
       button.addEventListener('click', handleScreenshotClick, true)
 
       // 阻止 mousedown/touchstart/pointerdown 阶段冒泡，避免被 Leaflet 地图误认作拖拽或缩放操作

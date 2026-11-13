@@ -1696,7 +1696,9 @@ if (isShareLocation(window.location)) {
   renderAppVersion()
   prepareShareView(init3dEarth)
 } else if (isAdminLocation(window.location)) {
-  import('./admin/dashboard.js').then(({ initAdminApp }) => initAdminApp({ amapLoader: AMapLoader }))
+  import('./admin/dashboard.js')
+    .then(({ initAdminApp }) => initAdminApp({ amapLoader: AMapLoader }))
+    .catch((err) => { console.error('加载管理后台失败:', err) })
 } else {
   renderAppVersion()
   initAfterAccessCheck({

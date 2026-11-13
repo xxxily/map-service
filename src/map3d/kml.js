@@ -114,6 +114,7 @@ const DEFAULT_KML_ID = 'default-kml'
 const DEFAULT_KML_NAME = '默认标注'
 const PUBLIC_PREFS_KEY = 'map_shared_kml_prefs'
 const KML_POINT_LABEL_MAX_LENGTH = 18
+const MAX_KML_UPLOAD_BYTES = 50 * 1024 * 1024
 
 const LONG_PRESS_DELAY_MS = 650
 const LONG_PRESS_MOVE_TOLERANCE = 10
@@ -779,7 +780,7 @@ function pushKmlHistory () {
 }
 
 function undoKml () {
-  if (!canWritePersonalKml()) return
+  if (!canWritePersonalKml() && !isEditingPublicKml) return
   if (kmlUndoStack.length === 0) return
   const previousFiles = kmlList
   kmlRedoStack.push(JSON.parse(JSON.stringify(kmlList)))
@@ -790,7 +791,7 @@ function undoKml () {
 }
 
 function redoKml () {
-  if (!canWritePersonalKml()) return
+  if (!canWritePersonalKml() && !isEditingPublicKml) return
   if (kmlRedoStack.length === 0) return
   const previousFiles = kmlList
   kmlUndoStack.push(JSON.parse(JSON.stringify(kmlList)))
@@ -3038,6 +3039,11 @@ function bindPanelEvents () {
     }
     const file = event.target.files[0]
     if (!file) return
+    if (file.size > MAX_KML_UPLOAD_BYTES) {
+      event.target.value = ''
+      showAlert('KML 文件大小不能超过 50MB')
+      return
+    }
 
     const reader = new FileReader()
     reader.onload = (loadEvent) => {
@@ -3737,8 +3743,16 @@ function bindCanvasPickEvents () {
   }, ScreenSpaceEventType.LEFT_CLICK)
 }
 
+let kmlKeyboardBound3d = false
+
 function bindKeyboardEvents () {
+  if (kmlKeyboardBound3d) return
+  kmlKeyboardBound3d = true
   document.addEventListener('keydown', (event) => {
+    const target = event.target
+    if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(String(target.tagName || '').toUpperCase()))) {
+      return
+    }
     if (typeof window.getIsGuidelineModeActive === 'function' && window.getIsGuidelineModeActive()) return
 
     const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0
@@ -3908,6 +3922,8 @@ export async function initKmlSupport3d (viewer, options = {}) {
     renderAllKmls()
     updateKmlPanelUI()
     checkPublicKmlEditMode()
+  }).catch((error) => {
+    console.warn('公共 KML 图层加载失败:', error)
   })
 
   bindPanelEvents()

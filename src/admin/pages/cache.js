@@ -359,9 +359,13 @@ async function refreshCacheState ({ api, renderDashboard, state }) {
 
 function scheduleCacheRefresh (context, delay = 1500) {
   if (cacheRefreshTimer) window.clearTimeout(cacheRefreshTimer)
+  if (!context?.state?.session?.authenticated) {
+    cacheRefreshTimer = null
+    return
+  }
   cacheRefreshTimer = window.setTimeout(async () => {
     cacheRefreshTimer = null
-    if (context.state.activeTab !== 'cache') return
+    if (context.state.activeTab !== 'cache' || !context.state.session?.authenticated) return
     try {
       await refreshCacheState(context)
     } catch (err) {

@@ -49,6 +49,17 @@ const TRACK_PERSIST_RETRY_BASE_MS = 5000
 const TRACK_PERSIST_RETRY_MAX_MS = 5 * 60_000
 const singleLocationRequestCoordinator3d = createLatestLocationRequestCoordinator()
 const locationCameraRuntimes3d = new WeakMap()
+const activeRippleEffects3d = new Set()
+
+function clearActiveRipples3d (viewer) {
+  activeRippleEffects3d.forEach((effect) => {
+    clearInterval(effect.timer)
+    if (viewer && !viewer.isDestroyed?.() && effect.entity) {
+      viewer.entities.remove(effect.entity)
+    }
+  })
+  activeRippleEffects3d.clear()
+}
 
 function subscribeCesiumEvent (event, callback) {
   if (!event?.addEventListener) return () => {}
@@ -340,6 +351,7 @@ function persistTrack3d ({ force = false } = {}) {
 
 // 辅助函数：触发 3D 定位扩散波纹
 function triggerRipple3d (viewer, position) {
+  if (!viewer || viewer.isDestroyed?.()) return
   let radius = 10
   const maxRadius = 150
   let alpha = 0.8
@@ -360,7 +372,13 @@ function triggerRipple3d (viewer, position) {
 
   const startTime = Date.now()
   const duration = 1200
-  const timer = setInterval(() => {
+  const effect = { timer: null, entity: rippleEntity }
+  effect.timer = setInterval(() => {
+    if (viewer.isDestroyed?.()) {
+      clearInterval(effect.timer)
+      activeRippleEffects3d.delete(effect)
+      return
+    }
     const elapsed = Date.now() - startTime
     const ratio = Math.min(1, elapsed / duration)
 
@@ -368,10 +386,12 @@ function triggerRipple3d (viewer, position) {
     alpha = 0.8 * (1 - ratio)
 
     if (ratio >= 1) {
-      clearInterval(timer)
+      clearInterval(effect.timer)
+      activeRippleEffects3d.delete(effect)
       viewer.entities.remove(rippleEntity)
     }
   }, 30)
+  activeRippleEffects3d.add(effect)
 }
 
 // 辅助函数：绘制 3D 轨迹点
@@ -473,16 +493,12 @@ export function addTargetMarker3d (viewer, location, options = {}) {
     targetEntity = null
   }
 
-  let pixelSizeVal = 13
-  let sizeDirection = 1
-
   if (options.isInterval) {
-    // 持续定位状态：使用 CallbackProperty 实现呼吸动画点
+    // 持续定位状态：使用基于时间的 CallbackProperty 实现与帧率无关的呼吸动画点
+    const pulseStartTime = Date.now()
     const sizeCallback = new CallbackProperty(() => {
-      pixelSizeVal += sizeDirection * 0.2
-      if (pixelSizeVal >= 17) sizeDirection = -1
-      if (pixelSizeVal <= 13) sizeDirection = 1
-      return pixelSizeVal
+      const phase = ((Date.now() - pulseStartTime) % 1600) / 1600
+      return 15 + 2 * Math.sin(phase * Math.PI * 2)
     }, false)
 
     targetEntity = viewer.entities.add({
@@ -1053,6 +1069,7 @@ export function startIntervalLocation3d (viewer, geolocation, interval, zoom, ma
 // 停止 3D 持续定位
 export function stopIntervalLocation3d (viewer) {
   cancelLocationCamera3d(viewer)
+  clearActiveRipples3d(viewer)
   intervalLocationController3d?.stop()
   intervalLocationController3d?.destroy()
   intervalLocationController3d = null

@@ -342,7 +342,13 @@ export async function handleProxyClick ({ api, event, state, renderDashboard, sh
 
   if (event.target.closest('[data-proxy-edit-outbound]')) {
     const id = event.target.closest('[data-proxy-edit-outbound]').getAttribute('data-proxy-edit-outbound')
-    state.editingProxyOutbound = JSON.parse(JSON.stringify(state.proxyOutbounds.find(o => o.id === id)))
+    const target = state.proxyOutbounds.find(o => o.id === id)
+    if (!target) {
+      setNotice('', '未找到指定的代理出口')
+      renderDashboard()
+      return true
+    }
+    state.editingProxyOutbound = JSON.parse(JSON.stringify(target))
     renderDashboard()
     return true
   }
@@ -399,7 +405,13 @@ export async function handleProxyClick ({ api, event, state, renderDashboard, sh
 
   if (event.target.closest('[data-proxy-edit-pool]')) {
     const id = event.target.closest('[data-proxy-edit-pool]').getAttribute('data-proxy-edit-pool')
-    state.editingProxyPool = JSON.parse(JSON.stringify(state.proxyPools.find(p => p.id === id)))
+    const target = state.proxyPools.find(p => p.id === id)
+    if (!target) {
+      setNotice('', '未找到指定的代理池')
+      renderDashboard()
+      return true
+    }
+    state.editingProxyPool = JSON.parse(JSON.stringify(target))
     renderDashboard()
     return true
   }
@@ -487,12 +499,19 @@ export async function handleProxySubmit ({ api, event, state, renderDashboard, s
 
     // 收集 members
     const members = []
+    const formElements = Array.from(poolForm.elements || [])
     const checkboxes = poolForm.querySelectorAll('input[name="pool_outbound_id"]:checked')
     checkboxes.forEach((cb) => {
       const outboundId = cb.value
-      const priority = parseInt(poolForm.querySelector(`[name="pool_priority_${outboundId}"]`).value, 10)
-      const weight = parseInt(poolForm.querySelector(`[name="pool_weight_${outboundId}"]`).value, 10)
-      members.push({ outboundId, priority, weight })
+      const priorityInput = formElements.find(el => el?.name === `pool_priority_${outboundId}`)
+      const weightInput = formElements.find(el => el?.name === `pool_weight_${outboundId}`)
+      const priority = Number.parseInt(priorityInput?.value ?? '0', 10)
+      const weight = Number.parseInt(weightInput?.value ?? '1', 10)
+      members.push({
+        outboundId,
+        priority: Number.isFinite(priority) ? priority : 0,
+        weight: Number.isFinite(weight) ? weight : 1,
+      })
     })
 
     const payload = {

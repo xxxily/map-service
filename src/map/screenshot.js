@@ -3,6 +3,8 @@ const HIDDEN_ELEMENT_SELECTORS = [
   '#map-menu',
   '#guideline-toolbar',
   '#kml-panel',
+  '#map-search-mod',
+  '#location-history-panel',
   '.amap-sug-result',
 ]
 
@@ -18,7 +20,12 @@ let html2canvasLoader = null
 
 function loadHtml2Canvas () {
   if (!html2canvasLoader) {
-    html2canvasLoader = import('html2canvas').then(module => module.default)
+    html2canvasLoader = import('html2canvas')
+      .then(module => module.default)
+      .catch((error) => {
+        html2canvasLoader = null
+        throw error
+      })
   }
   return html2canvasLoader
 }

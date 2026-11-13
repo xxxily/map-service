@@ -2293,7 +2293,13 @@ export async function handleTileSourcesClick (context) {
   const editLayerBtn = event.target.closest('[data-tile-sources-edit-layer]')
   if (editLayerBtn) {
     const id = editLayerBtn.getAttribute('data-tile-sources-edit-layer')
-    state.editingMapLayer = JSON.parse(JSON.stringify(state.mapLayers.find(l => l.id === id)))
+    const target = state.mapLayers.find(l => l.id === id)
+    if (!target) {
+      setNotice('', '未找到指定的图层组合')
+      renderDashboard()
+      return true
+    }
+    state.editingMapLayer = JSON.parse(JSON.stringify(target))
     renderDashboard()
     return true
   }
@@ -2422,7 +2428,13 @@ export async function handleTileSourcesClick (context) {
   const editPublishBtn = event.target.closest('[data-tile-sources-edit-publish]')
   if (editPublishBtn) {
     const id = editPublishBtn.getAttribute('data-tile-sources-edit-publish')
-    state.editingExternalPublish = JSON.parse(JSON.stringify(state.externalPublishes.find(p => p.id === id)))
+    const target = state.externalPublishes.find(p => p.id === id)
+    if (!target) {
+      setNotice('', '未找到指定的对外发布项')
+      renderDashboard()
+      return true
+    }
+    state.editingExternalPublish = JSON.parse(JSON.stringify(target))
     renderDashboard()
     return true
   }

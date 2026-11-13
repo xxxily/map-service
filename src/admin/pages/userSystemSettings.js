@@ -417,13 +417,19 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
       },
     }
     if (isSuperAdmin(state)) {
+      const spatialPaddingMeters = numberField(data, 'spatialPaddingMeters')
       const spatialMaxAreaKm2 = numberField(data, 'spatialMaxAreaKm2')
       const spatialMaxDiagonalKm = numberField(data, 'spatialMaxDiagonalKm')
       const spatialUnrestrictedTileMaxZoom = numberField(data, 'spatialUnrestrictedTileMaxZoom')
       const unlimitedAccessMaxAreaKm2 = numberField(data, 'unlimitedAccessMaxAreaKm2')
       const unlimitedAccessMaxDiagonalKm = numberField(data, 'unlimitedAccessMaxDiagonalKm')
-      if (![spatialMaxAreaKm2, spatialMaxDiagonalKm, spatialUnrestrictedTileMaxZoom, unlimitedAccessMaxAreaKm2, unlimitedAccessMaxDiagonalKm].every(Number.isFinite)) {
+      if (![spatialPaddingMeters, spatialMaxAreaKm2, spatialMaxDiagonalKm, spatialUnrestrictedTileMaxZoom, unlimitedAccessMaxAreaKm2, unlimitedAccessMaxDiagonalKm].every(Number.isFinite)) {
         setNotice('', '空间策略阈值必须是有效数字')
+        renderDashboard()
+        return true
+      }
+      if (spatialPaddingMeters < 0) {
+        setNotice('', '边界余量不能小于 0')
         renderDashboard()
         return true
       }
@@ -438,7 +444,7 @@ export async function handleUserSystemSettingsSubmit ({ api, event, renderDashbo
         return true
       }
       body.share.spatialAccessEnabled = data.get('spatialAccessEnabled') === 'true'
-      body.share.spatialPaddingMeters = numberField(data, 'spatialPaddingMeters')
+      body.share.spatialPaddingMeters = spatialPaddingMeters
       body.share.spatialMaxAreaKm2 = spatialMaxAreaKm2
       body.share.spatialMaxDiagonalKm = spatialMaxDiagonalKm
       body.share.spatialUnrestrictedTileMaxZoom = spatialUnrestrictedTileMaxZoom

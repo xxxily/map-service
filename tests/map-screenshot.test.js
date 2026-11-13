@@ -121,3 +121,9 @@ test('截图可以绘制 canvas 瓦片，并等待图片瓦片而不阻塞 canva
   assert.match(source, /isCanvas && image\.dataset\?\.tileReady/)
   assert.match(source, /image\.offsetWidth \|\| image\.width \|\| image\.naturalWidth/)
 })
+
+test('截图隐藏面板包含搜索与定位历史浮层，且按需加载失败时可重试', () => {
+  assert.match(source, /'#map-search-mod'/)
+  assert.match(source, /'#location-history-panel'/)
+  assert.match(source, /html2canvasLoader = null[\s\S]{0,40}throw error/)
+})

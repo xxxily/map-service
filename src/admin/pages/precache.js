@@ -397,7 +397,10 @@ async function refreshPrecacheEstimate (state, api) {
 
 export function schedulePrecacheTaskRefresh (state, api, delay = PRECACHE_TASK_REFRESH_DELAY) {
   window.clearTimeout(taskRefreshTimer)
-  if (state.activeTab !== 'precache' || !hasActiveTasks(state.tasks)) return
+  if (state.activeTab !== 'precache' || !state.session?.authenticated || !hasActiveTasks(state.tasks)) {
+    taskRefreshTimer = null
+    return
+  }
 
   taskRefreshTimer = window.setTimeout(() => {
     refreshPrecacheTasks(state, api)
@@ -405,14 +408,14 @@ export function schedulePrecacheTaskRefresh (state, api, delay = PRECACHE_TASK_R
 }
 
 async function refreshPrecacheTasks (state, api) {
-  if (state.activeTab !== 'precache') return
+  if (state.activeTab !== 'precache' || !state.session?.authenticated) return
 
   const requestId = taskRefreshRequestId + 1
   taskRefreshRequestId = requestId
 
   try {
     const tasks = await api.tasks()
-    if (requestId !== taskRefreshRequestId || state.activeTab !== 'precache') return
+    if (requestId !== taskRefreshRequestId || state.activeTab !== 'precache' || !state.session?.authenticated) return
     state.tasks = tasks
     updatePrecacheTaskPanelView(state)
     schedulePrecacheTaskRefresh(state, api)
@@ -798,6 +801,7 @@ export function initPrecacheMap (state, api) {
       startHeight = container.offsetHeight
       document.addEventListener('pointermove', handlePointerMove)
       document.addEventListener('pointerup', handlePointerUp)
+      document.addEventListener('pointercancel', handlePointerUp)
       resizer.classList.add('is-dragging')
       e.preventDefault()
     }
@@ -815,10 +819,12 @@ export function initPrecacheMap (state, api) {
     const handlePointerUp = () => {
       document.removeEventListener('pointermove', handlePointerMove)
       document.removeEventListener('pointerup', handlePointerUp)
+      document.removeEventListener('pointercancel', handlePointerUp)
       resizer.classList.remove('is-dragging')
     }
 
     resizer.addEventListener('pointerdown', handlePointerDown)
+    map.on('unload', handlePointerUp)
   }
 }
 

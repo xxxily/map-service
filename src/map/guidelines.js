@@ -27,6 +27,15 @@ let previewVertical = null
 
 // 旋转防误触时间戳记录
 let lastRotateTime = 0
+let endpointUpdateFrameId = 0
+let activeKeydownHandler = null
+
+function isEditableKeyboardTarget (target) {
+  if (!target || typeof target !== 'object') return false
+  if (target.isContentEditable) return true
+  const tagName = String(target.tagName || '').toUpperCase()
+  return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT'
+}
 
 // 阻止元素上的所有交互、触摸和指针事件向地图容器冒泡，切断点击穿透
 function preventAllPropagation (el) {
@@ -193,8 +202,6 @@ function updateGuidelineStyles () {
       const isSelected = item.id === selectedGuidelineId
       const color = isSelected ? '#be123c' : '#06b6d4'
       const weight = isSelected ? 2.2 : 1.5
-      const pointColor = isSelected ? '#be123c' : '#0891b2'
-      const radius = isSelected ? 7 : 6
 
       group.eachLayer(layer => {
         if (layer instanceof L.Polyline) {
@@ -256,7 +263,6 @@ function renderGuidelines () {
     const isSelected = id === selectedGuidelineId
     const color = isSelected ? '#be123c' : '#06b6d4'
     const weight = isSelected ? 2.2 : 1.5
-    const pointColor = isSelected ? '#be123c' : '#0891b2'
 
     // 水平辅助线，设置永远 interactive 允许任何模式点击触发
     const horizontalLine = L.polyline(pts.horizontal, {
@@ -687,8 +693,19 @@ export function initGuidelines (map) {
   loadGuidelinesData()
   renderGuidelines()
 
-  // 监听地图的移动和缩放事件，动态刷新辅助线的端点坐标
-  map.on('move', updateGuidelineEndpoints)
+  // 监听地图的移动和缩放事件，动态刷新辅助线的端点坐标（合并到 rAF）
+  const scheduleGuidelineEndpointUpdate = () => {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      if (endpointUpdateFrameId) return
+      endpointUpdateFrameId = window.requestAnimationFrame(() => {
+        endpointUpdateFrameId = 0
+        updateGuidelineEndpoints()
+      })
+      return
+    }
+    updateGuidelineEndpoints()
+  }
+  map.on('move', scheduleGuidelineEndpointUpdate)
 
   // 全局常态化监听地图点击事件，以实现碰撞检测和无感添加
   map.on('click', onMapClick)
@@ -705,7 +722,8 @@ export function initGuidelines (map) {
 
   // 绑定工具栏的按钮点击事件
   const toolbar = document.getElementById('guideline-toolbar')
-  if (toolbar) {
+  if (toolbar && toolbar.dataset.guidelineToolbarBound !== 'true') {
+    toolbar.dataset.guidelineToolbarBound = 'true'
     toolbar.addEventListener('click', (event) => {
       const actionTarget = event.target.closest('[data-guideline-action]')
       const action = actionTarget?.getAttribute('data-guideline-action')
@@ -722,7 +740,11 @@ export function initGuidelines (map) {
   }
 
   // 监听键盘事件：支持 ESC 退出及 Ctrl+Z (Cmd+Z) / Ctrl+Y (Cmd+Y/Cmd+Shift+Z) 撤销重做
-  document.addEventListener('keydown', (event) => {
+  if (activeKeydownHandler) {
+    document.removeEventListener('keydown', activeKeydownHandler)
+  }
+  activeKeydownHandler = (event) => {
+    if (isEditableKeyboardTarget(event.target)) return
     if (event.key === 'Escape' && isGuidelineModeActive) {
       exitGuidelineMode()
       return
@@ -754,6 +776,19 @@ export function initGuidelines (map) {
         redo()
       }
     }
+  }
+  document.addEventListener('keydown', activeKeydownHandler)
+
+  map.on('unload', () => {
+    if (endpointUpdateFrameId && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(endpointUpdateFrameId)
+      endpointUpdateFrameId = 0
+    }
+    if (activeKeydownHandler) {
+      document.removeEventListener('keydown', activeKeydownHandler)
+      activeKeydownHandler = null
+    }
+    if (activeMap === map) activeMap = null
   })
 }
 

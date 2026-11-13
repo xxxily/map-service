@@ -576,9 +576,13 @@ if (isShareLocation(window.location)) {
   renderAppVersion()
   prepareShareView(initLeafletMap)
 } else if (isAccountLocation(window.location)) {
-  import('./account/app.js').then(({ initAccountApp }) => initAccountApp())
+  import('./account/app.js')
+    .then(({ initAccountApp }) => initAccountApp())
+    .catch((err) => { console.error('加载账号页面失败:', err) })
 } else if (isAdminLocation(window.location)) {
-  import('./admin/dashboard.js').then(({ initAdminApp }) => initAdminApp({ amapLoader: AMapLoader }))
+  import('./admin/dashboard.js')
+    .then(({ initAdminApp }) => initAdminApp({ amapLoader: AMapLoader }))
+    .catch((err) => { console.error('加载管理后台失败:', err) })
 } else {
   renderAppVersion()
   initAfterAccessCheck({

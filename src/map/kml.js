@@ -120,6 +120,8 @@ import {
   replaceKmlPanelContent,
 } from './kml-panel-scroll.js'
 
+const MAX_KML_UPLOAD_BYTES = 50 * 1024 * 1024
+
 // 辅助函数：从 Leaflet map 获取视口参数
 function getViewportOptions2d (map) {
   if (!map || typeof map.getBounds !== 'function') return {}
@@ -4603,6 +4605,8 @@ export async function initKmlSupport (map, options = {}) {
     renderAllKmls(map)
     updateKmlPanelUI(map)
     checkPublicKmlEditMode(map)
+  }).catch((error) => {
+    console.warn('公共 KML 图层加载失败:', error)
   })
 
   initLongPressPointCreation(map)
@@ -4682,6 +4686,11 @@ export async function initKmlSupport (map, options = {}) {
     }
     const file = e.target.files[0]
     if (!file) return
+    if (file.size > MAX_KML_UPLOAD_BYTES) {
+      e.target.value = ''
+      showAlert('KML 文件大小不能超过 50MB')
+      return
+    }
     
     const reader = new FileReader()
     reader.onload = (event) => {
@@ -4960,6 +4969,9 @@ export async function initKmlSupport (map, options = {}) {
         renderAllKmls(map)
         updateKmlPanelUI(map)
         showAlert('公共图层已刷新')
+      }).catch((error) => {
+        console.warn('刷新公共 KML 图层失败:', error)
+        showAlert(error?.message || '刷新公共图层失败')
       })
       return
     }

@@ -40,6 +40,32 @@ const TRACK_PERSIST_RETRY_BASE_MS = 5000
 const TRACK_PERSIST_RETRY_MAX_MS = 5 * 60_000
 const singleLocationRequestCoordinator2d = createLatestLocationRequestCoordinator()
 const locationCameraCoordinators2d = new WeakMap()
+let historyLayerGroup2d = null
+const activeRippleEffects2d = new Set()
+
+function ensureHistoryLayerGroup2d (map) {
+  if (historyLayerGroup2d && map.hasLayer?.(historyLayerGroup2d)) {
+    return historyLayerGroup2d
+  }
+  historyLayerGroup2d?.remove?.()
+  historyLayerGroup2d = L.layerGroup().addTo(map)
+  return historyLayerGroup2d
+}
+
+function clearHistoryPoints2d () {
+  historyLayerGroup2d?.clearLayers?.()
+  intervalLocationState.historyLayers = []
+}
+
+function clearActiveRipples2d (map) {
+  activeRippleEffects2d.forEach((effect) => {
+    clearTimeout(effect.timer)
+    if (effect.marker && map?.hasLayer?.(effect.marker)) {
+      map.removeLayer(effect.marker)
+    }
+  })
+  activeRippleEffects2d.clear()
+}
 
 function isLeafletLocationInteractionActive (map) {
   const draggable = map?.dragging?._draggable
@@ -323,8 +349,9 @@ function persistTrack2d (map, { force = false } = {}) {
 
 // 辅助函数：绘制历史定位轨迹点
 function renderHistoryPoints (map, points) {
-  // 清除旧轨迹点图层
-  intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
+  // 复用持久 LayerGroup 并清空旧轨迹点
+  const historyGroup = ensureHistoryLayerGroup2d(map)
+  historyGroup.clearLayers()
   intervalLocationState.historyLayers = []
 
   // 直接历史定位点（circleMarker）不做视口过滤，仅保留最近 N 个点。
@@ -388,7 +415,7 @@ function renderHistoryPoints (map, points) {
     `
 
     circle.bindPopup(popupContent, { closeButton: false })
-    circle.addTo(map)
+    circle.addTo(historyGroup)
     intervalLocationState.historyLayers.push(circle)
   })
 }
@@ -403,7 +430,7 @@ export function addTargetMarker (map, location, options = {}) {
   }
 
   map.eachLayer((layer) => {
-    if (layer instanceof L.Marker) {
+    if (layer instanceof L.Marker && !layer._isLocationRipple) {
       const iconOptions = layer.options?.icon?.options
       if (iconOptions?.className === 'custom-location-marker') {
         map.removeLayer(layer)
@@ -447,11 +474,18 @@ export function addTargetMarker (map, location, options = {}) {
       keyboard: false,
       alt: '',
       zIndexOffset: -100
-    }).addTo(map)
+    })
+    rippleMarker._isLocationRipple = true
+    rippleMarker.addTo(map)
 
-    setTimeout(() => {
-      map.removeLayer(rippleMarker)
+    const effect = { marker: rippleMarker, timer: null }
+    effect.timer = setTimeout(() => {
+      activeRippleEffects2d.delete(effect)
+      if (map.hasLayer?.(rippleMarker)) {
+        map.removeLayer(rippleMarker)
+      }
     }, 1200)
+    activeRippleEffects2d.add(effect)
   }
 
   return marker
@@ -930,8 +964,7 @@ export function startIntervalLocation2d (map, geolocation, interval, zoom, maxHi
   if (recordTrack) ensureTrackKml2d()
   
   // 清空之前的轨迹图层
-  intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
-  intervalLocationState.historyLayers = []
+  clearHistoryPoints2d()
 
   void startLocationKeepAlive()
 
@@ -991,14 +1024,14 @@ export function stopIntervalLocation2d (map) {
   intervalLocationState.suspectPosition = null
   resetTrackRecordingSession(intervalLocationState.recordingSession)
   
-  // 清理历史点图层
-  intervalLocationState.historyLayers.forEach(layer => map.removeLayer(layer))
-  intervalLocationState.historyLayers = []
+  // 清理历史点图层与进行中的定位波纹
+  clearActiveRipples2d(map)
+  clearHistoryPoints2d()
   intervalLocationState.historyPoints = []
 
   // 重新在最后定位处绘制默认常规 Marker
   map.eachLayer((layer) => {
-    if (layer instanceof L.Marker) {
+    if (layer instanceof L.Marker && !layer._isLocationRipple) {
       const iconOptions = layer.options?.icon?.options
       if (iconOptions?.className === 'custom-location-marker' || layer === currentLocationMarker) {
         const latlng = layer.getLatLng()
@@ -1117,7 +1150,8 @@ export function initLocationHistoryPanel2d () {
   const panel = document.getElementById('location-history-panel')
   const closeBtn = document.getElementById('history-close-btn')
 
-  if (footerBar && panel) {
+  if (footerBar && panel && footerBar.dataset.locationHistoryBound !== 'true') {
+    footerBar.dataset.locationHistoryBound = 'true'
     footerBar.title = '点击查看最近 100 次定位历史记录'
     footerBar.style.pointerEvents = 'auto'
     footerBar.style.cursor = 'pointer'
@@ -1133,7 +1167,8 @@ export function initLocationHistoryPanel2d () {
     })
   }
 
-  if (closeBtn && panel) {
+  if (closeBtn && panel && closeBtn.dataset.locationHistoryBound !== 'true') {
+    closeBtn.dataset.locationHistoryBound = 'true'
     closeBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       panel.setAttribute('hidden', '')

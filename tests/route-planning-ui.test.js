@@ -39,3 +39,12 @@ test('路线保存复用统一 KML 目标选择弹框和既有持久化链路', 
   assert.match(source, /name: 'kmlId'/)
   assert.match(source, /saveKmlChanges\(kmlFile\)/)
 })
+
+test('路线选点、超时和卸载生命周期正确取消挂起操作并防止重复绑定', () => {
+  const source = readSource('../src/map/search.js')
+  assert.match(source, /let activeMapPickCancel = null/)
+  assert.match(source, /activeMapPickCancel = \(\) => \{[\s\S]*?map\.off\('click', handleMapClick\)/)
+  assert.match(source, /geocodeTimeoutId = window\.setTimeout\(\(\) => finishAddress\(displayName\), 5000\)/)
+  assert.match(source, /routePlanningTimeoutId = window\.setTimeout\(/)
+  assert.match(source, /searchContainer\.dataset\.searchInitialized === 'true'/)
+})

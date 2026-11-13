@@ -24,6 +24,16 @@ let previewEntities = []
 let guidelinePopupEl = null
 let popupGuidelineId = null
 let refreshFrameId = 0
+let previewAnimationFrameId = 0
+let pendingPreviewPosition = null
+let keyboardBound = false
+
+function isEditableKeyboardTarget (target) {
+  if (!target || typeof target !== 'object') return false
+  if (target.isContentEditable) return true
+  const tagName = String(target.tagName || '').toUpperCase()
+  return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT'
+}
 
 const undoStack = []
 const redoStack = []
@@ -342,21 +352,36 @@ function currentCameraBearing () {
   return Math.round((heading % 360 + 360) % 360)
 }
 
-function removePreview () {
+function clearPreviewEntities () {
   if (!viewerRef) return
   previewEntities.forEach(entity => viewerRef.entities.remove(entity))
   previewEntities = []
 }
 
-function updatePreview (windowPosition) {
-  if (!isGuidelineModeActive || !viewerRef) return
+function removePreview () {
+  if (previewAnimationFrameId && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+    window.cancelAnimationFrame(previewAnimationFrameId)
+  }
+  previewAnimationFrameId = 0
+  pendingPreviewPosition = null
+  clearPreviewEntities()
+}
+
+function renderPreviewFrame () {
+  previewAnimationFrameId = 0
+  const windowPosition = pendingPreviewPosition
+  pendingPreviewPosition = null
+  if (!isGuidelineModeActive || !viewerRef || !windowPosition) {
+    clearPreviewEntities()
+    return
+  }
   const latlng = getLatLngFromWindowPosition(windowPosition)
   if (!latlng) {
-    removePreview()
+    clearPreviewEntities()
     return
   }
 
-  removePreview()
+  clearPreviewEntities()
   const preview = {
     id: 'preview',
     lat: latlng.lat,
@@ -385,6 +410,18 @@ function updatePreview (windowPosition) {
       },
     }),
   ]
+}
+
+function updatePreview (windowPosition) {
+  if (!isGuidelineModeActive || !viewerRef) return
+  pendingPreviewPosition = windowPosition ? { x: windowPosition.x, y: windowPosition.y } : null
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    if (!previewAnimationFrameId) {
+      previewAnimationFrameId = window.requestAnimationFrame(renderPreviewFrame)
+    }
+    return
+  }
+  renderPreviewFrame()
 }
 
 function selectGuideline (guidelineId, screenPosition = null) {
@@ -453,7 +490,10 @@ function bindToolbar () {
 }
 
 function bindKeyboard () {
+  if (keyboardBound) return
+  keyboardBound = true
   document.addEventListener('keydown', (event) => {
+    if (isEditableKeyboardTarget(event.target)) return
     if (event.key === 'Escape' && isGuidelineModeActive) {
       exitGuidelineMode()
       return

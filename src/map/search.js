@@ -34,6 +34,23 @@ let temporaryRoutes = []
 let routePlanningRequestId = 0
 let routeLifecycleBound = false
 let routePlanningBusy = false
+let routePlanningTimeoutId = null
+let activeMapPickCancel = null
+
+function cancelRoutePlanningTimeout () {
+  if (routePlanningTimeoutId !== null && typeof window !== 'undefined') {
+    window.clearTimeout(routePlanningTimeoutId)
+  }
+  routePlanningTimeoutId = null
+}
+
+function cancelActiveMapPick () {
+  if (typeof activeMapPickCancel === 'function') {
+    const cancel = activeMapPickCancel
+    activeMapPickCancel = null
+    cancel()
+  }
+}
 
 function escapeHtml (value) {
   return String(value ?? '')
@@ -248,6 +265,7 @@ async function saveSelectedRoute (map, AMap, routeIndex = activeRouteIndex) {
 // 清理路线相关的地图图层和状态
 function clearRouteLayers (map, options = {}) {
   if (options.invalidate !== false) {
+    cancelRoutePlanningTimeout()
     routePlanningRequestId += 1
     routePlanningBusy = false
   }
@@ -408,30 +426,60 @@ function triggerRoutePlanning (map, AMap) {
   const planningStart = snapshotRoutePoi(startPoi)
   const planningEnd = snapshotRoutePoi(endPoi)
   if (!planningStart || !planningEnd) return
+  if (typeof AMap?.plugin !== 'function') {
+    showAlert('路线规划插件不可用，请稍后重试')
+    return
+  }
+
+  cancelRoutePlanningTimeout()
   const requestId = ++routePlanningRequestId
   routePlanningBusy = true
   updateRouteActionState()
 
-  AMap.plugin('AMap.Driving', () => {
-    const driving = new AMap.Driving({
-      policy: 10,
-      extensions: 'all',
-    })
+  const failPlanning = async (message) => {
+    if (requestId !== routePlanningRequestId) return
+    cancelRoutePlanningTimeout()
+    routePlanningRequestId += 1
+    routePlanningBusy = false
+    updateRouteActionState()
+    await showAlert(message)
+  }
 
-    const startLngLat = new AMap.LngLat(planningStart.location.lng, planningStart.location.lat)
-    const endLngLat = new AMap.LngLat(planningEnd.location.lng, planningEnd.location.lat)
+  if (typeof window !== 'undefined') {
+    routePlanningTimeoutId = window.setTimeout(() => {
+      void failPlanning('路线规划请求超时，请检查网络或高德服务后重试')
+    }, 15000)
+  }
 
-    driving.search(startLngLat, endLngLat, async (status, result) => {
+  try {
+    AMap.plugin('AMap.Driving', () => {
       if (requestId !== routePlanningRequestId) return
-      const routes = Array.isArray(result?.routes)
-        ? result.routes.filter(route => routePathForLeaflet(route).length >= 2)
-        : []
-      if (status !== 'complete' || routes.length === 0) {
-        routePlanningBusy = false
-        updateRouteActionState()
-        await showAlert('路线规划失败: ' + (result?.info || '未知错误'))
+      let driving
+      try {
+        driving = new AMap.Driving({
+          policy: 10,
+          extensions: 'all',
+        })
+      } catch (err) {
+        void failPlanning('路线规划初始化失败: ' + (err?.message || '未知错误'))
         return
       }
+
+      const startLngLat = new AMap.LngLat(planningStart.location.lng, planningStart.location.lat)
+      const endLngLat = new AMap.LngLat(planningEnd.location.lng, planningEnd.location.lat)
+
+      driving.search(startLngLat, endLngLat, async (status, result) => {
+        if (requestId !== routePlanningRequestId) return
+        cancelRoutePlanningTimeout()
+        const routes = Array.isArray(result?.routes)
+          ? result.routes.filter(route => routePathForLeaflet(route).length >= 2)
+          : []
+        if (status !== 'complete' || routes.length === 0) {
+          routePlanningBusy = false
+          updateRouteActionState()
+          await showAlert('路线规划失败: ' + (result?.info || '未知错误'))
+          return
+        }
 
       saveSearchHistory('map_route_history', planningStart)
       saveSearchHistory('map_route_history', planningEnd)
@@ -534,8 +582,11 @@ function triggerRoutePlanning (map, AMap) {
       selectRoute(0)
       routePlanningBusy = false
       updateRouteActionState()
+      })
     })
-  })
+  } catch (err) {
+    void failPlanning('路线规划初始化失败: ' + (err?.message || '未知错误'))
+  }
 }
 
 export function initAmapSearch (map, AMap, amapGeolocation) {
@@ -551,6 +602,8 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
   if (map && !routeLifecycleBound) {
     routeLifecycleBound = true
     map.on('unload', () => {
+      cancelRoutePlanningTimeout()
+      cancelActiveMapPick()
       clearTemporaryRoutes(map)
       routeFeatureGroup = null
       routePolylines = []
@@ -558,12 +611,20 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       routePlanningRequestId += 1
       routePlanningBusy = false
       routeLifecycleBound = false
+      if (searchContainer) {
+        delete searchContainer.dataset.searchInitialized
+      }
     })
   }
 
   if (!AMap?.AutoComplete || !AMap?.PlaceSearch) {
     console.warn('高德搜索插件加载失败，搜索功能不可用')
     return
+  }
+
+  if (searchContainer) {
+    if (searchContainer.dataset.searchInitialized === 'true') return
+    searchContainer.dataset.searchInitialized = 'true'
   }
 
   // 1. 初始化普通搜索联想
@@ -815,15 +876,10 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
     if (!btn || !input) return
 
     btn.addEventListener('click', () => {
-      const isPicking = btn.classList.contains('active')
+      const wasPickingThisBtn = btn.classList.contains('active')
+      cancelActiveMapPick()
 
-      if (startMapBtn) startMapBtn.classList.remove('active')
-      if (endMapBtn) endMapBtn.classList.remove('active')
-      L.DomUtil.removeClass(map.getContainer(), 'map-crosshair-pick')
-      map.off('click', handleMapClick)
-
-      if (isPicking) {
-        input.placeholder = isStart ? '输入起点位置' : '输入终点位置'
+      if (wasPickingThisBtn) {
         return
       }
 
@@ -832,14 +888,18 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
       input.value = ''
       input.placeholder = '请在地图上点击选择位置...'
 
-      async function handleMapClick (e) {
-        const lat = e.latlng.lat
-        const lng = e.latlng.lng
-
+      const restoreButtonUi = () => {
         btn.classList.remove('active')
         L.DomUtil.removeClass(map.getContainer(), 'map-crosshair-pick')
         input.placeholder = isStart ? '输入起点位置' : '输入终点位置'
+      }
 
+      function handleMapClick (e) {
+        activeMapPickCancel = null
+        restoreButtonUi()
+
+        const lat = e.latlng.lat
+        const lng = e.latlng.lng
         const displayName = `地图选定位置 (${lat.toFixed(4)}, ${lng.toFixed(4)})`
         input.value = '正在解析位置...'
 
@@ -859,27 +919,59 @@ export function initAmapSearch (map, AMap, amapGeolocation) {
 
         updatePickMarker(map, [lat, lng], isStart)
 
-        AMap.plugin('AMap.Geocoder', () => {
-          const geocoder = new AMap.Geocoder()
-          geocoder.getAddress([lng, lat], (status, result) => {
-            if (endpointRequestId !== routePlanningRequestId) return
-            if (status === 'complete' && result.regeocode) {
-              const address = result.regeocode.formattedAddress || displayName
-              poi.name = address
-              input.value = address
-            } else {
-              input.value = displayName
-            }
-            saveSearchHistory('map_route_history', poi)
-            if (startPoi && endPoi) {
-              triggerRoutePlanning(map, AMap)
-            } else {
-              clearRouteLayers(map)
+        let settled = false
+        let geocodeTimeoutId = null
+        const finishAddress = (resolvedAddress) => {
+          if (settled) return
+          settled = true
+          if (geocodeTimeoutId !== null && typeof window !== 'undefined') {
+            window.clearTimeout(geocodeTimeoutId)
+          }
+          if (endpointRequestId !== routePlanningRequestId) return
+          const address = String(resolvedAddress || displayName).trim() || displayName
+          poi.name = address
+          input.value = address
+          saveSearchHistory('map_route_history', poi)
+          if (startPoi && endPoi) {
+            triggerRoutePlanning(map, AMap)
+          } else {
+            clearRouteLayers(map)
+          }
+        }
+
+        if (typeof AMap?.plugin !== 'function') {
+          finishAddress(displayName)
+          return
+        }
+
+        if (typeof window !== 'undefined') {
+          geocodeTimeoutId = window.setTimeout(() => finishAddress(displayName), 5000)
+        }
+
+        try {
+          AMap.plugin('AMap.Geocoder', () => {
+            try {
+              const geocoder = new AMap.Geocoder()
+              geocoder.getAddress([lng, lat], (status, result) => {
+                if (status === 'complete' && result?.regeocode) {
+                  finishAddress(result.regeocode.formattedAddress || displayName)
+                } else {
+                  finishAddress(displayName)
+                }
+              })
+            } catch {
+              finishAddress(displayName)
             }
           })
-        })
+        } catch {
+          finishAddress(displayName)
+        }
       }
 
+      activeMapPickCancel = () => {
+        restoreButtonUi()
+        map.off('click', handleMapClick)
+      }
       map.once('click', handleMapClick)
     })
   }
